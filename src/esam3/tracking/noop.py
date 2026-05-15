@@ -4,10 +4,22 @@ from __future__ import annotations
 
 from typing import Any
 
-from esam3._registry import register
-from esam3.tracking.base import NoopTracker  # re-exported for public API
+import numpy as np
 
-__all__ = ["NoopTracker", "build_noop"]
+from esam3._registry import register
+
+
+class NoopTracker:
+    """Tracker that drops all calls on the floor."""
+
+    def log_scalars(self, step: int, values: dict[str, float]) -> None:
+        return None
+
+    def log_images(self, step: int, images: dict[str, np.ndarray]) -> None:
+        return None
+
+    def close(self) -> None:
+        return None
 
 
 @register("tracker", "none")

@@ -14,16 +14,3 @@ class Tracker(Protocol):
     def log_scalars(self, step: int, values: dict[str, float]) -> None: ...
     def log_images(self, step: int, images: dict[str, np.ndarray]) -> None: ...
     def close(self) -> None: ...
-
-
-class NoopTracker:
-    """Tracker that drops all calls on the floor."""
-
-    def log_scalars(self, step: int, values: dict[str, float]) -> None:
-        return None
-
-    def log_images(self, step: int, images: dict[str, np.ndarray]) -> None:
-        return None
-
-    def close(self) -> None:
-        return None

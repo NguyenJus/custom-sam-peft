@@ -3,10 +3,26 @@
 from __future__ import annotations
 
 import numpy as np
+import pytest
 
-from esam3._registry import lookup, reset_registry
+from esam3._registry import RegistryError, list_registered, lookup
 from esam3.tracking.base import Tracker
 from esam3.tracking.noop import NoopTracker, build_noop  # noqa: F401
+
+
+@pytest.fixture(autouse=True)
+def _ensure_noop_registered() -> None:
+    """Re-register the noop factory if a sibling test file cleared the registry."""
+    import contextlib
+    import importlib
+
+    try:
+        lookup("tracker", "none")
+    except RegistryError:
+        from esam3.tracking import noop as _noop_mod
+
+        with contextlib.suppress(RegistryError):
+            importlib.reload(_noop_mod)
 
 
 def test_noop_tracker_conforms_to_protocol() -> None:
@@ -17,12 +33,8 @@ def test_noop_tracker_conforms_to_protocol() -> None:
 
 
 def test_noop_registered_under_tracker_kind() -> None:
-    reset_registry()
-    import importlib
-
-    import esam3.tracking.noop as mod
-
-    importlib.reload(mod)
+    assert "none" in list_registered("tracker")
     factory = lookup("tracker", "none")
     instance = factory({})
-    assert isinstance(instance, NoopTracker)
+    assert type(instance).__name__ == "NoopTracker"
+    assert type(instance).__module__ == "esam3.tracking.noop"
