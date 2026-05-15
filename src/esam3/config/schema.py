@@ -39,8 +39,8 @@ class ModelConfig(_Strict):
 
 
 class DataSplit(_Strict):
-    annotations: str
-    images: str
+    annotations: str = Field(min_length=1)
+    images: str = Field(min_length=1)
 
 
 class AugmentationsConfig(_Strict):
@@ -85,9 +85,7 @@ class TrainHyperparams(_Strict):
 
 
 class EvalConfig(_Strict):
-    metrics: list[str] = Field(
-        default_factory=lambda: ["mAP", "mAP_50", "mAP_75", "per_class_AP"]
-    )
+    metrics: list[str] = Field(default_factory=lambda: ["mAP", "mAP_50", "mAP_75", "per_class_AP"])
     iou_thresholds: list[float] = Field(
         default_factory=lambda: [0.5, 0.55, 0.6, 0.65, 0.7, 0.75, 0.8, 0.85, 0.9, 0.95]
     )

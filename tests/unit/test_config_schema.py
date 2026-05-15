@@ -5,21 +5,7 @@ from __future__ import annotations
 import pytest
 from pydantic import ValidationError
 
-from esam3.config.schema import (
-    AugmentationsConfig,
-    DataConfig,
-    DataSplit,
-    EvalConfig,
-    ExportConfig,
-    ModelConfig,
-    PEFTConfig,
-    QLoRAConfig,
-    RunConfig,
-    TrackingConfig,
-    TrainConfig,
-    TrainHyperparams,
-    WandbConfig,
-)
+from esam3.config.schema import TrainConfig
 
 
 def _minimal_dict() -> dict[str, object]:
@@ -121,3 +107,26 @@ def test_qlora_subconfig_defaults() -> None:
     cfg = TrainConfig.model_validate(d)
     assert cfg.peft.qlora.quant_type == "nf4"
     assert cfg.peft.qlora.compute_dtype == "bfloat16"
+
+
+def test_all_public_submodels_are_importable() -> None:
+    """Smoke check that every documented sub-model is a public attribute of schema."""
+    from esam3.config import schema
+
+    expected = {
+        "AugmentationsConfig",
+        "DataConfig",
+        "DataSplit",
+        "EvalConfig",
+        "ExportConfig",
+        "ModelConfig",
+        "PEFTConfig",
+        "QLoRAConfig",
+        "RunConfig",
+        "TrackingConfig",
+        "TrainConfig",
+        "TrainHyperparams",
+        "WandbConfig",
+    }
+    missing = {n for n in expected if not hasattr(schema, n)}
+    assert missing == set(), f"missing public sub-models: {missing}"
