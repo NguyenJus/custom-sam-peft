@@ -23,3 +23,4 @@
 [2026-05-16] [implementer] task 15 — hf module-private helpers (resolve_field, normalize_bbox, validate, class_names; 8 tests pass)
 [2026-05-16] [implementer] task 16 — HFDataset + build_hf builder with field-map, masks-from-boxes fallback (8 new tests; 16 hf tests pass)
 [2026-05-16] [implementer] task 17 — augment example YAMLs with text_prompt + normalize; ARCHITECTURE.md data line
+[2026-05-16] [implementer] task 18 — boundary test guarding TrainConfig import in data layer
