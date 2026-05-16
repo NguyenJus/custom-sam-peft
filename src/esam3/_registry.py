@@ -47,5 +47,9 @@ def list_registered(kind: str) -> list[str]:
 
 
 def reset_registry() -> None:
-    """Clear the registry — test-only helper."""
+    """Clear the registry. Test-only helper — do NOT call from production code.
+
+    Clearing the registry wipes all dataset/peft/tracker registrations and
+    will break any subsequent lookups until the relevant modules are reloaded.
+    """
     _REGISTRY.clear()

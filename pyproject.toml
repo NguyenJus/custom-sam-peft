@@ -64,7 +64,7 @@ files = ["src/esam3"]
 plugins = ["pydantic.mypy"]
 
 [[tool.mypy.overrides]]
-module = ["pycocotools.*", "bitsandbytes.*", "wandb.*"]
+module = ["pycocotools.*", "bitsandbytes.*", "wandb.*", "tensorboard.*"]
 ignore_missing_imports = true
 
 [tool.pytest.ini_options]

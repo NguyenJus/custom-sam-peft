@@ -133,9 +133,9 @@ my.yaml ─► config.loader.load() ─► TrainConfig
                   train.Trainer(model, train_ds, val_ds, tracker, cfg).fit()
                            │
                            ▼
-              checkpoints/{run_id}/adapter/        ← always (LoRA weights + config)
-              checkpoints/{run_id}/merged/         ← if cfg.export.merge
-              checkpoints/{run_id}/metrics.json    ← final eval report
+              runs/{run_id}/adapter/        ← always (LoRA weights + config)
+              runs/{run_id}/merged/         ← if cfg.export.merge
+              runs/{run_id}/metrics.json    ← final eval report
 ```
 
 Each `build_*` helper looks the implementation up via `_registry.lookup(kind, name)`, so adding a new dataset adapter / PEFT method / tracker is one file plus a `@register` decorator — no edits to dispatch code.
