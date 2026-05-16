@@ -26,3 +26,4 @@
 [2026-05-16] [implementer] task 18 — boundary test guarding TrainConfig import in data layer
 [2026-05-16] [implementer] task 19 — drop test_data_stubs and stale data imports
 [2026-05-16] [implementer] task 20 — ruff/format clean sweep: per-file E402 for test_data_*, removed unused std vars, shortened docstring (135/135 pass, mypy clean)
+[2026-05-16] [implementer] task 21 — coverage verification: 138 tests pass, total 91.36%, hf.py 81% after 3 added tests

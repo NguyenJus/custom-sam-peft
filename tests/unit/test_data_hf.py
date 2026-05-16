@@ -368,3 +368,102 @@ def test_register_hf_lookup(monkeypatch: pytest.MonkeyPatch) -> None:
     with _patch_imagenet_ctx():
         hfds = builder(cfg, model_name="facebook/sam3.1", pipeline="eval")
     assert len(hfds) > 0
+
+
+def _build_many_cat_hf(n_cats: int) -> hf_datasets.Dataset:
+    features = hf_datasets.Features(
+        {
+            "image": hf_datasets.Image(),
+            "objects": hf_datasets.Sequence(
+                {
+                    "bbox": hf_datasets.Sequence(hf_datasets.Value("float32"), length=4),
+                    "category": hf_datasets.ClassLabel(names=[f"c{i}" for i in range(n_cats)]),
+                }
+            ),
+        }
+    )
+    return hf_datasets.Dataset.from_dict(
+        {
+            "image": [Image.new("RGB", (16, 16))],
+            "objects": [
+                {
+                    "bbox": [[0.0, 0.0, 4.0, 4.0]] * n_cats,
+                    "category": list(range(n_cats)),
+                }
+            ],
+        },
+        features=features,
+    )
+
+
+def test_multiplex_truncation_text_hf(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    ds = _build_many_cat_hf(20)
+    _patch_load_dataset(monkeypatch, ds)
+    caplog.set_level(logging.WARNING, logger="esam3.data.hf")
+    with _patch_imagenet_ctx():
+        hfds = HFDataset(
+            name="x",
+            split="train",
+            prompt_mode="text",
+            transforms=_build_eval(16),
+            text_prompt=TextPromptConfig(mode="all"),
+            field_map=HFFieldMap(segmentation=None),
+        )
+    ex = hfds[0]
+    assert isinstance(ex.prompts, TextPrompts)
+    assert len(ex.prompts.classes) == 16
+    assert any(re.search(r"truncating to 16", rec.message) for rec in caplog.records)
+
+
+def test_multiplex_truncation_box_hf(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    ds = _build_many_cat_hf(20)
+    _patch_load_dataset(monkeypatch, ds)
+    caplog.set_level(logging.WARNING, logger="esam3.data.hf")
+    with _patch_imagenet_ctx():
+        hfds = HFDataset(
+            name="x",
+            split="train",
+            prompt_mode="bbox",
+            transforms=_build_eval(16),
+            text_prompt=TextPromptConfig(),
+            field_map=HFFieldMap(segmentation=None),
+        )
+    ex = hfds[0]
+    assert isinstance(ex.prompts, BoxPrompts)
+    assert ex.prompts.boxes.shape == (16, 4)
+
+
+def test_build_hf_train_pipeline(monkeypatch: pytest.MonkeyPatch) -> None:
+    ds = _build_hf_dataset(use_class_label=True)
+    _patch_load_dataset(monkeypatch, ds)
+    builder = lookup("dataset", "hf")
+    cfg: dict[str, Any] = {
+        "format": "hf",
+        "train": {"annotations": "unused", "images": "unused"},
+        "val": {"annotations": "unused", "images": "unused"},
+        "hf": {
+            "name": "x",
+            "split_train": "train",
+            "split_val": "val",
+            "field_map": {
+                "image": "image",
+                "bbox": "objects.bbox",
+                "category": "objects.category",
+                "segmentation": None,
+                "categories_feature": "categories",
+                "bbox_format": "xyxy",
+            },
+        },
+        "prompt_mode": "bbox",
+        "image_size": 8,
+        "augmentations": {"hflip": False, "color_jitter": 0.0},
+        "text_prompt": {"mode": "present"},
+        "normalize": {"mean": [0.485, 0.456, 0.406], "std": [0.229, 0.224, 0.225]},
+    }
+    with _patch_imagenet_ctx():
+        hfds = builder(cfg, model_name="facebook/sam3.1", pipeline="train")
+    assert len(hfds) > 0
