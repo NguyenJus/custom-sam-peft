@@ -1,0 +1,52 @@
+run:
+  name: coco-text-lora
+  output_dir: ./runs
+  seed: 42
+
+model:
+  name: facebook/sam3.1
+  gradient_checkpointing: true
+  dtype: bfloat16
+
+data:
+  format: coco
+  train:
+    annotations: data/coco/instances_train2017.json
+    images: data/coco/train2017
+  val:
+    annotations: data/coco/instances_val2017.json
+    images: data/coco/val2017
+  prompt_mode: text
+  image_size: 1024
+  augmentations:
+    hflip: true
+    color_jitter: 0.1
+
+peft:
+  method: lora
+  r: 16
+  alpha: 32
+  dropout: 0.05
+  target_modules: [q_proj, v_proj]
+
+train:
+  epochs: 10
+  batch_size: 1
+  grad_accum_steps: 8
+  optimizer: adamw
+  lr: 1.0e-4
+  lr_schedule: cosine
+  warmup_steps: 100
+  max_grad_norm: 1.0
+  eval_every: 500
+  save_every: 1000
+
+eval:
+  metrics: [mAP, mAP_50, mAP_75, per_class_AP]
+  iou_thresholds: [0.5, 0.55, 0.6, 0.65, 0.7, 0.75, 0.8, 0.85, 0.9, 0.95]
+
+tracking:
+  backend: tensorboard
+
+export:
+  merge: false
