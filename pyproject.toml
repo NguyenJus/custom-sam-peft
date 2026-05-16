@@ -17,6 +17,9 @@ dependencies = [
   "pycocotools>=2.0",
   "numpy>=1.26",
   "rich>=13",
+  "pillow>=10",
+  "albumentations>=1.4",
+  "opencv-python-headless>=4.10",
 ]
 
 [project.optional-dependencies]
@@ -31,7 +34,6 @@ dev = [
   "pytest>=8",
   "pytest-cov>=5",
   "pre-commit>=4",
-  "pillow>=10",
   "types-PyYAML>=6",
 ]
 
@@ -64,7 +66,15 @@ files = ["src/esam3"]
 plugins = ["pydantic.mypy"]
 
 [[tool.mypy.overrides]]
-module = ["pycocotools.*", "bitsandbytes.*", "wandb.*", "tensorboard.*"]
+module = [
+  "pycocotools.*",
+  "bitsandbytes.*",
+  "wandb.*",
+  "tensorboard.*",
+  "albumentations.*",
+  "cv2",
+  "datasets.*",
+]
 ignore_missing_imports = true
 
 [tool.pytest.ini_options]
