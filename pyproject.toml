@@ -73,7 +73,7 @@ markers = [
   "integration: end-to-end tests using the stub model (CPU)",
   "gpu: tests requiring a CUDA device with real SAM3.1 weights",
 ]
-addopts = "-ra --strict-markers"
+addopts = "-ra --strict-markers --cov=esam3 --cov-report=term-missing --cov-fail-under=80"
 
 [tool.coverage.run]
 source = ["src/esam3"]
