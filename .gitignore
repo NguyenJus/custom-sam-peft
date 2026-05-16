@@ -36,3 +36,4 @@ wandb/
 
 data/*
 models/*
+logs/*
