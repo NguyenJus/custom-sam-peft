@@ -19,6 +19,7 @@ QuantType = Literal["nf4", "fp4"]
 Optimizer = Literal["adamw", "adamw8bit"]
 LRSchedule = Literal["constant", "cosine", "linear"]
 TrackerBackend = Literal["tensorboard", "wandb", "none"]
+TextPromptMode = Literal["present", "all", "present_plus_negatives", "sampled_fixed_k"]
 
 
 class _Strict(BaseModel):
@@ -116,3 +117,22 @@ class TrainConfig(_Strict):
     eval: EvalConfig = Field(default_factory=EvalConfig)
     tracking: TrackingConfig = Field(default_factory=TrackingConfig)
     export: ExportConfig = Field(default_factory=ExportConfig)
+
+
+class TextPromptConfig(_Strict):
+    """How TextPrompts.classes is populated for each image when prompt_mode='text'.
+
+    - present:                Use exactly the categories present in the image's
+                              annotations (post-iscrowd filter). Default.
+    - all:                    Use the full dataset class vocabulary every time.
+    - present_plus_negatives: Use the present categories plus N randomly-sampled
+                              negative class names per image.
+    - sampled_fixed_k:        Use exactly k class names: all positives, plus
+                              negatives sampled to reach k. If positives exceed
+                              k, positives are truncated (kept in dense-id
+                              ascending order). Deterministic given (seed, image_id).
+    """
+
+    mode: TextPromptMode = "present"
+    negatives_per_image: int = Field(default=0, ge=0)
+    k: int = Field(default=16, ge=1, le=16)

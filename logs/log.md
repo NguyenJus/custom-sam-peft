@@ -8,3 +8,4 @@
 [2026-05-15] [implementer] post-review cleanup pass complete — 7 reviewer items fixed across 4 commits (13fe3f7)
 [2026-05-16] [implementer] task 1 — added albumentations/opencv-headless deps, promoted pillow to core
 [2026-05-16] [implementer] task 2 — appended deferred iscrowd + transform-suite TODO entries
+[2026-05-16] [implementer] task 3 — added TextPromptMode + TextPromptConfig schema
