@@ -53,4 +53,4 @@ def test_train_config_includes_loss() -> None:
         peft=PEFTConfig(method="lora"),
         train=TrainHyperparams(epochs=1),
     )
-    assert isinstance(tc.train.loss if hasattr(tc.train, "loss") else tc.loss, LossConfig)
+    assert isinstance(tc.train.loss, LossConfig)
