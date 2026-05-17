@@ -117,7 +117,7 @@ def test_apply_lora_preserves_forward_signature() -> None:
     apply_lora(w, PEFTConfig(method="lora"))
     sig_after = inspect.signature(w.forward)
     assert sig_before == sig_after
-    assert list(sig_after.parameters) == ["images", "prompts"]
+    assert list(sig_after.parameters) == ["images", "prompts", "box_hints"]
 
 
 def test_apply_lora_sets_peft_model_handle() -> None:
