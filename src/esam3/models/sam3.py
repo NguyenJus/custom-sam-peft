@@ -218,34 +218,39 @@ class _Sam3ImageAdapter(nn.Module):
             )
         device = images.device
         b = images.shape[0]
-        backbone_out = self.model.backbone.forward_image(images)
-        text_outputs = self.model.backbone.forward_text([class_names[0]], device=device)
-        backbone_out.update(text_outputs)
-        find_input = FindStage(
-            img_ids=torch.arange(b, device=device, dtype=torch.long),
-            text_ids=torch.zeros(b, device=device, dtype=torch.long),
-            input_boxes=None,
-            input_boxes_mask=None,
-            input_boxes_label=None,
-            input_points=None,
-            input_points_mask=None,
-        )
-        gp = _build_geometric_prompt(
-            box_hints if box_hints is not None else [None] * b,
-            self.image_size,
-            device,
-        )
-        if gp is None:
-            gp = Prompt(
-                box_embeddings=torch.zeros(0, b, 4, device=device),
-                box_mask=torch.zeros(b, 0, device=device, dtype=torch.bool),
+        with torch.autocast(
+            device_type=device.type,
+            dtype=torch.bfloat16,
+            enabled=(device.type == "cuda"),
+        ):
+            backbone_out = self.model.backbone.forward_image(images)
+            text_outputs = self.model.backbone.forward_text([class_names[0]], device=device)
+            backbone_out.update(text_outputs)
+            find_input = FindStage(
+                img_ids=torch.arange(b, device=device, dtype=torch.long),
+                text_ids=torch.zeros(b, device=device, dtype=torch.long),
+                input_boxes=None,
+                input_boxes_mask=None,
+                input_boxes_label=None,
+                input_points=None,
+                input_points_mask=None,
             )
-        outputs: dict[str, Tensor] = self.model.forward_grounding(
-            backbone_out=backbone_out,
-            find_input=find_input,
-            find_target=None,
-            geometric_prompt=gp,
-        )
+            gp = _build_geometric_prompt(
+                box_hints if box_hints is not None else [None] * b,
+                self.image_size,
+                device,
+            )
+            if gp is None:
+                gp = Prompt(
+                    box_embeddings=torch.zeros(0, b, 4, device=device),
+                    box_mask=torch.zeros(b, 0, device=device, dtype=torch.bool),
+                )
+            outputs: dict[str, Tensor] = self.model.forward_grounding(
+                backbone_out=backbone_out,
+                find_input=find_input,
+                find_target=None,
+                geometric_prompt=gp,
+            )
         return outputs
 
 
