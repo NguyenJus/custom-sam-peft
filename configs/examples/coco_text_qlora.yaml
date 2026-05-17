@@ -1,5 +1,5 @@
 run:
-  name: coco-bbox-qlora
+  name: coco-text-qlora
   output_dir: ./runs
   seed: 42
 
@@ -18,13 +18,14 @@ data:
   val:
     annotations: data/coco/instances_val2017.json
     images: data/coco/val2017
-  prompt_mode: bbox
+  prompt_mode: text
   image_size: 1008
   augmentations:
     hflip: true
     color_jitter: 0.1
   text_prompt:
-    mode: present
+    mode: present_plus_negatives
+    negatives_per_image: 4
   normalize:
     mean: [0.5, 0.5, 0.5]
     std:  [0.5, 0.5, 0.5]
@@ -46,25 +47,26 @@ train:
   epochs: 10
   batch_size: 1
   grad_accum_steps: 8
-  optimizer: adamw8bit
+  optimizer: auto
   lr: 1.0e-4
   lr_schedule: cosine
   warmup_steps: 100
   max_grad_norm: 1.0
   eval_every: 500
   save_every: 1000
-  # Loss-mix weights (defaults shown — uncomment to override):
-  # loss:
-  #   w_mask: 1.0
-  #   w_box: 5.0
-  #   w_obj: 1.0
-  #   w_presence: 1.0
-  #   focal_gamma: 2.0
-  #   focal_alpha: 0.25
-  #   matcher_weights:
-  #     lambda_l1: 5.0
-  #     lambda_giou: 2.0
-  #     lambda_mask: 5.0
+  log_every: 50
+  nan_abort_after: 20
+  box_hint:
+    p_start: 1.0
+    p_end: 0.0
+    decay_steps: 5000
+    early_stop_p_threshold: 0.05
+  loss:
+    w_mask: 1.0
+    w_obj: 1.0
+    w_presence: 1.0
+    matcher_weights:
+      lambda_mask: 5.0
 
 eval:
   metrics: [mAP, mAP_50, mAP_75, per_class_AP]

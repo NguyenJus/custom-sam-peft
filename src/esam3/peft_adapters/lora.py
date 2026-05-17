@@ -128,13 +128,21 @@ def save_lora(wrapper: Sam3Wrapper, dirpath: str | Path) -> None:
 
 
 def load_lora(wrapper: Sam3Wrapper, dirpath: str | Path) -> Sam3Wrapper:
-    """Apply a previously-saved LoRA adapter to `wrapper`; mutate in place."""
+    """Apply a previously-saved LoRA adapter to `wrapper`; mutate in place.
+
+    If `wrapper` already has a PeftModel (i.e. apply_lora was called before
+    this, as in the normal resume-from-checkpoint flow), the saved adapter
+    weights are reloaded into the existing PeftModel instead of re-wrapping.
+    """
+    dirpath = str(dirpath)
     if wrapper.peft_model is not None:
-        raise RuntimeError("load_lora: wrapper already has a PeftModel attached")
+        # Resume path: wrapper is already LoRA-wrapped; reload weights only.
+        wrapper.peft_model.load_adapter(dirpath, "default", is_trainable=True)
+        return wrapper
     base = cast(nn.Module, wrapper.model.model)
     for p in base.parameters():
         p.requires_grad = False
-    peft_base = PeftModel.from_pretrained(base, str(dirpath))
+    peft_base = PeftModel.from_pretrained(base, dirpath, is_trainable=True)
     wrapper.model.model = peft_base
     wrapper.peft_model = peft_base
     return wrapper

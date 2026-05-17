@@ -117,7 +117,7 @@ def test_apply_lora_preserves_forward_signature() -> None:
     apply_lora(w, PEFTConfig(method="lora"))
     sig_after = inspect.signature(w.forward)
     assert sig_before == sig_after
-    assert list(sig_after.parameters) == ["images", "prompts"]
+    assert list(sig_after.parameters) == ["images", "prompts", "box_hints"]
 
 
 def test_apply_lora_sets_peft_model_handle() -> None:
@@ -157,12 +157,33 @@ def test_save_load_lora_roundtrip(tmp_path: Path) -> None:
         assert torch.allclose(t1, sd2[name], atol=0.0), f"mismatch on {name}"
 
 
-def test_load_lora_idempotent_guard(tmp_path: Path) -> None:
+def test_load_lora_keeps_lora_params_trainable(tmp_path: Path) -> None:
+    w_a = make_stub_wrapper(dim=8)
+    apply_lora(w_a, PEFTConfig(method="lora", scope="vision"))
+    save_lora(w_a, tmp_path / "adapter")
+
+    w_b = make_stub_wrapper(dim=8)
+    load_lora(w_b, tmp_path / "adapter")
+
+    lora_params = [p for n, p in w_b.named_parameters() if "lora_" in n]
+    assert lora_params, "expected at least one LoRA-named parameter after load_lora"
+    assert all(p.requires_grad for p in lora_params), (
+        "load_lora must leave LoRA params trainable for resume-then-train flows"
+    )
+
+
+def test_load_lora_on_already_wrapped_reloads_weights(tmp_path: Path) -> None:
+    # When a wrapper already has a PeftModel (e.g. apply_lora was called before
+    # load_full_state), load_lora reloads adapter weights rather than raising.
     w = make_stub_wrapper()
     apply_lora(w, PEFTConfig(method="lora"))
     save_lora(w, tmp_path)
-    with pytest.raises(RuntimeError, match="already has a PeftModel"):
-        load_lora(w, tmp_path)
+    # Should not raise; should return the same wrapper.
+    result = load_lora(w, tmp_path)
+    assert result is w
+    lora_params = [p for n, p in w.named_parameters() if "lora_" in n]
+    assert lora_params, "expected LoRA params still present after reload"
+    assert all(p.requires_grad for p in lora_params)
 
 
 def test_save_lora_without_apply_raises(tmp_path: Path) -> None:

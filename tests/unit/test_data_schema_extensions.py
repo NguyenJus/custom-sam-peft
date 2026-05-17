@@ -138,7 +138,7 @@ def test_existing_example_yaml_still_validates() -> None:
     import yaml
 
     repo_root = Path(__file__).resolve().parents[2]
-    for name in ("coco_text_lora.yaml", "coco_bbox_qlora.yaml"):
+    for name in ("coco_text_lora.yaml", "coco_text_qlora.yaml"):
         p = repo_root / "configs" / "examples" / name
         raw = yaml.safe_load(p.read_text())
         TrainConfig.model_validate(raw)

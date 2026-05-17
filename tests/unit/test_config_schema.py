@@ -34,7 +34,7 @@ def test_full_config_validates() -> None:
     assert cfg.peft.method == "lora"
     assert cfg.train.batch_size == 1
     assert cfg.train.grad_accum_steps == 8
-    assert cfg.train.optimizer == "adamw"
+    assert cfg.train.optimizer == "auto"
     assert cfg.tracking.backend == "tensorboard"
 
 

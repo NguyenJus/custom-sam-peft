@@ -35,6 +35,12 @@ uv run esam3 train --config configs/examples/coco_bbox_qlora.yaml
 | PEFT | LoRA, QLoRA | other PEFT methods |
 | Tracking | TensorBoard, W&B, none | — |
 
+## v0 Training scope
+
+v0 trains **text-prompts only**. Ground-truth bounding boxes are used as a curriculum hint during training (increasing probability of box-only forward passes), not as a primary prompt. `prompt_mode='bbox'` is rejected at training time (see logs/TODO.md for deferred bbox-prompt-training spec).
+
+For testing: run `pytest -m integration` for end-to-end stub tests, or `pytest -m gpu` if you have a CUDA GPU and a local SAM 3.1 checkpoint.
+
 ## Repo layout
 
 See `ARCHITECTURE.md` for the module map and data flow.

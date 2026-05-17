@@ -1,0 +1,56 @@
+"""Sam3Wrapper.forward accepts box_hints kwarg with strict validation."""
+
+from __future__ import annotations
+
+import pytest
+import torch
+
+from esam3.data.base import BoxPrompts, TextPrompts
+from esam3.models.sam3 import Sam3Wrapper
+from tests.fixtures.tiny_sam3_stub import TinySam3Stub
+
+
+def _wrapper() -> Sam3Wrapper:
+    return Sam3Wrapper(TinySam3Stub(), image_size=8, mask_size=8)
+
+
+def test_forward_accepts_none_box_hints() -> None:
+    w = _wrapper()
+    images = torch.zeros(2, 3, 8, 8)
+    prompts = [TextPrompts(classes=["cat"]), TextPrompts(classes=["dog"])]
+    out = w(images, prompts, box_hints=None)
+    assert set(out) >= {"pred_logits", "pred_boxes", "pred_masks", "presence_logit_dec"}
+
+
+def test_forward_accepts_per_image_box_hints() -> None:
+    w = _wrapper()
+    images = torch.zeros(2, 3, 8, 8)
+    prompts = [TextPrompts(classes=["cat"]), TextPrompts(classes=["dog"])]
+    box_hints = [torch.tensor([[1.0, 2.0, 3.0, 4.0]]), None]
+    out = w(images, prompts, box_hints=box_hints)
+    assert "pred_masks" in out
+
+
+def test_forward_rejects_mismatched_box_hints_length() -> None:
+    w = _wrapper()
+    images = torch.zeros(2, 3, 8, 8)
+    prompts = [TextPrompts(classes=["cat"]), TextPrompts(classes=["dog"])]
+    with pytest.raises(ValueError, match=r"len.box_hints"):
+        w(images, prompts, box_hints=[None])
+
+
+def test_forward_rejects_box_hints_with_box_prompts() -> None:
+    w = _wrapper()
+    images = torch.zeros(1, 3, 8, 8)
+    prompts = [BoxPrompts(boxes=torch.zeros(2, 4), class_ids=torch.zeros(2, dtype=torch.int64))]
+    with pytest.raises(ValueError, match="BoxPrompts"):
+        w(images, prompts, box_hints=[torch.tensor([[1.0, 2.0, 3.0, 4.0]])])
+
+
+def test_forward_rejects_wrong_box_hint_shape() -> None:
+    w = _wrapper()
+    images = torch.zeros(1, 3, 8, 8)
+    prompts = [TextPrompts(classes=["cat"])]
+    bad = torch.zeros(2, 5)
+    with pytest.raises(ValueError, match=r"\(M_i, 4\)|shape"):
+        w(images, prompts, box_hints=[bad])

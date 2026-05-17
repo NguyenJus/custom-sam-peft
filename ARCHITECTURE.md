@@ -68,6 +68,13 @@ stable across patch releases. Everything else is internal.
 - `esam3.train.trainer.Trainer.fit() -> RunResult`.
 - `esam3.eval.evaluator.Evaluator.evaluate(model, dataset) -> MetricsReport`.
 
+## Determinism and reproducibility
+
+Gradient checkpointing and bitsandbytes contain non-deterministic CUDA kernels.
+Resume reproducibility comes from RNG-state restore (Python `random`, NumPy, PyTorch CPU+CUDA), not from algorithmic determinism.
+`torch.use_deterministic_algorithms` is intentionally left at the default (False) because enabling it would conflict with the above.
+Bit-identical resume is therefore NOT guaranteed; the integration test `test_resume_matches_uninterrupted` asserts only finiteness and adapter weight preservation, not equality.
+
 ## Adding a new pluggable surface
 
 The registry pattern is used for three kinds: `dataset`, `peft`, `tracker`.

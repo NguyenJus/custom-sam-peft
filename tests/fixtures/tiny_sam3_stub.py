@@ -28,8 +28,13 @@ class TinySam3Stub(nn.Module):
         # One trainable param so optimizers have something to update.
         self.dummy = nn.Parameter(torch.zeros(1))
 
-    def forward(self, image: torch.Tensor, prompts: Any) -> dict[str, torch.Tensor]:
-        del prompts  # ignored by the stub
+    def forward(
+        self,
+        image: torch.Tensor,
+        prompts: Any,
+        box_hints: Any = None,
+    ) -> dict[str, torch.Tensor]:
+        del prompts, box_hints  # ignored by the stub
         b = image.shape[0] if image.ndim == 4 else 1
         q, m = self.num_queries, self.mask_size
         return {
