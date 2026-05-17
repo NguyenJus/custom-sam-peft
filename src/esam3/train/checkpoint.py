@@ -52,7 +52,8 @@ def _has_linear4bit(wrapper: Sam3Wrapper) -> bool:
         return False
     if wrapper.peft_model is None:
         return False
-    return any(isinstance(m, bnb.nn.Linear4bit) for m in wrapper.peft_model.modules())
+    bnb_any: Any = bnb
+    return any(isinstance(m, bnb_any.nn.Linear4bit) for m in wrapper.peft_model.modules())
 
 
 def _hash_cfg(cfg: TrainConfig) -> str:

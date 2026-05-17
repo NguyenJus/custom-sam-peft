@@ -62,7 +62,8 @@ def _build_optimizer(
                 "adamw8bit requires bitsandbytes. Install with: "
                 "pip install 'efficient-sam3-finetuning[qlora]'"
             ) from e
-        return bnb.optim.AdamW8bit(params, lr=lr)  # type: ignore[no-any-return]
+        bnb_any: Any = bnb
+        return bnb_any.optim.AdamW8bit(params, lr=lr)  # type: ignore[no-any-return]
     raise ValueError(f"unknown optimizer name: {name!r}")
 
 
