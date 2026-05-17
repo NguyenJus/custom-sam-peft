@@ -13,7 +13,7 @@ consumer GPU.
 
 ```bash
 # Install
-uv sync --all-extras --group dev
+uv sync --all-extras
 
 # Sanity check the CLI
 uv run esam3 --help

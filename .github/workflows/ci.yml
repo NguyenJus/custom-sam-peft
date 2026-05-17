@@ -20,7 +20,7 @@ jobs:
         run: uv python install 3.13
 
       - name: Install deps
-        run: uv sync --all-extras --group dev
+        run: uv sync --all-extras
 
       - name: Lint
         run: uv run ruff check
