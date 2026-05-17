@@ -4,7 +4,7 @@ version = "0.0.1"
 description = "Parameter-efficient finetuning of SAM3.1 on niche image datasets."
 readme = "README.md"
 license = { text = "Apache-2.0" }
-requires-python = ">=3.13"
+requires-python = ">=3.12"
 authors = [{ name = "Justin Nguyen" }]
 dependencies = [
   "torch>=2.4",
@@ -55,7 +55,7 @@ packages = ["src/esam3"]
 
 [tool.ruff]
 line-length = 100
-target-version = "py313"
+target-version = "py312"
 src = ["src", "tests"]
 
 [tool.ruff.lint]
@@ -67,7 +67,7 @@ ignore = []
 "tests/unit/test_data_*.py" = ["E402"]
 
 [tool.mypy]
-python_version = "3.13"
+python_version = "3.12"
 strict = true
 files = ["src/esam3"]
 plugins = ["pydantic.mypy"]
