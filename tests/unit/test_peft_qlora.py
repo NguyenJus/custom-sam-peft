@@ -51,28 +51,57 @@ def test_schema_rejects_bogus_compute_dtype() -> None:
         QLoRAConfig(compute_dtype="float32")  # type: ignore[arg-type]
 
 
-def test_import_does_not_require_bitsandbytes(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Importing esam3.peft_adapters.qlora must succeed without bitsandbytes installed."""
-    # Force re-import after hiding bnb.
-    monkeypatch.setitem(sys.modules, "bitsandbytes", None)
-    monkeypatch.delitem(sys.modules, "esam3.peft_adapters.qlora", raising=False)
+def test_import_does_not_require_bitsandbytes() -> None:
+    """qlora.py must not import bitsandbytes at module scope (lazy-import contract).
 
-    import esam3.peft_adapters.qlora as qlora  # imports OK without bnb
+    Verified via AST inspection rather than monkeypatched re-import: re-importing
+    the module triggers the @register("peft", "qlora") decorator a second time,
+    which the registry rejects as a duplicate. AST inspection is more direct
+    anyway — it pins the static contract.
+    """
+    import ast
+    from pathlib import Path
 
-    # Sanity: the public symbols are reachable.
-    assert hasattr(qlora, "apply_qlora")
-    assert hasattr(qlora, "save_qlora")
-    assert hasattr(qlora, "load_qlora")
+    import esam3.peft_adapters.qlora as qlora_module
+
+    # The module is already importable (this very import succeeded) — that
+    # alone proves importing qlora does not require bitsandbytes at module
+    # scope, since bitsandbytes is not installed in the CPU test environment.
+    # The AST check below pins this as a static property of the source file,
+    # not just a runtime artifact of the current sys.path.
+    src = Path(qlora_module.__file__).read_text()
+    tree = ast.parse(src)
+    for node in tree.body:  # tree.body = top-level only; nested imports ignored
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                assert alias.name != "bitsandbytes", (
+                    "qlora.py must not import bitsandbytes at module scope; "
+                    "use a lazy import inside apply_qlora/load_qlora instead."
+                )
+        elif isinstance(node, ast.ImportFrom):
+            assert node.module != "bitsandbytes", (
+                "qlora.py must not `from bitsandbytes import ...` at module "
+                "scope; use a lazy import inside apply_qlora/load_qlora."
+            )
+
+    # apply_qlora is reachable now; save_qlora/load_qlora land in Task 3.
+    assert hasattr(qlora_module, "apply_qlora")
 
 
 def test_apply_qlora_raises_helpful_importerror_when_bnb_missing(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Calling apply_qlora without bnb raises ImportError naming the [qlora] extra."""
-    monkeypatch.setitem(sys.modules, "bitsandbytes", None)
-    monkeypatch.delitem(sys.modules, "esam3.peft_adapters.qlora", raising=False)
+    """Calling apply_qlora without bnb raises ImportError naming the [qlora] extra.
 
+    Setting sys.modules["bitsandbytes"] = None makes a fresh `import
+    bitsandbytes` inside apply_qlora's lazy-import helper fail with
+    ImportError. We do NOT evict esam3.peft_adapters.qlora from sys.modules
+    here — re-importing it would re-fire the @register("peft", "qlora")
+    decorator, which the registry rejects as a duplicate.
+    """
     from esam3.peft_adapters.qlora import apply_qlora
+
+    monkeypatch.setitem(sys.modules, "bitsandbytes", None)
 
     w = make_stub_wrapper()
     cfg = PEFTConfig(method="qlora")
