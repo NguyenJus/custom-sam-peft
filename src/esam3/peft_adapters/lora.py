@@ -29,16 +29,24 @@ from esam3.models.sam3 import Sam3Wrapper
 logger = logging.getLogger(__name__)
 
 
+# Real SAM 3.1 attention naming, verified against
+# sam3/model/{vitdet.py,necks.py,vl_combiner.py,decoder.py,model_misc.py}.
+# `meta_to_canonical` and SCOPE_TARGETS are the two single-points-of-contact
+# for SAM 3.1's surface naming; if Meta renames modules, only these change.
 SCOPE_TARGETS: dict[str, list[str]] = {
-    "vision": [r"vision_encoder\..*\.attn\.(qkv|proj)$"],
-    "vision_decoder": [
-        r"vision_encoder\..*\.attn\.(qkv|proj)$",
-        r"mask_decoder\..*\.(self_attn|cross_attn)\.(q|k|v|out)_proj$",
+    # ViT vision trunk: fused qkv + output projection per block.
+    "vision": [
+        r"backbone\.vision_backbone\.trunk\.blocks\.\d+\.attn\.(qkv|proj)$",
     ],
-    # TODO(task-7): replace `r".*"` — currently matches every nn.Linear in the
-    # tree (including MLP / feedforward projections that are NOT adaptation
-    # targets). Pin to attention-only patterns once SCOPE_TARGETS is verified
-    # against the real SAM 3.1 module names.
+    # Vision trunk + transformer decoder attention output projections.
+    # MultiheadAttentionWrapper exposes only `out_proj` as nn.Linear; its
+    # in_proj_weight/q,k,v_proj_weight are bare Parameters and not LoRA-targetable.
+    "vision_decoder": [
+        r"backbone\.vision_backbone\.trunk\.blocks\.\d+\.attn\.(qkv|proj)$",
+        r"transformer\.decoder\.layers\.\d+\.(self_attn|cross_attn|ca_text)\.out_proj$",
+    ],
+    # Every nn.Linear in the tree. Existing intentional over-match; narrowing
+    # is deferred (see TODO history in PRs #4 / #7).
     "all": [r".*"],
 }
 

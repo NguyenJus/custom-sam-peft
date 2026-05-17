@@ -17,6 +17,7 @@ if TYPE_CHECKING:
 import sam3
 import torch
 from sam3.model.box_ops import box_xyxy_to_cxcywh
+from sam3.model.data_misc import FindStage
 from sam3.model.geometry_encoders import Prompt
 from torch import Tensor, nn
 
@@ -178,44 +179,27 @@ def _resolve_checkpoint_path(cfg: ModelConfig) -> Path:
     return path
 
 
-def _resolve_bpe_path(cfg: ModelConfig) -> Path:
-    """The BPE merges file is shipped alongside the checkpoint in the HF repo."""
-    if cfg.local_dir is None:
-        raise FileNotFoundError("ModelConfig.local_dir is None; cannot resolve BPE path.")
-    path = Path(cfg.local_dir) / "merges.txt"
-    if not path.exists():
-        raise FileNotFoundError(
-            f"SAM 3.1 BPE merges file not found at {path}. Re-download the checkpoint "
-            f"directory from {cfg.name}."
-        )
-    return path
-
-
 class _Sam3ImageAdapter(nn.Module):
-    """Adapt raw Sam3Image to the (images, prompts, **kwargs) calling convention.
+    """Adapt raw Sam3Image to the (images, prompts, box_hints) calling convention.
 
     Sam3Image's training-mode forward (``forward_grounding``) expects
     ``(backbone_out, find_input, find_target, geometric_prompt)``, none of which
     are raw image tensors or our ``Prompts`` dataclasses.  This adapter holds the
     inner ``Sam3Image`` and orchestrates the conversion.
 
-    TODO (Task 4 / DONE_WITH_CONCERNS): The body below raises ``NotImplementedError``
-    because building ``backbone_out``, ``find_input``, and ``find_target`` from
-    ``(images, list[TextPrompts])`` requires non-trivial text tokenization via
-    Meta's ``FindStage`` / ``TextTokenizer`` pipeline that was not fully pinned by
-    Task 0.  Task 0's notes pin ``forward_grounding`` at ``sam3_image.py:440-446``
-    and the ``_get_dummy_prompt`` zero-hint form at ``sam3_image.py:547-553``
-    (use these when ``box_hints`` contains all ``None``).
+    The ``box_hints`` kwarg routes per-image absolute-pixel xyxy box hints
+    through ``_build_geometric_prompt`` into Meta's ``Prompt`` container.  When
+    every entry is ``None`` (or the kwarg itself is ``None``), the builder
+    returns ``None`` and we substitute Meta's zero-length-seq dummy.
 
-    The ``box_hints`` kwarg is accepted so that ``Sam3Wrapper.forward`` can pass
-    it through without breaking the interface.  When this body is completed,
-    build the geometric prompt via ``_build_geometric_prompt`` and pass it as
-    ``geometric_prompt`` to ``self.model.forward_grounding(...)``.
+    ``image_size`` must match the wrapper's image_size; ``load_sam31`` plumbs
+    it through the constructor.
     """
 
-    def __init__(self, model: nn.Module) -> None:
+    def __init__(self, model: nn.Module, image_size: int = 1008) -> None:
         super().__init__()
         self.model = model
+        self.image_size = image_size
 
     def forward(
         self,
@@ -223,35 +207,49 @@ class _Sam3ImageAdapter(nn.Module):
         prompts: list[Prompts],
         box_hints: list[Tensor | None] | None = None,
     ) -> dict[str, Tensor]:
-        # IMPLEMENTOR: complete this body to drive Meta's text-grounding path.
-        # Contract pinned in docs/superpowers/plans/2026-05-17-training-loop-notes.md
-        # ("Where the slot lives" + Note A + Note B + Sources). Required steps:
-        #   1. Encode images → backbone_out via self.model.image_encoder(images).
-        #   2. Tokenize per-image class names ([p.classes[0] for p in prompts])
-        #      through Meta's text tokenizer/encoder (the same path
-        #      `SAM3Image.forward` uses to populate `find_input` at
-        #      sam3_image.py:576-580). Inspect sam3.model.data_misc.FindStage
-        #      for the dtype/device contract — see notes file §Sources.
-        #   3. Build `find_input` (FindStage with input_text + input_text_mask)
-        #      and `find_target` (training-time labels; pass an empty/None
-        #      target for inference paths). The find_target shape depends on
-        #      whether mask supervision is active — refer to the trainer's
-        #      call site for the live contract.
-        #   4. Build `geometric_prompt`:
-        #        gp = _build_geometric_prompt(box_hints or [None]*B,
-        #                                     self.image_size, images.device)
-        #        if gp is None:
-        #            gp = Prompt(
-        #                box_embeddings=torch.zeros(0, B, 4, device=images.device),
-        #                box_mask=torch.zeros(B, 0, device=images.device, dtype=torch.bool),
-        #            )  # Meta's zero-length dummy (sam3_image.py:547-553)
-        #   5. Call self.model.forward_grounding(backbone_out, find_input,
-        #      find_target, geometric_prompt=gp) and return its dict.
-        raise NotImplementedError(
-            "Sam3Image high-level forward entrypoint not yet pinned; complete this "
-            "function using the contract pinned in Task 0's notes file. See the "
-            "step-by-step recipe in this function's inline comment above."
+        if not all(isinstance(p, TextPrompts) for p in prompts):
+            raise ValueError("_Sam3ImageAdapter only supports TextPrompts in v0")
+        class_names = [p.classes[0] for p in prompts]
+        if len(set(class_names)) > 1:
+            raise ValueError(
+                "All prompts in a batch must share the same class name "
+                "(SAM 3.1 forward_grounding runs one text prompt per call); "
+                f"got {class_names}"
+            )
+        device = images.device
+        b = images.shape[0]
+        model_dtype = next(self.model.parameters()).dtype
+        backbone_out = self.model.backbone.forward_image(images)
+        text_outputs = self.model.backbone.forward_text([class_names[0]], device=device)
+        backbone_out.update(text_outputs)
+        find_input = FindStage(
+            img_ids=torch.arange(b, device=device, dtype=torch.long),
+            text_ids=torch.zeros(b, device=device, dtype=torch.long),
+            input_boxes=None,
+            input_boxes_mask=None,
+            input_boxes_label=None,
+            input_points=None,
+            input_points_mask=None,
         )
+        gp = _build_geometric_prompt(
+            box_hints if box_hints is not None else [None] * b,
+            self.image_size,
+            device,
+        )
+        if gp is None:
+            gp = Prompt(
+                box_embeddings=torch.zeros(0, b, 4, device=device, dtype=model_dtype),
+                box_mask=torch.zeros(b, 0, device=device, dtype=torch.bool),
+                point_embeddings=torch.zeros(0, b, 2, device=device, dtype=model_dtype),
+                point_mask=torch.zeros(b, 0, device=device, dtype=torch.bool),
+            )
+        outputs: dict[str, Tensor] = self.model.forward_grounding(
+            backbone_out=backbone_out,
+            find_input=find_input,
+            find_target=None,
+            geometric_prompt=gp,
+        )
+        return outputs
 
 
 def load_sam31(cfg: ModelConfig) -> Sam3Wrapper:
@@ -262,11 +260,9 @@ def load_sam31(cfg: ModelConfig) -> Sam3Wrapper:
     `presence_logit_dec`).
     """
     ckpt_path = _resolve_checkpoint_path(cfg)
-    bpe_path = _resolve_bpe_path(cfg)
     device = cfg.device or ("cuda" if torch.cuda.is_available() else "cpu")
 
     raw_model = sam3.build_sam3_image_model(
-        bpe_path=str(bpe_path),
         device=device,
         eval_mode=False,  # training mode — gradients flow.
         checkpoint_path=str(ckpt_path),
@@ -290,5 +286,5 @@ def load_sam31(cfg: ModelConfig) -> Sam3Wrapper:
     elif cfg.dtype == "float16":
         raw_model = raw_model.to(dtype=torch.float16)
 
-    adapter = _Sam3ImageAdapter(raw_model)
+    adapter = _Sam3ImageAdapter(raw_model, image_size=1008)
     return Sam3Wrapper(adapter, image_size=1008, mask_size=288)

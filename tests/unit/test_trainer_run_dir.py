@@ -19,7 +19,7 @@ from esam3.data.base import Example, Instance, TextPrompts
 from esam3.peft_adapters.lora import apply_lora
 from esam3.tracking.noop import NoopTracker
 from esam3.train.trainer import Trainer
-from tests.fixtures.tiny_sam3_lora_stub import make_stub_wrapper
+from tests.fixtures.tiny_sam3_lora_stub import FIXTURE_SCOPE_PATTERNS, make_stub_wrapper
 
 
 class _TinyTextDataset:
@@ -64,7 +64,7 @@ def test_fit_creates_expected_layout(tmp_path: Path) -> None:
             val=DataSplit(annotations="a.json", images="i"),
             prompt_mode="text",
         ),
-        peft=PEFTConfig(method="lora", scope="vision"),
+        peft=PEFTConfig(method="lora", target_modules=FIXTURE_SCOPE_PATTERNS["vision"]),
         train=TrainHyperparams(
             epochs=1,
             grad_accum_steps=1,

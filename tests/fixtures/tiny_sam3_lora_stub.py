@@ -1,9 +1,8 @@
-"""Tiny stub mirroring SAM 3.1's attention module naming for LoRA tests.
+"""Tiny stub mirroring SAM 3.1's attention module-naming shape for LoRA tests.
 
-This stub exists so SCOPE_TARGETS regex patterns can be exercised on CPU
-without the real Meta checkpoint. It is structurally a Sam3Wrapper around a
-two-layer fake model with a `vision_encoder` and `mask_decoder` subtree, plus
-two negative-control Linear modules outside either subtree.
+The subtree paths use indexed `blocks` and `layers` ModuleLists so the same
+regex shape that targets the real SAM 3.1 (`...trunk.blocks.\\d+.attn.(qkv|proj)$`,
+`...decoder.layers.\\d+.(self_attn|cross_attn).out_proj$`) is exercised here.
 
 By default, forward() raises NotImplementedError — structural tests never
 execute forward.  Pass ``working=True`` to get a wrapper with a real forward
@@ -52,7 +51,7 @@ class TinySam3LoraStub(nn.Module):
     """Fake SAM 3.1 inner-base with realistic attention naming.
 
     When ``working=False`` (default), forward raises NotImplementedError.
-    When ``working=True``, forward routes through ``vision_encoder.block0.attn.qkv``
+    When ``working=True``, forward routes through ``vision_trunk.blocks[0].attn.qkv``
     so that LoRA A/B matrices participate in the gradient graph.
     """
 
@@ -62,11 +61,10 @@ class TinySam3LoraStub(nn.Module):
         self._dim = dim
         self._num_queries = 4
         self._mask_size = 8
-        self.vision_encoder = nn.Module()
-        self.vision_encoder.block0 = _AttnBlock(dim)  # type: ignore[assignment]
-        self.vision_encoder.block1 = _AttnBlock(dim)  # type: ignore[assignment]
-        self.mask_decoder = nn.Module()
-        self.mask_decoder.layer0 = _DecoderLayer(dim)  # type: ignore[assignment]
+        self.vision_trunk = nn.Module()
+        self.vision_trunk.blocks = nn.ModuleList([_AttnBlock(dim), _AttnBlock(dim)])  # type: ignore[assignment]
+        self.transformer_decoder = nn.Module()
+        self.transformer_decoder.layers = nn.ModuleList([_DecoderLayer(dim)])  # type: ignore[assignment]
         # Negative controls: Linears outside any LoRA scope.
         self.neg_control_a = nn.Linear(dim, dim)
         self.neg_control_b = nn.Linear(dim, dim)
@@ -78,7 +76,7 @@ class TinySam3LoraStub(nn.Module):
         q, m = self._num_queries, self._mask_size
         flat = images.reshape(b, 3, -1).mean(dim=-1)  # type: ignore[union-attr]  # (B, 3)
         feat = torch.nn.functional.pad(flat, (0, self._dim - 3))  # (B, dim)
-        feat = self.vision_encoder.block0.attn.qkv(feat)  # type: ignore[operator]  # (B, dim*3)
+        feat = self.vision_trunk.blocks[0].attn.qkv(feat)  # type: ignore[operator,index]  # (B, dim*3)
         scalar = feat.mean()
         return {
             "pred_logits": torch.zeros(b, q, 1) + scalar,
@@ -110,3 +108,18 @@ def make_stub_wrapper(dim: int = 128, working: bool = False) -> Sam3Wrapper:
     base = TinySam3LoraStub(dim=dim, working=working)
     adapter = _StubAdapter(base)
     return Sam3Wrapper(adapter, image_size=8, mask_size=8)
+
+
+# Regex patterns matching the renamed fixture subtrees. The production
+# SCOPE_TARGETS in src/esam3/peft_adapters/lora.py target the REAL SAM 3.1
+# names (backbone.vision_backbone.trunk.blocks.*); the fixture below uses
+# truncated prefixes (`vision_trunk`, `transformer_decoder`) because the full
+# nested chain would balloon the fixture without adding coverage.
+FIXTURE_SCOPE_PATTERNS: dict[str, list[str]] = {
+    "vision": [r"vision_trunk\.blocks\.\d+\.attn\.(qkv|proj)$"],
+    "vision_decoder": [
+        r"vision_trunk\.blocks\.\d+\.attn\.(qkv|proj)$",
+        r"transformer_decoder\.layers\.\d+\.(self_attn|cross_attn)\.out_proj$",
+    ],
+    "all": [r".*"],
+}

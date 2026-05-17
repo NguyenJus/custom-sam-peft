@@ -27,7 +27,7 @@ from esam3.train.checkpoint import (
     save_adapter,
     save_full_state,
 )
-from tests.fixtures.tiny_sam3_lora_stub import make_stub_wrapper
+from tests.fixtures.tiny_sam3_lora_stub import FIXTURE_SCOPE_PATTERNS, make_stub_wrapper
 
 
 def _make_cfg(tmp_path: Path) -> TrainConfig:
@@ -39,7 +39,7 @@ def _make_cfg(tmp_path: Path) -> TrainConfig:
             val=DataSplit(annotations="a.json", images="i"),
             prompt_mode="text",
         ),
-        peft=PEFTConfig(method="lora", scope="vision"),
+        peft=PEFTConfig(method="lora", target_modules=FIXTURE_SCOPE_PATTERNS["vision"]),
         train=TrainHyperparams(epochs=1),
     )
 
