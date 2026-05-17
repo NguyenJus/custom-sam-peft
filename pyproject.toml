@@ -83,6 +83,7 @@ module = [
   "datasets.*",
   "scipy.*",
   "sam3.*",
+  "peft.*",
 ]
 ignore_missing_imports = true
 

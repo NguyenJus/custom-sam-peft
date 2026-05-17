@@ -9,7 +9,10 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from peft import PeftModel
 
 import sam3
 import torch
@@ -40,6 +43,7 @@ class Sam3Wrapper(nn.Module):
         self.model = model
         self.image_size = image_size
         self.mask_size = mask_size
+        self.peft_model: PeftModel | None = None
 
     def forward(self, images: Tensor, prompts: list[Prompts]) -> dict[str, Any]:
         self._validate_prompts(images, prompts)

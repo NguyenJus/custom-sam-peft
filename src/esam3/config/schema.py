@@ -20,6 +20,7 @@ Optimizer = Literal["adamw", "adamw8bit"]
 LRSchedule = Literal["constant", "cosine", "linear"]
 TrackerBackend = Literal["tensorboard", "wandb", "none"]
 TextPromptMode = Literal["present", "all", "present_plus_negatives", "sampled_fixed_k"]
+LoraScope = Literal["vision", "vision_decoder", "all"]
 
 
 class _Strict(BaseModel):
@@ -151,7 +152,15 @@ class PEFTConfig(_Strict):
     r: PositiveInt = 16
     alpha: PositiveInt = 32
     dropout: float = Field(default=0.05, ge=0.0, lt=1.0)
-    target_modules: list[str] = Field(default_factory=lambda: ["q_proj", "v_proj"])
+    scope: LoraScope = "vision_decoder"
+    target_modules: list[str] | None = Field(
+        default=None,
+        description=(
+            "Explicit list of module name patterns to adapt. When None, "
+            "apply_lora uses SCOPE_TARGETS[scope]. When set, scope is ignored."
+        ),
+    )
+    bias: Literal["none", "all", "lora_only"] = "none"
     qlora: QLoRAConfig = Field(default_factory=QLoRAConfig)
 
 

@@ -10,7 +10,6 @@ from esam3.config.schema import (
 )
 from esam3.eval.evaluator import Evaluator
 from esam3.eval.metrics import compute_coco_map
-from esam3.peft_adapters.lora import apply_lora
 from esam3.peft_adapters.qlora import apply_qlora
 from esam3.train.checkpoint import load_adapter, save_adapter, save_merged
 from esam3.train.loop import run_epoch
@@ -22,8 +21,6 @@ def _assert_stub(call: object) -> None:
 
 
 def test_peft_stubs() -> None:
-    cfg = PEFTConfig(method="lora")
-    _assert_stub(lambda: apply_lora(object(), cfg))
     qcfg = PEFTConfig(method="qlora")
     _assert_stub(lambda: apply_qlora(object(), qcfg))
 

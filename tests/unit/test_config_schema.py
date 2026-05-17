@@ -130,3 +130,42 @@ def test_all_public_submodels_are_importable() -> None:
     }
     missing = {n for n in expected if not hasattr(schema, n)}
     assert missing == set(), f"missing public sub-models: {missing}"
+
+
+def test_peft_defaults_include_scope_and_bias() -> None:
+    d = _minimal_dict()
+    cfg = TrainConfig.model_validate(d)
+    assert cfg.peft.scope == "vision_decoder"
+    assert cfg.peft.bias == "none"
+    assert cfg.peft.target_modules is None
+
+
+def test_peft_scope_invalid_value_rejected() -> None:
+    d = _minimal_dict()
+    d["peft"]["scope"] = "encoder"  # type: ignore[index]
+    with pytest.raises(ValidationError):
+        TrainConfig.model_validate(d)
+
+
+def test_peft_bias_invalid_value_rejected() -> None:
+    d = _minimal_dict()
+    d["peft"]["bias"] = "some"  # type: ignore[index]
+    with pytest.raises(ValidationError):
+        TrainConfig.model_validate(d)
+
+
+def test_peft_target_modules_accepts_explicit_list() -> None:
+    d = _minimal_dict()
+    d["peft"]["target_modules"] = ["vision_encoder.block0.attn.qkv"]  # type: ignore[index]
+    cfg = TrainConfig.model_validate(d)
+    assert cfg.peft.target_modules == ["vision_encoder.block0.attn.qkv"]
+
+
+def test_peft_target_modules_and_scope_both_set_validates() -> None:
+    # Pydantic does not enforce precedence; apply_lora does. Both should validate.
+    d = _minimal_dict()
+    d["peft"]["scope"] = "all"  # type: ignore[index]
+    d["peft"]["target_modules"] = ["foo"]  # type: ignore[index]
+    cfg = TrainConfig.model_validate(d)
+    assert cfg.peft.scope == "all"
+    assert cfg.peft.target_modules == ["foo"]
