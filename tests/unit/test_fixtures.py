@@ -26,11 +26,17 @@ def test_stub_model_forward_returns_expected_keys(stub_model: TinySam3Stub) -> N
     image = torch.zeros((2, 3, 32, 32))
     out = stub_model(image, prompts=None)
     assert set(out.keys()) == {
-        "pred_logits", "pred_boxes", "pred_masks", "presence_logit_dec",
+        "pred_logits",
+        "pred_boxes",
+        "pred_masks",
+        "presence_logit_dec",
     }
     assert out["pred_logits"].shape == (2, stub_model.num_queries, 1)
     assert out["pred_boxes"].shape == (2, stub_model.num_queries, 4)
     assert out["pred_masks"].shape == (
-        2, stub_model.num_queries, stub_model.mask_size, stub_model.mask_size,
+        2,
+        stub_model.num_queries,
+        stub_model.mask_size,
+        stub_model.mask_size,
     )
     assert out["presence_logit_dec"].shape == (2, 1)

@@ -11,7 +11,7 @@ import logging
 from pathlib import Path
 from typing import Any
 
-import sam3  # type: ignore[import-untyped]
+import sam3
 import torch
 from torch import Tensor, nn
 
@@ -43,7 +43,8 @@ class Sam3Wrapper(nn.Module):
 
     def forward(self, images: Tensor, prompts: list[Prompts]) -> dict[str, Any]:
         self._validate_prompts(images, prompts)
-        return self.model(images, prompts)
+        out: dict[str, Any] = self.model(images, prompts)
+        return out
 
     @staticmethod
     def _validate_prompts(images: Tensor, prompts: list[Prompts]) -> None:
@@ -51,9 +52,7 @@ class Sam3Wrapper(nn.Module):
             raise ValueError(f"images must be (B, 3, H, W); got shape {tuple(images.shape)}")
         b = images.shape[0]
         if len(prompts) != b:
-            raise ValueError(
-                f"len(prompts)={len(prompts)} must equal batch size {b}"
-            )
+            raise ValueError(f"len(prompts)={len(prompts)} must equal batch size {b}")
         if not prompts:
             return
         first = type(prompts[0])

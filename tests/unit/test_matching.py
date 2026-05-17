@@ -50,11 +50,13 @@ def test_matcher_returns_one_match_per_target() -> None:
 def test_matcher_handles_more_targets_than_queries() -> None:
     matcher = HungarianMatcher(lambda_l1=5.0, lambda_giou=2.0, lambda_mask=5.0)
     outputs = _make_outputs(q=2)
-    targets = [[
-        _instance([0.1, 0.1, 0.1, 0.1]),
-        _instance([0.3, 0.3, 0.1, 0.1]),
-        _instance([0.5, 0.5, 0.1, 0.1]),
-    ]]
+    targets = [
+        [
+            _instance([0.1, 0.1, 0.1, 0.1]),
+            _instance([0.3, 0.3, 0.1, 0.1]),
+            _instance([0.5, 0.5, 0.1, 0.1]),
+        ]
+    ]
     indices = matcher(outputs, targets)
     pred_idx, tgt_idx = indices[0]
     assert pred_idx.numel() == 2

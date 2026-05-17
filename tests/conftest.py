@@ -37,14 +37,10 @@ def _has_compatible_gpu() -> bool:
     return (major, minor) >= (7, 5)
 
 
-def pytest_collection_modifyitems(
-    config: pytest.Config, items: list[pytest.Item]
-) -> None:
+def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item]) -> None:
     ckpt = pathlib.Path("models/sam3.1/sam3.1_multiplex.pt")
     skip_no_ckpt = pytest.mark.skip(reason="real SAM 3.1 checkpoint not present locally")
-    skip_no_gpu = pytest.mark.skip(
-        reason="real SAM 3.1 forward requires a CUDA GPU with CC >= 7.5"
-    )
+    skip_no_gpu = pytest.mark.skip(reason="real SAM 3.1 forward requires a CUDA GPU with CC >= 7.5")
     have_gpu = _has_compatible_gpu()
     for item in items:
         if "requires_checkpoint" in item.keywords and not ckpt.exists():

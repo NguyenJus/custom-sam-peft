@@ -91,11 +91,15 @@ def test_total_loss_returns_all_components() -> None:
     from esam3.models.losses import total_loss
 
     raw = _stub_outputs()
-    targets = [[Instance(
-        mask=torch.zeros(32, 32),
-        class_id=0,
-        box=torch.tensor([0.5, 0.5, 0.2, 0.2]),
-    )]]
+    targets = [
+        [
+            Instance(
+                mask=torch.zeros(32, 32),
+                class_id=0,
+                box=torch.tensor([0.5, 0.5, 0.2, 0.2]),
+            )
+        ]
+    ]
     losses = total_loss(raw, targets, LossConfig())
     assert set(losses.keys()) == {"total", "mask", "box", "obj", "presence"}
     assert all(torch.isfinite(v) for v in losses.values())
@@ -107,11 +111,15 @@ def test_total_loss_total_equals_weighted_sum() -> None:
     from esam3.models.losses import total_loss
 
     raw = _stub_outputs()
-    targets = [[Instance(
-        mask=torch.zeros(32, 32),
-        class_id=0,
-        box=torch.tensor([0.5, 0.5, 0.2, 0.2]),
-    )]]
+    targets = [
+        [
+            Instance(
+                mask=torch.zeros(32, 32),
+                class_id=0,
+                box=torch.tensor([0.5, 0.5, 0.2, 0.2]),
+            )
+        ]
+    ]
     cfg = LossConfig()
     losses = total_loss(raw, targets, cfg)
     expected = (

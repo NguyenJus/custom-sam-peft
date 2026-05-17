@@ -36,7 +36,7 @@ class CanonicalOutputs:
     img_presence: Tensor
 
 
-def meta_to_canonical(outputs: dict) -> CanonicalOutputs:
+def meta_to_canonical(outputs: dict[str, Tensor]) -> CanonicalOutputs:
     """Convert Meta SAM 3.1's native output dict to CanonicalOutputs.
 
     SINGLE point of contact for Meta key names. Update only this function if
@@ -93,7 +93,7 @@ def _giou(boxes1: Tensor, boxes2: Tensor) -> Tensor:
 def _dice_cost(pred_masks: Tensor, tgt_masks: Tensor) -> Tensor:
     """Dice cost between every pred (Q, H, W) and target (N, H, W) mask. Returns (Q, N)."""
     p = pred_masks.sigmoid().flatten(1)  # (Q, H*W)
-    t = tgt_masks.flatten(1).float()      # (N, H*W)
+    t = tgt_masks.flatten(1).float()  # (N, H*W)
     num = 2 * p @ t.t()
     den = p.sum(-1)[:, None] + t.sum(-1)[None, :]
     return 1.0 - (num + 1.0) / (den + 1.0)
@@ -129,10 +129,12 @@ class HungarianMatcher:
         for i in range(b):
             tgts = targets[i]
             if len(tgts) == 0:
-                results.append((
-                    torch.empty(0, dtype=torch.long),
-                    torch.empty(0, dtype=torch.long),
-                ))
+                results.append(
+                    (
+                        torch.empty(0, dtype=torch.long),
+                        torch.empty(0, dtype=torch.long),
+                    )
+                )
                 continue
             tgt_boxes = torch.stack([t.box for t in tgts]).to(outputs.pred_boxes.device)
             cost_l1 = torch.cdist(outputs.pred_boxes[i], tgt_boxes, p=1)
@@ -156,8 +158,10 @@ class HungarianMatcher:
                 + self.lambda_mask * cost_mask
             )
             row_ind, col_ind = linear_sum_assignment(cost.cpu().numpy())
-            results.append((
-                torch.as_tensor(row_ind, dtype=torch.long),
-                torch.as_tensor(col_ind, dtype=torch.long),
-            ))
+            results.append(
+                (
+                    torch.as_tensor(row_ind, dtype=torch.long),
+                    torch.as_tensor(col_ind, dtype=torch.long),
+                )
+            )
         return results

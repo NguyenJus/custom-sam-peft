@@ -67,9 +67,7 @@ def box_loss(pred: Tensor, target: Tensor) -> Tensor:
     return smooth_l1 + (1.0 - giou).mean()
 
 
-def _focal_bce(
-    logits: Tensor, targets: Tensor, gamma: float = 2.0, alpha: float = 0.25
-) -> Tensor:
+def _focal_bce(logits: Tensor, targets: Tensor, gamma: float = 2.0, alpha: float = 0.25) -> Tensor:
     """Sigmoid focal BCE, mean-reduced. logits and targets broadcastable to the same shape."""
     p = logits.sigmoid()
     ce = binary_cross_entropy_with_logits(logits, targets.float(), reduction="none")
@@ -158,7 +156,7 @@ def _image_has_target(targets: list[list[Instance]], device: torch.device) -> Te
 
 
 def total_loss(
-    outputs: dict,
+    outputs: dict[str, Tensor],
     targets: list[list[Instance]],
     cfg: LossConfig,
 ) -> dict[str, Tensor]:

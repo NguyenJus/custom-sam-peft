@@ -32,7 +32,7 @@ def test_load_sam31_forward_to_canonical() -> None:
     with torch.no_grad():
         outputs = wrapper(image, [TextPrompts(classes=["cat"])])
     canonical = meta_to_canonical(outputs)
-    assert canonical.obj_logits.dim() == 2          # (B, Q)
+    assert canonical.obj_logits.dim() == 2  # (B, Q)
     assert canonical.pred_boxes.shape[-1] == 4
     assert canonical.pred_masks.shape[-1] == 288
-    assert canonical.img_presence.dim() == 1         # (B,)
+    assert canonical.img_presence.dim() == 1  # (B,)

@@ -81,6 +81,8 @@ module = [
   "albumentations.*",
   "cv2",
   "datasets.*",
+  "scipy.*",
+  "sam3.*",
 ]
 ignore_missing_imports = true
 
