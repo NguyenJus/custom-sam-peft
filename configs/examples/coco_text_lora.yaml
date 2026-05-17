@@ -35,7 +35,10 @@ peft:
   r: 16
   alpha: 32
   dropout: 0.05
-  target_modules: [q_proj, v_proj]
+  # Knobs (defaults shown — uncomment to override):
+  # scope: vision_decoder          # vision | vision_decoder | all
+  # bias: none                     # none | all | lora_only
+  # target_modules: [...]          # overrides scope when set
 
 train:
   epochs: 10
