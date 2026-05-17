@@ -43,13 +43,17 @@ SCOPE_TARGETS: dict[str, list[str]] = {
 }
 
 
-def _resolve_targets(base: nn.Module, cfg: PEFTConfig) -> list[str]:
+def _resolve_targets(
+    base: nn.Module,
+    cfg: PEFTConfig,
+    linear_types: tuple[type, ...] = (nn.Linear,),
+) -> list[str]:
     patterns = cfg.target_modules if cfg.target_modules is not None else SCOPE_TARGETS[cfg.scope]
     compiled = [re.compile(p) for p in patterns]
     matched: list[str] = []
     linears: list[str] = []
     for name, module in base.named_modules():
-        if not isinstance(module, nn.Linear):
+        if not isinstance(module, linear_types):
             continue
         linears.append(name)
         if any(c.search(name) for c in compiled):
@@ -137,7 +141,11 @@ def load_lora(wrapper: Sam3Wrapper, dirpath: str | Path) -> Sam3Wrapper:
 
 
 def merge_lora(wrapper: Sam3Wrapper) -> Sam3Wrapper:
-    """Fold LoRA deltas into the base weights and unwrap PeftModel; mutate in place."""
+    """Fold LoRA deltas into the base weights and unwrap PeftModel; mutate in place.
+
+    For QLoRA wrappers, this dequantizes the 4-bit base to compute_dtype during
+    folding; the resulting module is no longer 4-bit-quantized.
+    """
     if wrapper.peft_model is None:
         raise RuntimeError("merge_lora: wrapper has no PeftModel; call apply_lora first")
     merged: Any = wrapper.peft_model.merge_and_unload()

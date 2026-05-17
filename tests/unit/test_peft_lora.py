@@ -202,3 +202,58 @@ def test_apply_lora_registered_under_peft_lora() -> None:
 
     fn = lookup("peft", "lora")
     assert fn is apply_lora
+
+
+def test_resolve_targets_supports_custom_linear_types() -> None:
+    """The new linear_types parameter lets qlora.py match Linear4bit modules."""
+    from esam3.peft_adapters.lora import _resolve_targets
+
+    class FakeLinear4bit(nn.Module):
+        """Stand-in for bnb.nn.Linear4bit; not an nn.Linear subclass."""
+
+        def __init__(self, in_features: int, out_features: int) -> None:
+            super().__init__()
+            self.weight = nn.Parameter(torch.zeros(out_features, in_features))
+
+    class Base(nn.Module):
+        def __init__(self) -> None:
+            super().__init__()
+            self.vision_encoder = nn.Module()
+            self.vision_encoder.block0 = nn.Module()  # type: ignore[assignment]
+            self.vision_encoder.block0.attn = nn.Module()  # type: ignore[assignment]
+            self.vision_encoder.block0.attn.qkv = FakeLinear4bit(8, 24)  # type: ignore[assignment]
+            self.vision_encoder.block0.attn.proj = FakeLinear4bit(8, 8)  # type: ignore[assignment]
+
+    base = Base()
+    cfg = PEFTConfig(method="qlora", scope="vision")
+
+    # Default linear_types=(nn.Linear,) finds nothing.
+    with pytest.raises(ValueError, match=r"no nn\.Linear modules matched"):
+        _resolve_targets(base, cfg)
+
+    # Custom linear_types=(FakeLinear4bit,) finds the two attention modules.
+    matched = _resolve_targets(base, cfg, linear_types=(FakeLinear4bit,))
+    assert sorted(matched) == [
+        "vision_encoder.block0.attn.proj",
+        "vision_encoder.block0.attn.qkv",
+    ]
+
+
+def test_resolve_targets_default_still_filters_to_nn_linear() -> None:
+    """Backward-compat guard: default behavior unchanged after adding linear_types."""
+    from esam3.peft_adapters.lora import _resolve_targets
+
+    class Base(nn.Module):
+        def __init__(self) -> None:
+            super().__init__()
+            self.vision_encoder = nn.Module()
+            self.vision_encoder.block0 = nn.Module()  # type: ignore[assignment]
+            self.vision_encoder.block0.attn = nn.Module()  # type: ignore[assignment]
+            self.vision_encoder.block0.attn.qkv = nn.Linear(8, 24)  # type: ignore[assignment]
+            self.vision_encoder.block0.attn.proj = nn.Linear(8, 8)  # type: ignore[assignment]
+
+    matched = _resolve_targets(Base(), PEFTConfig(method="lora", scope="vision"))
+    assert sorted(matched) == [
+        "vision_encoder.block0.attn.proj",
+        "vision_encoder.block0.attn.qkv",
+    ]

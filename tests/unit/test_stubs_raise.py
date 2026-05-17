@@ -6,11 +6,9 @@ import pytest
 
 from esam3.config.schema import (
     EvalConfig,
-    PEFTConfig,
 )
 from esam3.eval.evaluator import Evaluator
 from esam3.eval.metrics import compute_coco_map
-from esam3.peft_adapters.qlora import apply_qlora
 from esam3.train.checkpoint import load_adapter, save_adapter, save_merged
 from esam3.train.loop import run_epoch
 
@@ -18,11 +16,6 @@ from esam3.train.loop import run_epoch
 def _assert_stub(call: object) -> None:
     with pytest.raises(NotImplementedError, match="filled in by spec:"):
         call()  # type: ignore[operator]
-
-
-def test_peft_stubs() -> None:
-    qcfg = PEFTConfig(method="qlora")
-    _assert_stub(lambda: apply_qlora(object(), qcfg))
 
 
 def test_eval_stubs() -> None:
