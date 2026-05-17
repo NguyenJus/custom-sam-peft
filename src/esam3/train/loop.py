@@ -118,7 +118,10 @@ def train_step(
                 len(classes_in_batch) * cfg.train.grad_accum_steps
             )
             is_finite = bool(torch.isfinite(class_scaled))
-        except (ValueError, RuntimeError) as exc:
+        except ValueError as exc:
+            # Hungarian matcher raises ValueError on non-finite cost matrices;
+            # treat as a NaN-class skip. Other exceptions (RuntimeError for OOM,
+            # shape mismatches, dtype errors, device mismatches) must propagate.
             _LOG.warning("train_step: class %r raised %s; treating as non-finite.", c, exc)
             is_finite = False
 
@@ -165,6 +168,7 @@ class _ScalarWindow:
         default_factory=lambda: {
             "loss/total": 0.0,
             "loss/mask": 0.0,
+            "loss/box": 0.0,
             "loss/obj": 0.0,
             "loss/presence": 0.0,
             "box_hint/applied": 0.0,
@@ -185,6 +189,7 @@ class _ScalarWindow:
             return
         self.sums["loss/total"] += r.losses["total"]
         self.sums["loss/mask"] += r.losses["mask"]
+        self.sums["loss/box"] += r.losses["box"]
         self.sums["loss/obj"] += r.losses["obj"]
         self.sums["loss/presence"] += r.losses["presence"]
         denom = max(r.n_classes * max(r.images_processed, 1), 1)
@@ -202,6 +207,7 @@ class _ScalarWindow:
         out = {
             "loss/total": self.sums["loss/total"] / n,
             "loss/mask": self.sums["loss/mask"] / n,
+            "loss/box": self.sums["loss/box"] / n,
             "loss/obj": self.sums["loss/obj"] / n,
             "loss/presence": self.sums["loss/presence"] / n,
             "lr": self.last_lr,
