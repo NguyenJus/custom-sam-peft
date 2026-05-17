@@ -14,6 +14,7 @@ from esam3.peft_adapters.lora import (
     SCOPE_TARGETS,
     apply_lora,
     load_lora,
+    merge_lora,
     save_lora,
 )
 from tests.fixtures.tiny_sam3_lora_stub import make_stub_wrapper
@@ -168,3 +169,29 @@ def test_save_lora_without_apply_raises(tmp_path: Path) -> None:
     w = make_stub_wrapper()
     with pytest.raises(RuntimeError, match="no PeftModel"):
         save_lora(w, tmp_path)
+
+
+def test_merge_lora_unwraps_and_clears_handle() -> None:
+    w = make_stub_wrapper()
+    # Snapshot one pre-LoRA base weight so we can verify deltas folded in.
+    pre = w.model.model.vision_encoder.block0.attn.qkv.weight.detach().clone()
+
+    apply_lora(w, PEFTConfig(method="lora"))
+    # Force a non-zero LoRA-B so merge changes the base.
+    for n, p in w.model.model.named_parameters():
+        if "lora_B" in n and "vision_encoder.block0.attn.qkv" in n:
+            with torch.no_grad():
+                p.add_(1.0)
+
+    merge_lora(w)
+
+    assert w.peft_model is None
+    assert "Peft" not in type(w.model.model).__name__
+    post = w.model.model.vision_encoder.block0.attn.qkv.weight.detach()
+    assert not torch.allclose(pre, post), "merge_lora should have folded LoRA deltas into base"
+
+
+def test_merge_lora_without_apply_raises() -> None:
+    w = make_stub_wrapper()
+    with pytest.raises(RuntimeError, match="no PeftModel"):
+        merge_lora(w)
