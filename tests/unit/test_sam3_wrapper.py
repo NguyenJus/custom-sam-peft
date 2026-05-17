@@ -49,3 +49,13 @@ def test_wrapper_rejects_batch_size_mismatch() -> None:
     prompts = [TextPrompts(classes=["cat"])]  # B=2 images but 1 prompt
     with pytest.raises(ValueError, match="len\\(prompts\\)"):
         wrapper(image, prompts)
+
+
+def test_sam3_wrapper_has_peft_model_slot() -> None:
+    from torch import nn
+
+    from esam3.models.sam3 import Sam3Wrapper
+
+    wrapper = Sam3Wrapper(nn.Identity(), image_size=8, mask_size=8)
+    assert hasattr(wrapper, "peft_model")
+    assert wrapper.peft_model is None
