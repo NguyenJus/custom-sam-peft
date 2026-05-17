@@ -32,8 +32,10 @@ def test_apply_lora_on_real_sam31_under_trainable_budget() -> None:
     assert ratio < 0.05, f"trainable ratio {ratio:.2%} exceeds 5% budget"
 
     lora_names = [n for n, _ in w.model.model.named_parameters() if "lora_" in n]
-    assert any("vision_encoder" in n for n in lora_names), "no vision-encoder LoRA targets"
-    assert any("mask_decoder" in n for n in lora_names), "no mask-decoder LoRA targets"
+    assert any("vision_backbone" in n for n in lora_names), "no vision-trunk LoRA targets"
+    assert any("transformer.decoder" in n for n in lora_names), (
+        "no transformer-decoder LoRA targets"
+    )
 
 
 def test_save_load_roundtrip_on_real_sam31(tmp_path: Path) -> None:

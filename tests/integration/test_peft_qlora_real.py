@@ -67,8 +67,10 @@ def test_apply_qlora_swaps_every_linear_and_attaches_lora() -> None:
     assert ratio < 0.05, f"trainable ratio {ratio:.2%} exceeds 5% budget"
 
     lora_names = [n for n, _ in base.named_parameters() if "lora_" in n]
-    assert any("vision_encoder" in n for n in lora_names), "no vision-encoder LoRA targets"
-    assert any("mask_decoder" in n for n in lora_names), "no mask-decoder LoRA targets"
+    assert any("vision_backbone" in n for n in lora_names), "no vision-trunk LoRA targets"
+    assert any("transformer.decoder" in n for n in lora_names), (
+        "no transformer-decoder LoRA targets"
+    )
 
 
 @pytest.mark.skipif(not _bnb_available(), reason="bitsandbytes not installed")
