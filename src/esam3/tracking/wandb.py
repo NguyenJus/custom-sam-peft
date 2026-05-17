@@ -20,7 +20,7 @@ class WandBTracker:
     def log_scalars(self, step: int, values: dict[str, float]) -> None:
         raise NotImplementedError("filled in by spec: spec/tracking")
 
-    def log_images(self, step: int, images: dict[str, np.ndarray]) -> None:
+    def log_images(self, step: int, images: dict[str, np.ndarray[Any, Any]]) -> None:
         raise NotImplementedError("filled in by spec: spec/tracking")
 
     def close(self) -> None:

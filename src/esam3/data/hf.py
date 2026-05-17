@@ -179,7 +179,7 @@ class HFDataset:
         classes = list(_resolve_field(row, self._field_map.category))
         bboxes_xyxy = [_normalize_bbox(list(b), self._field_map.bbox_format) for b in bboxes_raw]
 
-        masks: list[np.ndarray] = []
+        masks: list[np.ndarray[Any, Any]] = []
         seg_path = self._field_map.segmentation
         seg_resolved: Any = None
         if seg_path:

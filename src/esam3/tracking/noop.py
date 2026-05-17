@@ -15,7 +15,7 @@ class NoopTracker:
     def log_scalars(self, step: int, values: dict[str, float]) -> None:
         return None
 
-    def log_images(self, step: int, images: dict[str, np.ndarray]) -> None:
+    def log_images(self, step: int, images: dict[str, np.ndarray[Any, Any]]) -> None:
         return None
 
     def close(self) -> None:

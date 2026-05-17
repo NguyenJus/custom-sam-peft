@@ -64,7 +64,7 @@ def _drop_crowd_only_images(
     return kept, ann_index, dropped
 
 
-def _decode_segmentation(ann: dict[str, Any], h: int, w: int) -> np.ndarray:
+def _decode_segmentation(ann: dict[str, Any], h: int, w: int) -> np.ndarray[Any, Any]:
     """Polygon or RLE -> (H, W) bool ndarray."""
     seg = ann["segmentation"]
     if isinstance(seg, list):
@@ -177,7 +177,7 @@ class COCODataset:
 
         anns = self._ann_index[image_id]
         bboxes_xyxy: list[list[float]] = []
-        masks: list[np.ndarray] = []
+        masks: list[np.ndarray[Any, Any]] = []
         class_labels: list[int] = []
         for ann in anns:
             x, y, bw, bh = ann["bbox"]
@@ -193,7 +193,7 @@ class COCODataset:
         )
         image_tensor: torch.Tensor = out["image"]
         out_bboxes: list[tuple[float, float, float, float]] = list(out["bboxes"])
-        out_masks: list[np.ndarray] = list(out["masks"])
+        out_masks: list[np.ndarray[Any, Any]] = list(out["masks"])
         out_classes: list[int] = [int(c) for c in out["class_labels"]]
 
         from esam3.data.base import BoxPrompts, Instance, TextPrompts
