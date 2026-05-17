@@ -54,6 +54,15 @@ GPU smoke test (requires CUDA + SAM3.1 weights):
 uv run pytest -m gpu
 ```
 
+### GPU test automation
+
+Run the GPU-gated tests on a free Colab T4 (no local GPU required):
+
+[![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/NguyenJus/Efficient-SAM3-Finetuning/blob/main/notebooks/colab_gpu_tests.ipynb)
+
+Set a `HF_TOKEN` once in Colab Secrets, choose a T4 (or better) runtime,
+and Run All. See [`docs/superpowers/specs/2026-05-17-peft-qlora-design.md`](docs/superpowers/specs/2026-05-17-peft-qlora-design.md) §11 for details.
+
 ## License
 
 Apache-2.0. See `LICENSE`.
