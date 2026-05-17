@@ -7,6 +7,7 @@ against TrainConfig.
 
 from __future__ import annotations
 
+import os
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, PositiveFloat, PositiveInt, model_validator
@@ -16,7 +17,7 @@ DataFormat = Literal["coco", "hf"]
 PromptMode = Literal["text", "bbox"]
 PEFTMethod = Literal["lora", "qlora"]
 QuantType = Literal["nf4", "fp4"]
-Optimizer = Literal["adamw", "adamw8bit"]
+Optimizer = Literal["adamw", "adamw8bit", "auto"]
 LRSchedule = Literal["constant", "cosine", "linear"]
 TrackerBackend = Literal["tensorboard", "wandb", "none"]
 TextPromptMode = Literal["present", "all", "present_plus_negatives", "sampled_fixed_k"]
@@ -167,14 +168,42 @@ class PEFTConfig(_Strict):
 class MatcherWeights(_Strict):
     """Per-term cost weights for the Hungarian matcher.
 
-    No `lambda_cls` term: SAM 3.1's open-vocab head has no multi-class
-    classification logits; class identity comes from the text prompt itself,
-    so matching uses only geometric (L1/GIoU) and mask (Dice) costs.
+    v0 defaults are mask-only (box terms = 0) because v0 trains text-only
+    with no box supervision. Users who later want box supervision can
+    override these in config.
     """
 
-    lambda_l1: PositiveFloat = 5.0
-    lambda_giou: PositiveFloat = 2.0
+    lambda_l1: float = Field(default=0.0, ge=0.0)
+    lambda_giou: float = Field(default=0.0, ge=0.0)
     lambda_mask: PositiveFloat = 5.0
+
+
+class BoxHintSchedule(_Strict):
+    """Linear-decay schedule for per-image probability of feeding GT boxes
+    as a localization hint alongside the text prompt.
+
+    p(t) = max(p_end, p_start + (p_end - p_start) * t / decay_steps)
+    where t = global_step. Applied per-image via Bernoulli(p(t)) over each
+    image's GT boxes for the currently-prompted class.
+
+    early_stop_p_threshold is consumed by a future early-stopping mechanism
+    (not by the training-loop spec): a run MUST NOT terminate early while
+    current p(t) >= this value. Recorded here so the constraint is
+    co-located with the schedule it gates.
+    """
+
+    p_start: float = Field(default=1.0, ge=0.0, le=1.0)
+    p_end: float = Field(default=0.0, ge=0.0, le=1.0)
+    decay_steps: PositiveInt = 5000
+    early_stop_p_threshold: float = Field(default=0.05, ge=0.0, le=1.0)
+
+    @model_validator(mode="after")
+    def _check_monotone(self) -> BoxHintSchedule:
+        if self.p_end > self.p_start:
+            raise ValueError(
+                f"BoxHintSchedule must decay: p_end ({self.p_end}) > p_start ({self.p_start})"
+            )
+        return self
 
 
 class LossConfig(_Strict):
@@ -187,7 +216,7 @@ class LossConfig(_Strict):
     """
 
     w_mask: PositiveFloat = 1.0
-    w_box: PositiveFloat = 5.0
+    w_box: float = Field(default=0.0, ge=0.0)
     w_obj: PositiveFloat = 1.0
     w_presence: PositiveFloat = 1.0
     matcher_weights: MatcherWeights = Field(default_factory=MatcherWeights)
@@ -199,7 +228,7 @@ class TrainHyperparams(_Strict):
     epochs: PositiveInt
     batch_size: PositiveInt = 1
     grad_accum_steps: PositiveInt = 8
-    optimizer: Optimizer = "adamw"
+    optimizer: Optimizer = "auto"
     lr: PositiveFloat = 1.0e-4
     lr_schedule: LRSchedule = "cosine"
     warmup_steps: int = Field(default=100, ge=0)
@@ -207,6 +236,14 @@ class TrainHyperparams(_Strict):
     eval_every: PositiveInt = 500
     save_every: PositiveInt = 1000
     loss: LossConfig = Field(default_factory=LossConfig)
+    box_hint: BoxHintSchedule = Field(default_factory=BoxHintSchedule)
+    log_every: PositiveInt = 50
+    nan_abort_after: PositiveInt = 20
+    num_workers: int = Field(
+        default_factory=lambda: min(4, os.cpu_count() or 1),
+        ge=0,
+        description="DataLoader workers. 0 disables multiprocessing.",
+    )
 
 
 class EvalConfig(_Strict):
