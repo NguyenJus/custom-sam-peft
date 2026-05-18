@@ -42,3 +42,6 @@ logs/*
 .claude/*
 CLAUDE.md
 .mcp.json
+
+# Local git worktrees
+.worktrees/
