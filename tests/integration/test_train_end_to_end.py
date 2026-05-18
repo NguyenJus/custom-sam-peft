@@ -14,13 +14,14 @@ from esam3.config.schema import (
     PEFTConfig,
     RunConfig,
     TextPromptConfig,
+    TrackingConfig,
     TrainConfig,
     TrainHyperparams,
 )
 from esam3.data.coco import COCODataset
 from esam3.data.transforms import build_eval_transforms, build_train_transforms
 from esam3.peft_adapters.lora import apply_lora
-from esam3.tracking.noop import NoopTracker
+from esam3.tracking import build_tracker
 from esam3.train.trainer import Trainer
 from tests.fixtures.tiny_sam3_lora_stub import FIXTURE_SCOPE_PATTERNS, make_stub_wrapper
 
@@ -52,7 +53,10 @@ def _ds(tiny_coco_dir: Path, pipeline: str) -> COCODataset:
     )
 
 
-def test_fit_end_to_end_on_tiny_coco(tmp_path: Path, tiny_coco_dir: Path) -> None:
+@pytest.mark.parametrize("backend", ["none", "tensorboard"])
+def test_fit_end_to_end_on_tiny_coco(backend: str, tmp_path: Path, tiny_coco_dir: Path) -> None:
+    if backend == "tensorboard":
+        pytest.importorskip("tensorboard")
     ds_train = _ds(tiny_coco_dir, "train")
     ds_val = _ds(tiny_coco_dir, "eval")
     wrapper = make_stub_wrapper(dim=8, working=True)
@@ -86,9 +90,11 @@ def test_fit_end_to_end_on_tiny_coco(tmp_path: Path, tiny_coco_dir: Path) -> Non
             warmup_steps=0,
             num_workers=0,
         ),
+        tracking=TrackingConfig(backend=backend),  # type: ignore[arg-type]
     )
     apply_lora(wrapper, cfg.peft)
-    trainer = Trainer(wrapper, ds_train, ds_val, NoopTracker(), cfg)
+    tracker = build_tracker(cfg)
+    trainer = Trainer(wrapper, ds_train, ds_val, tracker, cfg)
     result = trainer.fit()
 
     assert result.run_dir.exists()
@@ -99,3 +105,6 @@ def test_fit_end_to_end_on_tiny_coco(tmp_path: Path, tiny_coco_dir: Path) -> Non
     assert ckpts, "expected at least one step_* checkpoint dir"
     assert (ckpts[0] / "training_state.pt").exists()
     assert (ckpts[0] / "adapter").exists()
+    if backend == "tensorboard":
+        events = list(result.run_dir.glob("events.out.tfevents.*"))
+        assert events, "tensorboard backend should write at least one event file"

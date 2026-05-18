@@ -89,3 +89,106 @@ def test_fit_creates_expected_layout(tmp_path: Path) -> None:
     payload = json.loads((rd / "metrics.json").read_text())
     assert "global_step" in payload
     assert "overall" in payload
+
+
+def test_fit_calls_start_run_once_before_first_log(tmp_path: Path) -> None:
+    """Regression: Trainer.fit() must call tracker.start_run before any log call."""
+    from unittest.mock import MagicMock
+
+    from esam3.config.schema import (
+        AugmentationsConfig,
+        DataConfig,
+        DataSplit,
+        PEFTConfig,
+        RunConfig,
+        TextPromptConfig,
+        TrainConfig,
+        TrainHyperparams,
+    )
+    from esam3.data.coco import COCODataset
+    from esam3.data.transforms import build_eval_transforms, build_train_transforms
+    from esam3.peft_adapters.lora import apply_lora
+    from esam3.train.trainer import Trainer
+    from tests.fixtures.tiny_sam3_lora_stub import FIXTURE_SCOPE_PATTERNS, make_stub_wrapper
+
+    # Reuse the integration test's tiny_coco directory via the conftest fixture path.
+    tiny_coco_dir = Path(__file__).resolve().parents[1] / "fixtures" / "tiny_coco"
+    from esam3.config.schema import NormalizeConfig
+
+    transforms_t = build_train_transforms(
+        AugmentationsConfig(hflip=False, color_jitter=0.0),
+        32,
+        model_name="facebook/sam3.1",
+        normalize=NormalizeConfig(),
+    )
+    transforms_v = build_eval_transforms(
+        32,
+        model_name="facebook/sam3.1",
+        normalize=NormalizeConfig(),
+    )
+    ds_train = COCODataset(
+        annotations=str(tiny_coco_dir / "annotations.json"),
+        images=str(tiny_coco_dir / "images"),
+        prompt_mode="text",
+        transforms=transforms_t,
+        text_prompt=TextPromptConfig(),
+    )
+    ds_val = COCODataset(
+        annotations=str(tiny_coco_dir / "annotations.json"),
+        images=str(tiny_coco_dir / "images"),
+        prompt_mode="text",
+        transforms=transforms_v,
+        text_prompt=TextPromptConfig(),
+    )
+    wrapper = make_stub_wrapper(dim=8, working=True)
+    cfg = TrainConfig(
+        run=RunConfig(name="sr", output_dir=str(tmp_path), seed=0),
+        data=DataConfig(
+            format="coco",
+            train=DataSplit(
+                annotations=str(tiny_coco_dir / "annotations.json"),
+                images=str(tiny_coco_dir / "images"),
+            ),
+            val=DataSplit(
+                annotations=str(tiny_coco_dir / "annotations.json"),
+                images=str(tiny_coco_dir / "images"),
+            ),
+            prompt_mode="text",
+            image_size=32,
+        ),
+        peft=PEFTConfig(
+            method="lora", scope="vision", target_modules=FIXTURE_SCOPE_PATTERNS["vision"]
+        ),
+        train=TrainHyperparams(
+            epochs=1,
+            batch_size=1,
+            grad_accum_steps=1,
+            save_every=10_000,
+            log_every=10_000,
+            warmup_steps=0,
+            num_workers=0,
+        ),
+    )
+    apply_lora(wrapper, cfg.peft)
+
+    tracker = MagicMock()
+    # Record call order: start_run must precede any log_* call.
+    order: list[str] = []
+    tracker.start_run.side_effect = lambda *a, **k: order.append("start_run")
+    tracker.log_scalars.side_effect = lambda *a, **k: order.append("log_scalars")
+    tracker.log_images.side_effect = lambda *a, **k: order.append("log_images")
+    tracker.close.side_effect = lambda: order.append("close")
+
+    Trainer(wrapper, ds_train, ds_val, tracker, cfg).fit()
+    assert order, "tracker received no calls"
+    assert order[0] == "start_run", f"first call was {order[0]!r}, expected start_run"
+    assert order[-1] == "close"
+
+    tracker.start_run.assert_called_once()
+    args = tracker.start_run.call_args
+    # First positional: run_dir (a Path under tmp_path); second: config dict
+    assert isinstance(args.args[0], Path)
+    assert args.args[0].is_dir()
+    assert isinstance(args.args[1], dict)
+    # resume_from must be passed through (None for fresh runs)
+    assert args.kwargs.get("resume_from", args.args[2] if len(args.args) > 2 else "MISSING") is None

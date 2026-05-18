@@ -140,6 +140,7 @@ class Trainer:
         run_dir = Path(cfg.run.output_dir) / f"{cfg.run.name}-{timestamp}"
         (run_dir / "checkpoints").mkdir(parents=True, exist_ok=True)
         (run_dir / "config.yaml").write_text(yaml.safe_dump(cfg.model_dump(mode="json")))
+        self.tracker.start_run(run_dir, cfg.model_dump(mode="json"), resume_from)
 
         device = next(self.model.parameters()).device
         pin = device.type == "cuda"

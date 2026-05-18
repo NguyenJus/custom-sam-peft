@@ -34,6 +34,9 @@ class _RecordingTracker:
     def __init__(self) -> None:
         self.scalars: list[tuple[int, dict[str, float]]] = []
 
+    def start_run(self, run_dir: Any, config: Any, resume_from: Any = None) -> None:
+        pass
+
     def log_scalars(self, step: int, values: dict[str, float]) -> None:
         self.scalars.append((step, values))
 
