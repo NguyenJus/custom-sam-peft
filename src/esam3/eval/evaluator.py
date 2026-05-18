@@ -37,8 +37,8 @@ def _mask_to_rle(mask: torch.Tensor) -> dict:
     return rle
 
 
-def _build_gt(dataset: Dataset, indices: range) -> tuple[COCO, dict[str, int]]:
-    """Build an in-memory COCO ground-truth from ``dataset[indices]``.
+def _build_coco_gt_from_examples(examples: list, dataset: Dataset) -> tuple[COCO, dict[str, int]]:
+    """Build an in-memory COCO ground-truth from a pre-fetched list of Examples.
 
     Returns the COCO object and a ``str_image_id -> int_image_id`` map.
     Raises RuntimeError on int-id collision.
@@ -49,8 +49,7 @@ def _build_gt(dataset: Dataset, indices: range) -> tuple[COCO, dict[str, int]]:
     str_to_int: dict[str, int] = {}
     ann_id = 1
 
-    for i in indices:
-        ex = dataset[i]
+    for ex in examples:
         int_id = _int_image_id(ex.image_id)
         prior = seen_ids.get(int_id)
         if prior is not None and prior != ex.image_id:
@@ -102,12 +101,20 @@ class Evaluator:
         Pure compute — no disk I/O. Restores the model's training/eval state
         after the forward loop.
         """
+        # Reset predictions at the start so evaluate_and_save never writes
+        # stale data from a prior call that may have failed mid-run.
+        self._last_predictions = []
+
         cfg = self.cfg
         n_total = len(dataset)
         n = n_total if cfg.mode == "full" else min(cfg.lite_max_images, n_total)
         indices = range(n)
 
-        gt, _ = _build_gt(dataset, indices)
+        # Fetch each example exactly once — used for both GT construction and
+        # model inference, avoiding a double dataset traversal.
+        examples = [dataset[i] for i in indices]
+
+        gt, _ = _build_coco_gt_from_examples(examples, dataset)
 
         was_training = bool(getattr(model, "training", False))
         if hasattr(model, "eval"):
@@ -115,11 +122,13 @@ class Evaluator:
 
         predictions: list[dict] = []
         try:
-            with torch.inference_mode():
-                for i in indices:
-                    ex = dataset[i]
+            with torch.no_grad():
+                for ex in examples:
                     original_hw = (int(ex.image.shape[-2]), int(ex.image.shape[-1]))
                     int_id = _int_image_id(ex.image_id)
+                    # Note: mode="lite" bounds only the image dimension; the
+                    # class dimension is intentionally unbounded (per spec's
+                    # documented compute cost O(images * classes)).
                     for cat_idx, class_name in enumerate(dataset.class_names):
                         cat_id = cat_idx + 1
                         outputs = model(
