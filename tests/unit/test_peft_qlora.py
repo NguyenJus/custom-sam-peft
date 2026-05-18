@@ -219,7 +219,7 @@ def test_infer_quant_type_raises_when_both_paths_missing(
 
 def test_has_plain_nn_linear_ignores_lora_adapter_children() -> None:
     """The tightened predicate must ignore lora_A/lora_B nn.Linears but flag base leaks."""
-    from tests.integration.test_peft_qlora_real import _has_plain_nn_linear
+    from tests.helpers.lora_predicates import has_plain_nn_linear as _has_plain_nn_linear
 
     # Fake LoRA adapter wrapper: holds a Linear4bit-shape sentinel as base, plus
     # full-precision lora_A / lora_B nn.Linear adapters (mimicking peft.tuners.lora.bnb.Linear4bit).

@@ -25,6 +25,7 @@ from esam3.config.schema import ModelConfig, PEFTConfig
 from esam3.models.sam3 import load_sam31
 from esam3.peft_adapters.lora import merge_lora
 from esam3.peft_adapters.qlora import apply_qlora, load_qlora, save_qlora
+from tests.helpers.lora_predicates import has_plain_nn_linear as _has_plain_nn_linear
 
 pytestmark = [
     pytest.mark.requires_checkpoint,
@@ -44,39 +45,6 @@ def _has_linear4bit_modules(module: nn.Module) -> bool:
     import bitsandbytes as bnb
 
     return any(isinstance(m, bnb.nn.Linear4bit) for m in module.modules())
-
-
-# LoRA adapter sub-paths whose internal nn.Linear modules are EXPECTED and must
-# not be flagged as a "base Linear leak". peft.tuners.lora.layer.Linear stores
-# the trainable LoRA matrices in `lora_A.<adapter>` and `lora_B.<adapter>`
-# nn.Linear submodules; the QLoRA recipe leaves these in full precision while
-# the base layer is bnb.nn.Linear4bit. Add `lora_embedding_A`, `lora_embedding_B`,
-# and `lora_magnitude_vector` defensively for future LoRA variants (Embedding
-# adapters, DoRA) even though we do not configure them today.
-_LORA_ADAPTER_PATH_TOKENS = (
-    "lora_A",
-    "lora_B",
-    "lora_embedding_A",
-    "lora_embedding_B",
-    "lora_magnitude_vector",
-)
-
-
-def _has_plain_nn_linear(module: nn.Module) -> bool:
-    """True if any nn.Linear remains in the BASE tree (NOT under a LoRA adapter path).
-
-    Subclasses of nn.Linear (e.g. bnb.nn.Linear4bit) are ignored via `type(m) is`.
-    Plain nn.Linear modules whose qualified name from `named_modules()` contains
-    any token in `_LORA_ADAPTER_PATH_TOKENS` are also ignored: they belong to
-    LoRA's full-precision adapter, not the base.
-    """
-    for name, m in module.named_modules():
-        if type(m) is not nn.Linear:
-            continue
-        if any(tok in name for tok in _LORA_ADAPTER_PATH_TOKENS):
-            continue
-        return True
-    return False
 
 
 @pytest.mark.skipif(not _bnb_available(), reason="bitsandbytes not installed")
