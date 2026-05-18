@@ -22,7 +22,7 @@ from esam3.data.transforms import build_eval_transforms, build_train_transforms
 from esam3.peft_adapters.lora import apply_lora
 from esam3.tracking.noop import NoopTracker
 from esam3.train.trainer import Trainer
-from tests.fixtures.tiny_sam3_lora_stub import make_stub_wrapper
+from tests.fixtures.tiny_sam3_lora_stub import FIXTURE_SCOPE_PATTERNS, make_stub_wrapper
 
 pytestmark = pytest.mark.integration
 
@@ -72,7 +72,11 @@ def test_fit_end_to_end_on_tiny_coco(tmp_path: Path, tiny_coco_dir: Path) -> Non
             prompt_mode="text",
             image_size=32,
         ),
-        peft=PEFTConfig(method="lora", scope="vision"),
+        peft=PEFTConfig(
+            method="lora",
+            scope="vision",
+            target_modules=FIXTURE_SCOPE_PATTERNS["vision"],
+        ),
         train=TrainHyperparams(
             epochs=1,
             batch_size=1,
