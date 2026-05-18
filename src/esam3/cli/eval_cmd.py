@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Literal, cast
 
 import typer
 from rich import print as rprint
@@ -31,11 +32,12 @@ def evaluate(
     if split not in ("val", "test"):
         raise typer.BadParameter(f"--split must be val|test; got {split!r}", param_hint="--split")
     cfg = load_config(config)
+    split_lit = cast(Literal["val", "test"], split)
     try:
         report = run_eval(
             cfg,
             checkpoint=checkpoint,
-            split=split,
+            split=split_lit,
             output_dir=output,
             save_predictions=save_predictions,
         )
