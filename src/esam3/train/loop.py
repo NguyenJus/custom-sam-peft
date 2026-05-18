@@ -13,6 +13,7 @@ import contextlib
 import logging
 import random
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -236,8 +237,8 @@ def run_epoch(
     nan_streak: int,
     class_names: list[str],
     val_ds: Any,
-    on_checkpoint: Any,
-    on_eval: Any,
+    on_checkpoint: Callable[[int, int, float, int], None],
+    on_eval: Callable[[int], None],
 ) -> tuple[int, int]:
     """Drive one epoch. `on_checkpoint(global_step, epoch, p_t, nan_streak)`
     is called at every `save_every` boundary; the trainer wires it to the

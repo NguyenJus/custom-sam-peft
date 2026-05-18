@@ -40,7 +40,7 @@ class RunResult:
     run_dir: Path
     adapter_path: Path
     merged_path: Path | None
-    final_metrics: MetricsReport | None
+    final_metrics: MetricsReport | None  # None if end-of-run eval raises
 
 
 def _resolve_optimizer_name(cfg: TrainConfig) -> Optimizer:
@@ -193,10 +193,12 @@ class Trainer:
             try:
                 lite_cfg = cfg.eval.model_copy(update={"mode": "lite", "save_predictions": False})
                 report = Evaluator(lite_cfg).evaluate(self.model, self.val_ds)
-                self.tracker.log_scalars(step, {f"eval/{k}": v for k, v in report.overall.items()})
+                self.tracker.log_scalars(step, report.overall)
             except Exception:
                 _LOG.warning("lite eval failed at step %d; skipping.", step, exc_info=True)
 
+        full_report: MetricsReport | None = None
+        merged_path: Path | None = None
         try:
             for epoch in range(start_epoch, cfg.train.epochs):
                 global_step, nan_streak = run_epoch(
@@ -218,7 +220,6 @@ class Trainer:
 
             adapter_path = run_dir / "adapter"
             save_adapter(self.model, adapter_path)
-            merged_path: Path | None = None
             if cfg.export.merge:
                 merged_path = run_dir / "merged"
                 save_merged(self.model, merged_path)
