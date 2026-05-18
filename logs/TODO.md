@@ -1,4 +1,0 @@
-# TODO
-
-[2026-05-18T04:00:00Z] [planner] colab-remaining-failures: upstream PR to Meta sam3 to make PositionEmbeddingSine._encode_xy honor input dtype natively (Option D from spec §3.4). Until merged and a sam3 release lands, the monkey-patch in src/esam3/models/sam3.py::_patch_pos_enc_dtype remains the stop-gap. Re-evaluate on every sam3 version bump.
-[2026-05-18T02:08:26Z] [implementer] colab-remaining-failures: upstream sam3 still has multiple hardcoded-fp32 sites (gen_sineembed_for_position dim_t, get_valid_ratio .float(), _encode_prompt zero-length cat, _encode_xy dim_t). Generic Linear/LayerNorm/Conv input-dtype hook in _patch_module_input_dtype is the stop-gap; the per-site patches (_patch_pos_enc_dtype, _patch_roi_align_dtype, _patch_encode_prompt_dtype) remain as documentation of known sites. Re-evaluate on every sam3 version bump; upstream PR to Meta sam3 still owed.
