@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 
 import typer
 from rich import print as rprint
@@ -11,7 +12,7 @@ from esam3.config.loader import load_config
 from esam3.config.schema import DataSplit, TrainConfig
 
 
-def _build_dataset(cfg: TrainConfig, split: DataSplit) -> object:  # type: ignore[type-arg]
+def _build_dataset(cfg: TrainConfig, split: DataSplit) -> Any:
     """Build a dataset for the given split config.
 
     Only COCO format is supported today; HF and other formats are a TODO.

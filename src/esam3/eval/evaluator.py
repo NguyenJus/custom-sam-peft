@@ -8,6 +8,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
@@ -17,7 +18,7 @@ import torch
 from pycocotools.coco import COCO
 
 from esam3.config.schema import EvalConfig
-from esam3.data.base import Dataset, TextPrompts
+from esam3.data.base import Dataset, Example, TextPrompts
 from esam3.eval.metrics import MetricsReport, compute_coco_map
 from esam3.eval.postprocess import queries_to_coco_results
 
@@ -29,7 +30,7 @@ def _int_image_id(image_id: str) -> int:
     return int(hashlib.blake2s(image_id.encode("utf-8"), digest_size=8).hexdigest(), 16)
 
 
-def _mask_to_rle(mask: torch.Tensor) -> dict:
+def _mask_to_rle(mask: torch.Tensor) -> Any:
     """Convert a (H, W) bool tensor to a pycocotools RLE dict."""
     arr = mask.cpu().numpy().astype(np.uint8)
     rle = mask_utils.encode(np.asfortranarray(arr))
@@ -37,14 +38,16 @@ def _mask_to_rle(mask: torch.Tensor) -> dict:
     return rle
 
 
-def _build_coco_gt_from_examples(examples: list, dataset: Dataset) -> tuple[COCO, dict[str, int]]:
+def _build_coco_gt_from_examples(
+    examples: Sequence[Example], dataset: Dataset
+) -> tuple[COCO, dict[str, int]]:
     """Build an in-memory COCO ground-truth from a pre-fetched list of Examples.
 
     Returns the COCO object and a ``str_image_id -> int_image_id`` map.
     Raises RuntimeError on int-id collision.
     """
-    images: list[dict] = []
-    annotations: list[dict] = []
+    images: list[dict[str, object]] = []
+    annotations: list[dict[str, object]] = []
     seen_ids: dict[int, str] = {}
     str_to_int: dict[str, int] = {}
     ann_id = 1
@@ -93,7 +96,7 @@ class Evaluator:
 
     def __init__(self, cfg: EvalConfig) -> None:
         self.cfg = cfg
-        self._last_predictions: list[dict] = []
+        self._last_predictions: list[dict[str, object]] = []
 
     def evaluate(self, model: Any, dataset: Dataset) -> MetricsReport:
         """Run the model over the dataset and return a MetricsReport.
@@ -120,7 +123,7 @@ class Evaluator:
         if hasattr(model, "eval"):
             model.eval()
 
-        predictions: list[dict] = []
+        predictions: list[dict[str, object]] = []
         try:
             with torch.no_grad():
                 for ex in examples:

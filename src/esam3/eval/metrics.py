@@ -37,7 +37,7 @@ def _zero_overall() -> dict[str, float]:
 
 
 def compute_coco_map(
-    predictions: list[dict],
+    predictions: list[dict[str, object]],
     ground_truth: COCO,
     iou_thresholds: list[float],
     include_per_class: bool,
