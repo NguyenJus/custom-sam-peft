@@ -252,6 +252,64 @@ class _Sam3ImageAdapter(nn.Module):
         return outputs
 
 
+def _patch_pos_enc_dtype(model: nn.Module) -> None:
+    """Wrap every PositionEmbeddingSine._encode_xy to honor input dtype.
+
+    sam3's ``PositionEmbeddingSine._encode_xy``
+    (sam3/model/position_encoding.py:60-77) builds its frequency table as
+    ``dim_t = torch.arange(..., dtype=torch.float32, ...)`` regardless of the
+    input dtype.  Downstream broadcasts produce fp32 output, which then feeds a
+    bf16-weight ``points_pos_enc_project`` Linear in
+    ``PointGeometryEncoder._encode_points`` (sam3/model/geometry_encoders.py:623)
+    and raises ``RuntimeError: mat1 and mat2 must have the same dtype`` on Colab
+    T4 with ``ModelConfig(dtype="bfloat16")``.  This is true even for zero-length
+    point sequences because ``F.linear`` validates dtypes regardless of seq len.
+
+    We wrap each ``_encode_xy`` method to cast its (pos_x, pos_y) outputs to the
+    dtype of the input ``x`` tensor BEFORE returning.  The bound method is
+    replaced via ``MethodType`` on each ``PositionEmbeddingSine`` instance so the
+    patch persists across forward calls and survives ``.to(device)`` /
+    ``.to(dtype)`` (only parameters move; methods do not).
+
+    This is a localized stop-gap.  The right long-term fix is upstream in
+    sam3's pos-enc to honor input dtype directly (tracked as a follow-up
+    in logs/TODO.md).  Re-evaluate every sam3 version bump.
+
+    Notes:
+    - We use a per-instance ``MethodType`` replacement (NOT class-level
+      monkey-patch) to avoid affecting other consumers of sam3 in the same
+      process.
+    - We do NOT introduce any ``torch.autocast`` scope; doing so re-triggered
+      the bf16-vs-fp32 collision inside ``sam3/model/decoder.py::forward_ffn``'s
+      ``with torch.amp.autocast(enabled=False)`` region during PR #13's v2 work.
+      The cast-on-return approach side-steps that entirely.
+    """
+    from types import MethodType
+
+    from sam3.model.position_encoding import PositionEmbeddingSine
+
+    patched_count = 0
+    for submodule in model.modules():
+        if not isinstance(submodule, PositionEmbeddingSine):
+            continue
+        if getattr(submodule, "_esam3_pos_enc_dtype_patched", False):
+            continue
+        original = submodule._encode_xy
+
+        def _encode_xy_dtype_aware(self, x, y, _orig=original):  # type: ignore[no-untyped-def]
+            pos_x, pos_y = _orig(x, y)
+            return pos_x.to(dtype=x.dtype), pos_y.to(dtype=x.dtype)
+
+        submodule._encode_xy = MethodType(_encode_xy_dtype_aware, submodule)
+        submodule._esam3_pos_enc_dtype_patched = True  # idempotency marker
+        patched_count += 1
+
+    logger.info(
+        "Patched %d PositionEmbeddingSine._encode_xy callsites for dtype awareness.",
+        patched_count,
+    )
+
+
 def load_sam31(cfg: ModelConfig) -> Sam3Wrapper:
     """Load SAM 3.1 via Meta's `sam3` package and wrap it for our trainer.
 
@@ -285,6 +343,11 @@ def load_sam31(cfg: ModelConfig) -> Sam3Wrapper:
         raw_model = raw_model.to(dtype=torch.bfloat16)
     elif cfg.dtype == "float16":
         raw_model = raw_model.to(dtype=torch.float16)
+
+    # Cast PositionEmbeddingSine._encode_xy outputs to input dtype to avoid
+    # fp32 inputs feeding bf16 Linear weights in the geometry encoder.
+    # See _patch_pos_enc_dtype for full rationale.
+    _patch_pos_enc_dtype(raw_model)
 
     adapter = _Sam3ImageAdapter(raw_model, image_size=1008)
     return Sam3Wrapper(adapter, image_size=1008, mask_size=288)
