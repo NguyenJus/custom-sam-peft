@@ -18,6 +18,7 @@ from torch.utils.data import DataLoader
 from esam3.config.schema import Optimizer, TrainConfig
 from esam3.data.base import Dataset
 from esam3.data.collate import collate_batch
+from esam3.eval.evaluator import Evaluator
 from esam3.eval.metrics import MetricsReport
 from esam3.models.sam3 import Sam3Wrapper
 from esam3.tracking.base import Tracker
@@ -39,7 +40,7 @@ class RunResult:
     run_dir: Path
     adapter_path: Path
     merged_path: Path | None
-    final_metrics: MetricsReport | None
+    final_metrics: MetricsReport | None  # None if end-of-run eval raises
 
 
 def _resolve_optimizer_name(cfg: TrainConfig) -> Optimizer:
@@ -188,6 +189,16 @@ class Trainer:
             )
             self._log_image_panel(val_examples, class_names, step)
 
+        def on_eval(step: int) -> None:
+            try:
+                lite_cfg = cfg.eval.model_copy(update={"mode": "lite", "save_predictions": False})
+                report = Evaluator(lite_cfg).evaluate(self.model, self.val_ds)
+                self.tracker.log_scalars(step, report.overall)
+            except Exception:
+                _LOG.warning("lite eval failed at step %d; skipping.", step, exc_info=True)
+
+        full_report: MetricsReport | None = None
+        merged_path: Path | None = None
         try:
             for epoch in range(start_epoch, cfg.train.epochs):
                 global_step, nan_streak = run_epoch(
@@ -204,18 +215,23 @@ class Trainer:
                     class_names,
                     self.val_ds,
                     on_checkpoint,
+                    on_eval,
                 )
 
             adapter_path = run_dir / "adapter"
             save_adapter(self.model, adapter_path)
-            merged_path: Path | None = None
             if cfg.export.merge:
                 merged_path = run_dir / "merged"
                 save_merged(self.model, merged_path)
 
+            full_report = Evaluator(cfg.eval).evaluate(self.model, self.val_ds)
             (run_dir / "metrics.json").write_text(
                 json.dumps(
                     {
+                        "overall": full_report.overall,
+                        "per_class": full_report.per_class,
+                        "n_images": full_report.n_images,
+                        "n_predictions": full_report.n_predictions,
                         "global_step": global_step,
                         "epoch": cfg.train.epochs - 1,
                         "box_hint_p_final": _box_hint_p(global_step, cfg.train.box_hint),
@@ -230,7 +246,7 @@ class Trainer:
             run_dir=run_dir,
             adapter_path=run_dir / "adapter",
             merged_path=merged_path,
-            final_metrics=None,
+            final_metrics=full_report,
         )
 
     def _log_image_panel(

@@ -22,6 +22,7 @@ LRSchedule = Literal["constant", "cosine", "linear"]
 TrackerBackend = Literal["tensorboard", "wandb", "none"]
 TextPromptMode = Literal["present", "all", "present_plus_negatives", "sampled_fixed_k"]
 LoraScope = Literal["vision", "vision_decoder", "all"]
+EvalMode = Literal["full", "lite"]
 
 
 class _Strict(BaseModel):
@@ -129,6 +130,7 @@ class DataConfig(_Strict):
     format: DataFormat
     train: DataSplit
     val: DataSplit
+    test: DataSplit | None = None
     hf: HFDatasetConfig | None = None
     prompt_mode: PromptMode
     image_size: PositiveInt = 1024
@@ -251,6 +253,10 @@ class EvalConfig(_Strict):
     iou_thresholds: list[float] = Field(
         default_factory=lambda: [0.5, 0.55, 0.6, 0.65, 0.7, 0.75, 0.8, 0.85, 0.9, 0.95]
     )
+    mode: EvalMode = "full"
+    lite_max_images: PositiveInt = 64
+    mask_threshold: float = 0.0
+    save_predictions: bool = False
 
 
 class WandbConfig(_Strict):

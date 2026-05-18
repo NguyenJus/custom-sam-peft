@@ -13,6 +13,7 @@ import contextlib
 import logging
 import random
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -236,11 +237,13 @@ def run_epoch(
     nan_streak: int,
     class_names: list[str],
     val_ds: Any,
-    on_checkpoint: Any,
+    on_checkpoint: Callable[[int, int, float, int], None],
+    on_eval: Callable[[int], None],
 ) -> tuple[int, int]:
     """Drive one epoch. `on_checkpoint(global_step, epoch, p_t, nan_streak)`
     is called at every `save_every` boundary; the trainer wires it to the
-    checkpoint + image-panel routines."""
+    checkpoint + image-panel routines. `on_eval(global_step)` is called at
+    every `eval_every` boundary for lite mid-run evaluation."""
     window = _ScalarWindow()
     for batch in loader:
         result = train_step(
@@ -260,4 +263,6 @@ def run_epoch(
             tracker.log_scalars(global_step, window.flush())
         if global_step % cfg.train.save_every == 0:
             on_checkpoint(global_step, epoch, result.p_t, nan_streak)
+        if global_step > 0 and global_step % cfg.train.eval_every == 0:
+            on_eval(global_step)
     return global_step, nan_streak

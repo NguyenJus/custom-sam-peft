@@ -169,3 +169,59 @@ def test_peft_target_modules_and_scope_both_set_validates() -> None:
     cfg = TrainConfig.model_validate(d)
     assert cfg.peft.scope == "all"
     assert cfg.peft.target_modules == ["foo"]
+
+
+# ---------------------------------------------------------------------------
+# Task 1: EvalConfig extensions + DataConfig.test
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def minimal_data_config_dict() -> dict:
+    return {
+        "format": "coco",
+        "train": {"annotations": "t.json", "images": "t/"},
+        "val": {"annotations": "v.json", "images": "v/"},
+        "prompt_mode": "text",
+    }
+
+
+def test_eval_config_defaults_extended() -> None:
+    from esam3.config.schema import EvalConfig
+
+    c = EvalConfig()
+    assert c.mode == "full"
+    assert c.lite_max_images == 64
+    assert c.mask_threshold == 0.0
+    assert c.save_predictions is False
+
+
+def test_eval_config_mode_literal_validated() -> None:
+    from esam3.config.schema import EvalConfig
+
+    EvalConfig(mode="lite")
+    with pytest.raises(ValidationError):
+        EvalConfig(mode="medium")  # type: ignore[arg-type]
+
+
+def test_eval_config_lite_max_images_must_be_positive() -> None:
+    from esam3.config.schema import EvalConfig
+
+    with pytest.raises(ValidationError):
+        EvalConfig(lite_max_images=0)
+
+
+def test_data_config_test_defaults_to_none(minimal_data_config_dict: dict) -> None:
+    from esam3.config.schema import DataConfig
+
+    cfg = DataConfig(**minimal_data_config_dict)
+    assert cfg.test is None
+
+
+def test_data_config_test_accepts_data_split(minimal_data_config_dict: dict) -> None:
+    from esam3.config.schema import DataConfig
+
+    minimal_data_config_dict["test"] = {"annotations": "a.json", "images": "img/"}
+    cfg = DataConfig(**minimal_data_config_dict)
+    assert cfg.test is not None
+    assert cfg.test.annotations == "a.json"

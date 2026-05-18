@@ -87,3 +87,46 @@ def stub_model() -> TinySam3Stub:
 @pytest.fixture
 def noop_tracker() -> NoopTracker:
     return NoopTracker()
+
+
+@pytest.fixture
+def tiny_text_dataset():
+    """A 2-image, 2-class in-memory Dataset that yields text prompts and GT masks.
+
+    Designed for evaluator unit tests: predictable image_ids, predictable mask
+    geometry, no transforms, no albumentations.
+    """
+    from esam3.data.base import Example, Instance, TextPrompts
+
+    _class_names = ["cat", "dog"]
+
+    def make_ex(image_id: str, class_id: int) -> Example:
+        h = w = 8
+        image = torch.zeros(3, h, w)
+        mask = torch.zeros(h, w, dtype=torch.bool)
+        mask[:4, :4] = True
+        return Example(
+            image=image,
+            image_id=image_id,
+            prompts=TextPrompts(classes=_class_names),
+            instances=[
+                Instance(
+                    mask=mask,
+                    class_id=class_id,
+                    box=torch.tensor([0.0, 0.0, 4.0, 4.0]),
+                ),
+            ],
+        )
+
+    examples = [make_ex("img_0", 0), make_ex("img_1", 1)]
+
+    class _InMemDataset:
+        class_names = _class_names
+
+        def __len__(self) -> int:
+            return len(examples)
+
+        def __getitem__(self, i: int) -> Example:
+            return examples[i]
+
+    return _InMemDataset()

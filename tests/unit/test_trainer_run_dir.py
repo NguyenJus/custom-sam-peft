@@ -16,6 +16,7 @@ from esam3.config.schema import (
     TrainHyperparams,
 )
 from esam3.data.base import Example, Instance, TextPrompts
+from esam3.eval.metrics import MetricsReport
 from esam3.peft_adapters.lora import apply_lora
 from esam3.tracking.noop import NoopTracker
 from esam3.train.trainer import Trainer
@@ -83,7 +84,8 @@ def test_fit_creates_expected_layout(tmp_path: Path) -> None:
     assert (rd / "adapter" / "adapter_config.json").exists()
     assert (rd / "metrics.json").exists()
     assert (rd / "checkpoints").exists()
-    assert result.final_metrics is None
+    assert isinstance(result.final_metrics, MetricsReport)
     assert result.merged_path is None
     payload = json.loads((rd / "metrics.json").read_text())
     assert "global_step" in payload
+    assert "overall" in payload

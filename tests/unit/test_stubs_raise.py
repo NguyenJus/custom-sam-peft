@@ -8,18 +8,13 @@ from esam3.config.schema import (
     EvalConfig,
 )
 from esam3.eval.evaluator import Evaluator
-from esam3.eval.metrics import compute_coco_map
-
-
-def _assert_stub(call: object) -> None:
-    with pytest.raises(NotImplementedError, match="filled in by spec:"):
-        call()  # type: ignore[operator]
 
 
 def test_eval_stubs() -> None:
-    _assert_stub(lambda: compute_coco_map(object(), object(), [0.5]))
+    # compute_coco_map is implemented (Task 3); Evaluator.evaluate is implemented (Task 4).
+    # Nothing left to stub-check in this module — placeholder to keep test collection happy.
     ev = Evaluator(EvalConfig())
-    _assert_stub(lambda: ev.evaluate(object(), object()))  # type: ignore[arg-type]
+    assert ev is not None
 
 
 def test_trainer_fit_stub() -> None:
