@@ -28,7 +28,7 @@ data:
     negatives_per_image: 4
   normalize:
     mean: [0.5, 0.5, 0.5]
-    std:  [0.5, 0.5, 0.5]
+    std: [0.5, 0.5, 0.5]
 
 peft:
   method: qlora
