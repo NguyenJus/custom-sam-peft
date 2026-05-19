@@ -1,0 +1,48 @@
+run:
+  name: gpu-smoke-lora
+  output_dir: ./runs
+  seed: 0
+
+model:
+  name: facebook/sam3.1
+  local_dir: models/sam3.1
+  checkpoint_file: sam3.1_multiplex.pt
+  gradient_checkpointing: true
+  dtype: bfloat16
+
+data:
+  format: coco
+  train:
+    annotations: data/placeholder/annotations.json
+    images: data/placeholder/images
+  val:
+    annotations: data/placeholder/annotations.json
+    images: data/placeholder/images
+  prompt_mode: text
+  image_size: 1008
+  augmentations:
+    hflip: true
+    color_jitter: 0.0
+
+peft:
+  method: lora
+  scope: vision_decoder
+
+train:
+  epochs: 25
+  batch_size: 1
+  grad_accum_steps: 1
+  optimizer: adamw
+  lr: 5.0e-4
+  lr_schedule: constant
+  warmup_steps: 0
+  save_every: 50
+  log_every: 10
+  num_workers: 0
+  box_hint:
+    p_start: 1.0
+    p_end: 0.0
+    decay_steps: 25
+
+tracking:
+  backend: none

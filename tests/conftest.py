@@ -25,6 +25,10 @@ def pytest_configure(config: pytest.Config) -> None:
         "requires_compatible_gpu: skip unless a CUDA device with compute capability "
         ">= 7.5 is available",
     )
+    config.addinivalue_line(
+        "markers",
+        "requires_bnb: skip unless bitsandbytes is importable",
+    )
 
 
 def _has_compatible_gpu() -> bool:

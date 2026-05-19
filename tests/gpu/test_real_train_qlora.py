@@ -1,12 +1,14 @@
-"""50-step LoRA overfit on tiny_coco via run_training(gpu_smoke_lora.yaml).
+"""50-step QLoRA overfit on tiny_coco via run_training(gpu_smoke_qlora.yaml).
 
-Gated by `@pytest.mark.gpu`, `@requires_compatible_gpu`, and
-`@requires_checkpoint`. Not in CI by default. Run with:
-    pytest -m gpu tests/gpu/test_real_train_overfits.py -v
+Gated by `@pytest.mark.gpu`, `@requires_compatible_gpu`, `@requires_checkpoint`,
+plus a per-test `skipif(not _bnb_available())`. Not in CI by default. Run with:
+    pytest -m gpu tests/gpu/test_real_train_qlora.py -v
 
 This test exercises the same `run_training(cfg)` seam that `esam3 train` uses,
-so the YAML at configs/examples/gpu_smoke_lora.yaml is both the user-facing
-example and the test's source of truth (modulo the monkeypatched tracker).
+proving 4-bit base + bf16 LoRA + 8-bit optimizer trains end-to-end on real
+SAM 3.1. Loss-ratio and VRAM ceilings are looser than the LoRA smoke because
+4-bit base converges slightly slower and pairs with adamw8bit on the 12 GB
+recipe (architecture §6).
 """
 
 from __future__ import annotations
@@ -19,7 +21,7 @@ import torch
 
 from esam3.config.loader import load_config
 from esam3.train.runner import run_training
-from tests.gpu.conftest import _RecordingTracker
+from tests.gpu.conftest import _bnb_available, _RecordingTracker
 
 pytestmark = [
     pytest.mark.gpu,
@@ -27,12 +29,14 @@ pytestmark = [
     pytest.mark.requires_checkpoint,
 ]
 
-CONFIG_PATH = Path(__file__).resolve().parents[2] / "configs" / "examples" / "gpu_smoke_lora.yaml"
-LOSS_RATIO_CEIL = 0.70
-VRAM_CEIL_GB = 14.0
+CONFIG_PATH = Path(__file__).resolve().parents[2] / "configs" / "examples" / "gpu_smoke_qlora.yaml"
+LOSS_RATIO_CEIL = 0.75
+VRAM_CEIL_GB = 10.0
 
 
-def test_overfits_in_50_steps(
+@pytest.mark.requires_bnb
+@pytest.mark.skipif(not _bnb_available(), reason="bitsandbytes not installed")
+def test_qlora_overfits_in_50_steps(
     tmp_path: Path,
     tiny_coco_dir: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -49,8 +53,7 @@ def test_overfits_in_50_steps(
     )
     tracker = _RecordingTracker()
     # Patch the consumer's namespace (esam3.train.runner) rather than the producer
-    # (esam3.tracking) — runner.py does `from esam3.tracking import build_tracker`
-    # at import time, so the bound name lives in runner.__dict__. See spec §4.2.
+    # (esam3.tracking). See spec §4.2.
     monkeypatch.setattr("esam3.train.runner.build_tracker", lambda *_a, **_kw: tracker)
 
     torch.cuda.reset_peak_memory_stats()
