@@ -103,7 +103,7 @@ def train_step(
         targets_c = [[inst for inst in targets[i] if inst.class_id == c_dense] for i in range(B)]
         hints_c: list[Tensor | None] = []
         for i in range(B):
-            if targets_c[i] and random.random() < p_t:
+            if targets_c[i] and random.random() < p_t:  # noqa: S311 — training sampling probability, not security-sensitive
                 hints_c.append(torch.stack([inst.box for inst in targets_c[i]]).to(device))
                 n_hint_applied += 1
             else:

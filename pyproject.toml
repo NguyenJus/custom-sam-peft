@@ -63,7 +63,10 @@ ignore = []
 [tool.ruff.lint.per-file-ignores]
 "src/esam3/cli/*_cmd.py" = ["B008"]
 "tests/unit/test_data_*.py" = ["E402"]
-"tests/**/*.py" = ["S101"]
+"tests/**/*.py" = ["S101", "S311"]
+# Colab notebook: subprocess.run("git", ...) with partial path is intentional in a Colab
+# environment where git is always on PATH; asserts are runtime environment guards.
+"notebooks/**" = ["S101", "S603", "S607"]
 
 [tool.mypy]
 python_version = "3.12"

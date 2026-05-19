@@ -232,7 +232,7 @@ class HFDataset:
         image_id = str(i)
         if self._prompt_mode == "text":
             present = sorted(set(out_classes))
-            rng = _random.Random(f"{self._seed}:{i}")
+            rng = _random.Random(f"{self._seed}:{i}")  # noqa: S311 — deterministic seeded RNG for prompt sampling, not security
             prompts_list = _build_text_prompts(
                 present_dense_ids=present,
                 class_names=self._class_names,
