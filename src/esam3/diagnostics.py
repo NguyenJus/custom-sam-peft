@@ -4,10 +4,14 @@ from __future__ import annotations
 
 import importlib.metadata
 import importlib.util
+import os
 import platform
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Literal
+
+import huggingface_hub
 
 
 @dataclass(frozen=True)
@@ -27,6 +31,16 @@ class WeightsInfo:
 
 
 @dataclass(frozen=True)
+class HuggingFaceAuthInfo:
+    """Local-only HF token status. Mirrors esam3.utils.huggingface.resolve_hf_token's
+    probe order but reports the *source*, not the token value. Never hits the network.
+    """
+
+    token_source: Literal["env", "cache", "none"]
+    has_token: bool
+
+
+@dataclass(frozen=True)
 class DoctorReport:
     python_version: str
     platform: str
@@ -37,6 +51,7 @@ class DoctorReport:
     optional_deps: dict[str, str | None]
     core_versions: dict[str, str]
     sam3_weights: WeightsInfo
+    hf_auth: HuggingFaceAuthInfo
     issues: list[str] = field(default_factory=list)
 
 
@@ -78,6 +93,21 @@ def _gpus() -> list[GpuInfo]:
     return out
 
 
+def _hf_auth_info() -> HuggingFaceAuthInfo:
+    """Probe local HF token sources. Mirrors resolve_hf_token's order but
+    reports the source, not the token value. Never hits the network.
+
+    Deliberately NOT delegated to ``resolve_hf_token``: that returns the token
+    string; we want to discriminate ``env`` vs ``cache``, which means probing
+    each source explicitly.
+    """
+    if os.environ.get("HF_TOKEN"):
+        return HuggingFaceAuthInfo(token_source="env", has_token=True)  # noqa: S106
+    if huggingface_hub.get_token():
+        return HuggingFaceAuthInfo(token_source="cache", has_token=True)  # noqa: S106
+    return HuggingFaceAuthInfo(token_source="none", has_token=False)  # noqa: S106
+
+
 def _default_weights_path() -> Path:
     from esam3.config.schema import ModelConfig
 
@@ -110,6 +140,13 @@ def run_doctor(*, weights_path: Path | None = None) -> DoctorReport:
     if not weights.exists:
         issues.append(f"SAM 3.1 weights not found at {wp}")
 
+    hf_auth = _hf_auth_info()
+    if hf_auth.token_source == "none":  # noqa: S105
+        issues.append(
+            "no HuggingFace token found; gated repos like facebook/sam3.1 "
+            "will not download (set HF_TOKEN or run `huggingface-cli login`)"
+        )
+
     return DoctorReport(
         python_version=sys.version.split()[0],
         platform=platform.platform(),
@@ -120,5 +157,6 @@ def run_doctor(*, weights_path: Path | None = None) -> DoctorReport:
         optional_deps=optional,
         core_versions=core,
         sam3_weights=weights,
+        hf_auth=hf_auth,
         issues=issues,
     )
