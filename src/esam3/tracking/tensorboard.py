@@ -52,14 +52,16 @@ class TensorBoardTracker:
         self._writer.add_text("config", "```yaml\n" + yaml.safe_dump(config) + "\n```", 0)
 
     def log_scalars(self, step: int, values: dict[str, float]) -> None:
-        assert self._writer is not None, "start_run() must be called before log_scalars()"
+        if self._writer is None:
+            raise RuntimeError("start_run() must be called before log_scalars()")
         for tag, value in values.items():
             if not math.isfinite(value):
                 continue
             self._writer.add_scalar(tag, value, step)
 
     def log_images(self, step: int, images: dict[str, np.ndarray[Any, Any]]) -> None:
-        assert self._writer is not None, "start_run() must be called before log_images()"
+        if self._writer is None:
+            raise RuntimeError("start_run() must be called before log_images()")
         for tag, arr in images.items():
             _validate_image(tag, arr)
             self._writer.add_image(tag, arr, step, dataformats="HWC")

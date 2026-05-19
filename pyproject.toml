@@ -57,12 +57,16 @@ target-version = "py312"
 src = ["src", "tests"]
 
 [tool.ruff.lint]
-select = ["E", "F", "I", "B", "UP", "SIM", "RUF"]
+select = ["E", "F", "I", "B", "UP", "SIM", "RUF", "S"]
 ignore = []
 
 [tool.ruff.lint.per-file-ignores]
 "src/esam3/cli/*_cmd.py" = ["B008"]
 "tests/unit/test_data_*.py" = ["E402"]
+"tests/**/*.py" = ["S101", "S311"]
+# Colab notebook: subprocess.run("git", ...) with partial path is intentional in a Colab
+# environment where git is always on PATH; asserts are runtime environment guards.
+"notebooks/**" = ["S101", "S603", "S607"]
 
 [tool.mypy]
 python_version = "3.12"
@@ -93,7 +97,7 @@ markers = [
   "requires_checkpoint: skip unless real checkpoint is present",
   "requires_compatible_gpu: skip unless CUDA CC >= 7.5",
 ]
-addopts = "-ra --strict-markers --cov=esam3 --cov-report=term-missing --cov-fail-under=80"
+addopts = "-ra --strict-markers --cov=esam3 --cov-report=term-missing --cov-report=html --cov-fail-under=80"
 
 [tool.coverage.run]
 source = ["src/esam3"]

@@ -78,7 +78,8 @@ class WandBTracker:
         return None, None
 
     def log_scalars(self, step: int, values: dict[str, float]) -> None:
-        assert self._run is not None, "start_run() must be called before log_scalars()"
+        if self._run is None:
+            raise RuntimeError("start_run() must be called before log_scalars()")
         finite = {k: v for k, v in values.items() if math.isfinite(v)}
         if finite:
             self._run.log(finite, step=step)
@@ -86,7 +87,8 @@ class WandBTracker:
     def log_images(self, step: int, images: dict[str, np.ndarray[Any, Any]]) -> None:
         import wandb
 
-        assert self._run is not None, "start_run() must be called before log_images()"
+        if self._run is None:
+            raise RuntimeError("start_run() must be called before log_images()")
         payload: dict[str, Any] = {}
         for tag, arr in images.items():
             _validate_image(tag, arr)

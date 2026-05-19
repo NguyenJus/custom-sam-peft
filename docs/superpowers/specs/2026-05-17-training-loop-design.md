@@ -10,7 +10,7 @@
 
 A single-device PyTorch training loop that finetunes SAM 3.1 on niche datasets using **text prompts only** at inference time, supervising on **masks + objectness + image-presence** (no box supervision, no box prediction emission). During training, ground-truth boxes are fed as an optional prompt-side localization hint with a Bernoulli probability `p(t)` that linearly decays from `p_start` to `p_end` over `decay_steps` global steps, so the model is weaned off the box crutch by the end of training.
 
-**Behavioral targets**
+### Behavioral targets
 
 - Single-GPU runs on 12–16 GB VRAM with QLoRA + grad checkpointing.
 - Reproducible resume from full state (model + optimizer + scheduler + RNG + box-hint p + step + epoch).
@@ -18,7 +18,7 @@ A single-device PyTorch training loop that finetunes SAM 3.1 on niche datasets u
 - Skip non-finite micro-steps and abort after `nan_abort_after` consecutive failures.
 - Per-class outer loop honors SAM 3.1's "one class per forward" contract; multiplex relaxation is mechanically future-proof.
 
-**Non-goals (filed in §11)**
+### Non-goals (filed in §11)
 
 - Evaluation call site (lands in spec/eval).
 - `data.prompt_mode='bbox'` training (rejected at fit-time).
@@ -32,7 +32,7 @@ A single-device PyTorch training loop that finetunes SAM 3.1 on niche datasets u
 ## 2. Module map
 
 | File | Disposition | Purpose |
-|---|---|---|
+| --- | --- | --- |
 | `src/esam3/train/trainer.py` | Implement | `Trainer.fit()` lifecycle: build optimizer / scheduler / dataloaders, drive epochs, save checkpoints, write `metrics.json`, return `RunResult`. ~150 LOC. |
 | `src/esam3/train/loop.py` | Implement | `train_step()` per-batch class loop, autocast, grad accumulation, box-hint sampling, NaN policy. `run_epoch()` cadence (save_every / log_every / image panel). ~120 LOC. |
 | `src/esam3/train/checkpoint.py` | Implement | `save_full_state` / `load_full_state` (training state) and `save_adapter` / `save_merged` / `load_adapter` dispatchers (LoRA vs QLoRA). ~80 LOC. |
@@ -122,6 +122,7 @@ class Sam3Wrapper(nn.Module):
 ### 4.3 `_Sam3ImageAdapter.forward` and `_build_geometric_prompt`
 
 The adapter:
+
 1. Runs the backbone once: `backbone_out = self.model.image_encoder(images)`.
 2. Tokenizes the per-image class name into Meta's `find_input` / `find_target`.
 3. Calls `geometric_prompt = _build_geometric_prompt(box_hints, image_size, device)` (returns `None` when no hints are present, else a tensor in Meta's expected layout).
@@ -161,6 +162,7 @@ class Trainer:
 6. **LR scheduler:** linear warmup for `cfg.train.warmup_steps`, then `cfg.train.lr_schedule` (`constant` / `cosine` / `linear`) over `total_steps - warmup_steps`. `total_steps = epochs * ceil(len(train_loader) / grad_accum_steps)`. Single composed `LambdaLR`.
 7. **Resume:** if `resume_from is not None`, call `load_full_state(resume_from, wrapper, optimizer, scheduler)` → `ResumeState(start_step, start_epoch, nan_streak, box_hint_p)`. Otherwise zero-initialize those values.
 8. **Epoch loop:**
+
    ```python
    class_names = train_ds.class_names      # propagated to train_step for dense-id lookup
    for epoch in range(start_epoch, cfg.train.epochs):
@@ -170,6 +172,7 @@ class Trainer:
            class_names, val_ds,
        )
    ```
+
    `class_names` is the **train** split's `class_names` property; the dataset spec guarantees both splits share the same dense id space when reading the same COCO annotations.
 9. **Final adapter:** call `save_adapter(model, run_dir / "adapter")`. Dispatch on LoRA vs QLoRA via Linear4bit-presence detection.
 10. **Optional merge:** if `cfg.export.merge`, call `save_merged(model, run_dir / "merged")` (calls `merge_lora` then dumps the resulting module).
@@ -363,7 +366,7 @@ def _box_hint_p(global_step: int, cfg: BoxHintSchedule) -> float:
 
 ### 7.1 Run-dir layout
 
-```
+```text
 runs/coco-cats-lora-20260518-143012/
 ├── config.yaml                      # frozen resolved TrainConfig (post-override)
 ├── adapter/                         # final LoRA/QLoRA adapter
@@ -520,7 +523,7 @@ def render_mask_panel(
 ## 9. Error handling
 
 | Condition | Behavior |
-|---|---|
+| --- | --- |
 | `cfg.data.prompt_mode == "bbox"` | `ConfigError` from `Trainer.__init__` with the documented message. |
 | `cfg.peft.method == "qlora"` and bnb missing | Lazy import in `apply_qlora` / `AdamW8bit` factory raises with the install hint already present in `peft_adapters/qlora.py`. Trainer doesn't need to duplicate. |
 | Non-finite class-forward | Skip that class's backward; don't update accum. |
@@ -585,7 +588,7 @@ Each entry below is added to `logs/TODO.md` as part of Plan Step 1.
 ### 12.1 Unit (`tests/unit/`, fast, CPU, every commit)
 
 | Test | Asserts |
-|---|---|
+| --- | --- |
 | `test_box_hint_schedule.py` | `_box_hint_p` math at t=0, t=decay_steps/2, t=decay_steps, t>>decay_steps; validator rejects `p_end > p_start`. |
 | `test_train_step_class_loop.py` | Stub wrapper records forwards. Batch of {img0: classes=[A,B], img1: classes=[A]} → exactly 2 wrapper calls; per-class targets filtered by `class_id`. |
 | `test_train_step_box_hint_sampling.py` | Patched `random.random()` sequence drives Bernoulli; assert hints[i] is GT-stack or None per the patched flips at current `p_t`. |

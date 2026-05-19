@@ -9,13 +9,13 @@
 ## 1. Current State
 
 | Command | State |
-|---|---|
-| `esam3 train`   | Stub — parses config, prints "not yet implemented". |
-| `esam3 eval`    | Implemented (PR #17). Loads cfg + COCO dataset + LoRA, runs `Evaluator.evaluate_and_save`. Wiring inlined in `cli/eval_cmd.py`. |
-| `esam3 export`  | Stub. |
-| `esam3 init`    | Stub — validates `--template` against `{coco-text, coco-bbox, hf-text}` but writes nothing. |
-| `esam3 doctor`  | Stub. |
-| `cli/main.py`   | Typer app wired; all five commands registered. |
+| --- | --- |
+| `esam3 train` | Stub — parses config, prints "not yet implemented". |
+| `esam3 eval` | Implemented (PR #17). Loads cfg + COCO dataset + LoRA, runs `Evaluator.evaluate_and_save`. Wiring inlined in `cli/eval_cmd.py`. |
+| `esam3 export` | Stub. |
+| `esam3 init` | Stub — validates `--template` against `{coco-text, coco-bbox, hf-text}` but writes nothing. |
+| `esam3 doctor` | Stub. |
+| `cli/main.py` | Typer app wired; all five commands registered. |
 
 Existing tests (`tests/unit/test_cli.py`) assert the "not yet implemented" strings for `train` and `doctor`; those two cases are rewritten by this spec.
 
@@ -42,7 +42,7 @@ Existing tests (`tests/unit/test_cli.py`) assert the "not yet implemented" strin
 
 ## 3. Module Layout
 
-```
+```text
 src/esam3/
   _bootstrap.py            # NEW — imports every @register site once
   diagnostics.py           # NEW — run_doctor() -> DoctorReport
@@ -209,7 +209,7 @@ No `__all__`; the side effect is the point. `cli/main.py` adds `import esam3._bo
 
 ### 6.1 `esam3 train`
 
-```
+```bash
 esam3 train --config PATH [--override key=val]... [--resume PATH] [-v|--verbose]
 ```
 
@@ -224,7 +224,7 @@ Body (target ≤30 lines, excluding imports):
 **Errors / exit codes:**
 
 | Source | Mapping |
-|---|---|
+| --- | --- |
 | `ConfigError` from `load_config` | `typer.BadParameter` → exit 2 |
 | `NotImplementedError` for non-COCO format | catch in CLI, `typer.Exit(1)` with rich error |
 | `ValueError` for bbox mode (defensive double-guard) | catch, `typer.Exit(1)` |
@@ -232,7 +232,7 @@ Body (target ≤30 lines, excluding imports):
 
 ### 6.2 `esam3 eval`
 
-```
+```bash
 esam3 eval --config PATH --checkpoint PATH [--split val|test] [--output PATH]
            [--save-predictions/--no-save-predictions]
 ```
@@ -241,7 +241,7 @@ CLI shrinks to a thin wrapper that calls `run_eval`. Behavior identical to today
 
 ### 6.3 `esam3 export`
 
-```
+```bash
 esam3 export --checkpoint PATH [--merge] [--output PATH] [--config PATH]
 ```
 
@@ -252,9 +252,9 @@ esam3 export --checkpoint PATH [--merge] [--output PATH] [--config PATH]
 **Output rules:**
 
 | Mode | Default `--output` | Explicit `--output` |
-|---|---|---|
+| --- | --- | --- |
 | no `--merge` (re-emit adapter) | **required** (BadParameter if missing — refuse to clobber source) | use as given |
-| `--merge`                     | `run_dir / "merged"` (sibling of `adapter/`, regardless of whether `--checkpoint` pointed at `adapter/` or `checkpoints/step_N/`) | use as given |
+| `--merge` | `run_dir / "merged"` (sibling of `adapter/`, regardless of whether `--checkpoint` pointed at `adapter/` or `checkpoints/step_N/`) | use as given |
 
 **Pipeline:**
 
@@ -268,7 +268,7 @@ QLoRA merged exports dequantize via the existing `save_merged` → `merge_lora` 
 
 ### 6.4 `esam3 init`
 
-```
+```bash
 esam3 init [--template coco-text-lora|coco-text-qlora] [--output ./config.yaml] [--force]
 ```
 
@@ -287,7 +287,7 @@ esam3 init [--template coco-text-lora|coco-text-qlora] [--output ./config.yaml] 
 
 ### 6.5 `esam3 doctor`
 
-```
+```bash
 esam3 doctor [--weights-path PATH] [--json]
 ```
 
@@ -301,7 +301,7 @@ esam3 doctor [--weights-path PATH] [--json]
 ## 7. Cross-Cutting
 
 | Concern | Decision |
-|---|---|
+| --- | --- |
 | Bootstrap | `cli/main.py` has `import esam3._bootstrap  # noqa: F401` at module top. |
 | Error model | `ConfigError` / argument-style errors → `typer.BadParameter` (exit 2). Library `ValueError` / `NotImplementedError` from known-bad states → catch in CLI and `typer.Exit(1)` with `rich.print` of the message. Unknown exceptions propagate. |
 | Logging | `_configure_logging(verbose)` in `cli/_logging.py` (new shared helper, used by `train`, `eval`, `export`). Trainer & runners use Python `logging`; CLI uses `rprint` only for terminal-facing summaries. |
@@ -317,7 +317,7 @@ All tests CPU-only. Tier: unit, in `tests/unit/`.
 ### 8.1 Existing tests to keep / rewrite
 
 | Test | Action |
-|---|---|
+| --- | --- |
 | `test_root_help_exits_zero` ... `test_init_help_exits_zero` | Keep unchanged. |
 | `test_train_with_valid_config_prints_not_implemented` | **Rewrite** — monkeypatch `esam3.train.runner.run_training` to return a fake `RunResult`; assert exit 0 and `"run_dir="` in stdout. |
 | `test_doctor_runs_and_prints_not_implemented` | **Rewrite** — assert exit 0 and `"torch"` in stdout (table mode). |
@@ -328,7 +328,7 @@ All tests CPU-only. Tier: unit, in `tests/unit/`.
 ### 8.2 New tests
 
 | Test | Mechanism |
-|---|---|
+| --- | --- |
 | `test_train_rejects_bbox_prompt_mode` | Build cfg with `prompt_mode: bbox`; assert exit ≠ 0 and `"bbox"` in stderr. |
 | `test_export_auto_discovers_config` | Create `tmp/run_dir/config.yaml` + `tmp/run_dir/adapter/`; monkeypatch `save_adapter` / `load_adapter` / `load_sam31` / `lookup`; invoke without `--config`; assert success. |
 | `test_export_no_merge_requires_output` | Without `--merge` and without `--output`: assert `BadParameter`. |

@@ -5,7 +5,7 @@ full design rationale lives in `docs/superpowers/specs/`.
 
 ## Module map
 
-```
+```text
 src/esam3/
   _registry.py         plugin registry: register(kind, name) + lookup
   config/
@@ -38,7 +38,7 @@ src/esam3/
 
 ## Data flow (one training run)
 
-```
+```text
 my.yaml ─► config.loader.load() ─► TrainConfig
                                        │
             ┌──────────────────────────┼──────────────────────────┐

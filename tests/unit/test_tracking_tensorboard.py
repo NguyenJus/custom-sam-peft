@@ -109,8 +109,8 @@ def test_tb_close_is_idempotent(tmp_path: Path) -> None:
     t.close()  # must not raise
 
 
-def test_tb_log_before_start_run_asserts(tmp_path: Path) -> None:
+def test_tb_log_before_start_run_raises(tmp_path: Path) -> None:
     cfg = _cfg(tmp_path)
     t = TensorBoardTracker(cfg)
-    with pytest.raises(AssertionError, match="start_run"):
+    with pytest.raises(RuntimeError, match="start_run"):
         t.log_scalars(0, {"loss": 1.0})

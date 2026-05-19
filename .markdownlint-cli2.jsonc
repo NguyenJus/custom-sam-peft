@@ -1,0 +1,7 @@
+// markdownlint-cli2 configuration
+{
+  "config": {
+    "MD013": false
+  },
+  "ignores": [".venv/**"]
+}

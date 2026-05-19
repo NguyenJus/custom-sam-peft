@@ -14,7 +14,7 @@ Replace the `NotImplementedError` stubs in `tracking/tensorboard.py` and `tracki
 **In scope:**
 
 | Item | Where |
-|---|---|
+| --- | --- |
 | `TensorBoardTracker` wrapping `torch.utils.tensorboard.SummaryWriter` | `tracking/tensorboard.py` |
 | `WandBTracker` wrapping `wandb.init/log/finish` | `tracking/wandb.py` |
 | `start_run(run_dir, config, resume_from=None)` on the `Tracker` Protocol | `tracking/base.py` + all three backends |
@@ -383,7 +383,7 @@ This spec does not implement those CLI commands — it only ensures `build_track
 ## 6. Optional-Dependency Behavior
 
 | Backend selected | Extra missing | Behavior |
-|---|---|---|
+| --- | --- | --- |
 | `tensorboard` | `[tensorboard]` not installed | `build_tracker(cfg)` raises `ImportError` with `pip install 'efficient-sam3-finetuning[tensorboard]'` |
 | `wandb` | `[wandb]` not installed | `build_tracker(cfg)` raises `ImportError` with `pip install 'efficient-sam3-finetuning[wandb]'` |
 | `none` | n/a | always works |
@@ -395,7 +395,7 @@ The error fires at construction (during `build_tracker`), not at step 50 — so 
 ## 7. Resume Semantics
 
 | State | Behavior |
-|---|---|
+| --- | --- |
 | Fresh `fit()` (no `resume_from`) | TB: new event file in new `run_dir`. W&B: new run, new `id`, `wandb_run_id.txt` written. |
 | `fit(resume_from=Path)` and `wandb_run_id.txt` found by walking ≤3 parents from `resume_from` | W&B: `wandb.init(id=<saved>, resume="allow")` — same W&B run continues, charts stay contiguous across restarts. New `run_dir` still gets its own `wandb_run_id.txt` (same id). |
 | `fit(resume_from=Path)` and no `wandb_run_id.txt` found | W&B: brand-new run started. No error — the checkpoint may have been moved between machines. |
@@ -425,7 +425,7 @@ Greyscale, float, and CHW arrays are out of scope. If a future caller needs them
 
 The Trainer already emits these via `_ScalarWindow.flush()`:
 
-```
+```text
 loss/total, loss/mask, loss/box, loss/obj, loss/presence,
 lr, box_hint/p, box_hint/applied, grad_norm,
 throughput/img_s, skipped_steps
@@ -433,7 +433,7 @@ throughput/img_s, skipped_steps
 
 The eval-flatten helper extends the namespace:
 
-```
+```text
 eval/mAP, eval/mAP_50, eval/mAP_75
 eval/per_class/<class>/AP, eval/per_class/<class>/AP_50, eval/per_class/<class>/AP_75
 ```
@@ -500,11 +500,13 @@ All tests live under `tests/unit/` unless otherwise marked. All are CPU-only and
 ### 10.6 `test_tracking_flatten.py` (new)
 
 - `flatten_metrics_report(report_with_two_classes)` produces exactly the expected key set:
-  ```
+
+  ```text
   eval/mAP, eval/mAP_50, eval/mAP_75,
   eval/per_class/cat/AP, eval/per_class/cat/AP_50,
   eval/per_class/dog/AP, eval/per_class/dog/AP_50
   ```
+
 - Class name `"animals/cat"` becomes `"eval/per_class/animals_cat/AP"`.
 - All values are `float`.
 - Custom `prefix="val"` swaps `eval/` for `val/`.
@@ -541,7 +543,7 @@ All tests live under `tests/unit/` unless otherwise marked. All are CPU-only and
 
 ## 12. File Layout
 
-```
+```text
 src/esam3/tracking/
   __init__.py        # build_tracker(cfg), flatten_metrics_report(report, prefix)
   base.py            # Tracker Protocol (adds start_run); _validate_image helper

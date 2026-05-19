@@ -199,3 +199,19 @@ def test_wb_close_is_idempotent(tmp_path: Path, mock_wandb: Any) -> None:
     t.close()  # must not raise
     fake_run = mock_wandb.init.return_value
     fake_run.finish.assert_called_once()
+
+
+def test_wb_log_scalars_before_start_run_raises(tmp_path: Path, mock_wandb: Any) -> None:
+    cfg = _cfg(tmp_path)
+    WandBTracker = _import_tracker()
+    t = WandBTracker(cfg)
+    with pytest.raises(RuntimeError, match="start_run"):
+        t.log_scalars(0, {"loss": 1.0})
+
+
+def test_wb_log_images_before_start_run_raises(tmp_path: Path, mock_wandb: Any) -> None:
+    cfg = _cfg(tmp_path)
+    WandBTracker = _import_tracker()
+    t = WandBTracker(cfg)
+    with pytest.raises(RuntimeError, match="start_run"):
+        t.log_images(0, {"panel": np.zeros((4, 4, 3), dtype=np.uint8)})

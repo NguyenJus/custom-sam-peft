@@ -9,7 +9,7 @@
 ## 1. Current State
 
 | Surface | State today | This spec |
-|---|---|---|
+| --- | --- | --- |
 | `tests/gpu/test_real_train_overfits.py` | Builds a `TrainConfig` from in-code literals, constructs `Trainer` directly, asserts ≥30% loss drop on a `_RecordingTracker`. LoRA + text + COCO. | **Rewritten** to load `configs/examples/gpu_smoke_lora.yaml` and call `run_training(cfg)`. Adds VRAM-ceiling and finite-value assertions. |
 | Real-GPU QLoRA training | Not covered. `tests/integration/test_peft_qlora_real.py` covers `apply_qlora` / save / load / merge but never runs a training step. | **New** `tests/gpu/test_real_train_qlora.py` overfits 50 steps via QLoRA + text + COCO. |
 | `_RecordingTracker` | Defined inline inside the LoRA test. | Lifted into `tests/gpu/conftest.py` and reused by both tests. |
@@ -45,7 +45,7 @@ The existing test's `Trainer(...).fit()` path is replaced by `run_training(cfg)`
 
 ## 3. Files Touched / Module Layout
 
-```
+```text
 configs/examples/
   gpu_smoke_lora.yaml          # NEW — source of truth for the LoRA smoke
   gpu_smoke_qlora.yaml         # NEW — source of truth for the QLoRA smoke
@@ -200,11 +200,12 @@ def test_<name>(tmp_path: Path, tiny_coco_dir: Path, monkeypatch: pytest.MonkeyP
 ### 4.4 Per-test parameters
 
 | Test file | `CONFIG_PATH` (basename) | `LOSS_RATIO_CEIL` | `VRAM_CEIL_GB` | Extra marker |
-|---|---|---|---|---|
+| --- | --- | --- | --- | --- |
 | `test_real_train_overfits.py` | `gpu_smoke_lora.yaml` | `0.70` | `14` | — |
 | `test_real_train_qlora.py` | `gpu_smoke_qlora.yaml` | `0.75` | `10` | `requires_bnb` |
 
 **Rationale for thresholds.**
+
 - LoRA loss ratio `0.70` matches the existing test's "≥30% drop" assertion (`tests/gpu/test_real_train_overfits.py:112`), preserving behavior.
 - QLoRA loss ratio `0.75` is looser by 5 percentage points because 4-bit base + bf16 LoRA on 50 steps converges slightly slower than bf16 LoRA. A 25% drop on 2-image overfit is still trivially achievable; tighter and the test flakes on hardware variance.
 - LoRA VRAM ceiling `14` GB is the architecture's stated 12–16 GB consumer-GPU target's upper edge with headroom for the bf16 base.
@@ -297,6 +298,7 @@ tracking:
 ```
 
 **Rationale block.**
+
 - `run.seed: 0` matches the existing test (deterministic on overfit setup).
 - `data.augmentations.color_jitter: 0.0` matches the existing test (avoids color-augmentation variance on a 2-image set).
 - `data.image_size: 1008` is SAM3.1's native input — confirmed by the model-loading spec and the existing test.
@@ -333,6 +335,7 @@ train:
 ```
 
 Concrete differences from the LoRA YAML:
+
 - `run.name: gpu-smoke-qlora`
 - `peft.method: qlora`
 - `peft.qlora: { quant_type: nf4, compute_dtype: bfloat16 }`

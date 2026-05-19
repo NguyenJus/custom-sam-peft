@@ -49,7 +49,7 @@ uv run esam3 train --config configs/examples/coco_bbox_qlora.yaml
 ### CLI
 
 | Command | Status |
-|---|---|
+| --- | --- |
 | `esam3 run --config CONFIG [--resume PATH] [-v]` | Functional |
 | `esam3 train --config CONFIG [--override key=val]... [--resume PATH] [-v]` | Functional |
 | `esam3 eval --config CONFIG --checkpoint PATH [--split val\|test] [--output PATH] [--save-predictions]` | Functional (LoRA adapters only) |
@@ -64,7 +64,7 @@ uv run esam3 train --config configs/examples/coco_bbox_qlora.yaml
 ### What's supported in v0
 
 | | v0 | Deferred |
-|---|---|---|
+| --- | --- | --- |
 | Model | SAM3.1 | SAM3 |
 | Prompts | text, bounding boxes | points, masks |
 | Data | static images, COCO + HF datasets | video |

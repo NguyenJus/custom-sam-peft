@@ -11,7 +11,7 @@
 `tests/integration/test_load_sam31_real.py::test_load_sam31_forward_to_canonical`
 fails on Colab T4 with `ModelConfig(device="cuda", gradient_checkpointing=False, dtype="bfloat16")`:
 
-```
+```text
 RuntimeError: Expected tensor for argument #1 'input' to have the same type as
 tensor for argument #2 'rois'; but type CUDABFloat16Type does not equal
 torch.cuda.FloatTensor (while checking arguments for roi_align_forward_kernel)

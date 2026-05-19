@@ -5,14 +5,18 @@ on:
     branches: [main]
   pull_request:
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   test:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd             # v6.0.2
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v3
+        uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b           # v8.1.0
         with:
           enable-cache: true
 
@@ -33,3 +37,50 @@ jobs:
 
       - name: Test
         run: uv run pytest
+
+      - name: Upload coverage HTML
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a      # v7.0.1
+        if: always()
+        with:
+          name: coverage-html
+          path: htmlcov/
+          retention-days: 3
+
+  lock-check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd             # v6.0.2
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b           # v8.1.0
+        with:
+          enable-cache: true
+
+      - name: uv lock --check
+        run: uv lock --check
+
+  lint-hygiene:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd             # v6.0.2
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b           # v8.1.0
+        with:
+          enable-cache: true
+
+      - name: Install actionlint
+        run: |
+          bash <(curl -sSL https://raw.githubusercontent.com/rhysd/actionlint/v1.7.7/scripts/download-actionlint.bash) 1.7.7
+
+      - name: actionlint
+        run: ./actionlint -color
+
+      - name: yamllint
+        run: uv run --with yamllint yamllint .
+
+      - name: markdownlint
+        run: npx --yes markdownlint-cli2 "**/*.md" "#node_modules"
+
+      - name: shellcheck
+        run: shellcheck scripts/*.sh

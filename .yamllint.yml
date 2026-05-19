@@ -1,0 +1,8 @@
+extends: default
+ignore: |
+  .venv/
+rules:
+  line-length: disable
+  document-start: disable   # project-wide style omits leading ---
+  truthy:
+    check-keys: false        # GitHub `on:` triggers truthy false-positives by default

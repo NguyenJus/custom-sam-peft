@@ -1,0 +1,7 @@
+# Extend the bundled default ruleset.
+[extend]
+useDefault = true
+
+[allowlist]
+# Empty by default. Add `paths`, `regexes`, or `commits` only when a verified
+# false positive needs to be silenced; comment each entry with the rationale.

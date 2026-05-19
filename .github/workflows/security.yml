@@ -1,0 +1,66 @@
+name: Security
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  pip-audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd             # v6.0.2
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b           # v8.1.0
+        with:
+          enable-cache: true
+
+      - name: Set Python version
+        run: uv python install 3.13
+
+      - name: Install deps
+        run: uv sync --all-extras
+
+      - name: pip-audit
+        run: uv run --with pip-audit pip-audit --skip-editable
+
+  gitleaks:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout (PR — full history)
+        if: github.event_name == 'pull_request'
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd             # v6.0.2
+        with:
+          fetch-depth: 0
+
+      - name: Checkout (push — shallow)
+        if: github.event_name != 'pull_request'
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd             # v6.0.2
+
+      - name: Download gitleaks
+        env:
+          GITLEAKS_VERSION: "8.21.2"
+          # SHA-256 of gitleaks_${VERSION}_linux_x64.tar.gz from the upstream release page.
+          # Verified against upstream checksums.txt and locally recomputed at plan-write time.
+          # Dependabot's github-actions ecosystem does not bump non-Action versions, so any
+          # future GITLEAKS_VERSION bump is a manual edit that also rotates this hash.
+          GITLEAKS_SHA256: "5bc41815076e6ed6ef8fbecc9d9b75bcae31f39029ceb55da08086315316e3ba"
+        run: |
+          set -euo pipefail
+          curl -sSL -o gitleaks.tar.gz \
+            "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+          echo "${GITLEAKS_SHA256}  gitleaks.tar.gz" | sha256sum -c -
+          tar -xzf gitleaks.tar.gz gitleaks
+
+      - name: gitleaks (PR — full)
+        if: github.event_name == 'pull_request'
+        run: ./gitleaks detect --no-banner --redact --verbose
+
+      - name: gitleaks (push — range)
+        if: github.event_name != 'pull_request'
+        run: ./gitleaks detect --no-banner --redact --verbose --log-opts "${{ github.event.before }}..${{ github.sha }}"

@@ -178,7 +178,8 @@ def _infer_quant_type_from_wrapper(wrapper: Sam3Wrapper) -> str:
     as a fallback for older bnb builds the original tests were written against.
     """
     bnb = _import_bnb()
-    assert wrapper.peft_model is not None
+    if wrapper.peft_model is None:
+        raise RuntimeError("_infer_quant_type_from_wrapper: wrapper.peft_model is None")
     for module in wrapper.peft_model.modules():
         if isinstance(module, bnb.nn.Linear4bit):
             # Primary: bnb >= the Params4bit-quant_type refactor.
@@ -206,7 +207,8 @@ def _infer_quant_type_from_wrapper(wrapper: Sam3Wrapper) -> str:
 def _infer_compute_dtype_from_wrapper(wrapper: Sam3Wrapper) -> str:
     """Read the compute_dtype from the first Linear4bit module in the wrapped base."""
     bnb = _import_bnb()
-    assert wrapper.peft_model is not None
+    if wrapper.peft_model is None:
+        raise RuntimeError("_infer_compute_dtype_from_wrapper: wrapper.peft_model is None")
     for module in wrapper.peft_model.modules():
         if isinstance(module, bnb.nn.Linear4bit):
             dt = module.compute_dtype
