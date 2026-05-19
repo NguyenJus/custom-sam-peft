@@ -11,4 +11,4 @@ set -euo pipefail
 "${PYTHON:-python}" -m pytest -v --tb=short \
   -m "requires_compatible_gpu and requires_checkpoint" \
   --no-cov \
-  tests/integration/
+  tests/integration/ tests/gpu/
