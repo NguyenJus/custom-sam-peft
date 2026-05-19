@@ -14,17 +14,19 @@ from esam3.data.base import TextPrompts
 from esam3.models.matching import meta_to_canonical
 from esam3.models.sam3 import Sam3Wrapper, load_sam31
 
+pytestmark = [
+    pytest.mark.requires_checkpoint,
+    pytest.mark.requires_compatible_gpu,
+    pytest.mark.gpu_inspection,
+]
 
-@pytest.mark.requires_checkpoint
-@pytest.mark.requires_compatible_gpu
+
 def test_load_sam31_returns_wrapper() -> None:
     cfg = ModelConfig(device="cuda", gradient_checkpointing=False, dtype="bfloat16")
     wrapper = load_sam31(cfg)
     assert isinstance(wrapper, Sam3Wrapper)
 
 
-@pytest.mark.requires_checkpoint
-@pytest.mark.requires_compatible_gpu
 def test_load_sam31_forward_to_canonical() -> None:
     cfg = ModelConfig(device="cuda", gradient_checkpointing=False, dtype="bfloat16")
     wrapper = load_sam31(cfg)

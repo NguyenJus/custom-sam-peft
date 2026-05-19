@@ -30,6 +30,7 @@ from tests.helpers.lora_predicates import has_plain_nn_linear as _has_plain_nn_l
 pytestmark = [
     pytest.mark.requires_checkpoint,
     pytest.mark.requires_compatible_gpu,
+    pytest.mark.gpu_inspection,
 ]
 
 

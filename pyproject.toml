@@ -101,6 +101,7 @@ testpaths = ["tests"]
 markers = [
   "integration: end-to-end tests using the stub model (CPU)",
   "gpu: tests requiring a CUDA device with real SAM3.1 weights",
+  "gpu_inspection: cheap GPU-gated structural/forward tests (Tier 1); see docs/testing/gpu-test-policy.md",
   "requires_checkpoint: skip unless real checkpoint is present",
   "requires_compatible_gpu: skip unless CUDA CC >= 7.5",
 ]

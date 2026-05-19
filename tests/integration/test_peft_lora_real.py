@@ -19,6 +19,7 @@ from esam3.peft_adapters.lora import apply_lora, load_lora, merge_lora, save_lor
 pytestmark = [
     pytest.mark.requires_checkpoint,
     pytest.mark.requires_compatible_gpu,
+    pytest.mark.gpu_inspection,
 ]
 
 

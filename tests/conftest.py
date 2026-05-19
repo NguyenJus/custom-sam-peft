@@ -29,6 +29,11 @@ def pytest_configure(config: pytest.Config) -> None:
         "markers",
         "requires_bnb: skip unless bitsandbytes is importable",
     )
+    config.addinivalue_line(
+        "markers",
+        "gpu_inspection: cheap GPU-gated structural/forward tests (Tier 1); "
+        "see docs/testing/gpu-test-policy.md",
+    )
 
 
 def _has_compatible_gpu() -> bool:
