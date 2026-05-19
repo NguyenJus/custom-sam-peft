@@ -1,0 +1,54 @@
+name: Bug report
+description: Report a bug in Efficient-SAM3-Finetuning
+title: "[bug] "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for filing a bug. Please fill out the fields below so the
+        maintainer can reproduce the issue quickly.
+  - type: textarea
+    id: env
+    attributes:
+      label: Environment
+      description: Output of `uv run esam3 doctor` (or equivalent — Python, OS, CUDA, torch version).
+      placeholder: |
+        Python 3.13.x
+        OS: Ubuntu 24.04
+        CUDA: 12.4
+        torch: 2.4.x
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Reproduction steps
+      description: Minimal commands to reproduce. Include the config file used.
+      placeholder: |
+        1. uv run esam3 init --template coco-text-lora
+        2. uv run esam3 train --config config.yaml
+        3. ...
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+      description: Include the full error message and traceback if any.
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs
+      description: Relevant log output. Use ``` blocks for code formatting.
+      render: shell
+    validations:
+      required: false
