@@ -185,8 +185,9 @@ test failure today for a silent OOM on the next contributor's T4 tomorrow.
 
 The smoke configs drive training with the `tests/fixtures/tiny_coco/`
 fixture: 2 images, 50 gradient updates total (epochs=25, batch\_size=1,
-grad\_accum\_steps=1, so each epoch processes 1 batch for 1 gradient step,
-giving 25 steps per pass × 2 passes = 50 steps). This is the minimal
+grad\_accum\_steps=1 — tiny\_coco has 2 images, so each epoch produces 2
+batches and one gradient step per batch, giving 25 × 2 = 50 gradient updates).
+This is the minimal
 end-to-end overfit shape that exercises the full `run_training` call graph
 without growing the GPU run time beyond a single Colab session slot. The
 fixture size and step count are confirmed against both
