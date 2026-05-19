@@ -1,0 +1,13 @@
+cff-version: 1.2.0
+message: "If you use this software, please cite it as below."
+type: software
+title: "Efficient-SAM3-Finetuning"
+abstract: >-
+  Parameter-efficient finetuning of SAM 3.1 for instance segmentation on a
+  single consumer GPU. Implements LoRA and QLoRA adapters over the
+  Meta SAM 3.1 open-vocab head.
+authors:
+  - family-names: Nguyen
+    given-names: Justin
+license: Apache-2.0
+repository-code: "https://github.com/NguyenJus/Efficient-SAM3-Finetuning"
