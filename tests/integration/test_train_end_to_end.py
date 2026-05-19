@@ -93,9 +93,10 @@ def test_fit_end_to_end_on_tiny_coco(backend: str, tmp_path: Path, tiny_coco_dir
         tracking=TrackingConfig(backend=backend),  # type: ignore[arg-type]
     )
     apply_lora(wrapper, cfg.peft)
+    run_dir = tmp_path / f"{cfg.run.name}-test"
     tracker = build_tracker(cfg)
     trainer = Trainer(wrapper, ds_train, ds_val, tracker, cfg)
-    result = trainer.fit()
+    result = trainer.fit(run_dir=run_dir)
 
     assert result.run_dir.exists()
     assert (result.run_dir / "adapter" / "adapter_config.json").exists()

@@ -8,16 +8,16 @@ implementation = one file + one @register + one test; no edits to dispatch.
 from __future__ import annotations
 
 from collections.abc import Callable
-from typing import TypeVar
+from typing import Any, TypeVar
 
-T = TypeVar("T", bound=Callable[..., object])
+T = TypeVar("T", bound=Callable[..., Any])
 
 
 class RegistryError(KeyError):
     """Raised on duplicate registration or unknown lookup."""
 
 
-_REGISTRY: dict[str, dict[str, Callable[..., object]]] = {}
+_REGISTRY: dict[str, dict[str, Callable[..., Any]]] = {}
 
 
 def register(kind: str, name: str) -> Callable[[T], T]:
@@ -33,7 +33,7 @@ def register(kind: str, name: str) -> Callable[[T], T]:
     return decorator
 
 
-def lookup(kind: str, name: str) -> Callable[..., object]:
+def lookup(kind: str, name: str) -> Callable[..., Any]:
     """Return the callable registered under (kind, name)."""
     bucket = _REGISTRY.get(kind, {})
     if name not in bucket:

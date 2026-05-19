@@ -91,7 +91,7 @@ def test_trainer_fit_runs_lite_eval_and_final_full_eval(
         tracker=tracker,
         cfg=cfg,
     )
-    result = trainer.fit()
+    result = trainer.fit(run_dir=tmp_path / "train-then-eval")
     assert isinstance(result.final_metrics, MetricsReport)
     assert "mAP" in result.final_metrics.overall
 
@@ -132,4 +132,4 @@ def test_trainer_fit_propagates_evaluator_exception(tiny_text_dataset, tmp_path:
         ),
         pytest.raises(RuntimeError, match="injected eval failure"),
     ):
-        trainer.fit()
+        trainer.fit(run_dir=tmp_path / "fit-propagates")

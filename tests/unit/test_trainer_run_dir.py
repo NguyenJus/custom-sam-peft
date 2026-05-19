@@ -1,12 +1,15 @@
-"""End-to-end Trainer.fit() on the stub: verify run-dir layout."""
+"""Trainer.fit must use the caller-provided run_dir, not compute one internally."""
 
 from __future__ import annotations
 
 import json
 from pathlib import Path
+from unittest.mock import MagicMock
 
+import pytest
 import torch
 
+import esam3.train.trainer as trainer_mod
 from esam3.config.schema import (
     DataConfig,
     DataSplit,
@@ -21,6 +24,62 @@ from esam3.peft_adapters.lora import apply_lora
 from esam3.tracking.noop import NoopTracker
 from esam3.train.trainer import Trainer
 from tests.fixtures.tiny_sam3_lora_stub import FIXTURE_SCOPE_PATTERNS, make_stub_wrapper
+
+
+def test_fit_uses_caller_provided_run_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    # Build a minimal Trainer that won't actually train; we just want to see
+    # which dir gets the config.yaml write.
+    cfg = MagicMock()
+    cfg.run.output_dir = str(tmp_path / "ignored")  # Trainer must NOT use this.
+    cfg.run.name = "irrelevant"
+    cfg.run.seed = 0
+    cfg.data.prompt_mode = "text"
+    cfg.train.num_workers = 0
+    cfg.train.batch_size = 1
+    cfg.train.epochs = 0  # Skip the train loop entirely.
+    cfg.train.warmup_steps = 0
+    cfg.train.lr_schedule = "constant"
+    cfg.train.lr = 1e-4
+    cfg.train.optimizer = "adamw"
+    cfg.train.box_hint.p_start = 0.0
+    cfg.train.box_hint.p_end = 0.0
+    cfg.train.box_hint.decay_steps = 1
+    cfg.peft.method = "lora"
+    cfg.export.merge = False
+    cfg.model_dump.return_value = {"run": {"name": "irrelevant"}}
+
+    # Stub model with at least one trainable parameter on CPU.
+    # Use side_effect so each parameters() call gets a fresh iterator.
+    _param = torch.nn.Parameter(torch.zeros(1))
+    model = MagicMock()
+    model.parameters.side_effect = lambda: iter([_param])
+
+    # Length=1 satisfies DataLoader's RandomSampler; epochs=0 means it's never iterated.
+    train_ds = MagicMock(__len__=lambda self: 1, class_names=[])
+    val_ds = MagicMock(__len__=lambda self: 0, class_names=[])
+    tracker = MagicMock()
+
+    # Patch Evaluator and save_adapter where trainer.py imports them (module-level names).
+    monkeypatch.setattr(
+        trainer_mod,
+        "Evaluator",
+        lambda _cfg: MagicMock(
+            evaluate=MagicMock(
+                return_value=MagicMock(overall={}, per_class={}, n_images=0, n_predictions=0)
+            )
+        ),
+    )
+    monkeypatch.setattr(
+        trainer_mod, "save_adapter", lambda model, path: path.mkdir(parents=True, exist_ok=True)
+    )
+
+    chosen = tmp_path / "explicit-run"
+    trainer = Trainer(model, train_ds, val_ds, tracker, cfg)
+    result = trainer.fit(run_dir=chosen)
+
+    assert result.run_dir == chosen
+    assert (chosen / "config.yaml").exists()
+    assert not (tmp_path / "ignored").exists()
 
 
 class _TinyTextDataset:
@@ -77,8 +136,10 @@ def test_fit_creates_expected_layout(tmp_path: Path) -> None:
     )
     apply_lora(wrapper, cfg.peft)
     trainer = Trainer(wrapper, ds, ds, NoopTracker(), cfg)
-    result = trainer.fit()
+    run_dir = tmp_path / "layout-test-run"
+    result = trainer.fit(run_dir=run_dir)
     rd = result.run_dir
+    assert rd == run_dir
     assert rd.exists()
     assert (rd / "config.yaml").exists()
     assert (rd / "adapter" / "adapter_config.json").exists()

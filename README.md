@@ -23,6 +23,18 @@ uv run esam3 doctor
 uv run esam3 train --config configs/examples/coco_bbox_qlora.yaml
 ```
 
+## CLI
+
+| Command | Status |
+|---|---|
+| `esam3 train --config CONFIG [--override key=val]... [--resume PATH] [-v]` | Functional |
+| `esam3 eval --config CONFIG --checkpoint PATH [--split val\|test] [--output PATH] [--save-predictions]` | Functional (LoRA adapters only) |
+| `esam3 export --checkpoint PATH [--merge] [--output PATH] [--config PATH]` | Functional |
+| `esam3 init [--template coco-text-lora\|coco-text-qlora] [--output PATH] [--force]` | Functional |
+| `esam3 doctor [--weights-path PATH] [--json]` | Functional |
+
+`coco-bbox` and `hf-text` init templates are deferred (see `logs/TODO.md`).
+
 ## What's supported in v0
 
 | | v0 | Deferred |

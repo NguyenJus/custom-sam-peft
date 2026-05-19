@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import typer
 
+import esam3._bootstrap  # noqa: F401  # populate plugin registry before subcommand imports
 from esam3.cli import (
     doctor_cmd,
     eval_cmd,

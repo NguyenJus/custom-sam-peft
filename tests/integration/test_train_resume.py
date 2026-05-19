@@ -95,7 +95,7 @@ def test_resume_matches_uninterrupted(tmp_path: Path, tiny_coco_dir: Path) -> No
     w_a = make_stub_wrapper(dim=8, working=True)
     apply_lora(w_a, cfg.peft)
     trainer_a = Trainer(w_a, ds, ds, NoopTracker(), cfg)
-    trainer_a.fit()
+    trainer_a.fit(run_dir=tmp_path / "run-a")
     state_a = _adapter_state(w_a)
 
     # Truncated first run (1 epoch), then resumed (2 epochs continuing from checkpoint).
@@ -104,7 +104,7 @@ def test_resume_matches_uninterrupted(tmp_path: Path, tiny_coco_dir: Path) -> No
     cfg_short = _cfg(tmp_path, tiny_coco_dir, save_every=2)
     cfg_short.train.epochs = 1
     trainer_b = Trainer(w_b, ds, ds, NoopTracker(), cfg_short)
-    result_b1 = trainer_b.fit()
+    result_b1 = trainer_b.fit(run_dir=tmp_path / "run-b1")
 
     ckpts = sorted((result_b1.run_dir / "checkpoints").glob("step_*"))
     assert ckpts, "no checkpoint produced"
@@ -113,7 +113,7 @@ def test_resume_matches_uninterrupted(tmp_path: Path, tiny_coco_dir: Path) -> No
     w_c = make_stub_wrapper(dim=8, working=True)
     apply_lora(w_c, cfg.peft)
     trainer_c = Trainer(w_c, ds, ds, NoopTracker(), cfg)
-    trainer_c.fit(resume_from=resume_dir)
+    trainer_c.fit(run_dir=tmp_path / "run-c", resume_from=resume_dir)
     state_c = _adapter_state(w_c)
 
     # Resume produces finite weights (not bit-identical to uninterrupted run because
