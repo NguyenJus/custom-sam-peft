@@ -10,7 +10,7 @@ import json
 import logging
 from collections.abc import Sequence
 from pathlib import Path
-from typing import Any, cast
+from typing import Any, Literal, overload
 
 import numpy as np
 import pycocotools.mask as mask_utils
@@ -97,6 +97,24 @@ class Evaluator:
     def __init__(self, cfg: EvalConfig) -> None:
         self.cfg = cfg
         self._last_predictions: list[dict[str, object]] = []
+
+    @overload
+    def evaluate(
+        self,
+        model: Any,
+        dataset: Dataset,
+        *,
+        return_per_example_iou: Literal[False] = False,
+    ) -> MetricsReport: ...
+
+    @overload
+    def evaluate(
+        self,
+        model: Any,
+        dataset: Dataset,
+        *,
+        return_per_example_iou: Literal[True],
+    ) -> tuple[MetricsReport, list[float]]: ...
 
     def evaluate(
         self,
@@ -251,7 +269,7 @@ class Evaluator:
         output_dir = Path(output_dir)
         output_dir.mkdir(parents=True, exist_ok=True)
 
-        report = cast(MetricsReport, self.evaluate(model, dataset))
+        report = self.evaluate(model, dataset)
 
         (output_dir / "metrics.json").write_text(
             json.dumps(

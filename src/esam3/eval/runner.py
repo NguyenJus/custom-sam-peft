@@ -8,7 +8,7 @@ it can re-use a single dataset+wrapper across the eval and bundle phases.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, Literal, cast
+from typing import Any, Literal, cast, overload
 
 from esam3._registry import lookup
 from esam3.config.schema import TrainConfig
@@ -17,6 +17,34 @@ from esam3.eval.evaluator import Evaluator
 from esam3.eval.metrics import MetricsReport
 from esam3.models.sam3 import load_sam31
 from esam3.peft_adapters.lora import load_lora
+
+
+@overload
+def run_eval(
+    cfg: TrainConfig,
+    *,
+    checkpoint: Path,
+    split: Literal["val", "test"] = "val",
+    output_dir: Path | None = None,
+    save_predictions: bool | None = None,
+    val_dataset: Dataset | None = None,
+    model: Any | None = None,
+    return_per_example_iou: Literal[False] = False,
+) -> MetricsReport: ...
+
+
+@overload
+def run_eval(
+    cfg: TrainConfig,
+    *,
+    checkpoint: Path,
+    split: Literal["val", "test"] = "val",
+    output_dir: Path | None = None,
+    save_predictions: bool | None = None,
+    val_dataset: Dataset | None = None,
+    model: Any | None = None,
+    return_per_example_iou: Literal[True],
+) -> tuple[MetricsReport, list[float]]: ...
 
 
 def run_eval(
@@ -80,8 +108,7 @@ def run_eval(
         # per-example IoUs. `evaluate_and_save` only persists; call `evaluate`
         # for the data we need and then mirror the persistence the CLI path does.
         out.mkdir(parents=True, exist_ok=True)
-        result = evaluator.evaluate(wrapper, dataset, return_per_example_iou=True)
-        report, per_example_iou = cast(tuple[MetricsReport, list[float]], result)
+        report, per_example_iou = evaluator.evaluate(wrapper, dataset, return_per_example_iou=True)
         import json
 
         (out / "metrics.json").write_text(
