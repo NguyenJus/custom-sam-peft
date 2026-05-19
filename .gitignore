@@ -26,6 +26,8 @@ Thumbs.db
 
 # Runtime artifacts
 runs/
+!src/esam3/runs/
+!tests/unit/runs/
 checkpoints/
 wandb/
 *.ckpt

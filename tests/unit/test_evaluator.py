@@ -138,3 +138,24 @@ def test_evaluate_single_dataset_traversal(stub_model):
     assert set(access_counts.keys()) == {0, 1, 2}, "not all indices were accessed"
     for idx, count in access_counts.items():
         assert count == 1, f"index {idx} was accessed {count} times (expected exactly 1)"
+
+
+def test_evaluate_returns_per_example_iou_when_requested(stub_model, tiny_text_dataset):
+    """When return_per_example_iou=True, return (MetricsReport, list[float])
+    aligned with dataset indices."""
+    cfg = EvalConfig(mode="full", iou_thresholds=[0.5])
+    out = Evaluator(cfg).evaluate(stub_model, tiny_text_dataset, return_per_example_iou=True)
+    assert isinstance(out, tuple)
+    report, ious = out
+    assert isinstance(report, MetricsReport)
+    assert isinstance(ious, list)
+    assert len(ious) == len(tiny_text_dataset)
+    assert all(0.0 <= v <= 1.0 or v != v for v in ious)  # 0..1 or NaN
+
+
+def test_evaluate_default_unchanged_returns_report_only(stub_model, tiny_text_dataset):
+    """Backward-compat: omitting the flag returns MetricsReport, not a tuple."""
+    cfg = EvalConfig(mode="full", iou_thresholds=[0.5])
+    out = Evaluator(cfg).evaluate(stub_model, tiny_text_dataset)
+    assert not isinstance(out, tuple)
+    assert isinstance(out, MetricsReport)
