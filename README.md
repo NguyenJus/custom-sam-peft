@@ -9,7 +9,30 @@ consumer GPU.
 > `docs/superpowers/specs/` for design and `docs/superpowers/plans/`
 > for the build sequence.
 
-## Quickstart
+## Beginner — train in 3 clicks
+
+Train a custom segmentation model in your browser, no GPU setup required.
+
+**Prerequisites:** a Hugging Face account (free) with read access to the gated `facebook/sam3.1` checkpoint, and either a custom dataset (a folder with `train/` and `val/` COCO subdirectories) or a Hugging Face dataset ID.
+
+[![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/NguyenJus/Efficient-SAM3-Finetuning/blob/main/notebooks/esam3_train.ipynb)
+
+1. Open the notebook in Colab via the badge above.
+2. In Colab Secrets, set `HF_TOKEN` (Hugging Face token with read access
+   to gated `facebook/sam3.1`). If you've already downloaded the
+   checkpoint to `models/sam3.1/sam3.1_multiplex.pt` (e.g. on a RunPod
+   network volume), skip this step.
+3. Either upload a dataset (a folder with `train/` and `val/` COCO
+   subdirectories) or paste a HF dataset id, then click Runtime → Run All.
+
+When the run finishes, scroll to the bottom of the notebook for a
+summary, sample mask overlays, and a one-line download command.
+
+For RunPod, see [cloud/runpod/README.md](cloud/runpod/README.md).
+
+## Advanced
+
+### Quickstart
 
 ```bash
 # Install
@@ -23,19 +46,22 @@ uv run esam3 doctor
 uv run esam3 train --config configs/examples/coco_bbox_qlora.yaml
 ```
 
-## CLI
+### CLI
 
 | Command | Status |
 | --- | --- |
+| `esam3 run --config CONFIG [--resume PATH] [-v]` | Functional |
 | `esam3 train --config CONFIG [--override key=val]... [--resume PATH] [-v]` | Functional |
 | `esam3 eval --config CONFIG --checkpoint PATH [--split val\|test] [--output PATH] [--save-predictions]` | Functional (LoRA adapters only) |
 | `esam3 export --checkpoint PATH [--merge] [--output PATH] [--config PATH]` | Functional |
 | `esam3 init [--template coco-text-lora\|coco-text-qlora] [--output PATH] [--force]` | Functional |
 | `esam3 doctor [--weights-path PATH] [--json]` | Functional |
 
+(`esam3 run` is "train + eval + (optional) export + bundle in one shot"; the others are unchanged.)
+
 `coco-bbox` and `hf-text` init templates are deferred (see `logs/TODO.md`).
 
-## What's supported in v0
+### What's supported in v0
 
 | | v0 | Deferred |
 | --- | --- | --- |
@@ -47,17 +73,17 @@ uv run esam3 train --config configs/examples/coco_bbox_qlora.yaml
 | PEFT | LoRA, QLoRA | other PEFT methods |
 | Tracking | TensorBoard, W&B, none | — |
 
-## v0 Training scope
+### v0 Training scope
 
 v0 trains **text-prompts only**. Ground-truth bounding boxes are used as a curriculum hint during training (increasing probability of box-only forward passes), not as a primary prompt. `prompt_mode='bbox'` is rejected at training time (see logs/TODO.md for deferred bbox-prompt-training spec).
 
 For testing: run `pytest -m integration` for end-to-end stub tests, or `pytest -m gpu` if you have a CUDA GPU and a local SAM 3.1 checkpoint.
 
-## Repo layout
+### Repo layout
 
 See `ARCHITECTURE.md` for the module map and data flow.
 
-## Development
+### Development
 
 ```bash
 uv run ruff check

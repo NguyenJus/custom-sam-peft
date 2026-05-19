@@ -23,6 +23,7 @@ from torch import Tensor, nn
 
 from esam3.config.schema import ModelConfig
 from esam3.data.base import BoxPrompts, Prompts, TextPrompts
+from esam3.utils.huggingface import download_model
 
 logger = logging.getLogger(__name__)
 
@@ -164,17 +165,35 @@ class Sam3Wrapper(nn.Module):
 
 
 def _resolve_checkpoint_path(cfg: ModelConfig) -> Path:
+    """Return the local checkpoint path, auto-downloading from the Hub on miss.
+
+    - ``local_dir=None`` raises ``FileNotFoundError`` with an `esam3 init` hint.
+    - File present: return it (no Hub contact).
+    - File missing: ``download_model(cfg.name, local_dir, revision=cfg.revision)``,
+      then re-check. If the file is STILL missing post-download (e.g. the user
+      pinned a revision that doesn't contain it), raise ``FileNotFoundError``
+      with a precise diagnostic.
+    """
     if cfg.local_dir is None:
         raise FileNotFoundError(
-            "ModelConfig.local_dir is None and Hub fetch is not implemented. "
-            f"Set local_dir to a directory containing {cfg.checkpoint_file}. "
-            f"To download: `huggingface-cli download {cfg.name} --local-dir models/sam3.1`."
+            f"ModelConfig.local_dir is None. Set it to a directory for "
+            f"{cfg.checkpoint_file}, or run `esam3 init` to scaffold one."
         )
-    path = Path(cfg.local_dir) / cfg.checkpoint_file
+    local_dir = Path(cfg.local_dir)
+    path = local_dir / cfg.checkpoint_file
+    if path.exists():
+        return path
+    logger.info(
+        "SAM 3.1 checkpoint missing at %s; auto-downloading %s",
+        path,
+        cfg.name,
+    )
+    download_model(cfg.name, local_dir, revision=cfg.revision)
     if not path.exists():
         raise FileNotFoundError(
-            f"SAM 3.1 checkpoint not found at {path}. "
-            f"Run: huggingface-cli download {cfg.name} --local-dir {cfg.local_dir}"
+            f"Downloaded {cfg.name} into {local_dir} but {cfg.checkpoint_file} "
+            f"is still missing. Check that the repo (revision={cfg.revision!r}) "
+            f"contains that file."
         )
     return path
 

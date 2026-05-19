@@ -22,6 +22,7 @@ dependencies = [
   "opencv-python-headless>=4.10",
   "scipy>=1.10",
   "einops>=0.7",
+  "huggingface-hub>=0.30",
   "sam3 @ git+https://github.com/facebookresearch/sam3@2814fa619404a722d03e9a012e083e4f293a4e53",
 ]
 
@@ -56,6 +57,11 @@ line-length = 100
 target-version = "py312"
 src = ["src", "tests"]
 
+[tool.ruff.format]
+# Excluded so Colab form-widget tokens (`#@param`) survive — ruff format
+# converts them to `# @param`, which Colab does not recognize as a widget.
+exclude = ["notebooks/*.ipynb"]
+
 [tool.ruff.lint]
 select = ["E", "F", "I", "B", "UP", "SIM", "RUF", "S"]
 ignore = []
@@ -63,7 +69,7 @@ ignore = []
 [tool.ruff.lint.per-file-ignores]
 "src/esam3/cli/*_cmd.py" = ["B008"]
 "tests/unit/test_data_*.py" = ["E402"]
-"tests/**/*.py" = ["S101", "S311"]
+"tests/**/*.py" = ["S101", "S105", "S311"]
 # Colab notebook: subprocess.run("git", ...) with partial path is intentional in a Colab
 # environment where git is always on PATH; asserts are runtime environment guards.
 "notebooks/**" = ["S101", "S603", "S607"]
@@ -86,6 +92,7 @@ module = [
   "scipy.*",
   "sam3.*",
   "peft.*",
+  "google.colab",
 ]
 ignore_missing_imports = true
 

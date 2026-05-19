@@ -58,6 +58,12 @@ def _render_table(report: DoctorReport) -> None:
     weights.add_row("size", f"{w.size_bytes:,}" if w.size_bytes is not None else "(n/a)")
     console.print(weights)
 
+    hf = report.hf_auth
+    auth = Table(title="HuggingFace auth", show_header=False, box=None)
+    auth.add_row("token source", hf.token_source)
+    auth.add_row("has token", str(hf.has_token))
+    console.print(auth)
+
     if report.issues:
         issues = Table(title="Issues", show_header=False, box=None)
         for msg in report.issues:

@@ -5,6 +5,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+
 from esam3.diagnostics import DoctorReport, run_doctor
 
 
@@ -41,3 +43,34 @@ def test_report_is_json_serializable() -> None:
     r = run_doctor()
     blob = json.dumps(dataclasses.asdict(r), default=str)
     assert "torch_version" in blob
+
+
+# ---------------------------------------------------------------------------
+# spec/hf-utils — hf_auth field
+# ---------------------------------------------------------------------------
+
+
+def test_run_doctor_reports_env_token_source(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("HF_TOKEN", "env-tok")
+    r = run_doctor()
+    assert r.hf_auth.token_source == "env"
+    assert r.hf_auth.has_token is True
+
+
+def test_run_doctor_reports_cache_token_source(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("HF_TOKEN", raising=False)
+    monkeypatch.setattr("esam3.diagnostics.huggingface_hub.get_token", lambda: "cache-tok")
+    r = run_doctor()
+    assert r.hf_auth.token_source == "cache"
+    assert r.hf_auth.has_token is True
+
+
+def test_run_doctor_reports_no_token_and_appends_issue(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("HF_TOKEN", raising=False)
+    monkeypatch.setattr("esam3.diagnostics.huggingface_hub.get_token", lambda: None)
+    r = run_doctor()
+    assert r.hf_auth.token_source == "none"
+    assert r.hf_auth.has_token is False
+    assert any("no HuggingFace token" in issue for issue in r.issues), r.issues
