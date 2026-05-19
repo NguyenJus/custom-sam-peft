@@ -56,6 +56,11 @@ line-length = 100
 target-version = "py312"
 src = ["src", "tests"]
 
+[tool.ruff.format]
+# Excluded so Colab form-widget tokens (`#@param`) survive — ruff format
+# converts them to `# @param`, which Colab does not recognize as a widget.
+exclude = ["notebooks/*.ipynb"]
+
 [tool.ruff.lint]
 select = ["E", "F", "I", "B", "UP", "SIM", "RUF", "S"]
 ignore = []
@@ -86,6 +91,7 @@ module = [
   "scipy.*",
   "sam3.*",
   "peft.*",
+  "google.colab",
 ]
 ignore_missing_imports = true
 
