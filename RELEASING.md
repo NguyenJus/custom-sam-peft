@@ -14,10 +14,12 @@ human-readable notes.
 
 ## Retroactive tags (v0)
 
-The flip-day release `v0.5.0` was preceded by four retroactive tags
-applied to historical milestones. They were applied in a single
-`git tag -a ... && git push --tags` block in
-[`docs/public-flip-runbook.md`](docs/public-flip-runbook.md) step 6.
+The v0 milestones are marked by annotated tags on the merge commits
+listed below. None are published as GitHub Releases yet — the v0.5.0
+Release that originally accompanied the public flip was withdrawn
+pending a release-ready v0 surface. The tags remain as historical
+markers and will be revisited when v0.5.0 (or a successor) is cut as
+the first published release.
 
 | Tag | Milestone |
 | --- | --- |
@@ -25,7 +27,7 @@ applied to historical milestones. They were applied in a single
 | `v0.2.0` | First eval-pipeline merge — `Evaluator` + `MetricsReport` (#17) |
 | `v0.3.0` | LoRA + QLoRA support merged (#4, #7) |
 | `v0.4.0` | W&B tracking (#18) + CI hardening (#32) |
-| `v0.5.0` | Public-flip merge — community standards, CodeQL, runbook |
+| `v0.5.0` | Public-flip merge — community standards + CodeQL (tag only; Release withdrawn) |
 
 ## Cutting a future release
 
