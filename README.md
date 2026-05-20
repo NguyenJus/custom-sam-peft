@@ -1,6 +1,6 @@
-# efficient-sam3-finetuning
+# custom-sam-peft
 
-[![CI](https://github.com/NguyenJus/Efficient-SAM3-Finetuning/actions/workflows/ci.yml/badge.svg)](https://github.com/NguyenJus/Efficient-SAM3-Finetuning/actions/workflows/ci.yml)
+[![CI](https://github.com/NguyenJus/custom-sam-peft/actions/workflows/ci.yml/badge.svg)](https://github.com/NguyenJus/custom-sam-peft/actions/workflows/ci.yml)
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
 [![Python 3.12+](https://img.shields.io/badge/python-3.12+-blue.svg)](pyproject.toml)
 
@@ -11,13 +11,13 @@ consumer GPU.
 > **⚠️ Work in progress — not ready to run.**
 > v0.5.0 is an active development snapshot. The CLI surfaces (`train`, `eval`, `export`, `run`, `init`, `doctor`) exist and exercise real subsystems (LoRA / QLoRA adapters, W&B tracking), but the project has not been validated end-to-end on production workloads. Expect breaking changes. Use at your own risk; pin to a tagged release if you need stability.
 
-## Beginner — train in 3 clicks
+## Beginner — train in Colab
 
-Train a custom segmentation model in your browser, no GPU setup required.
+Train a custom segmentation model in your browser via Google Colab. No local GPU setup required.
 
 **Prerequisites:** a Hugging Face account (free) with read access to the gated `facebook/sam3.1` checkpoint, and either a custom dataset (a folder with `train/` and `val/` COCO subdirectories) or a Hugging Face dataset ID.
 
-[![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/NguyenJus/Efficient-SAM3-Finetuning/blob/main/notebooks/esam3_train.ipynb)
+[![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/NguyenJus/custom-sam-peft/blob/main/notebooks/custom_sam_peft_train.ipynb)
 
 1. Open the notebook in Colab via the badge above.
 2. In Colab Secrets, set `HF_TOKEN` (Hugging Face token with read access
@@ -41,25 +41,25 @@ For RunPod, see [cloud/runpod/README.md](cloud/runpod/README.md).
 uv sync --all-extras
 
 # Sanity check the CLI
-uv run esam3 --help
-uv run esam3 doctor
+uv run custom-sam-peft --help
+uv run custom-sam-peft doctor
 
 # Run the (currently stubbed) train command against an example config
-uv run esam3 train --config configs/examples/coco_bbox_qlora.yaml
+uv run custom-sam-peft train --config configs/examples/coco_bbox_qlora.yaml
 ```
 
 ### CLI
 
 | Command | Status |
 | --- | --- |
-| `esam3 run --config CONFIG [--resume PATH] [-v]` | Functional |
-| `esam3 train --config CONFIG [--override key=val]... [--resume PATH] [-v]` | Functional |
-| `esam3 eval --config CONFIG --checkpoint PATH [--split val\|test] [--output PATH] [--save-predictions]` | Functional (LoRA adapters only) |
-| `esam3 export --checkpoint PATH [--merge] [--output PATH] [--config PATH]` | Functional |
-| `esam3 init [--template coco-text-lora\|coco-text-qlora] [--output PATH] [--force]` | Functional |
-| `esam3 doctor [--weights-path PATH] [--json]` | Functional |
+| `custom-sam-peft run --config CONFIG [--resume PATH] [-v]` | Functional |
+| `custom-sam-peft train --config CONFIG [--override key=val]... [--resume PATH] [-v]` | Functional |
+| `custom-sam-peft eval --config CONFIG --checkpoint PATH [--split val\|test] [--output PATH] [--save-predictions]` | Functional (LoRA adapters only) |
+| `custom-sam-peft export --checkpoint PATH [--merge] [--output PATH] [--config PATH]` | Functional |
+| `custom-sam-peft init [--template coco-text-lora\|coco-text-qlora] [--output PATH] [--force]` | Functional |
+| `custom-sam-peft doctor [--weights-path PATH] [--json]` | Functional |
 
-(`esam3 run` is "train + eval + (optional) export + bundle in one shot"; the others are unchanged.)
+(`custom-sam-peft run` is "train + eval + (optional) export + bundle in one shot"; the others are unchanged.)
 
 `coco-bbox` and `hf-text` init templates are deferred (see `logs/TODO.md`).
 
