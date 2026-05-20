@@ -16,7 +16,7 @@ from custom_sam_peft.cli import (
 
 app = typer.Typer(
     name="custom-sam-peft",
-    help="Parameter-efficient finetuning of SAM3.1.",
+    help="Closed-vocab finetuning of SAM-family models with LoRA / QLoRA.",
     no_args_is_help=True,
     add_completion=False,
 )
