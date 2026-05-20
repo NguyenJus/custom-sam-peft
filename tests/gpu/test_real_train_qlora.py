@@ -71,3 +71,62 @@ def test_qlora_overfits_in_50_steps(
     assert peak_vram_gb <= VRAM_CEIL_GB, (
         f"peak VRAM {peak_vram_gb:.2f}GB exceeded ceiling {VRAM_CEIL_GB}GB"
     )
+
+
+@pytest.mark.requires_bnb
+@pytest.mark.skipif(not _bnb_available(), reason="bitsandbytes not installed")
+def test_qlora_smoke_fast(
+    tmp_path: Path,
+    tiny_coco_dir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Fast iteration variant of the QLoRA smoke (~3 min on T4 vs. ~14 min).
+
+    Same ``run_training(cfg)`` path as ``test_qlora_overfits_in_50_steps`` —
+    so any dtype, shape, grad-routing, or quantization bug that breaks the
+    full overfit also surfaces here — but with two debug-cycle shortcuts:
+
+      - ``train.epochs=2`` override (≈3 training steps on 2 images) instead
+        of the 50-step overfit target.
+      - Final ``Evaluator.evaluate`` pass monkeypatched to a no-op.
+
+    Assertions are correspondingly looser: every logged scalar must be
+    finite and at least one must be logged.  No loss-ratio assertion (3
+    steps gives the optimizer no time to overfit) and no VRAM-ceiling
+    (smoke is too short to peak activations or quantization buffers).
+
+    Use this for the dtype/grad debug cycle.  Promote to
+    ``test_qlora_overfits_in_50_steps`` for full release-tier validation
+    once this is green.
+    """
+    from esam3.eval.metrics import MetricsReport
+
+    cfg = load_config(
+        CONFIG_PATH,
+        overrides=[
+            f"data.train.annotations={tiny_coco_dir / 'annotations.json'}",
+            f"data.train.images={tiny_coco_dir / 'images'}",
+            f"data.val.annotations={tiny_coco_dir / 'annotations.json'}",
+            f"data.val.images={tiny_coco_dir / 'images'}",
+            f"run.output_dir={tmp_path}",
+            "train.epochs=2",
+        ],
+    )
+    tracker = _RecordingTracker()
+    monkeypatch.setattr("esam3.train.runner.build_tracker", lambda *_a, **_kw: tracker)
+
+    class _SkipEvaluator:
+        def __init__(self, *args: object, **kwargs: object) -> None:
+            pass
+
+        def evaluate(self, model: object, ds: object) -> MetricsReport:
+            return MetricsReport()
+
+    monkeypatch.setattr("esam3.train.trainer.Evaluator", _SkipEvaluator)
+
+    run_training(cfg)
+
+    assert tracker.scalars, "expected at least one scalar log"
+    for _, scalars in tracker.scalars:
+        for k, v in scalars.items():
+            assert math.isfinite(v), f"non-finite scalar logged: {k}={v}"
