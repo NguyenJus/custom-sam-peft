@@ -101,6 +101,15 @@ class Sam3Wrapper(nn.Module):
         name; the trainer is responsible for looping over the fixed class
         vocabulary and accumulating losses across classes.
       - Returns Meta's native output dict unchanged.
+      - ``forward`` is INFERENCE-ONLY.  The internal ``_Sam3ImageAdapter``
+        hardcodes ``find_target=None`` when calling sam3's
+        ``forward_grounding``, and sam3 only skips its target-bound matching
+        path (``back_convert(find_target)``) when ``self.model.training`` is
+        False.  Callers MUST put the wrapper in eval mode before invoking:
+        ``wrapper.eval(); out = wrapper(images, prompts)``.  Training uses a
+        separate path (``train_step``/``run_epoch``); the trainer also
+        performs the same eval/forward/train dance around validation calls
+        (see ``Trainer._log_image_panel``).
     """
 
     def __init__(self, model: nn.Module, image_size: int = 1008, mask_size: int = 288) -> None:
