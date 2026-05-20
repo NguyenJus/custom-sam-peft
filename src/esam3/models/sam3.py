@@ -450,6 +450,89 @@ def _patch_encode_prompt_dtype(model: nn.Module) -> None:
     )
 
 
+def _patch_addmm_act_grad_safe() -> None:
+    """Make sam3's ``addmm_act`` fused kernel grad-aware so LoRA training works.
+
+    sam3 ships an inference-only fused matmul helper
+    (``sam3/perflib/fused.py::addmm_act``) used by every ViT-Det MLP block's
+    ``forward`` (``sam3/model/vitdet.py:71`` calls it as
+    ``addmm_act(type(self.act), self.fc1, x)``).  The helper hard-rejects
+    grad-enabled callers and explicitly detaches ``linear.weight`` /
+    ``linear.bias`` — both correct optimizations at inference, both fatal
+    for LoRA fine-tuning:
+
+        def addmm_act(activation, linear, mat1):
+            if torch.is_grad_enabled():
+                raise ValueError("Expected grad to be disabled.")
+            self = linear.bias.detach()
+            mat2 = linear.weight.detach()
+            ...
+
+    LoRA adapters attach to ``fc1`` (and other backbone Linears).  Their
+    backward path requires grad to flow through ``linear.weight`` so the
+    chain rule reaches the adapter matrices, but every MLP block hits
+    ``addmm_act`` first and raises ``ValueError("Expected grad to be
+    disabled.")``.  ``train_step``'s ``except ValueError`` clause counts
+    each raise as a non-finite micro-step, and after ``nan_abort_after``
+    consecutive raises the trainer aborts.  Net effect: SAM 3.1 fine-tuning
+    on GPU is impossible against this sam3 commit without this patch —
+    every gpu-marked training test fails this way (caught during the
+    manual GPU pass for issue #44).
+
+    Fix: replace ``addmm_act`` with a wrapper that branches on
+    ``torch.is_grad_enabled()``:
+      - grad-enabled  (training)  : ``F.{relu,gelu}(linear(mat1))`` —
+        plain, grad-tracking ``linear`` + activation.  Negligible perf
+        cost on T4 since cuBLAS already fuses addmm internally.
+      - grad-disabled (inference) : delegate to sam3's original fused
+        kernel for full perf parity.
+
+    The patch must update BOTH ``sam3.perflib.fused.addmm_act`` (the
+    definition) AND ``sam3.model.vitdet.addmm_act`` (vitdet does
+    ``from sam3.perflib.fused import addmm_act`` at import time, copying
+    the function object into its own module namespace; later updates to
+    ``perflib.fused.addmm_act`` alone do NOT reach vitdet's binding).
+
+    Notes:
+    - Module-level monkey-patch (not per-instance) since the call site is
+      inside sam3's installed package, not a sub-module of our wrapper.
+    - Activation support mirrors sam3's original kernel (ReLU and GELU
+      class- or functional-form only); other activations raise the same
+      ``ValueError`` as upstream — surfaces incompatibility loudly if
+      future sam3 versions add new activations.
+    - Idempotency sentinel mirrors the other ``_patch_*`` helpers.
+    - The right long-term fix is upstream: sam3's ``addmm_act`` should
+      branch on grad state itself.  Re-evaluate every sam3 version bump.
+    """
+    import sam3.model.vitdet as _vd
+    import sam3.perflib.fused as _pf
+    import torch.nn.functional as F
+
+    if getattr(_pf, "_esam3_addmm_act_grad_safe_patched", False):
+        return
+
+    _orig = _pf.addmm_act
+
+    def _addmm_act_grad_safe(activation, linear, mat1):  # type: ignore[no-untyped-def]
+        if not torch.is_grad_enabled():
+            return _orig(activation, linear, mat1)
+        x = linear(mat1)
+        if activation in (nn.ReLU, F.relu):
+            return F.relu(x)
+        if activation in (nn.GELU, F.gelu):
+            return F.gelu(x)
+        raise ValueError(f"Unexpected activation {activation}")
+
+    _pf.addmm_act = _addmm_act_grad_safe
+    _vd.addmm_act = _addmm_act_grad_safe
+    _pf._esam3_addmm_act_grad_safe_patched = True  # type: ignore[attr-defined]
+    logger.info(
+        "Patched sam3.perflib.fused.addmm_act (and vitdet binding) for "
+        "grad-aware forward; LoRA backbone fine-tuning now works on this "
+        "sam3 commit."
+    )
+
+
 # Modules that own a `weight` parameter and require their floating-point
 # input to match that weight's dtype. We hook the forward pre-call on each
 # instance to cast input[0] in-flight. Embedding is intentionally excluded
@@ -583,6 +666,13 @@ def load_sam31(cfg: ModelConfig) -> Sam3Wrapper:
     # torch.cat type-promotes the concatenated prompt to fp32 even when
     # txt_feats/geo_feats are bf16. See _patch_encode_prompt_dtype.
     _patch_encode_prompt_dtype(raw_model)
+
+    # Make sam3's inference-only addmm_act fused kernel grad-aware so the
+    # ViT-Det backbone supports LoRA fine-tuning. Without this, every
+    # MLP block raises ValueError on grad-enabled forward and training
+    # aborts after nan_abort_after consecutive non-finite micro-steps.
+    # See _patch_addmm_act_grad_safe for full rationale.
+    _patch_addmm_act_grad_safe()
 
     # Generic backstop: cast fp inputs to weight dtype at every
     # nn.Linear/LayerNorm/Conv* in the model. Catches any remaining or
