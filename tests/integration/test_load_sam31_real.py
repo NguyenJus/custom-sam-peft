@@ -30,10 +30,10 @@ def test_load_sam31_returns_wrapper() -> None:
 def test_load_sam31_forward_to_canonical() -> None:
     cfg = ModelConfig(device="cuda", gradient_checkpointing=False, dtype="bfloat16")
     wrapper = load_sam31(cfg)
-    # Sam3Wrapper.forward is inference-only — the adapter hardcodes
-    # find_target=None, and sam3's forward_grounding only skips its
-    # matching/back_convert path when self.model.training is False.
-    # Trainer._log_image_panel performs the same eval/forward/train dance.
+    # This is an inference smoke test, so use eval() + no_grad to disable
+    # dropout / training-mode behavior.  (forward also works under train()
+    # thanks to _patch_forward_grounding_skip_matching_on_none_target, but
+    # the trainer exercises that path separately in tests/gpu/test_real_train_*.)
     wrapper.eval()
     image = torch.zeros(1, 3, 1008, 1008, dtype=torch.bfloat16, device="cuda")
     with torch.no_grad():

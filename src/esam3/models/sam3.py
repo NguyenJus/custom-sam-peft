@@ -101,15 +101,15 @@ class Sam3Wrapper(nn.Module):
         name; the trainer is responsible for looping over the fixed class
         vocabulary and accumulating losses across classes.
       - Returns Meta's native output dict unchanged.
-      - ``forward`` is INFERENCE-ONLY.  The internal ``_Sam3ImageAdapter``
+      - ``forward`` supports both training (``model.train()``) and inference
+        (``model.eval()``) modes.  The internal ``_Sam3ImageAdapter``
         hardcodes ``find_target=None`` when calling sam3's
-        ``forward_grounding``, and sam3 only skips its target-bound matching
-        path (``back_convert(find_target)``) when ``self.model.training`` is
-        False.  Callers MUST put the wrapper in eval mode before invoking:
-        ``wrapper.eval(); out = wrapper(images, prompts)``.  Training uses a
-        separate path (``train_step``/``run_epoch``); the trainer also
-        performs the same eval/forward/train dance around validation calls
-        (see ``Trainer._log_image_panel``).
+        ``forward_grounding``; sam3's training-mode side-effect that would
+        otherwise call ``back_convert(None)`` is neutralized by
+        ``_patch_forward_grounding_skip_matching_on_none_target`` (installed
+        by ``load_sam31``).  The trainer runs its own ``HungarianMatcher`` in
+        ``esam3.models.losses.total_loss``; ``out["indices"]`` written by
+        sam3's matching call is never read by us.
     """
 
     def __init__(self, model: nn.Module, image_size: int = 1008, mask_size: int = 288) -> None:
@@ -533,6 +533,93 @@ def _patch_addmm_act_grad_safe() -> None:
     )
 
 
+def _patch_forward_grounding_skip_matching_on_none_target(model: nn.Module) -> None:
+    """Neutralize sam3's training-mode matching side-effect when ``find_target`` is ``None``.
+
+    sam3's ``Sam3Image.forward_grounding`` (``sam3/model/sam3_image.py:440-496``)
+    runs an extra side-effect when the model is in train mode (or interactive
+    eval mode)::
+
+        if self.training or self.num_interactive_steps_val > 0:
+            self._compute_matching(out, self.back_convert(find_target))
+
+    The call writes ``out["indices"]`` (and into each ``aux_outputs[*]``) using
+    sam3's own matcher on a ``BatchedFindTarget``-shaped ``find_target``.  Our
+    ``_Sam3ImageAdapter`` does not carry a ``BatchedFindTarget`` and passes
+    ``find_target=None``; ``back_convert(None)`` then dereferences
+    ``None.boxes`` and raises ``AttributeError``
+    (``sam3/model/sam3_image.py:610``).  The crash is silent during inference
+    because the gate above is ``False`` in eval mode (the inspection-tier GPU
+    tests pass on a plain forward in eval), and only surfaces under
+    training-mode calls from ``train_step`` / ``run_epoch`` and the
+    eval/forward/train dance in ``Trainer._log_image_panel``.
+
+    Our trainer runs its OWN ``HungarianMatcher`` against
+    ``list[list[Instance]]`` targets inside
+    ``esam3.models.losses.total_loss``, and never reads ``out["indices"]``
+    written by sam3's matching call (grep verified — the only ``.indices`` hit
+    in ``src/`` is ``torch.topk(...).indices`` in ``trainer._log_image_panel``,
+    unrelated).  The upstream side-effect is pure waste from our perspective
+    AND it crashes on the ``None`` we pass.  This patch short-circuits both
+    halves of that side-effect when ``find_target is None``:
+
+      - ``back_convert(targets)``        : returns ``None`` when
+        ``targets is None``; delegates to the original implementation
+        otherwise.
+      - ``_compute_matching(out, targets)`` : no-op when ``targets is None``;
+        delegates to the original implementation otherwise.
+
+    Behavior preserved: ``self.training`` stays ``True``; every other
+    training-mode branch inside ``forward_grounding`` (DAC at
+    ``sam3_image.py:266,310,397``, aux-output population at lines
+    ``341,355,358,364,371,377,383``, the o2m head at ``366``, and activation
+    checkpointing in the seg head at ``407``) fires normally.  The only
+    suppressed work is the side-effect on ``out["indices"]`` that we replace
+    via our own matcher downstream.  Non-``None`` ``find_target`` paths are
+    untouched, so eval-time runs with ``num_interactive_steps_val > 0`` and a
+    real target keep sam3-native matching intact.
+
+    Notes:
+    - Per-instance ``MethodType`` rebind (mirrors the other ``_patch_*``
+      helpers); idempotency sentinel
+      ``_esam3_skip_matching_on_none_target_patched``.
+    - Models without ``back_convert`` / ``_compute_matching`` are skipped
+      (no-op), so unit tests with stand-ins that omit the methods do not
+      raise.
+    - The right long-term fix is upstream: ``forward_grounding`` should
+      tolerate ``find_target=None`` natively.  Re-evaluate every sam3
+      version bump.
+    """
+    from types import MethodType
+
+    if getattr(model, "_esam3_skip_matching_on_none_target_patched", False):
+        return
+    if not hasattr(model, "back_convert") or not hasattr(model, "_compute_matching"):
+        return
+
+    orig_back_convert = model.back_convert
+    orig_compute_matching = model._compute_matching
+
+    def _back_convert_none_safe(self, targets, _orig=orig_back_convert):  # type: ignore[no-untyped-def]
+        if targets is None:
+            return None
+        return _orig(targets)
+
+    def _compute_matching_none_safe(self, out, targets, _orig=orig_compute_matching):  # type: ignore[no-untyped-def]
+        if targets is None:
+            return
+        return _orig(out, targets)
+
+    model.back_convert = MethodType(_back_convert_none_safe, model)  # type: ignore[assignment]
+    model._compute_matching = MethodType(_compute_matching_none_safe, model)  # type: ignore[assignment]
+    model._esam3_skip_matching_on_none_target_patched = True  # type: ignore[assignment]
+    logger.info(
+        "Patched sam3.Sam3Image.{back_convert,_compute_matching} to short-circuit "
+        "on find_target=None; training-mode forward_grounding now bypasses sam3's "
+        "internal matching side-effect (we run our own matcher in losses.total_loss)."
+    )
+
+
 # Modules that own a `weight` parameter and require their floating-point
 # input to match that weight's dtype. We hook the forward pre-call on each
 # instance to cast input[0] in-flight. Embedding is intentionally excluded
@@ -673,6 +760,14 @@ def load_sam31(cfg: ModelConfig) -> Sam3Wrapper:
     # aborts after nan_abort_after consecutive non-finite micro-steps.
     # See _patch_addmm_act_grad_safe for full rationale.
     _patch_addmm_act_grad_safe()
+
+    # Neutralize sam3's training-mode matching side-effect when find_target
+    # is None. _Sam3ImageAdapter passes find_target=None; sam3's
+    # forward_grounding would otherwise call back_convert(None) -> crash.
+    # We run our own HungarianMatcher in losses.total_loss; sam3's matcher
+    # output (out["indices"]) is never read by us.
+    # See _patch_forward_grounding_skip_matching_on_none_target for full rationale.
+    _patch_forward_grounding_skip_matching_on_none_target(raw_model)
 
     # Generic backstop: cast fp inputs to weight dtype at every
     # nn.Linear/LayerNorm/Conv* in the model. Catches any remaining or
