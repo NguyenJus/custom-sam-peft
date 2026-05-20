@@ -57,8 +57,40 @@ def _torch_dtype(name: Dtype) -> torch.dtype:
 
 
 def _collect_linear_names(base: nn.Module) -> list[str]:
-    """Return the fully-qualified names of every nn.Linear in `base`."""
-    return [n for n, m in base.named_modules() if isinstance(m, nn.Linear)]
+    """Every ``nn.Linear`` in ``base``, excluding children of ``nn.MultiheadAttention``.
+
+    The exclusion is mandatory.  ``torch.nn.MultiheadAttention.forward``
+    delegates to ``torch.nn.functional.multi_head_attention_forward``, which
+    pulls ``mha.out_proj.weight`` (and the packed ``in_proj_weight``) as raw
+    tensors and calls ``F.linear`` directly on them — bypassing the
+    ``Linear4bit.__call__`` dispatch that bitsandbytes uses to dequantize.
+    If ``out_proj`` is replaced by ``bnb.nn.Linear4bit``, the first forward
+    raises ``RuntimeError: self and mat2 must have the same dtype, but got
+    Float and Byte`` (the "Byte" is bnb's uint8-packed 4-bit storage).
+
+    sam3's decoder uses native ``nn.MultiheadAttention`` at
+    ``sam3/model/decoder.py:54,59``, so this gotcha fires on every QLoRA
+    fine-tune of the decoder.  ``transformers.utils.bitsandbytes`` solves the
+    analogous problem by excluding specific modules (e.g. ``lm_head``); ours
+    is the symmetric exclusion for native MHA.
+
+    Trade-off this introduces: out_proj remains ``nn.Linear`` (fp32/bf16) in
+    QLoRA mode, so ``_resolve_targets(..., linear_types=(Linear4bit,))`` no
+    longer matches it and LoRA is NOT injected on out_proj under QLoRA.
+    In LoRA mode (no quantization) out_proj is still a plain ``nn.Linear``
+    and LoRA targets it normally.  The asymmetry is the right one: native
+    MHA's in_proj path also stays unquantized (``in_proj_weight`` is a raw
+    ``Parameter``, not a ``Linear`` submodule), so the bulk of decoder
+    finetuning lives at FFN Linears outside MHA and is unaffected.
+    """
+    mha_prefixes = {
+        name for name, mod in base.named_modules() if isinstance(mod, nn.MultiheadAttention)
+    }
+
+    def _under_mha(linear_name: str) -> bool:
+        return any(linear_name == p or linear_name.startswith(p + ".") for p in mha_prefixes)
+
+    return [n for n, m in base.named_modules() if isinstance(m, nn.Linear) and not _under_mha(n)]
 
 
 def _resolve_parent(base: nn.Module, dotted_name: str) -> tuple[nn.Module, str]:

@@ -244,3 +244,91 @@ def test_has_plain_nn_linear_ignores_lora_adapter_children() -> None:
     # Expected: predicate returns True (the leaked plain nn.Linear is NOT under a lora_* path).
     leaked = nn.Sequential(_FakeLoraWrapper(), nn.Linear(4, 4))
     assert _has_plain_nn_linear(leaked), "predicate must still flag a true base nn.Linear leak"
+
+
+# ---------------------------------------------------------------------------
+# Regression: _collect_linear_names must exclude children of
+# nn.MultiheadAttention so that out_proj is NOT replaced by Linear4bit.
+# Background: nn.MultiheadAttention.forward delegates to
+# F.multi_head_attention_forward, which calls F.linear directly on
+# mha.out_proj.weight (raw uint8 4-bit storage if quantized), bypassing the
+# Linear4bit module dispatch and raising
+# `RuntimeError: self and mat2 must have the same dtype, but got Float and
+# Byte` on the first QLoRA forward through sam3's decoder.
+# ---------------------------------------------------------------------------
+
+
+def test_collect_linear_names_excludes_mha_children() -> None:
+    """_collect_linear_names must NOT include any nn.Linear under nn.MultiheadAttention."""
+    from esam3.peft_adapters.qlora import _collect_linear_names
+
+    class _DecoderLikeBlock(nn.Module):
+        """Mirrors sam3's decoder.py layer shape: MHA + standalone FFN Linears."""
+
+        def __init__(self) -> None:
+            super().__init__()
+            # Native MHA — its `out_proj` (and any other internal Linears) MUST be skipped.
+            self.self_attn = nn.MultiheadAttention(embed_dim=8, num_heads=2)
+            self.ca_text = nn.MultiheadAttention(embed_dim=8, num_heads=2)
+            # FFN — standalone Linears that SHOULD be picked up.
+            self.fc1 = nn.Linear(8, 16)
+            self.fc2 = nn.Linear(16, 8)
+
+    base = _DecoderLikeBlock()
+    names = _collect_linear_names(base)
+
+    # FFN Linears must be present.
+    assert "fc1" in names
+    assert "fc2" in names
+
+    # No name under any nn.MultiheadAttention may appear.
+    assert not any(n.startswith("self_attn") for n in names), (
+        f"self_attn descendants leaked into quantization set: {names}"
+    )
+    assert not any(n.startswith("ca_text") for n in names), (
+        f"ca_text descendants leaked into quantization set: {names}"
+    )
+
+    # Specifically, out_proj (the historical failure mode) must be absent.
+    assert "self_attn.out_proj" not in names
+    assert "ca_text.out_proj" not in names
+
+
+def test_collect_linear_names_keeps_all_linears_when_no_mha() -> None:
+    """Pin behavior on a model with no nn.MultiheadAttention: every Linear is collected."""
+    from esam3.peft_adapters.qlora import _collect_linear_names
+
+    class _ViTLikeBlock(nn.Module):
+        """Mirrors sam3's ViT-Det block shape: custom q/k/v as bare Linears, FFN Linears."""
+
+        def __init__(self) -> None:
+            super().__init__()
+            self.qkv = nn.Linear(8, 24)  # combined q,k,v projection (single Linear)
+            self.proj = nn.Linear(8, 8)
+            self.fc1 = nn.Linear(8, 16)
+            self.fc2 = nn.Linear(16, 8)
+
+    base = _ViTLikeBlock()
+    names = _collect_linear_names(base)
+    assert set(names) == {"qkv", "proj", "fc1", "fc2"}
+
+
+def test_collect_linear_names_handles_nested_mha() -> None:
+    """A model with MHA nested inside a container still excludes the MHA's children."""
+    from esam3.peft_adapters.qlora import _collect_linear_names
+
+    class _Container(nn.Module):
+        def __init__(self) -> None:
+            super().__init__()
+            self.layers = nn.ModuleList(
+                [
+                    nn.MultiheadAttention(embed_dim=8, num_heads=2),
+                    nn.MultiheadAttention(embed_dim=8, num_heads=2),
+                ]
+            )
+            self.head = nn.Linear(8, 4)
+
+    base = _Container()
+    names = _collect_linear_names(base)
+    # Only the top-level standalone Linear should appear; nothing under `layers.*`.
+    assert names == ["head"], f"expected only 'head'; got {names}"
