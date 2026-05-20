@@ -19,5 +19,5 @@ dev-clones are welcome under Apache-2.0 — fork it, modify it, ship it.
 
 ## Developer setup
 
-See [`README-dev.md`](README-dev.md) for the dev loop (uv, ruff, mypy,
+See [`README-dev.md`](../docs/README-dev.md) for the dev loop (uv, ruff, mypy,
 pytest, GPU test automation, repo layout).

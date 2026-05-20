@@ -1,7 +1,7 @@
 blank_issues_enabled: false
 contact_links:
   - name: Feature requests
-    url: https://github.com/NguyenJus/Efficient-SAM3-Finetuning/blob/main/CONTRIBUTING.md
+    url: https://github.com/NguyenJus/Efficient-SAM3-Finetuning/blob/main/.github/CONTRIBUTING.md
     about: >-
       Feature work is scoped internally; this project is not currently
       accepting external PRs. If you need a variant, fork the repo and

@@ -89,7 +89,7 @@ See `docs/ARCHITECTURE.md` for the module map and data flow.
 
 Dev loop, GPU test automation, and repo layout live in
 [`README-dev.md`](docs/README-dev.md). See
-[`CONTRIBUTING.md`](CONTRIBUTING.md) for the project's contribution
+[`CONTRIBUTING.md`](.github/CONTRIBUTING.md) for the project's contribution
 posture (solo research; forks welcome, external PRs not currently
 accepted).
 
