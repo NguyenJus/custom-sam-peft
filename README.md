@@ -83,12 +83,12 @@ For testing: run `pytest -m integration` for end-to-end stub tests, or `pytest -
 
 ### Repo layout
 
-See `ARCHITECTURE.md` for the module map and data flow.
+See `docs/ARCHITECTURE.md` for the module map and data flow.
 
 ## Developer setup
 
 Dev loop, GPU test automation, and repo layout live in
-[`README-dev.md`](README-dev.md). See
+[`README-dev.md`](docs/README-dev.md). See
 [`CONTRIBUTING.md`](CONTRIBUTING.md) for the project's contribution
 posture (solo research; forks welcome, external PRs not currently
 accepted).
