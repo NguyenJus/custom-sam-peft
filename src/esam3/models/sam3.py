@@ -920,60 +920,6 @@ def _patch_module_input_dtype(model: nn.Module) -> None:
     )
 
 
-def _patch_enable_vit_act_checkpoint(model: nn.Module) -> None:
-    """Enable activation checkpointing on every sam3 submodule that supports it.
-
-    The Meta sam3 model lacks a top-level ``set_grad_checkpointing`` method, so
-    ``load_sam31``'s ``cfg.gradient_checkpointing=True`` branch previously hit
-    the ``hasattr`` fallback and logged a no-op warning — meaning checkpointing
-    was silently disabled despite the config requesting it.  Without it the
-    ViT-L trunk at 1008x1008 stores ~8-12 GB of intermediate activations across
-    the backbone, which OOMs T4 (14.56 GB) at the first SDPA call in a ViT-Det
-    block.  Weights are NOT the bottleneck here, which is why QLoRA (4-bit
-    weights, same activations) does not escape it.
-
-    Meanwhile sam3 itself already implements per-ViT-Det-block checkpointing:
-    ``sam3/model/vitdet.py:982`` runs
-    ``checkpoint.checkpoint(blk, x, use_reentrant=False)`` gated on a per-block
-    ``use_act_checkpoint`` flag that defaults to True at construction but is
-    never re-asserted at load time.  Several other sam3 submodules expose the
-    same flag with the same gate (encoder, decoder, model_misc), so this helper
-    iterates the whole module tree and flips the attribute wherever it lives,
-    aligning the runtime with the spec promise that T4 is a 14 GB / 10 GB
-    validation tier.
-
-    Scope:
-      - Only flips ``use_act_checkpoint`` — the trunk attribute that owns the
-        bulk of activation memory.  The text encoder uses a different name
-        (``grad_checkpointing``) and the seg head uses
-        ``use_act_checkpoint_seg_head``; both handle much smaller tensors and
-        are intentionally left for follow-ups if memory pressure persists.
-      - Does NOT inject the attribute onto modules that don't already declare
-        it — that would be a silent contract change with sam3.
-
-    Notes:
-      - Per-module sentinel ``_esam3_act_checkpoint_patched`` for idempotency;
-        the bool attribute itself is also fine to re-assign, but the sentinel
-        keeps log counts honest on re-entry.
-      - Filed under issue #60.  Long-term fix is upstream: sam3 should expose a
-        top-level ``set_grad_checkpointing`` that does this iteration itself.
-    """
-    patched_count = 0
-    for submodule in model.modules():
-        if not hasattr(submodule, "use_act_checkpoint"):
-            continue
-        if getattr(submodule, "_esam3_act_checkpoint_patched", False):
-            continue
-        submodule.use_act_checkpoint = True  # type: ignore[assignment]
-        submodule._esam3_act_checkpoint_patched = True  # type: ignore[assignment]
-        patched_count += 1
-
-    logger.info(
-        "Enabled activation checkpointing on %d sam3 submodules (use_act_checkpoint=True).",
-        patched_count,
-    )
-
-
 def load_sam31(cfg: ModelConfig) -> Sam3Wrapper:
     """Load SAM 3.1 via Meta's `sam3` package and wrap it for our trainer.
 
@@ -998,10 +944,16 @@ def load_sam31(cfg: ModelConfig) -> Sam3Wrapper:
         if hasattr(raw_model, "set_grad_checkpointing"):
             raw_model.set_grad_checkpointing(True)
         else:
-            # Meta sam3 has no top-level set_grad_checkpointing; flip the
-            # per-block use_act_checkpoint flag directly. See
-            # _patch_enable_vit_act_checkpoint and issue #60.
-            _patch_enable_vit_act_checkpoint(raw_model)
+            # sam3 ships per-ViT-Det-block use_act_checkpoint flags but
+            # flipping them on under non-reentrant torch.utils.checkpoint
+            # produces a recompute-vs-original metadata mismatch
+            # (CheckpointError). Likely interaction with sam3's internal
+            # `with torch.amp.autocast(enabled=False)` regions and the
+            # global no-outer-autocast constraint. Tracked in issue #60.
+            logger.warning(
+                "Meta sam3 model has no `set_grad_checkpointing`; "
+                "gradient_checkpointing=True is a no-op on this revision."
+            )
 
     if cfg.dtype == "bfloat16":
         raw_model = raw_model.to(dtype=torch.bfloat16)
