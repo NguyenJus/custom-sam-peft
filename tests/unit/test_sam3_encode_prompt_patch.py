@@ -1,7 +1,7 @@
 """CPU unit tests for _patch_encode_prompt_dtype.
 
 Covers the bf16/fp32 mismatch fix described at
-src/esam3/models/sam3.py::_patch_encode_prompt_dtype:
+src/custom_sam_peft/models/sam3.py::_patch_encode_prompt_dtype:
 when sam3's _encode_prompt cats an fp32 zero-length visual_prompt_embed with
 bf16 txt_feats/geo_feats, torch.cat type-promotes the result to fp32 and the
 downstream cross-attn KV projection (bf16 weight) explodes.
@@ -19,7 +19,7 @@ import pytest
 import torch
 from torch import nn
 
-from esam3.models.sam3 import _patch_encode_prompt_dtype
+from custom_sam_peft.models.sam3 import _patch_encode_prompt_dtype
 
 
 class _FakeSam3Image(nn.Module):
@@ -72,14 +72,14 @@ def test_idempotency() -> None:
     _patch_encode_prompt_dtype(m)
     bound2 = m._encode_prompt
     assert bound1 is bound2
-    assert getattr(m, "_esam3_encode_prompt_dtype_patched", False) is True
+    assert getattr(m, "_custom_sam_peft_encode_prompt_dtype_patched", False) is True
 
 
 def test_missing_encode_prompt_is_silent() -> None:
     """Models without _encode_prompt are skipped, not errored."""
     m = nn.Linear(4, 4)
     _patch_encode_prompt_dtype(m)  # must not raise
-    assert not hasattr(m, "_esam3_encode_prompt_dtype_patched")
+    assert not hasattr(m, "_custom_sam_peft_encode_prompt_dtype_patched")
 
 
 def test_prompt_mask_passthrough() -> None:

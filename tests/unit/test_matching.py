@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import torch
 
-from esam3.data.base import Instance
-from esam3.models.matching import CanonicalOutputs, HungarianMatcher
+from custom_sam_peft.data.base import Instance
+from custom_sam_peft.models.matching import CanonicalOutputs, HungarianMatcher
 
 
 def _make_outputs(q: int = 4, mask_size: int = 16) -> CanonicalOutputs:

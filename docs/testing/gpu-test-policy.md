@@ -25,7 +25,7 @@ the minimum dataset size so future tests cannot silently widen the cost
 envelope. The CPU-only CI workflow (`ci.yml`, `ubuntu-latest`) never runs
 GPU-gated tests; the conftest autoskip handles that automatically for any
 test carrying `requires_compatible_gpu` or `requires_checkpoint`. See
-[#37](https://github.com/NguyenJus/Efficient-SAM3-Finetuning/issues/37)
+[#37](https://github.com/NguyenJus/custom-sam-peft/issues/37)
 for the audit that prompted this work.
 
 ## 2. Tier definitions
@@ -45,8 +45,8 @@ for the audit that prompted this work.
   load, not the assertion logic.
 
 Tier 1 tests are appropriate for any PR that touches model loading
-(`esam3/models/`), PEFT adapter application (`esam3/peft_adapters/`), or
-the configuration schema (`esam3/config/`), because those changes can break
+(`custom_sam_peft/models/`), PEFT adapter application (`custom_sam_peft/peft_adapters/`), or
+the configuration schema (`custom_sam_peft/config/`), because those changes can break
 the structural guarantees the tier verifies — named parameter targets,
 module type postconditions, and adapter round-trip fidelity — without
 triggering any training-loop regression.
@@ -58,7 +58,7 @@ triggering any training-loop regression.
   tracker / optimizer code changes land.
 - **Runner invocation:** `bash scripts/run_gpu_tests.sh release`
 - **What's in the tier:** three smoke tests in `tests/gpu/` — two training
-  overfits (LoRA, QLoRA) plus an end-to-end CLI `esam3 run` test:
+  overfits (LoRA, QLoRA) plus an end-to-end CLI `custom-sam-peft run` test:
   `test_real_train_overfits.py::test_overfits_in_50_steps`,
   `test_real_train_qlora.py::test_qlora_overfits_in_50_steps`, and
   `test_run_end_to_end_gpu.py::test_run_end_to_end_writes_bundle`. The first
@@ -66,13 +66,13 @@ triggering any training-loop regression.
   loss computation, backward pass, optimizer step, and scalar logging,
   repeated for 50 gradient updates on `tiny_coco`, asserting loss
   convergence, peak VRAM within the T4 ceiling, and finite logged scalars.
-  The third drives `esam3 run` end-to-end via `CliRunner` against a copy of
+  The third drives `custom-sam-peft run` end-to-end via `CliRunner` against a copy of
   `gpu_smoke_lora.yaml` and asserts on the on-disk bundle (adapter files,
   `metrics.json` parses with numeric `overall.mAP`, `summary.md` present,
   `samples/` has ≤ 6 PNGs, no `merged/` since `export.merge=false`).
 
 Tier 2 tests are appropriate as a release gate and for PRs that change the
-training runner (`esam3/train/`), the tracker interface (`esam3/tracking/`),
+training runner (`custom_sam_peft/train/`), the tracker interface (`custom_sam_peft/tracking/`),
 or the optimizer configuration — changes where a structural inspection would
 pass but a broken gradient flow or a VRAM regression would not be caught
 until a real training run.
@@ -106,12 +106,12 @@ An unknown argument exits with code 2 and prints a usage line on stderr. The
 script uses `"${PYTHON:-python}" -m pytest` rather than bare `pytest` so the
 runner picks the same interpreter that `pip install -e .` populated — bare
 `pytest` on PATH can resolve to a different Python in Colab and trigger
-`ModuleNotFoundError: No module named 'esam3'`.
+`ModuleNotFoundError: No module named 'custom_sam_peft'`.
 
 ## 3. Inventory
 
 The table below covers all 12 GPU-gated tests as of the
-[#37](https://github.com/NguyenJus/Efficient-SAM3-Finetuning/issues/37)
+[#37](https://github.com/NguyenJus/custom-sam-peft/issues/37)
 audit. Each row is derived from reading the corresponding test file:
 its module-level docstring (which names the GPU dependency), the assertions
 in the test body (which determine whether a CPU stub could replicate them),
@@ -140,12 +140,12 @@ three buckets:
 | `tests/integration/test_peft_lora_real.py::test_save_load_roundtrip_on_real_sam31` | inspection | LoRA adapter saved to disk and reloaded into a fresh model; all `lora_` param names and exact tensor values match. | Asserts on the full set of SAM3.1 `lora_` parameter names produced by real PEFT applied to the real SAM3.1 module tree; these param names are model-specific. | none — needs real SAM3.1 weights |
 | `tests/integration/test_peft_lora_real.py::test_merge_lora_on_real_sam31` | inspection | `merge_lora` removes the PEFT wrapper; `peft_model` is `None` and the class name no longer contains "Peft". | Requires `load_sam31` with real weights; `PositionEmbeddingSine` hardcodes `device='cuda'`, preventing CPU execution of the setup path. | none — needs real SAM3.1 weights |
 | `tests/integration/test_peft_qlora_real.py::test_apply_qlora_swaps_every_linear_and_attaches_lora` | inspection | Every `nn.Linear` swapped to `Linear4bit`; no plain `nn.Linear` remains; LoRA adapter attached; trainable ratio < 5%; `vision_backbone` + `transformer.decoder` LoRA targets present. | Requires bitsandbytes `Linear4bit` quant kernels (Turing+) and SAM3.1-specific named parameters for the LoRA target assertions. | none — needs real SAM3.1 weights |
-| `tests/integration/test_peft_qlora_real.py::test_save_qlora_writes_adapter_and_metadata` | inspection | `save_qlora` writes `adapter_config.json`, at least one `adapter_model.*` file, and `esam3_qlora.json` with exact NF4/bfloat16 metadata. | Requires `apply_qlora` (bitsandbytes Turing+ quant kernels) to produce the PEFT adapter artifacts that the file-existence and JSON-content assertions verify. | none — needs real SAM3.1 weights |
+| `tests/integration/test_peft_qlora_real.py::test_save_qlora_writes_adapter_and_metadata` | inspection | `save_qlora` writes `adapter_config.json`, at least one `adapter_model.*` file, and `custom_sam_peft_qlora.json` with exact NF4/bfloat16 metadata. | Requires `apply_qlora` (bitsandbytes Turing+ quant kernels) to produce the PEFT adapter artifacts that the file-existence and JSON-content assertions verify. | none — needs real SAM3.1 weights |
 | `tests/integration/test_peft_qlora_real.py::test_save_load_qlora_roundtrip` | inspection | QLoRA adapter saved and reloaded into a fresh model; all `lora_` param names and exact tensor values agree between the two model instances. | Asserts on the full set of SAM3.1 `lora_` parameter names from real QLoRA applied to the real module tree; bitsandbytes quant kernels required for `apply_qlora`. | none — needs real SAM3.1 weights |
 | `tests/integration/test_peft_qlora_real.py::test_merge_lora_unloads_qlora_wrapper` | inspection | `merge_lora` detaches the PEFT wrapper (`peft_model is None`) while leaving `model.model` accessible after the merge. | Requires `apply_qlora` (bitsandbytes Turing+ quant kernels) and `load_sam31` with real weights; `PositionEmbeddingSine` hardcodes `device='cuda'`. | none — needs real SAM3.1 weights |
 | `tests/gpu/test_real_train_overfits.py::test_overfits_in_50_steps` | release | 50-step LoRA overfit on tiny_coco via `run_training(gpu_smoke_lora.yaml)`; asserts loss drops ≥ 30%, peak VRAM ≤ 14 GB, all logged scalars finite. | End-to-end real training: real SAM3.1 weights, real PEFT, real CUDA kernels, real optimizer step. | none — needs real SAM3.1 weights |
 | `tests/gpu/test_real_train_qlora.py::test_qlora_overfits_in_50_steps` | release | 50-step QLoRA overfit on tiny_coco via `run_training(gpu_smoke_qlora.yaml)`; asserts loss drops ≥ 25%, peak VRAM ≤ 10 GB, all logged scalars finite. | End-to-end real training with 4-bit base + bf16 LoRA + 8-bit optimizer; requires bitsandbytes quant kernels (Turing+) and real SAM3.1 weights. | none — needs real SAM3.1 weights |
-| `tests/gpu/test_run_end_to_end_gpu.py::test_run_end_to_end_writes_bundle` | release | `esam3 run` CLI end-to-end on tiny_coco: writes adapter, `metrics.json`, `summary.md`, samples; no `merged/`. | End-to-end real training via the CLI Typer entry; real SAM3.1 weights, real PEFT, real optimizer step. | none — needs real SAM3.1 weights |
+| `tests/gpu/test_run_end_to_end_gpu.py::test_run_end_to_end_writes_bundle` | release | `custom-sam-peft run` CLI end-to-end on tiny_coco: writes adapter, `metrics.json`, `summary.md`, samples; no `merged/`. | End-to-end real training via the CLI Typer entry; real SAM3.1 weights, real PEFT, real optimizer step. | none — needs real SAM3.1 weights |
 
 ## 4. T4 validation policy
 
@@ -256,4 +256,4 @@ optimizer state — it belongs in Tier 2 (`gpu`). When in doubt, prefer
 Tier 1 and document the rationale in the test docstring. The Section 3
 inventory shows that all current structural and adapter tests fit
 comfortably in Tier 1; only the three smoke tests (two training overfits
-plus the end-to-end CLI `esam3 run` test) justify Tier 2.
+plus the end-to-end CLI `custom-sam-peft run` test) justify Tier 2.

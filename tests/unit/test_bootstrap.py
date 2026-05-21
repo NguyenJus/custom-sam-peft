@@ -1,25 +1,25 @@
-"""esam3._bootstrap imports every registrant so the registry is populated."""
+"""custom_sam_peft._bootstrap imports every registrant so the registry is populated."""
 
 from __future__ import annotations
 
 import sys
 
-from esam3._registry import _REGISTRY, list_registered, reset_registry
+from custom_sam_peft._registry import _REGISTRY, list_registered, reset_registry
 
 
 def test_bootstrap_populates_all_kinds() -> None:
     mods_to_evict = (
-        "esam3.data",
-        "esam3.data.coco",
-        "esam3.data.hf",
-        "esam3.peft_adapters",
-        "esam3.peft_adapters.lora",
-        "esam3.peft_adapters.qlora",
-        "esam3.tracking",
-        "esam3.tracking.noop",
-        "esam3.tracking.tensorboard",
-        "esam3.tracking.wandb",
-        "esam3._bootstrap",
+        "custom_sam_peft.data",
+        "custom_sam_peft.data.coco",
+        "custom_sam_peft.data.hf",
+        "custom_sam_peft.peft_adapters",
+        "custom_sam_peft.peft_adapters.lora",
+        "custom_sam_peft.peft_adapters.qlora",
+        "custom_sam_peft.tracking",
+        "custom_sam_peft.tracking.noop",
+        "custom_sam_peft.tracking.tensorboard",
+        "custom_sam_peft.tracking.wandb",
+        "custom_sam_peft._bootstrap",
     )
 
     # Snapshot state before mutation.
@@ -27,9 +27,10 @@ def test_bootstrap_populates_all_kinds() -> None:
     saved_registry: dict[str, dict] = {k: dict(v) for k, v in _REGISTRY.items()}
 
     # Also capture the package-level submodule attributes that Python sets when
-    # sub-packages are imported (e.g. esam3.data.hf sets esam3.data.hf = <module>).
-    # When we restore sys.modules, we must also repair these attributes so that
-    # `import esam3.data.hf` from sibling tests still resolves to the original object.
+    # sub-packages are imported (e.g. importing custom_sam_peft.data.hf sets
+    # custom_sam_peft.data.hf = <module>). When we restore sys.modules, we must
+    # also repair these attributes so that `import custom_sam_peft.data.hf` from
+    # sibling tests still resolves to the original object.
     _pkg_attr_snapshot: list[tuple[object, str, object]] = []
     for dotted in mods_to_evict:
         parts = dotted.rsplit(".", 1)
@@ -45,7 +46,7 @@ def test_bootstrap_populates_all_kinds() -> None:
             if m in sys.modules:
                 del sys.modules[m]
 
-        import esam3._bootstrap  # noqa: F401  # triggers @register decorators
+        import custom_sam_peft._bootstrap  # noqa: F401  # triggers @register decorators
 
         assert set(list_registered("dataset")) >= {"coco", "hf"}
         assert set(list_registered("peft")) >= {"lora", "qlora"}
@@ -58,7 +59,7 @@ def test_bootstrap_populates_all_kinds() -> None:
         sys.modules.update(saved_mods)
         _REGISTRY.clear()
         _REGISTRY.update(saved_registry)
-        # Repair package-level submodule attributes so that `import esam3.data.hf`
+        # Repair package-level submodule attributes so that `import custom_sam_peft.data.hf`
         # in sibling tests resolves through the package attribute chain correctly.
         for parent, attr, orig_val in _pkg_attr_snapshot:
             setattr(parent, attr, orig_val)

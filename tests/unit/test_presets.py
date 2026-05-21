@@ -1,4 +1,4 @@
-"""Tests for src/esam3/presets.py — VRAM-tier patch generator."""
+"""Tests for src/custom_sam_peft/presets.py — VRAM-tier patch generator."""
 
 from __future__ import annotations
 
@@ -7,7 +7,7 @@ from unittest.mock import MagicMock
 import pytest
 import torch
 
-from esam3.presets import pick_preset, preset_label
+from custom_sam_peft.presets import pick_preset, preset_label
 
 _GB = 1024**3
 

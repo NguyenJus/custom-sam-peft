@@ -7,7 +7,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from esam3.eval.runner import run_eval
+from custom_sam_peft.eval.runner import run_eval
 
 
 def _make_cfg(
@@ -57,13 +57,13 @@ def test_run_eval_dispatches_dataset_via_registry(
         calls.append((kind, name))
         return builder_mock
 
-    monkeypatch.setattr("esam3.eval.runner.lookup", fake_lookup)
-    monkeypatch.setattr("esam3.eval.runner.load_sam31", lambda _m: MagicMock())
-    monkeypatch.setattr("esam3.eval.runner.load_lora", lambda *_a, **_kw: None)
+    monkeypatch.setattr("custom_sam_peft.eval.runner.lookup", fake_lookup)
+    monkeypatch.setattr("custom_sam_peft.eval.runner.load_sam31", lambda _m: MagicMock())
+    monkeypatch.setattr("custom_sam_peft.eval.runner.load_lora", lambda *_a, **_kw: None)
 
     fake_report = MagicMock()
     monkeypatch.setattr(
-        "esam3.eval.runner.Evaluator",
+        "custom_sam_peft.eval.runner.Evaluator",
         lambda _cfg: MagicMock(evaluate_and_save=MagicMock(return_value=fake_report)),
     )
 
@@ -95,9 +95,9 @@ def test_run_eval_accepts_prebuilt_val_dataset_and_model(
         forbidden.append("load_sam31")
         return None
 
-    monkeypatch.setattr("esam3.eval.runner.lookup", _forbidden_lookup)
-    monkeypatch.setattr("esam3.eval.runner.load_sam31", _forbidden_load)
-    monkeypatch.setattr("esam3.eval.runner.load_lora", lambda *_a, **_kw: None)
+    monkeypatch.setattr("custom_sam_peft.eval.runner.lookup", _forbidden_lookup)
+    monkeypatch.setattr("custom_sam_peft.eval.runner.load_sam31", _forbidden_load)
+    monkeypatch.setattr("custom_sam_peft.eval.runner.load_lora", lambda *_a, **_kw: None)
 
     fake_report = MagicMock(overall={"mAP": 0.5}, per_class={}, n_images=3, n_predictions=3)
     captured: dict[str, object] = {}
@@ -122,7 +122,7 @@ def test_run_eval_accepts_prebuilt_val_dataset_and_model(
         ev.evaluate_and_save = MagicMock(return_value=fake_report)
         return ev
 
-    monkeypatch.setattr("esam3.eval.runner.Evaluator", _fake_evaluator_init)
+    monkeypatch.setattr("custom_sam_peft.eval.runner.Evaluator", _fake_evaluator_init)
 
     fake_ds = MagicMock(__len__=lambda self: 3, class_names=["a"])
     fake_model = MagicMock()
@@ -151,15 +151,15 @@ def test_run_eval_return_per_example_iou_default_false_unchanged(
     cfg = _make_cfg(format_="coco", peft_method="lora")
     _empty_ds = MagicMock(__len__=lambda self: 0, class_names=[])
     monkeypatch.setattr(
-        "esam3.eval.runner.lookup",
+        "custom_sam_peft.eval.runner.lookup",
         lambda *_a, **_kw: lambda *a, **kw: _empty_ds,
     )
-    monkeypatch.setattr("esam3.eval.runner.load_sam31", lambda _m: MagicMock())
-    monkeypatch.setattr("esam3.eval.runner.load_lora", lambda *_a, **_kw: None)
+    monkeypatch.setattr("custom_sam_peft.eval.runner.load_sam31", lambda _m: MagicMock())
+    monkeypatch.setattr("custom_sam_peft.eval.runner.load_lora", lambda *_a, **_kw: None)
 
     fake_report = MagicMock(overall={"mAP": 0.0})
     monkeypatch.setattr(
-        "esam3.eval.runner.Evaluator",
+        "custom_sam_peft.eval.runner.Evaluator",
         lambda _cfg: MagicMock(evaluate_and_save=MagicMock(return_value=fake_report)),
     )
 

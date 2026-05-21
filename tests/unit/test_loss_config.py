@@ -5,7 +5,7 @@ from __future__ import annotations
 import pytest
 from pydantic import ValidationError
 
-from esam3.config.schema import LossConfig, MatcherWeights, TrainConfig
+from custom_sam_peft.config.schema import LossConfig, MatcherWeights, TrainConfig
 
 
 def test_matcher_weights_defaults() -> None:
@@ -41,7 +41,7 @@ def test_loss_config_rejects_extra_fields() -> None:
 
 
 def test_train_config_includes_loss() -> None:
-    from esam3.config.schema import (
+    from custom_sam_peft.config.schema import (
         DataConfig,
         DataSplit,
         PEFTConfig,

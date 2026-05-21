@@ -1,7 +1,7 @@
 """CPU unit tests for _patch_forward_grounding_skip_matching_on_none_target.
 
 Covers the find_target=None crash fix described at
-src/esam3/models/sam3.py::_patch_forward_grounding_skip_matching_on_none_target.
+src/custom_sam_peft/models/sam3.py::_patch_forward_grounding_skip_matching_on_none_target.
 
 sam3's Sam3Image.forward_grounding fires
 ``self._compute_matching(out, self.back_convert(find_target))`` whenever
@@ -24,7 +24,7 @@ import pytest
 import torch
 from torch import nn
 
-from esam3.models.sam3 import _patch_forward_grounding_skip_matching_on_none_target
+from custom_sam_peft.models.sam3 import _patch_forward_grounding_skip_matching_on_none_target
 
 
 class _FakeTarget:
@@ -102,14 +102,14 @@ def test_idempotency() -> None:
     _patch_forward_grounding_skip_matching_on_none_target(m)
     assert m.back_convert is bc1
     assert m._compute_matching is cm1
-    assert getattr(m, "_esam3_skip_matching_on_none_target_patched", False) is True
+    assert getattr(m, "_custom_sam_peft_skip_matching_on_none_target_patched", False) is True
 
 
 def test_missing_methods_are_silent() -> None:
     """Models without back_convert / _compute_matching are skipped, not errored."""
     m = nn.Linear(4, 4)
     _patch_forward_grounding_skip_matching_on_none_target(m)  # must not raise
-    assert not getattr(m, "_esam3_skip_matching_on_none_target_patched", False)
+    assert not getattr(m, "_custom_sam_peft_skip_matching_on_none_target_patched", False)
 
 
 def test_partial_methods_are_silent() -> None:
@@ -121,4 +121,4 @@ def test_partial_methods_are_silent() -> None:
 
     m = _OnlyBackConvert()
     _patch_forward_grounding_skip_matching_on_none_target(m)
-    assert not getattr(m, "_esam3_skip_matching_on_none_target_patched", False)
+    assert not getattr(m, "_custom_sam_peft_skip_matching_on_none_target_patched", False)

@@ -12,7 +12,7 @@ from unittest.mock import MagicMock
 import numpy as np
 import pytest
 
-from esam3.config.schema import (
+from custom_sam_peft.config.schema import (
     DataConfig,
     DataSplit,
     PEFTConfig,
@@ -45,7 +45,7 @@ def _cfg(tmp_path: Path) -> TrainConfig:
             num_workers=0,
         ),
         tracking=TrackingConfig(
-            backend="wandb", wandb=WandbConfig(project="esam3-test", entity=None)
+            backend="wandb", wandb=WandbConfig(project="custom_sam_peft-test", entity=None)
         ),
     )
 
@@ -56,7 +56,7 @@ def mock_wandb(monkeypatch: pytest.MonkeyPatch) -> types.ModuleType:
 
     The constructor and log_images do ``import wandb`` lazily, so simply
     setting sys.modules['wandb'] is enough — no need to reload
-    esam3.tracking.wandb (which would re-fire @register and collide).
+    custom_sam_peft.tracking.wandb (which would re-fire @register and collide).
     """
     fake_run = MagicMock()
     fake_run.id = "fake-run-id-123"
@@ -68,7 +68,7 @@ def mock_wandb(monkeypatch: pytest.MonkeyPatch) -> types.ModuleType:
 
 
 def _import_tracker() -> Any:
-    from esam3.tracking.wandb import WandBTracker
+    from custom_sam_peft.tracking.wandb import WandBTracker
 
     return WandBTracker
 
@@ -83,7 +83,7 @@ def test_wb_start_run_calls_init_and_writes_id(tmp_path: Path, mock_wandb: Any) 
 
     mock_wandb.init.assert_called_once()
     kwargs = mock_wandb.init.call_args.kwargs
-    assert kwargs["project"] == "esam3-test"
+    assert kwargs["project"] == "custom_sam_peft-test"
     assert kwargs["entity"] is None
     assert kwargs["name"] == "myrun"
     assert kwargs["dir"] == str(run_dir)

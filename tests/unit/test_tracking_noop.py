@@ -7,8 +7,8 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from esam3._registry import RegistryError, list_registered, lookup
-from esam3.config.schema import (
+from custom_sam_peft._registry import RegistryError, list_registered, lookup
+from custom_sam_peft.config.schema import (
     DataConfig,
     DataSplit,
     PEFTConfig,
@@ -16,8 +16,8 @@ from esam3.config.schema import (
     TrainConfig,
     TrainHyperparams,
 )
-from esam3.tracking.base import Tracker
-from esam3.tracking.noop import NoopTracker, build_noop  # noqa: F401
+from custom_sam_peft.tracking.base import Tracker
+from custom_sam_peft.tracking.noop import NoopTracker, build_noop  # noqa: F401
 
 
 def _minimal_cfg(tmp_path: Path) -> TrainConfig:
@@ -52,7 +52,7 @@ def _ensure_noop_registered() -> None:
     try:
         lookup("tracker", "none")
     except RegistryError:
-        from esam3.tracking import noop as _noop_mod
+        from custom_sam_peft.tracking import noop as _noop_mod
 
         with contextlib.suppress(RegistryError):
             importlib.reload(_noop_mod)
@@ -76,4 +76,4 @@ def test_noop_registered_under_tracker_kind(tmp_path: Path) -> None:
     factory = lookup("tracker", "none")
     instance = factory(_minimal_cfg(tmp_path))
     assert type(instance).__name__ == "NoopTracker"
-    assert type(instance).__module__ == "esam3.tracking.noop"
+    assert type(instance).__module__ == "custom_sam_peft.tracking.noop"

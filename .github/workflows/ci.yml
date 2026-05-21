@@ -35,7 +35,7 @@ jobs:
         run: uv run ruff format --check
 
       - name: Type check
-        run: uv run mypy src/esam3
+        run: uv run mypy src/custom_sam_peft
 
       - name: Test
         run: uv run pytest
@@ -81,10 +81,10 @@ jobs:
         run: ./actionlint -color
 
       - name: yamllint
-        run: uv run --with yamllint yamllint .
+        run: uv run --with yamllint yamllint -c .config/yamllint.yml .
 
       - name: markdownlint
-        run: npx --yes markdownlint-cli2 "**/*.md" "#node_modules"
+        run: npx --yes markdownlint-cli2 --config .config/markdownlint-cli2.jsonc "**/*.md" "#node_modules"
 
       - name: shellcheck
         run: shellcheck scripts/*.sh

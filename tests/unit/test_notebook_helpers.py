@@ -1,4 +1,4 @@
-"""Tests for src/esam3/notebook_helpers.py."""
+"""Tests for src/custom_sam_peft/notebook_helpers.py."""
 
 from __future__ import annotations
 
@@ -9,7 +9,7 @@ from typing import Any
 
 import pytest
 
-from esam3.notebook_helpers import (
+from custom_sam_peft.notebook_helpers import (
     check_local_checkpoint,
     detect_env,
     resolve_hf_token,

@@ -8,7 +8,7 @@ from typing import Any
 import pytest
 import torch
 
-from esam3.config.schema import (
+from custom_sam_peft.config.schema import (
     AugmentationsConfig,
     DataConfig,
     DataSplit,
@@ -19,11 +19,11 @@ from esam3.config.schema import (
     TrainConfig,
     TrainHyperparams,
 )
-from esam3.data.coco import COCODataset
-from esam3.data.transforms import build_train_transforms
-from esam3.peft_adapters.lora import apply_lora
-from esam3.tracking.noop import NoopTracker
-from esam3.train.trainer import Trainer
+from custom_sam_peft.data.coco import COCODataset
+from custom_sam_peft.data.transforms import build_train_transforms
+from custom_sam_peft.peft_adapters.lora import apply_lora
+from custom_sam_peft.tracking.noop import NoopTracker
+from custom_sam_peft.train.trainer import Trainer
 from tests.fixtures.tiny_sam3_lora_stub import FIXTURE_SCOPE_PATTERNS, make_stub_wrapper
 
 pytestmark = pytest.mark.integration

@@ -4,7 +4,7 @@ Gated by `@pytest.mark.gpu`, `@requires_compatible_gpu`, `@requires_checkpoint`,
 plus a per-test `skipif(not _bnb_available())`. Not in CI by default. Run with:
     pytest -m gpu tests/gpu/test_real_train_qlora.py -v
 
-This test exercises the same `run_training(cfg)` seam that `esam3 train` uses,
+This test exercises the same `run_training(cfg)` seam that `custom_sam_peft train` uses,
 proving 4-bit base + bf16 LoRA + 8-bit optimizer trains end-to-end on real
 SAM 3.1. Loss-ratio and VRAM ceilings are looser than the LoRA smoke because
 4-bit base converges slightly slower and pairs with adamw8bit on the 12 GB
@@ -19,8 +19,8 @@ from pathlib import Path
 import pytest
 import torch
 
-from esam3.config.loader import load_config
-from esam3.train.runner import run_training
+from custom_sam_peft.config.loader import load_config
+from custom_sam_peft.train.runner import run_training
 from tests.gpu.conftest import _bnb_available, _RecordingTracker
 
 pytestmark = [
@@ -52,9 +52,9 @@ def test_qlora_overfits_in_50_steps(
         ],
     )
     tracker = _RecordingTracker()
-    # Patch the consumer's namespace (esam3.train.runner) rather than the producer
-    # (esam3.tracking). See spec §4.2.
-    monkeypatch.setattr("esam3.train.runner.build_tracker", lambda *_a, **_kw: tracker)
+    # Patch the consumer's namespace (custom_sam_peft.train.runner) rather than the producer
+    # (custom_sam_peft.tracking). See spec §4.2.
+    monkeypatch.setattr("custom_sam_peft.train.runner.build_tracker", lambda *_a, **_kw: tracker)
 
     torch.cuda.reset_peak_memory_stats()
     run_training(cfg)
@@ -99,7 +99,7 @@ def test_qlora_smoke_fast(
     ``test_qlora_overfits_in_50_steps`` for full release-tier validation
     once this is green.
     """
-    from esam3.eval.metrics import MetricsReport
+    from custom_sam_peft.eval.metrics import MetricsReport
 
     cfg = load_config(
         CONFIG_PATH,
@@ -119,7 +119,7 @@ def test_qlora_smoke_fast(
         ],
     )
     tracker = _RecordingTracker()
-    monkeypatch.setattr("esam3.train.runner.build_tracker", lambda *_a, **_kw: tracker)
+    monkeypatch.setattr("custom_sam_peft.train.runner.build_tracker", lambda *_a, **_kw: tracker)
 
     class _SkipEvaluator:
         def __init__(self, *args: object, **kwargs: object) -> None:
@@ -128,7 +128,7 @@ def test_qlora_smoke_fast(
         def evaluate(self, model: object, ds: object) -> MetricsReport:
             return MetricsReport()
 
-    monkeypatch.setattr("esam3.train.trainer.Evaluator", _SkipEvaluator)
+    monkeypatch.setattr("custom_sam_peft.train.trainer.Evaluator", _SkipEvaluator)
 
     run_training(cfg)
 

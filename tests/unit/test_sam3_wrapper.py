@@ -5,8 +5,8 @@ from __future__ import annotations
 import pytest
 import torch
 
-from esam3.data.base import BoxPrompts, TextPrompts
-from esam3.models.sam3 import Sam3Wrapper
+from custom_sam_peft.data.base import BoxPrompts, TextPrompts
+from custom_sam_peft.models.sam3 import Sam3Wrapper
 from tests.fixtures.tiny_sam3_stub import TinySam3Stub
 
 
@@ -54,7 +54,7 @@ def test_wrapper_rejects_batch_size_mismatch() -> None:
 def test_sam3_wrapper_has_peft_model_slot() -> None:
     from torch import nn
 
-    from esam3.models.sam3 import Sam3Wrapper
+    from custom_sam_peft.models.sam3 import Sam3Wrapper
 
     wrapper = Sam3Wrapper(nn.Identity(), image_size=8, mask_size=8)
     assert hasattr(wrapper, "peft_model")

@@ -36,7 +36,7 @@ esac
 # Use `python -m pytest` (not bare `pytest`) so the test runner picks the
 # same interpreter that `pip install -e .` populated. Bare `pytest` on
 # PATH can resolve to a different Python (common in Colab) and trigger
-# `ModuleNotFoundError: No module named 'esam3'`.
+# `ModuleNotFoundError: No module named 'custom_sam_peft'`.
 # PATHS is a controlled space-separated list of paths; intentional word split.
 # shellcheck disable=SC2086
 "${PYTHON:-python}" -m pytest -v --tb=short \

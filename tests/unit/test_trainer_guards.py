@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from esam3.config.schema import (
+from custom_sam_peft.config.schema import (
     DataConfig,
     DataSplit,
     PEFTConfig,
@@ -12,8 +12,8 @@ from esam3.config.schema import (
     TrainConfig,
     TrainHyperparams,
 )
-from esam3.tracking.noop import NoopTracker
-from esam3.train.trainer import Trainer, _resolve_optimizer_name
+from custom_sam_peft.tracking.noop import NoopTracker
+from custom_sam_peft.train.trainer import Trainer, _resolve_optimizer_name
 
 
 def _cfg(

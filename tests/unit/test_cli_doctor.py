@@ -1,4 +1,4 @@
-"""esam3 doctor formats run_doctor output."""
+"""custom_sam_peft doctor formats run_doctor output."""
 
 from __future__ import annotations
 
@@ -8,7 +8,7 @@ import re
 import pytest
 from typer.testing import CliRunner
 
-from esam3.cli.main import app
+from custom_sam_peft.cli.main import app
 
 _ANSI = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
 
@@ -46,7 +46,7 @@ def test_doctor_table_includes_hf_auth_section(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.delenv("HF_TOKEN", raising=False)
-    monkeypatch.setattr("esam3.diagnostics.huggingface_hub.get_token", lambda: None)
+    monkeypatch.setattr("custom_sam_peft.diagnostics.huggingface_hub.get_token", lambda: None)
     result = runner.invoke(app, ["doctor"])
     assert result.exit_code == 0
     text = _plain(result.stdout)
@@ -68,7 +68,9 @@ def test_doctor_json_reports_cache_token_source(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.delenv("HF_TOKEN", raising=False)
-    monkeypatch.setattr("esam3.diagnostics.huggingface_hub.get_token", lambda: "cache-tok")
+    monkeypatch.setattr(
+        "custom_sam_peft.diagnostics.huggingface_hub.get_token", lambda: "cache-tok"
+    )
     result = runner.invoke(app, ["doctor", "--json"])
     assert result.exit_code == 0
     blob = json.loads(_plain(result.stdout))
@@ -79,7 +81,7 @@ def test_doctor_json_reports_no_token(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.delenv("HF_TOKEN", raising=False)
-    monkeypatch.setattr("esam3.diagnostics.huggingface_hub.get_token", lambda: None)
+    monkeypatch.setattr("custom_sam_peft.diagnostics.huggingface_hub.get_token", lambda: None)
     result = runner.invoke(app, ["doctor", "--json"])
     assert result.exit_code == 0
     blob = json.loads(_plain(result.stdout))
@@ -93,7 +95,7 @@ def test_doctor_json_round_trips_hf_auth_field(
 ) -> None:
     """`--json` always includes the hf_auth field with both sub-keys."""
     monkeypatch.delenv("HF_TOKEN", raising=False)
-    monkeypatch.setattr("esam3.diagnostics.huggingface_hub.get_token", lambda: None)
+    monkeypatch.setattr("custom_sam_peft.diagnostics.huggingface_hub.get_token", lambda: None)
     result = runner.invoke(app, ["doctor", "--json"])
     assert result.exit_code == 0
     blob = json.loads(_plain(result.stdout))

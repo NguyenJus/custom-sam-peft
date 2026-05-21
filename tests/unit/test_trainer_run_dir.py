@@ -9,8 +9,8 @@ from unittest.mock import MagicMock
 import pytest
 import torch
 
-import esam3.train.trainer as trainer_mod
-from esam3.config.schema import (
+import custom_sam_peft.train.trainer as trainer_mod
+from custom_sam_peft.config.schema import (
     DataConfig,
     DataSplit,
     PEFTConfig,
@@ -18,11 +18,11 @@ from esam3.config.schema import (
     TrainConfig,
     TrainHyperparams,
 )
-from esam3.data.base import Example, Instance, TextPrompts
-from esam3.eval.metrics import MetricsReport
-from esam3.peft_adapters.lora import apply_lora
-from esam3.tracking.noop import NoopTracker
-from esam3.train.trainer import Trainer
+from custom_sam_peft.data.base import Example, Instance, TextPrompts
+from custom_sam_peft.eval.metrics import MetricsReport
+from custom_sam_peft.peft_adapters.lora import apply_lora
+from custom_sam_peft.tracking.noop import NoopTracker
+from custom_sam_peft.train.trainer import Trainer
 from tests.fixtures.tiny_sam3_lora_stub import FIXTURE_SCOPE_PATTERNS, make_stub_wrapper
 
 
@@ -156,7 +156,7 @@ def test_fit_calls_start_run_once_before_first_log(tmp_path: Path) -> None:
     """Regression: Trainer.fit() must call tracker.start_run before any log call."""
     from unittest.mock import MagicMock
 
-    from esam3.config.schema import (
+    from custom_sam_peft.config.schema import (
         AugmentationsConfig,
         DataConfig,
         DataSplit,
@@ -166,15 +166,15 @@ def test_fit_calls_start_run_once_before_first_log(tmp_path: Path) -> None:
         TrainConfig,
         TrainHyperparams,
     )
-    from esam3.data.coco import COCODataset
-    from esam3.data.transforms import build_eval_transforms, build_train_transforms
-    from esam3.peft_adapters.lora import apply_lora
-    from esam3.train.trainer import Trainer
+    from custom_sam_peft.data.coco import COCODataset
+    from custom_sam_peft.data.transforms import build_eval_transforms, build_train_transforms
+    from custom_sam_peft.peft_adapters.lora import apply_lora
+    from custom_sam_peft.train.trainer import Trainer
     from tests.fixtures.tiny_sam3_lora_stub import FIXTURE_SCOPE_PATTERNS, make_stub_wrapper
 
     # Reuse the integration test's tiny_coco directory via the conftest fixture path.
     tiny_coco_dir = Path(__file__).resolve().parents[1] / "fixtures" / "tiny_coco"
-    from esam3.config.schema import NormalizeConfig
+    from custom_sam_peft.config.schema import NormalizeConfig
 
     transforms_t = build_train_transforms(
         AugmentationsConfig(hflip=False, color_jitter=0.0),

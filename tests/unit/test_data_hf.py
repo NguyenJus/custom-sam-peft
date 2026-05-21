@@ -15,8 +15,8 @@ import pytest
 import torch
 from PIL import Image
 
-from esam3.config.schema import HFFieldMap, NormalizeConfig, TextPromptConfig
-from esam3.data.hf import (
+from custom_sam_peft.config.schema import HFFieldMap, NormalizeConfig, TextPromptConfig
+from custom_sam_peft.data.hf import (
     HFFieldError,
     _normalize_bbox,
     _resolve_class_names,
@@ -116,13 +116,13 @@ def test_resolve_class_names_from_classlabel_in_objects() -> None:
 # Task 16: HFDataset + build_hf
 # ---------------------------------------------------------------------------
 
-from esam3._registry import lookup
-from esam3.data.base import BoxPrompts, TextPrompts
-from esam3.data.hf import HFDataset
+from custom_sam_peft._registry import lookup
+from custom_sam_peft.data.base import BoxPrompts, TextPrompts
+from custom_sam_peft.data.hf import HFDataset
 
 
 def _build_eval(image_size: int = 8) -> Any:
-    from esam3.data.transforms import build_eval_transforms
+    from custom_sam_peft.data.transforms import build_eval_transforms
 
     return build_eval_transforms(
         image_size, model_name="facebook/sam3.1", normalize=NormalizeConfig()
@@ -133,7 +133,7 @@ def _patch_load_dataset(monkeypatch: pytest.MonkeyPatch, ds: hf_datasets.Dataset
     def fake(name: str, split: str, **kwargs: object) -> hf_datasets.Dataset:
         return ds
 
-    monkeypatch.setattr("esam3.data.hf.hf_load_dataset", fake)
+    monkeypatch.setattr("custom_sam_peft.data.hf.hf_load_dataset", fake)
 
 
 def test_required_fields_validation_default_paths(
@@ -322,7 +322,7 @@ def test_masks_from_boxes_when_segmentation_absent(
 ) -> None:
     ds = _build_hf_dataset(use_class_label=True, include_segmentation=False)
     _patch_load_dataset(monkeypatch, ds)
-    caplog.set_level(logging.WARNING, logger="esam3.data.hf")
+    caplog.set_level(logging.WARNING, logger="custom_sam_peft.data.hf")
     with _patch_imagenet_ctx():
         hfds = HFDataset(
             name="x",
@@ -401,7 +401,7 @@ def test_multiplex_truncation_text_hf(
 ) -> None:
     ds = _build_many_cat_hf(20)
     _patch_load_dataset(monkeypatch, ds)
-    caplog.set_level(logging.WARNING, logger="esam3.data.hf")
+    caplog.set_level(logging.WARNING, logger="custom_sam_peft.data.hf")
     with _patch_imagenet_ctx():
         hfds = HFDataset(
             name="x",
@@ -422,7 +422,7 @@ def test_multiplex_truncation_box_hf(
 ) -> None:
     ds = _build_many_cat_hf(20)
     _patch_load_dataset(monkeypatch, ds)
-    caplog.set_level(logging.WARNING, logger="esam3.data.hf")
+    caplog.set_level(logging.WARNING, logger="custom_sam_peft.data.hf")
     with _patch_imagenet_ctx():
         hfds = HFDataset(
             name="x",

@@ -7,7 +7,7 @@ import os
 import pytest
 from pydantic import ValidationError
 
-from esam3.config.schema import (
+from custom_sam_peft.config.schema import (
     BoxHintSchedule,
     LossConfig,
     MatcherWeights,

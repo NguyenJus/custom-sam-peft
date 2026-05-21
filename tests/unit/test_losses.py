@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import torch
 
-from esam3.models.losses import box_loss, mask_loss, objectness_loss, presence_loss
+from custom_sam_peft.models.losses import box_loss, mask_loss, objectness_loss, presence_loss
 
 
 def test_mask_loss_zero_on_perfect_match() -> None:
@@ -86,9 +86,9 @@ def _stub_outputs(b: int = 1, q: int = 4, h: int = 16) -> dict:
 
 
 def test_total_loss_returns_all_components() -> None:
-    from esam3.config.schema import LossConfig
-    from esam3.data.base import Instance
-    from esam3.models.losses import total_loss
+    from custom_sam_peft.config.schema import LossConfig
+    from custom_sam_peft.data.base import Instance
+    from custom_sam_peft.models.losses import total_loss
 
     raw = _stub_outputs()
     targets = [
@@ -106,9 +106,9 @@ def test_total_loss_returns_all_components() -> None:
 
 
 def test_total_loss_total_equals_weighted_sum() -> None:
-    from esam3.config.schema import LossConfig
-    from esam3.data.base import Instance
-    from esam3.models.losses import total_loss
+    from custom_sam_peft.config.schema import LossConfig
+    from custom_sam_peft.data.base import Instance
+    from custom_sam_peft.models.losses import total_loss
 
     raw = _stub_outputs()
     targets = [
@@ -132,8 +132,8 @@ def test_total_loss_total_equals_weighted_sum() -> None:
 
 
 def test_total_loss_handles_empty_targets() -> None:
-    from esam3.config.schema import LossConfig
-    from esam3.models.losses import total_loss
+    from custom_sam_peft.config.schema import LossConfig
+    from custom_sam_peft.models.losses import total_loss
 
     raw = _stub_outputs()
     losses = total_loss(raw, [[]], LossConfig())

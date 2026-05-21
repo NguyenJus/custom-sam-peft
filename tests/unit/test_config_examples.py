@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from esam3.config.loader import load_config
+from custom_sam_peft.config.loader import load_config
 
 CONFIG_DIR = Path(__file__).resolve().parents[2] / "configs" / "examples"
 

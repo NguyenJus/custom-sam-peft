@@ -5,7 +5,7 @@ from __future__ import annotations
 import pytest
 from pydantic import ValidationError
 
-from esam3.config.schema import TextPromptConfig
+from custom_sam_peft.config.schema import TextPromptConfig
 
 
 def test_text_prompt_config_defaults() -> None:
@@ -22,7 +22,7 @@ def test_text_prompt_config_k_bounded() -> None:
         TextPromptConfig(k=0)
 
 
-from esam3.config.schema import NormalizeConfig
+from custom_sam_peft.config.schema import NormalizeConfig
 
 
 def test_normalize_config_defaults() -> None:
@@ -47,7 +47,7 @@ def test_normalize_config_validation_rejects_mean_out_of_range() -> None:
         NormalizeConfig(mean=[1.5, 0.1, 0.1], std=[0.1, 0.1, 0.1])
 
 
-from esam3.config.schema import HFFieldMap
+from custom_sam_peft.config.schema import HFFieldMap
 
 
 def test_hf_field_map_defaults() -> None:
@@ -70,7 +70,7 @@ def test_hf_field_map_rejects_invalid_bbox_format() -> None:
         HFFieldMap(bbox_format="cxcywh")  # type: ignore[arg-type]
 
 
-from esam3.config.schema import HFDatasetConfig
+from custom_sam_peft.config.schema import HFDatasetConfig
 
 
 def test_hf_dataset_config_required_name() -> None:
@@ -93,7 +93,7 @@ def test_hf_dataset_config_name_min_length() -> None:
 
 from pathlib import Path
 
-from esam3.config.schema import DataConfig, TrainConfig
+from custom_sam_peft.config.schema import DataConfig, TrainConfig
 
 
 def _minimal_data(format: str = "coco") -> dict[str, object]:

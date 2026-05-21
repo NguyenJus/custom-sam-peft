@@ -1,7 +1,7 @@
 """CPU unit tests for _patch_module_input_dtype.
 
 Covers the generic fp-input-dtype backstop described at
-src/esam3/models/sam3.py::_patch_module_input_dtype.  This hook is the
+src/custom_sam_peft/models/sam3.py::_patch_module_input_dtype.  This hook is the
 consumer-side defense for the cascading fp32/bf16 collisions seen on Colab
 T4 when sam3 internal helpers (e.g. ``gen_sineembed_for_position``,
 ``get_valid_ratio``) leak fp32 tensors into bf16-weight nn.Linear /
@@ -18,7 +18,7 @@ import pytest
 import torch
 from torch import nn
 
-from esam3.models.sam3 import _patch_module_input_dtype
+from custom_sam_peft.models.sam3 import _patch_module_input_dtype
 
 
 def test_unpatched_linear_raises_on_fp32_input_to_bf16_weight() -> None:
@@ -84,7 +84,7 @@ def test_idempotency_does_not_double_hook() -> None:
     _patch_module_input_dtype(model)
     hooks_after_second = len(linear._forward_pre_hooks)
     assert hooks_after_first == hooks_after_second
-    assert getattr(linear, "_esam3_module_input_dtype_patched", False) is True
+    assert getattr(linear, "_custom_sam_peft_module_input_dtype_patched", False) is True
 
 
 def test_embedding_is_skipped() -> None:
@@ -96,7 +96,7 @@ def test_embedding_is_skipped() -> None:
     model = nn.Sequential(nn.Embedding(10, 4)).to(dtype=torch.bfloat16)
     _patch_module_input_dtype(model)
     embedding = model[0]
-    assert getattr(embedding, "_esam3_module_input_dtype_patched", False) is False
+    assert getattr(embedding, "_custom_sam_peft_module_input_dtype_patched", False) is False
     # And it still works on LongTensor input.
     idx = torch.tensor([0, 1, 2], dtype=torch.long)
     y = model(idx)
@@ -144,7 +144,7 @@ def test_parameterless_module_in_tree_is_skipped() -> None:
     model = nn.Sequential(nn.Linear(4, 4), nn.ReLU()).to(dtype=torch.bfloat16)
     _patch_module_input_dtype(model)
     relu = model[1]
-    assert getattr(relu, "_esam3_module_input_dtype_patched", False) is False
+    assert getattr(relu, "_custom_sam_peft_module_input_dtype_patched", False) is False
 
 
 def test_reproduces_gen_sineembed_failure_mode() -> None:

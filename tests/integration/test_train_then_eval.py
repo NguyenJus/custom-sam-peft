@@ -10,7 +10,7 @@ from unittest.mock import patch
 import numpy as np
 import pytest
 
-from esam3.config.schema import (
+from custom_sam_peft.config.schema import (
     DataConfig,
     DataSplit,
     EvalConfig,
@@ -20,9 +20,9 @@ from esam3.config.schema import (
     TrainConfig,
     TrainHyperparams,
 )
-from esam3.eval.metrics import MetricsReport
-from esam3.peft_adapters.lora import apply_lora
-from esam3.train.trainer import Trainer
+from custom_sam_peft.eval.metrics import MetricsReport
+from custom_sam_peft.peft_adapters.lora import apply_lora
+from custom_sam_peft.train.trainer import Trainer
 from tests.fixtures.tiny_sam3_lora_stub import FIXTURE_SCOPE_PATTERNS, make_stub_wrapper
 
 pytestmark = pytest.mark.integration
@@ -127,7 +127,7 @@ def test_trainer_fit_propagates_evaluator_exception(tiny_text_dataset, tmp_path:
 
     with (
         patch(
-            "esam3.train.trainer.Evaluator.evaluate",
+            "custom_sam_peft.train.trainer.Evaluator.evaluate",
             side_effect=RuntimeError("injected eval failure"),
         ),
         pytest.raises(RuntimeError, match="injected eval failure"),

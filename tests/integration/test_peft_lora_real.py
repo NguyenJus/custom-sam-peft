@@ -12,9 +12,9 @@ from pathlib import Path
 import pytest
 import torch
 
-from esam3.config.schema import ModelConfig, PEFTConfig
-from esam3.models.sam3 import load_sam31
-from esam3.peft_adapters.lora import apply_lora, load_lora, merge_lora, save_lora
+from custom_sam_peft.config.schema import ModelConfig, PEFTConfig
+from custom_sam_peft.models.sam3 import load_sam31
+from custom_sam_peft.peft_adapters.lora import apply_lora, load_lora, merge_lora, save_lora
 
 pytestmark = [
     pytest.mark.requires_checkpoint,

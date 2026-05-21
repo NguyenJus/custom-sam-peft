@@ -1,4 +1,4 @@
-"""Tests for esam3.peft_adapters.lora.apply_lora and helpers."""
+"""Tests for custom_sam_peft.peft_adapters.lora.apply_lora and helpers."""
 
 from __future__ import annotations
 
@@ -9,8 +9,8 @@ import pytest
 import torch
 from torch import nn
 
-from esam3.config.schema import PEFTConfig
-from esam3.peft_adapters.lora import (
+from custom_sam_peft.config.schema import PEFTConfig
+from custom_sam_peft.peft_adapters.lora import (
     SCOPE_TARGETS,
     apply_lora,
     load_lora,
@@ -239,7 +239,7 @@ def test_merge_lora_without_apply_raises() -> None:
 
 
 def test_apply_lora_registered_under_peft_lora() -> None:
-    from esam3._registry import lookup
+    from custom_sam_peft._registry import lookup
 
     fn = lookup("peft", "lora")
     assert fn is apply_lora
@@ -247,7 +247,7 @@ def test_apply_lora_registered_under_peft_lora() -> None:
 
 def test_resolve_targets_supports_custom_linear_types() -> None:
     """The new linear_types parameter lets qlora.py match Linear4bit modules."""
-    from esam3.peft_adapters.lora import _resolve_targets
+    from custom_sam_peft.peft_adapters.lora import _resolve_targets
 
     class FakeLinear4bit(nn.Module):
         """Stand-in for bnb.nn.Linear4bit; not an nn.Linear subclass."""
@@ -290,7 +290,7 @@ def test_resolve_targets_supports_custom_linear_types() -> None:
 
 def test_resolve_targets_default_still_filters_to_nn_linear() -> None:
     """Backward-compat guard: default behavior unchanged after adding linear_types."""
-    from esam3.peft_adapters.lora import _resolve_targets
+    from custom_sam_peft.peft_adapters.lora import _resolve_targets
 
     class Base(nn.Module):
         def __init__(self) -> None:
@@ -316,7 +316,7 @@ def test_scope_targets_match_real_sam3_module_naming() -> None:
     """Regression guard: the production SCOPE_TARGETS regexes match the real
     SAM 3.1 module-naming shape (sourced from sam3/model/{vitdet,necks,vl_combiner,decoder}.py).
     """
-    from esam3.peft_adapters.lora import SCOPE_TARGETS, _resolve_targets
+    from custom_sam_peft.peft_adapters.lora import SCOPE_TARGETS, _resolve_targets
 
     class _RealNamingStub(nn.Module):
         def __init__(self) -> None:
@@ -386,7 +386,7 @@ def test_vision_decoder_scope_matches_decoder_ffn_linears() -> None:
     by calling _resolve_targets with linear_types=(nn.Linear,) directly, since
     the regex is type-agnostic and type filtering is orthogonal.
     """
-    from esam3.peft_adapters.lora import _resolve_targets
+    from custom_sam_peft.peft_adapters.lora import _resolve_targets
 
     class FakeDecoderLayer(nn.Module):
         def __init__(self) -> None:

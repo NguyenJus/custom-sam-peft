@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import torch
 
-from esam3.data.base import (
+from custom_sam_peft.data.base import (
     BoxPrompts,
     Dataset,
     Example,

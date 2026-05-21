@@ -7,8 +7,8 @@ from typing import Any
 
 import numpy as np
 
-from esam3.tracking.base import Tracker
-from esam3.tracking.noop import NoopTracker
+from custom_sam_peft.tracking.base import Tracker
+from custom_sam_peft.tracking.noop import NoopTracker
 
 
 def test_noop_is_a_tracker() -> None:

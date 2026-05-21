@@ -5,8 +5,8 @@ from __future__ import annotations
 import pytest
 import torch
 
-from esam3.data.base import BoxPrompts, Example, Instance, TextPrompts
-from esam3.data.collate import collate_batch
+from custom_sam_peft.data.base import BoxPrompts, Example, Instance, TextPrompts
+from custom_sam_peft.data.collate import collate_batch
 
 
 def _ex(image_id: str, shape: tuple[int, int, int] = (3, 64, 64)) -> Example:

@@ -9,10 +9,10 @@ from __future__ import annotations
 import pytest
 import torch
 
-from esam3.config.schema import ModelConfig
-from esam3.data.base import TextPrompts
-from esam3.models.matching import meta_to_canonical
-from esam3.models.sam3 import Sam3Wrapper, load_sam31
+from custom_sam_peft.config.schema import ModelConfig
+from custom_sam_peft.data.base import TextPrompts
+from custom_sam_peft.models.matching import meta_to_canonical
+from custom_sam_peft.models.sam3 import Sam3Wrapper, load_sam31
 
 pytestmark = [
     pytest.mark.requires_checkpoint,

@@ -1,6 +1,6 @@
-"""End-to-end `esam3 run` GPU smoke test.
+"""End-to-end `custom_sam_peft run` GPU smoke test.
 
-Drives `esam3 run` (Typer entry) against the same `configs/examples/gpu_smoke_lora.yaml`
+Drives `custom_sam_peft run` (Typer entry) against the same `configs/examples/gpu_smoke_lora.yaml`
 fixture used by the other GPU smoke tests. Asserts on the artefacts on disk.
 """
 
@@ -12,7 +12,7 @@ from pathlib import Path
 import pytest
 from typer.testing import CliRunner
 
-from esam3.cli.main import app
+from custom_sam_peft.cli.main import app
 
 pytestmark = [
     pytest.mark.gpu,
@@ -24,7 +24,7 @@ CONFIG_PATH = Path(__file__).resolve().parents[2] / "configs" / "examples" / "gp
 
 
 def test_run_end_to_end_writes_bundle(tmp_path: Path, tiny_coco_dir: Path) -> None:
-    from esam3.config.loader import load_config
+    from custom_sam_peft.config.loader import load_config
 
     # Materialize a copy of the smoke config pointing at tmp_path output, tiny_coco data.
     cfg = load_config(

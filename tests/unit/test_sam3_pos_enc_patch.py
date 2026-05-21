@@ -1,6 +1,6 @@
 """CPU unit test for the PositionEmbeddingSine._encode_xy dtype-cast patch.
 
-The patch lives in src/esam3/models/sam3.py::_patch_pos_enc_dtype. It rebinds
+The patch lives in src/custom_sam_peft/models/sam3.py::_patch_pos_enc_dtype. It rebinds
 the bound method on each PositionEmbeddingSine instance so its (pos_x, pos_y)
 outputs are cast to the input tensor's dtype before returning.
 """
@@ -12,7 +12,7 @@ import torch
 from sam3.model.position_encoding import PositionEmbeddingSine
 from torch import nn
 
-from esam3.models.sam3 import _patch_pos_enc_dtype
+from custom_sam_peft.models.sam3 import _patch_pos_enc_dtype
 
 
 def test_pos_enc_patch_casts_outputs_to_input_dtype() -> None:

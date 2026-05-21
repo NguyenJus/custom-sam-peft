@@ -1,4 +1,4 @@
-"""CPU smoke tests for esam3.peft_adapters.qlora.
+"""CPU smoke tests for custom_sam_peft.peft_adapters.qlora.
 
 The real work (4-bit module swap + LoRA on quantized base) is GPU-only and
 lives in tests/integration/test_peft_qlora_real.py. These tests cover:
@@ -27,14 +27,14 @@ import pytest
 import torch
 from torch import nn
 
-from esam3._registry import lookup
-from esam3.config.schema import PEFTConfig, QLoRAConfig
+from custom_sam_peft._registry import lookup
+from custom_sam_peft.config.schema import PEFTConfig, QLoRAConfig
 from tests.fixtures.tiny_sam3_lora_stub import make_stub_wrapper
 
 
 def test_registry_lookup() -> None:
     """apply_qlora is registered under ('peft', 'qlora')."""
-    from esam3.peft_adapters.qlora import apply_qlora
+    from custom_sam_peft.peft_adapters.qlora import apply_qlora
 
     assert lookup("peft", "qlora") is apply_qlora
 
@@ -73,7 +73,7 @@ def test_import_does_not_require_bitsandbytes() -> None:
     """
     import ast
 
-    import esam3.peft_adapters.qlora as qlora_module
+    import custom_sam_peft.peft_adapters.qlora as qlora_module
 
     # The module is already importable (this very import succeeded) — that
     # alone proves importing qlora does not require bitsandbytes at module
@@ -106,11 +106,11 @@ def test_apply_qlora_raises_helpful_importerror_when_bnb_missing(
 
     Setting sys.modules["bitsandbytes"] = None makes a fresh `import
     bitsandbytes` inside apply_qlora's lazy-import helper fail with
-    ImportError. We do NOT evict esam3.peft_adapters.qlora from sys.modules
+    ImportError. We do NOT evict custom_sam_peft.peft_adapters.qlora from sys.modules
     here — re-importing it would re-fire the @register("peft", "qlora")
     decorator, which the registry rejects as a duplicate.
     """
-    from esam3.peft_adapters.qlora import apply_qlora
+    from custom_sam_peft.peft_adapters.qlora import apply_qlora
 
     monkeypatch.setitem(sys.modules, "bitsandbytes", None)
 
@@ -122,7 +122,7 @@ def test_apply_qlora_raises_helpful_importerror_when_bnb_missing(
 
 def test_save_qlora_raises_when_no_peft_model(tmp_path: Path) -> None:
     """save_qlora requires apply_qlora to have run first."""
-    from esam3.peft_adapters.qlora import save_qlora
+    from custom_sam_peft.peft_adapters.qlora import save_qlora
 
     w = make_stub_wrapper()
     assert w.peft_model is None
@@ -132,7 +132,7 @@ def test_save_qlora_raises_when_no_peft_model(tmp_path: Path) -> None:
 
 def test_load_qlora_raises_when_peft_model_already_set(tmp_path: Path) -> None:
     """load_qlora refuses to overwrite a wrapper that already has an adapter."""
-    from esam3.peft_adapters.qlora import load_qlora
+    from custom_sam_peft.peft_adapters.qlora import load_qlora
 
     w = make_stub_wrapper()
     # Fake a previously-applied state. The real type is PeftModel; for this
@@ -189,7 +189,7 @@ class _FakeWrapper:
 
 
 def test_infer_quant_type_primary_path(fake_bnb: types.ModuleType) -> None:
-    from esam3.peft_adapters.qlora import _infer_quant_type_from_wrapper
+    from custom_sam_peft.peft_adapters.qlora import _infer_quant_type_from_wrapper
 
     fake_linear4bit = fake_bnb.nn.Linear4bit(weight_quant_type="nf4")  # type: ignore[attr-defined]
     model = nn.Sequential(fake_linear4bit)
@@ -198,7 +198,7 @@ def test_infer_quant_type_primary_path(fake_bnb: types.ModuleType) -> None:
 
 
 def test_infer_quant_type_legacy_fallback(fake_bnb: types.ModuleType) -> None:
-    from esam3.peft_adapters.qlora import _infer_quant_type_from_wrapper
+    from custom_sam_peft.peft_adapters.qlora import _infer_quant_type_from_wrapper
 
     fake_linear4bit = fake_bnb.nn.Linear4bit(module_quant_type="fp4")  # type: ignore[attr-defined]
     model = nn.Sequential(fake_linear4bit)
@@ -209,7 +209,7 @@ def test_infer_quant_type_legacy_fallback(fake_bnb: types.ModuleType) -> None:
 def test_infer_quant_type_raises_when_both_paths_missing(
     fake_bnb: types.ModuleType,
 ) -> None:
-    from esam3.peft_adapters.qlora import _infer_quant_type_from_wrapper
+    from custom_sam_peft.peft_adapters.qlora import _infer_quant_type_from_wrapper
 
     fake_linear4bit = fake_bnb.nn.Linear4bit()  # no quant_type set anywhere
     model = nn.Sequential(fake_linear4bit)
@@ -261,7 +261,7 @@ def test_has_plain_nn_linear_ignores_lora_adapter_children() -> None:
 
 def test_collect_linear_names_excludes_mha_children() -> None:
     """_collect_linear_names must NOT include any nn.Linear under nn.MultiheadAttention."""
-    from esam3.peft_adapters.qlora import _collect_linear_names
+    from custom_sam_peft.peft_adapters.qlora import _collect_linear_names
 
     class _DecoderLikeBlock(nn.Module):
         """Mirrors sam3's decoder.py layer shape: MHA + standalone FFN Linears."""
@@ -297,7 +297,7 @@ def test_collect_linear_names_excludes_mha_children() -> None:
 
 def test_collect_linear_names_keeps_all_linears_when_no_mha() -> None:
     """Pin behavior on a model with no nn.MultiheadAttention: every Linear is collected."""
-    from esam3.peft_adapters.qlora import _collect_linear_names
+    from custom_sam_peft.peft_adapters.qlora import _collect_linear_names
 
     class _ViTLikeBlock(nn.Module):
         """Mirrors sam3's ViT-Det block shape: custom q/k/v as bare Linears, FFN Linears."""
@@ -316,7 +316,7 @@ def test_collect_linear_names_keeps_all_linears_when_no_mha() -> None:
 
 def test_collect_linear_names_handles_nested_mha() -> None:
     """A model with MHA nested inside a container still excludes the MHA's children."""
-    from esam3.peft_adapters.qlora import _collect_linear_names
+    from custom_sam_peft.peft_adapters.qlora import _collect_linear_names
 
     class _Container(nn.Module):
         def __init__(self) -> None:
@@ -350,7 +350,7 @@ def test_mha_exclusion_includes_sam3_custom_mha(monkeypatch: pytest.MonkeyPatch)
     sentinel MultiheadAttention class, then re-execute the import path to
     confirm the exclusion picks it up.
     """
-    from esam3.peft_adapters.qlora import _mha_exclusion_types
+    from custom_sam_peft.peft_adapters.qlora import _mha_exclusion_types
 
     # The real sam3 may or may not be installed in this test env. To assert
     # the contract regardless, install a fake sam3.model.model_misc with a
@@ -378,7 +378,7 @@ def test_mha_exclusion_degrades_to_torch_only_without_sam3(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """_mha_exclusion_types still works when sam3.model.model_misc is missing."""
-    from esam3.peft_adapters.qlora import _mha_exclusion_types
+    from custom_sam_peft.peft_adapters.qlora import _mha_exclusion_types
 
     # Force the import path to fail by setting a sentinel that raises.
     monkeypatch.setitem(sys.modules, "sam3.model.model_misc", None)
@@ -399,7 +399,7 @@ def test_collect_linear_names_excludes_sam3_custom_mha_children(
     holds an out_proj nn.Linear and bypasses module dispatch the same way
     torch's built-in MHA does.
     """
-    from esam3.peft_adapters.qlora import _collect_linear_names
+    from custom_sam_peft.peft_adapters.qlora import _collect_linear_names
 
     # Fake-install a sam3.model.model_misc module exposing a custom MHA class.
     # We mirror the real shape: an nn.Module with an out_proj nn.Linear child
@@ -450,7 +450,7 @@ def test_collect_linear_names_excludes_sam3_custom_mha_children(
 # bf16/fp16 parameter to fp32 (peft/utils/other.py:181-186), under the
 # assumption that outer torch.autocast will be on at training time to handle
 # dtype routing. This codebase deliberately avoids outer autocast (see
-# src/esam3/models/sam3.py::_patch_pos_enc_dtype docstring; sam3 has its own
+# src/custom_sam_peft/models/sam3.py::_patch_pos_enc_dtype docstring; sam3 has its own
 # `with torch.amp.autocast(enabled=False)` regions in decoder.forward_ffn
 # that re-trigger bf16/fp32 collisions whenever an outer scope is active).
 # Without outer autocast the fp32 upcast is fatal at every raw-Parameter
@@ -467,7 +467,7 @@ def test_qlora_does_not_call_prepare_model_for_kbit_training() -> None:
     """
     import ast
 
-    import esam3.peft_adapters.qlora as qlora_module
+    import custom_sam_peft.peft_adapters.qlora as qlora_module
 
     src = Path(qlora_module.__file__).read_text()
 
@@ -504,7 +504,7 @@ def test_qlora_freezes_base_params_explicitly() -> None:
     future refactor doesn't silently drop the freeze (which would let the
     base 4-bit weights accumulate non-grad noise via LoRA's backward path).
     """
-    import esam3.peft_adapters.qlora as qlora_module
+    import custom_sam_peft.peft_adapters.qlora as qlora_module
 
     src = Path(qlora_module.__file__).read_text()
 

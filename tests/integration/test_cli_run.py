@@ -1,4 +1,4 @@
-"""End-to-end CLI integration tests for `esam3 run`."""
+"""End-to-end CLI integration tests for `custom_sam_peft run`."""
 
 from __future__ import annotations
 
@@ -9,7 +9,7 @@ from unittest.mock import MagicMock
 import pytest
 from typer.testing import CliRunner
 
-from esam3.cli.main import app
+from custom_sam_peft.cli.main import app
 
 runner = CliRunner()
 
@@ -99,12 +99,12 @@ def _patch_phases(
         if bundle_raises is not None:
             raise bundle_raises
 
-    monkeypatch.setattr("esam3.cli.run_cmd.run_training", _train)
-    monkeypatch.setattr("esam3.cli.run_cmd.run_eval", _eval)
-    monkeypatch.setattr("esam3.cli.run_cmd.save_merged", _save_merged)
-    monkeypatch.setattr("esam3.cli.run_cmd.write_bundle", _write_bundle)
-    monkeypatch.setattr("esam3.cli.run_cmd.load_sam31", lambda _m: MagicMock())
-    monkeypatch.setattr("esam3.cli.run_cmd.load_adapter", lambda *_a, **_kw: None)
+    monkeypatch.setattr("custom_sam_peft.cli.run_cmd.run_training", _train)
+    monkeypatch.setattr("custom_sam_peft.cli.run_cmd.run_eval", _eval)
+    monkeypatch.setattr("custom_sam_peft.cli.run_cmd.save_merged", _save_merged)
+    monkeypatch.setattr("custom_sam_peft.cli.run_cmd.write_bundle", _write_bundle)
+    monkeypatch.setattr("custom_sam_peft.cli.run_cmd.load_sam31", lambda _m: MagicMock())
+    monkeypatch.setattr("custom_sam_peft.cli.run_cmd.load_adapter", lambda *_a, **_kw: None)
     # Build a stub val_dataset.
     fake_ds = MagicMock(__len__=lambda self: 3, class_names=["a"])
 
@@ -112,7 +112,7 @@ def _patch_phases(
         captured["order"].append("build_val")  # type: ignore[union-attr]
         return fake_ds
 
-    monkeypatch.setattr("esam3.cli.run_cmd._build_val_dataset", _build_val)
+    monkeypatch.setattr("custom_sam_peft.cli.run_cmd._build_val_dataset", _build_val)
     return captured
 
 
@@ -213,7 +213,7 @@ def test_run_rejects_bbox_prompt_mode(tmp_path: Path, monkeypatch: pytest.Monkey
 def test_run_passes_preset_label_env_var_through(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setenv("ESAM3_PRESET_LABEL", "auto: 12-24GB tier")
+    monkeypatch.setenv("CUSTOM_SAM_PEFT_PRESET_LABEL", "auto: 12-24GB tier")
     captured = _patch_phases(monkeypatch, run_dir=tmp_path / "runs" / "r")
     cfg = _make_cfg_yaml(tmp_path)
     result = runner.invoke(app, ["run", "--config", str(cfg)])
@@ -225,7 +225,7 @@ def test_run_passes_preset_label_env_var_through(
 def test_run_preset_label_absent_yields_none(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.delenv("ESAM3_PRESET_LABEL", raising=False)
+    monkeypatch.delenv("CUSTOM_SAM_PEFT_PRESET_LABEL", raising=False)
     captured = _patch_phases(monkeypatch, run_dir=tmp_path / "runs" / "r")
     cfg = _make_cfg_yaml(tmp_path)
     result = runner.invoke(app, ["run", "--config", str(cfg)])

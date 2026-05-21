@@ -1,4 +1,4 @@
-"""esam3 export wires save_adapter / save_merged."""
+"""custom_sam_peft export wires save_adapter / save_merged."""
 
 from __future__ import annotations
 
@@ -8,7 +8,7 @@ from unittest.mock import MagicMock
 import pytest
 from typer.testing import CliRunner
 
-from esam3.cli.main import app
+from custom_sam_peft.cli.main import app
 
 
 @pytest.fixture
@@ -33,7 +33,7 @@ train: {epochs: 1}
 
 
 def _patch_export(monkeypatch: pytest.MonkeyPatch, captured: dict[str, object]) -> None:
-    from esam3.cli import export_cmd
+    from custom_sam_peft.cli import export_cmd
 
     monkeypatch.setattr(export_cmd, "load_sam31", lambda _m: MagicMock())
     monkeypatch.setattr(

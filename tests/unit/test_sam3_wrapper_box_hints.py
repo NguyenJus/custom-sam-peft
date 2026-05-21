@@ -5,8 +5,8 @@ from __future__ import annotations
 import pytest
 import torch
 
-from esam3.data.base import BoxPrompts, TextPrompts
-from esam3.models.sam3 import Sam3Wrapper
+from custom_sam_peft.data.base import BoxPrompts, TextPrompts
+from custom_sam_peft.models.sam3 import Sam3Wrapper
 from tests.fixtures.tiny_sam3_stub import TinySam3Stub
 
 

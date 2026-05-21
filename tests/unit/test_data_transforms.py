@@ -13,8 +13,8 @@ import numpy as np
 import pytest
 import torch
 
-from esam3.config.schema import NormalizeConfig
-from esam3.data.transforms import build_eval_transforms, resolve_normalization
+from custom_sam_peft.config.schema import NormalizeConfig
+from custom_sam_peft.data.transforms import build_eval_transforms, resolve_normalization
 
 
 @contextmanager
@@ -34,7 +34,7 @@ def test_resolve_normalization_uses_image_processor_when_available(
     mock_aip.from_pretrained.return_value = fake_proc
 
     with patch("transformers.AutoImageProcessor", mock_aip):
-        caplog.set_level(logging.INFO, logger="esam3.data.transforms")
+        caplog.set_level(logging.INFO, logger="custom_sam_peft.data.transforms")
         mean, std = resolve_normalization("facebook/sam3.1", NormalizeConfig())
 
     mock_aip.from_pretrained.assert_called_once_with("facebook/sam3.1", local_files_only=True)
@@ -53,7 +53,7 @@ def test_resolve_normalization_falls_back_on_oserror(
     mock_aip.from_pretrained.side_effect = OSError("no cache")
 
     with patch("transformers.AutoImageProcessor", mock_aip):
-        caplog.set_level(logging.INFO, logger="esam3.data.transforms")
+        caplog.set_level(logging.INFO, logger="custom_sam_peft.data.transforms")
         mean, std = resolve_normalization("facebook/sam3.1", NormalizeConfig())
 
     assert mean == [0.485, 0.456, 0.406]
@@ -100,8 +100,8 @@ def test_eval_transforms_pad_position_top_left() -> None:
 
 import random
 
-from esam3.config.schema import AugmentationsConfig
-from esam3.data.transforms import build_train_transforms
+from custom_sam_peft.config.schema import AugmentationsConfig
+from custom_sam_peft.data.transforms import build_train_transforms
 
 
 def test_train_transforms_deterministic_with_seeded_global_rng() -> None:

@@ -2,7 +2,7 @@
 
 Kept here (not in `tests/integration/`) so the lightweight unit suite can
 import the predicate without pulling in the integration module's heavy
-top-level imports (torch, sam3, esam3.peft_adapters.qlora, etc.).
+top-level imports (torch, sam3, custom_sam_peft.peft_adapters.qlora, etc.).
 """
 
 from __future__ import annotations
@@ -19,7 +19,7 @@ _LORA_ADAPTER_PATH_TOKENS = (
 
 
 def _mha_exclusion_types() -> tuple[type[nn.Module], ...]:
-    """Mirror of ``esam3.peft_adapters.qlora._mha_exclusion_types``.
+    """Mirror of ``custom_sam_peft.peft_adapters.qlora._mha_exclusion_types``.
 
     Duplicated here (not imported from qlora.py) so this module stays
     importable in CPU unit environments that don't have sam3/bitsandbytes.

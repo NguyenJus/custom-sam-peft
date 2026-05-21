@@ -4,7 +4,7 @@ Gated by `@pytest.mark.gpu`, `@requires_compatible_gpu`, and
 `@requires_checkpoint`. Not in CI by default. Run with:
     pytest -m gpu tests/gpu/test_real_train_overfits.py -v
 
-This test exercises the same `run_training(cfg)` seam that `esam3 train` uses,
+This test exercises the same `run_training(cfg)` seam that `custom_sam_peft train` uses,
 so the YAML at configs/examples/gpu_smoke_lora.yaml is both the user-facing
 example and the test's source of truth (modulo the monkeypatched tracker).
 """
@@ -17,8 +17,8 @@ from pathlib import Path
 import pytest
 import torch
 
-from esam3.config.loader import load_config
-from esam3.train.runner import run_training
+from custom_sam_peft.config.loader import load_config
+from custom_sam_peft.train.runner import run_training
 from tests.gpu.conftest import _RecordingTracker
 
 pytestmark = [
@@ -48,10 +48,11 @@ def test_overfits_in_50_steps(
         ],
     )
     tracker = _RecordingTracker()
-    # Patch the consumer's namespace (esam3.train.runner) rather than the producer
-    # (esam3.tracking) — runner.py does `from esam3.tracking import build_tracker`
-    # at import time, so the bound name lives in runner.__dict__. See spec §4.2.
-    monkeypatch.setattr("esam3.train.runner.build_tracker", lambda *_a, **_kw: tracker)
+    # Patch the consumer's namespace (custom_sam_peft.train.runner) rather than the
+    # producer (custom_sam_peft.tracking) — runner.py does
+    # `from custom_sam_peft.tracking import build_tracker` at import time, so the
+    # bound name lives in runner.__dict__. See spec §4.2.
+    monkeypatch.setattr("custom_sam_peft.train.runner.build_tracker", lambda *_a, **_kw: tracker)
 
     torch.cuda.reset_peak_memory_stats()
     run_training(cfg)

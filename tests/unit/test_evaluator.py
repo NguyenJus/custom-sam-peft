@@ -10,9 +10,9 @@ from unittest.mock import patch
 import pytest
 import torch
 
-from esam3.config.schema import EvalConfig
-from esam3.eval.evaluator import Evaluator
-from esam3.eval.metrics import MetricsReport
+from custom_sam_peft.config.schema import EvalConfig
+from custom_sam_peft.eval.evaluator import Evaluator
+from custom_sam_peft.eval.metrics import MetricsReport
 
 
 def test_evaluate_full_returns_metrics_report(stub_model, tiny_text_dataset):
@@ -63,7 +63,7 @@ def test_image_id_collision_detected(stub_model, tiny_text_dataset):
     cfg = EvalConfig(mode="full", iou_thresholds=[0.5])
     # Force every image_id to hash to the same int.
     with (
-        patch("esam3.eval.evaluator._int_image_id", return_value=42),
+        patch("custom_sam_peft.eval.evaluator._int_image_id", return_value=42),
         pytest.raises(RuntimeError, match="image_id hash collision"),
     ):
         Evaluator(cfg).evaluate(stub_model, tiny_text_dataset)
@@ -103,7 +103,7 @@ def test_evaluate_disables_grad(tiny_text_dataset):
 
 def test_evaluate_single_dataset_traversal(stub_model):
     """Each dataset index must be fetched exactly once during evaluate()."""
-    from esam3.data.base import Example, Instance, TextPrompts
+    from custom_sam_peft.data.base import Example, Instance, TextPrompts
 
     access_counts: dict[int, int] = {}
 

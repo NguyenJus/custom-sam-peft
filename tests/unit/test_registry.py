@@ -6,7 +6,7 @@ from collections.abc import Iterator
 
 import pytest
 
-from esam3._registry import (
+from custom_sam_peft._registry import (
     _REGISTRY,
     RegistryError,
     list_registered,

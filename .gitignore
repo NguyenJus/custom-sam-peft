@@ -26,7 +26,7 @@ Thumbs.db
 
 # Runtime artifacts
 runs/
-!src/esam3/runs/
+!src/custom_sam_peft/runs/
 !tests/unit/runs/
 checkpoints/
 wandb/

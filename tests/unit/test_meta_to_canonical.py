@@ -5,7 +5,7 @@ from __future__ import annotations
 import pytest
 import torch
 
-from esam3.models.matching import CanonicalOutputs, meta_to_canonical
+from custom_sam_peft.models.matching import CanonicalOutputs, meta_to_canonical
 
 
 def _raw_outputs(b: int = 2, q: int = 3, h: int = 16) -> dict:

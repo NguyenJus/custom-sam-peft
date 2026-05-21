@@ -10,8 +10,8 @@ import numpy as np
 import pytest
 from pycocotools.coco import COCO
 
-from esam3.config.schema import TextPromptConfig
-from esam3.data.coco import (
+from custom_sam_peft.config.schema import TextPromptConfig
+from custom_sam_peft.data.coco import (
     _build_category_remap,
     _build_text_prompts,
     _decode_segmentation,
@@ -174,9 +174,9 @@ from unittest.mock import patch as mock_patch
 
 import torch
 
-from esam3.config.schema import NormalizeConfig
-from esam3.data.base import BoxPrompts, TextPrompts
-from esam3.data.coco import COCODataset
+from custom_sam_peft.config.schema import NormalizeConfig
+from custom_sam_peft.data.base import BoxPrompts, TextPrompts
+from custom_sam_peft.data.coco import COCODataset
 
 
 @contextmanager
@@ -188,7 +188,7 @@ def _patch_imagenet_ctx() -> Iterator[None]:
 
 
 def _build_eval(image_size: int = 32) -> Any:
-    from esam3.data.transforms import build_eval_transforms
+    from custom_sam_peft.data.transforms import build_eval_transforms
 
     return build_eval_transforms(
         image_size, model_name="facebook/sam3.1", normalize=NormalizeConfig()
@@ -247,7 +247,7 @@ def test_len_drops_empty_after_iscrowd(tmp_path: Path, caplog: pytest.LogCapture
 
     Image.new("RGB", (8, 8)).save(images_dir / "a.png")
     Image.new("RGB", (8, 8)).save(images_dir / "b.png")
-    caplog.set_level(logging.INFO, logger="esam3.data.coco")
+    caplog.set_level(logging.INFO, logger="custom_sam_peft.data.coco")
     with _patch_imagenet_ctx():
         ds = COCODataset(
             annotations=str(p),
@@ -409,7 +409,7 @@ def _synth_many_cats(tmp_path: Path, n_cats: int) -> tuple[Path, Path]:
 
 def test_multiplex_truncation_text(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
     ann, imgs = _synth_many_cats(tmp_path, 20)
-    caplog.set_level(logging.WARNING, logger="esam3.data.coco")
+    caplog.set_level(logging.WARNING, logger="custom_sam_peft.data.coco")
     with _patch_imagenet_ctx():
         ds = COCODataset(
             annotations=str(ann),
@@ -426,7 +426,7 @@ def test_multiplex_truncation_text(tmp_path: Path, caplog: pytest.LogCaptureFixt
 
 def test_multiplex_truncation_box(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
     ann, imgs = _synth_many_cats(tmp_path, 20)
-    caplog.set_level(logging.WARNING, logger="esam3.data.coco")
+    caplog.set_level(logging.WARNING, logger="custom_sam_peft.data.coco")
     with _patch_imagenet_ctx():
         ds = COCODataset(
             annotations=str(ann),
@@ -603,7 +603,7 @@ def test_dropped_empty_image_logged_once(tmp_path: Path, caplog: pytest.LogCaptu
     images_dir.mkdir()
     Image.new("RGB", (8, 8)).save(images_dir / "a.png")
     Image.new("RGB", (8, 8)).save(images_dir / "b.png")
-    caplog.set_level(logging.INFO, logger="esam3.data.coco")
+    caplog.set_level(logging.INFO, logger="custom_sam_peft.data.coco")
     with _patch_imagenet_ctx():
         COCODataset(
             annotations=str(p),
@@ -689,7 +689,7 @@ def test_sparse_to_dense_remap(tmp_path: Path) -> None:
 
 
 def test_register_coco_lookup(tiny_coco_dir: Path) -> None:
-    from esam3._registry import lookup
+    from custom_sam_peft._registry import lookup
 
     builder = lookup("dataset", "coco")
     cfg: dict[str, Any] = {
@@ -715,7 +715,7 @@ def test_register_coco_lookup(tiny_coco_dir: Path) -> None:
 
 
 def test_build_coco_train_pipeline_uses_train_transforms(tiny_coco_dir: Path) -> None:
-    from esam3._registry import lookup
+    from custom_sam_peft._registry import lookup
 
     builder = lookup("dataset", "coco")
     cfg: dict[str, Any] = {

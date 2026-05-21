@@ -25,7 +25,7 @@ def main() -> None:
     Image.new("RGB", (32, 32), color=(50, 200, 50)).save(IMG_DIR / "img_000002.png")
 
     annotations = {
-        "info": {"description": "tiny_coco — esam3 test fixture", "version": "1.0"},
+        "info": {"description": "tiny_coco — custom_sam_peft test fixture", "version": "1.0"},
         "licenses": [],
         "images": [
             {"id": 1, "file_name": "img_000001.png", "width": 32, "height": 32},

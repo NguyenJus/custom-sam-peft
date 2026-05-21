@@ -9,23 +9,27 @@ import sam3.model.encoder as _encoder_mod
 import sam3.model.model_misc as _mm_mod
 import torch
 
-from esam3.models.sam3 import _patch_text_pool_dtype
+from custom_sam_peft.models.sam3 import _patch_text_pool_dtype
 
 
 @pytest.fixture(autouse=True)
 def _restore_text_pool_patches():
     """Restore both patched names + sentinels after each test."""
     original_pool_fn = _encoder_mod.pool_text_feat
-    original_pool_sentinel = getattr(_encoder_mod, "_esam3_pool_text_feat_dtype_patched", False)
+    original_pool_sentinel = getattr(
+        _encoder_mod, "_custom_sam_peft_pool_text_feat_dtype_patched", False
+    )
     original_mean_pool_method = _mm_mod.DotProductScoring.mean_pool_text
     original_mean_pool_sentinel = getattr(
-        _mm_mod.DotProductScoring, "_esam3_mean_pool_text_dtype_patched", False
+        _mm_mod.DotProductScoring, "_custom_sam_peft_mean_pool_text_dtype_patched", False
     )
     yield
     _encoder_mod.pool_text_feat = original_pool_fn
-    _encoder_mod._esam3_pool_text_feat_dtype_patched = original_pool_sentinel
+    _encoder_mod._custom_sam_peft_pool_text_feat_dtype_patched = original_pool_sentinel
     _mm_mod.DotProductScoring.mean_pool_text = original_mean_pool_method
-    _mm_mod.DotProductScoring._esam3_mean_pool_text_dtype_patched = original_mean_pool_sentinel
+    _mm_mod.DotProductScoring._custom_sam_peft_mean_pool_text_dtype_patched = (
+        original_mean_pool_sentinel
+    )
 
 
 def test_unpatched_pool_text_feat_promotes_bf16_to_fp32() -> None:
@@ -129,5 +133,7 @@ def test_idempotency() -> None:
 
     assert first_pool_fn is second_pool_fn
     assert first_method is second_method
-    assert getattr(_encoder_mod, "_esam3_pool_text_feat_dtype_patched", False)
-    assert getattr(_mm_mod.DotProductScoring, "_esam3_mean_pool_text_dtype_patched", False)
+    assert getattr(_encoder_mod, "_custom_sam_peft_pool_text_feat_dtype_patched", False)
+    assert getattr(
+        _mm_mod.DotProductScoring, "_custom_sam_peft_mean_pool_text_dtype_patched", False
+    )

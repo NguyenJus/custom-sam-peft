@@ -10,7 +10,7 @@ import numpy as np
 import pytest
 import torch
 
-from esam3.config.schema import (
+from custom_sam_peft.config.schema import (
     DataConfig,
     DataSplit,
     PEFTConfig,
@@ -18,9 +18,9 @@ from esam3.config.schema import (
     TrainConfig,
     TrainHyperparams,
 )
-from esam3.models.sam3 import Sam3Wrapper
-from esam3.peft_adapters.lora import apply_lora
-from esam3.train.checkpoint import (
+from custom_sam_peft.models.sam3 import Sam3Wrapper
+from custom_sam_peft.peft_adapters.lora import apply_lora
+from custom_sam_peft.train.checkpoint import (
     ResumeState,
     _has_linear4bit,
     load_full_state,
@@ -63,7 +63,7 @@ def test_save_adapter_writes_lora_artifacts(tmp_path: Path) -> None:
     out = tmp_path / "adapter"
     save_adapter(wrapper, out)
     assert (out / "adapter_config.json").exists()
-    assert not (out / "esam3_qlora.json").exists()
+    assert not (out / "custom_sam_peft_qlora.json").exists()
 
 
 def test_save_full_state_writes_training_state_and_adapter(tmp_path: Path) -> None:
@@ -133,7 +133,7 @@ def test_load_full_state_raises_on_peft_method_mismatch(tmp_path: Path) -> None:
     state_dir = tmp_path / "checkpoints" / "step_0"
     save_full_state(state_dir, w_a, opt_a, sched_a, 0, 0, 0, 1.0, cfg)
 
-    (state_dir / "adapter" / "esam3_qlora.json").write_text(
+    (state_dir / "adapter" / "custom_sam_peft_qlora.json").write_text(
         json.dumps({"format_version": 1, "quant_type": "nf4", "compute_dtype": "bfloat16"})
     )
 

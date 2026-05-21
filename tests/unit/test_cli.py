@@ -8,7 +8,7 @@ from pathlib import Path
 import pytest
 from typer.testing import CliRunner
 
-from esam3.cli.main import app
+from custom_sam_peft.cli.main import app
 
 _ANSI = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
 
@@ -65,8 +65,8 @@ def test_train_invokes_runner(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -
     """train CLI parses config and delegates to run_training."""
     from unittest.mock import MagicMock
 
-    from esam3.cli import train_cmd
-    from esam3.cli.main import app
+    from custom_sam_peft.cli import train_cmd
+    from custom_sam_peft.cli.main import app
 
     repo = Path(__file__).resolve().parents[2]
     cfg = repo / "configs" / "examples" / "coco_text_lora.yaml"
@@ -94,7 +94,7 @@ def test_train_invokes_runner(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -
 
 def test_train_rejects_bbox_prompt_mode(tmp_path: Path) -> None:
     """prompt_mode=bbox is surfaced as a CLI BadParameter, not a stack trace."""
-    from esam3.cli.main import app
+    from custom_sam_peft.cli.main import app
 
     cfg_path = tmp_path / "cfg.yaml"
     cfg_path.write_text(
@@ -116,8 +116,8 @@ train: {epochs: 1}
 
 
 def test_eval_command_with_split_test_missing_data_test(tmp_path: Path) -> None:
-    """`esam3 eval --split test` errors when data.test is None."""
-    from esam3.cli.main import app
+    """`custom_sam_peft eval --split test` errors when data.test is None."""
+    from custom_sam_peft.cli.main import app
 
     cfg_path = tmp_path / "cfg.yaml"
     cfg_path.write_text(
@@ -145,8 +145,8 @@ def test_eval_command_save_predictions_flag_parses(monkeypatch: object, tmp_path
     """--save-predictions / --no-save-predictions override cfg.eval.save_predictions."""
     from unittest.mock import MagicMock
 
-    import esam3.cli.eval_cmd as eval_cmd
-    from esam3.cli.main import app
+    import custom_sam_peft.cli.eval_cmd as eval_cmd
+    from custom_sam_peft.cli.main import app
 
     captured: dict[str, bool | None] = {}
 
@@ -190,8 +190,8 @@ train: {epochs: 1}
 
 
 def test_eval_command_rejects_qlora_method(tmp_path: Path) -> None:
-    """esam3 eval --checkpoint errors when peft.method is not lora."""
-    from esam3.cli.main import app
+    """custom_sam_peft eval --checkpoint errors when peft.method is not lora."""
+    from custom_sam_peft.cli.main import app
 
     cfg_path = tmp_path / "cfg.yaml"
     cfg_path.write_text(

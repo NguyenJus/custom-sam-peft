@@ -9,7 +9,7 @@ import pycocotools.mask as mask_utils
 import pytest
 from pycocotools.coco import COCO
 
-from esam3.eval.metrics import compute_coco_map
+from custom_sam_peft.eval.metrics import compute_coco_map
 
 
 def _build_gt(images: list[dict], categories: list[dict], anns: list[dict]) -> COCO:
@@ -78,7 +78,7 @@ def test_zero_predictions_returns_zeroed_report(caplog: pytest.LogCaptureFixture
         }
     ]
     gt = _build_gt(images, categories, anns)
-    with caplog.at_level(logging.WARNING, logger="esam3.eval.metrics"):
+    with caplog.at_level(logging.WARNING, logger="custom_sam_peft.eval.metrics"):
         report = compute_coco_map([], gt, [0.5], include_per_class=True)
     assert report.overall == {"mAP": 0.0, "mAP_50": 0.0, "mAP_75": 0.0}
     assert report.per_class == {}

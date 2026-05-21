@@ -5,7 +5,7 @@ from __future__ import annotations
 import pytest
 from pydantic import ValidationError
 
-from esam3.config.schema import ModelConfig
+from custom_sam_peft.config.schema import ModelConfig
 
 
 def test_model_config_defaults() -> None:

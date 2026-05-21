@@ -5,7 +5,7 @@ from __future__ import annotations
 import pytest
 from pydantic import ValidationError
 
-from esam3.config.schema import TrainConfig
+from custom_sam_peft.config.schema import TrainConfig
 
 
 def _minimal_dict() -> dict[str, object]:
@@ -111,7 +111,7 @@ def test_qlora_subconfig_defaults() -> None:
 
 def test_all_public_submodels_are_importable() -> None:
     """Smoke check that every documented sub-model is a public attribute of schema."""
-    from esam3.config import schema
+    from custom_sam_peft.config import schema
 
     expected = {
         "AugmentationsConfig",
@@ -187,7 +187,7 @@ def minimal_data_config_dict() -> dict:
 
 
 def test_eval_config_defaults_extended() -> None:
-    from esam3.config.schema import EvalConfig
+    from custom_sam_peft.config.schema import EvalConfig
 
     c = EvalConfig()
     assert c.mode == "full"
@@ -197,7 +197,7 @@ def test_eval_config_defaults_extended() -> None:
 
 
 def test_eval_config_mode_literal_validated() -> None:
-    from esam3.config.schema import EvalConfig
+    from custom_sam_peft.config.schema import EvalConfig
 
     EvalConfig(mode="lite")
     with pytest.raises(ValidationError):
@@ -205,21 +205,21 @@ def test_eval_config_mode_literal_validated() -> None:
 
 
 def test_eval_config_lite_max_images_must_be_positive() -> None:
-    from esam3.config.schema import EvalConfig
+    from custom_sam_peft.config.schema import EvalConfig
 
     with pytest.raises(ValidationError):
         EvalConfig(lite_max_images=0)
 
 
 def test_data_config_test_defaults_to_none(minimal_data_config_dict: dict) -> None:
-    from esam3.config.schema import DataConfig
+    from custom_sam_peft.config.schema import DataConfig
 
     cfg = DataConfig(**minimal_data_config_dict)
     assert cfg.test is None
 
 
 def test_data_config_test_accepts_data_split(minimal_data_config_dict: dict) -> None:
-    from esam3.config.schema import DataConfig
+    from custom_sam_peft.config.schema import DataConfig
 
     minimal_data_config_dict["test"] = {"annotations": "a.json", "images": "img/"}
     cfg = DataConfig(**minimal_data_config_dict)

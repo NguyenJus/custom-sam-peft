@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import torch
 
-from esam3.models.sam3 import _build_geometric_prompt
+from custom_sam_peft.models.sam3 import _build_geometric_prompt
 
 
 def test_all_none_returns_none() -> None:

@@ -8,7 +8,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from esam3.config.schema import (
+from custom_sam_peft.config.schema import (
     DataConfig,
     DataSplit,
     PEFTConfig,
@@ -19,7 +19,7 @@ from esam3.config.schema import (
 
 pytest.importorskip("tensorboard")
 
-from esam3.tracking.tensorboard import TensorBoardTracker
+from custom_sam_peft.tracking.tensorboard import TensorBoardTracker
 
 
 def _cfg(tmp_path: Path) -> TrainConfig:

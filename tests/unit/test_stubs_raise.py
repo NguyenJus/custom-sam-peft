@@ -4,10 +4,10 @@ from __future__ import annotations
 
 import pytest
 
-from esam3.config.schema import (
+from custom_sam_peft.config.schema import (
     EvalConfig,
 )
-from esam3.eval.evaluator import Evaluator
+from custom_sam_peft.eval.evaluator import Evaluator
 
 
 def test_eval_stubs() -> None:
@@ -20,7 +20,7 @@ def test_eval_stubs() -> None:
 def test_trainer_fit_stub() -> None:
     # Trainer is now implemented (Task 8). Verify it raises ValueError for
     # bbox prompt_mode (the v0 guard), not NotImplementedError.
-    from esam3.config.schema import (
+    from custom_sam_peft.config.schema import (
         DataConfig,
         DataSplit,
         PEFTConfig,
@@ -28,8 +28,8 @@ def test_trainer_fit_stub() -> None:
         TrainConfig,
         TrainHyperparams,
     )
-    from esam3.tracking.noop import NoopTracker
-    from esam3.train.trainer import Trainer
+    from custom_sam_peft.tracking.noop import NoopTracker
+    from custom_sam_peft.train.trainer import Trainer
 
     cfg = TrainConfig(
         run=RunConfig(name="t"),

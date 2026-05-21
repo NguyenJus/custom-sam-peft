@@ -1,4 +1,4 @@
-"""Tests for src/esam3/runs/bundle.py."""
+"""Tests for src/custom_sam_peft/runs/bundle.py."""
 
 from __future__ import annotations
 
@@ -11,7 +11,7 @@ import numpy as np
 import pytest
 from PIL import Image
 
-from esam3.runs.bundle import (
+from custom_sam_peft.runs.bundle import (
     BundleContext,
     pick_samples,
     render_overlay,
@@ -182,7 +182,7 @@ def test_write_bundle_writes_summary_and_samples(
     def _fake_render(image: Image.Image, pred: object, gt: object, *, caption: str) -> Image.Image:
         return Image.new("RGB", (8, 8), (1, 2, 3))
 
-    monkeypatch.setattr("esam3.runs.bundle.render_overlay", _fake_render)
+    monkeypatch.setattr("custom_sam_peft.runs.bundle.render_overlay", _fake_render)
 
     # Monkeypatch the per-sample re-inference to a no-op that yields blank masks.
     def _fake_run_one(
@@ -190,7 +190,7 @@ def test_write_bundle_writes_summary_and_samples(
     ) -> tuple[Image.Image, np.ndarray, np.ndarray]:
         return Image.new("RGB", (8, 8)), np.zeros((8, 8), dtype=bool), np.zeros((8, 8), dtype=bool)
 
-    monkeypatch.setattr("esam3.runs.bundle._reinfer_one_example", _fake_run_one)
+    monkeypatch.setattr("custom_sam_peft.runs.bundle._reinfer_one_example", _fake_run_one)
 
     write_bundle(ctx, report, val_dataset=val_ds, model_wrapper=model)
     summary = (ctx.run_dir / "summary.md").read_text()
@@ -248,7 +248,7 @@ def test_write_bundle_skipped_sample_logged_and_summary_notes_it(
     ) -> tuple[Image.Image, np.ndarray, np.ndarray]:
         raise RuntimeError("forward kaboom")
 
-    monkeypatch.setattr("esam3.runs.bundle._reinfer_one_example", _explode)
+    monkeypatch.setattr("custom_sam_peft.runs.bundle._reinfer_one_example", _explode)
 
     with caplog.at_level("WARNING"):
         write_bundle(ctx, report, val_dataset=val_ds, model_wrapper=MagicMock())

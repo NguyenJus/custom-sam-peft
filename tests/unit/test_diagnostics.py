@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from esam3.diagnostics import DoctorReport, run_doctor
+from custom_sam_peft.diagnostics import DoctorReport, run_doctor
 
 
 def test_report_has_expected_fields() -> None:
@@ -59,7 +59,9 @@ def test_run_doctor_reports_env_token_source(monkeypatch: pytest.MonkeyPatch) ->
 
 def test_run_doctor_reports_cache_token_source(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("HF_TOKEN", raising=False)
-    monkeypatch.setattr("esam3.diagnostics.huggingface_hub.get_token", lambda: "cache-tok")
+    monkeypatch.setattr(
+        "custom_sam_peft.diagnostics.huggingface_hub.get_token", lambda: "cache-tok"
+    )
     r = run_doctor()
     assert r.hf_auth.token_source == "cache"
     assert r.hf_auth.has_token is True
@@ -69,7 +71,7 @@ def test_run_doctor_reports_no_token_and_appends_issue(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.delenv("HF_TOKEN", raising=False)
-    monkeypatch.setattr("esam3.diagnostics.huggingface_hub.get_token", lambda: None)
+    monkeypatch.setattr("custom_sam_peft.diagnostics.huggingface_hub.get_token", lambda: None)
     r = run_doctor()
     assert r.hf_auth.token_source == "none"
     assert r.hf_auth.has_token is False

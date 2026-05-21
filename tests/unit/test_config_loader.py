@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from esam3.config.loader import ConfigError, apply_overrides, load_config
+from custom_sam_peft.config.loader import ConfigError, apply_overrides, load_config
 
 
 def _write_minimal_yaml(p: Path) -> Path:

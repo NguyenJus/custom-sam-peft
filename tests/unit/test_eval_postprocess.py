@@ -7,7 +7,7 @@ import pycocotools.mask as mask_utils
 import pytest
 import torch
 
-from esam3.eval.postprocess import queries_to_coco_results
+from custom_sam_peft.eval.postprocess import queries_to_coco_results
 
 
 def _outputs(

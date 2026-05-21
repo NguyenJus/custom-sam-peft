@@ -1,4 +1,4 @@
-"""esam3 init writes a template that reloads cleanly through load_config."""
+"""custom_sam_peft init writes a template that reloads cleanly through load_config."""
 
 from __future__ import annotations
 
@@ -8,8 +8,8 @@ import pytest
 import yaml
 from typer.testing import CliRunner
 
-from esam3.cli.main import app
-from esam3.config.loader import load_config
+from custom_sam_peft.cli.main import app
+from custom_sam_peft.config.loader import load_config
 
 runner = CliRunner()
 
@@ -87,7 +87,7 @@ def test_init_no_download_weights_skips_with_hint(
 
     calls: list[object] = []
     monkeypatch.setattr(
-        "esam3.cli.init_cmd.download_model",
+        "custom_sam_peft.cli.init_cmd.download_model",
         lambda *a, **kw: calls.append((a, kw)),
     )
 
@@ -115,7 +115,7 @@ def test_init_short_circuits_when_weights_present(
 
     calls: list[object] = []
     monkeypatch.setattr(
-        "esam3.cli.init_cmd.download_model",
+        "custom_sam_peft.cli.init_cmd.download_model",
         lambda *a, **kw: calls.append((a, kw)),
     )
 
@@ -131,11 +131,11 @@ def test_init_non_tty_skips_with_hint(tmp_path: Path, monkeypatch: pytest.Monkey
     """No flag + non-TTY stdin: skip; print hint pointing at --download-weights."""
     _make_data_paths(tmp_path)
     monkeypatch.chdir(tmp_path)
-    monkeypatch.setattr("esam3.cli.init_cmd.sys.stdin.isatty", lambda: False)
+    monkeypatch.setattr("custom_sam_peft.cli.init_cmd.sys.stdin.isatty", lambda: False)
 
     calls: list[object] = []
     monkeypatch.setattr(
-        "esam3.cli.init_cmd.download_model",
+        "custom_sam_peft.cli.init_cmd.download_model",
         lambda *a, **kw: calls.append((a, kw)),
     )
 
@@ -159,7 +159,7 @@ def test_init_download_weights_yes_triggers_download(
         calls.append({"name": name, "local_dir": local_dir, "revision": revision})
         return Path(local_dir)
 
-    monkeypatch.setattr("esam3.cli.init_cmd.download_model", _fake_dl)
+    monkeypatch.setattr("custom_sam_peft.cli.init_cmd.download_model", _fake_dl)
 
     out = tmp_path / "config.yaml"
     result = runner.invoke(
@@ -183,7 +183,7 @@ def test_init_download_failure_surfaces_as_exit_1(
     def _boom(*a: object, **kw: object) -> Path:
         raise RuntimeError("could not download 'facebook/sam3.1': the repo is gated.")
 
-    monkeypatch.setattr("esam3.cli.init_cmd.download_model", _boom)
+    monkeypatch.setattr("custom_sam_peft.cli.init_cmd.download_model", _boom)
 
     out = tmp_path / "config.yaml"
     result = runner.invoke(

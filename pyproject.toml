@@ -1,7 +1,7 @@
 [project]
-name = "efficient-sam3-finetuning"
-version = "0.0.1"
-description = "Parameter-efficient finetuning of SAM3.1 on niche image datasets."
+name = "custom-sam-peft"
+version = "0.5.0"
+description = "Closed-vocab finetuning of SAM-family models with LoRA / QLoRA on a single consumer GPU"
 readme = "README.md"
 license = { text = "Apache-2.0" }
 requires-python = ">=3.12"
@@ -40,7 +40,7 @@ dev = [
 ]
 
 [project.scripts]
-esam3 = "esam3.cli.main:app"
+custom-sam-peft = "custom_sam_peft.cli.main:app"
 
 [build-system]
 requires = ["hatchling"]
@@ -50,7 +50,7 @@ build-backend = "hatchling.build"
 allow-direct-references = true
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/esam3"]
+packages = ["src/custom_sam_peft"]
 
 [tool.ruff]
 line-length = 100
@@ -67,7 +67,7 @@ select = ["E", "F", "I", "B", "UP", "SIM", "RUF", "S"]
 ignore = []
 
 [tool.ruff.lint.per-file-ignores]
-"src/esam3/cli/*_cmd.py" = ["B008"]
+"src/custom_sam_peft/cli/*_cmd.py" = ["B008"]
 "tests/unit/test_data_*.py" = ["E402"]
 "tests/**/*.py" = ["S101", "S105", "S311"]
 # Colab notebook: subprocess.run("git", ...) with partial path is intentional in a Colab
@@ -77,7 +77,7 @@ ignore = []
 [tool.mypy]
 python_version = "3.12"
 strict = true
-files = ["src/esam3"]
+files = ["src/custom_sam_peft"]
 plugins = ["pydantic.mypy"]
 
 [[tool.mypy.overrides]]
@@ -105,10 +105,10 @@ markers = [
   "requires_checkpoint: skip unless real checkpoint is present",
   "requires_compatible_gpu: skip unless CUDA CC >= 7.5",
 ]
-addopts = "-ra --strict-markers --cov=esam3 --cov-report=term-missing --cov-report=html --cov-fail-under=80"
+addopts = "-ra --strict-markers --cov=custom_sam_peft --cov-report=term-missing --cov-report=html --cov-fail-under=80"
 
 [tool.coverage.run]
-source = ["src/esam3"]
+source = ["src/custom_sam_peft"]
 branch = true
 
 [tool.coverage.report]

@@ -21,10 +21,10 @@ import pytest
 import torch
 from torch import nn
 
-from esam3.config.schema import ModelConfig, PEFTConfig
-from esam3.models.sam3 import load_sam31
-from esam3.peft_adapters.lora import merge_lora
-from esam3.peft_adapters.qlora import apply_qlora, load_qlora, save_qlora
+from custom_sam_peft.config.schema import ModelConfig, PEFTConfig
+from custom_sam_peft.models.sam3 import load_sam31
+from custom_sam_peft.peft_adapters.lora import merge_lora
+from custom_sam_peft.peft_adapters.qlora import apply_qlora, load_qlora, save_qlora
 from tests.helpers.lora_predicates import has_plain_nn_linear as _has_plain_nn_linear
 
 pytestmark = [
@@ -81,8 +81,8 @@ def test_save_qlora_writes_adapter_and_metadata(tmp_path: Path) -> None:
     adapter_weights = list(tmp_path.glob("adapter_model.*"))
     assert adapter_weights, "no adapter_model.* file written"
 
-    # esam3_qlora.json present with the expected fields.
-    meta_path = tmp_path / "esam3_qlora.json"
+    # custom_sam_peft_qlora.json present with the expected fields.
+    meta_path = tmp_path / "custom_sam_peft_qlora.json"
     assert meta_path.exists()
     meta = json.loads(meta_path.read_text())
     assert meta == {

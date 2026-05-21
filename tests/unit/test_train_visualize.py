@@ -7,7 +7,7 @@ from typing import Any
 import numpy as np
 from numpy.typing import NDArray
 
-from esam3.train.visualize import render_mask_panel
+from custom_sam_peft.train.visualize import render_mask_panel
 
 
 def _checker(h: int, w: int) -> NDArray[Any]:

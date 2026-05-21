@@ -8,8 +8,8 @@ from pathlib import Path
 import pytest
 import torch
 
-from esam3.data.coco import COCODataset
-from esam3.tracking.noop import NoopTracker
+from custom_sam_peft.data.coco import COCODataset
+from custom_sam_peft.tracking.noop import NoopTracker
 from tests.fixtures.tiny_sam3_stub import TinySam3Stub
 
 FIXTURES = Path(__file__).resolve().parent / "fixtures"
@@ -66,8 +66,8 @@ def tiny_coco_dir() -> Path:
 @pytest.fixture
 def tiny_coco_dataset(tiny_coco_dir: Path) -> COCODataset:
     """A COCODataset pointing at the tiny_coco fixture (bbox prompt mode)."""
-    from esam3.config.schema import NormalizeConfig, TextPromptConfig
-    from esam3.data.transforms import build_eval_transforms
+    from custom_sam_peft.config.schema import NormalizeConfig, TextPromptConfig
+    from custom_sam_peft.data.transforms import build_eval_transforms
 
     transforms = build_eval_transforms(
         32, model_name="facebook/sam3.1", normalize=NormalizeConfig()
@@ -105,7 +105,7 @@ def tiny_text_dataset():
     Designed for evaluator unit tests: predictable image_ids, predictable mask
     geometry, no transforms, no albumentations.
     """
-    from esam3.data.base import Example, Instance, TextPrompts
+    from custom_sam_peft.data.base import Example, Instance, TextPrompts
 
     _class_names = ["cat", "dog"]
 

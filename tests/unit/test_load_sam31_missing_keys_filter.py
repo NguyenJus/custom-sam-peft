@@ -1,4 +1,4 @@
-"""Tests for the convs.3 missing-keys filter logic in esam3.models.sam3.
+"""Tests for the convs.3 missing-keys filter logic in custom_sam_peft.models.sam3.
 
 This test suite exercises ``_classify_missing_keys`` in isolation — no sam3,
 torch, or GPU required.  The function is a pure helper that decides whether a
@@ -17,7 +17,11 @@ import ast
 
 import pytest
 
-from esam3.models.sam3 import _KNOWN_MISSING_KEYS, _SAM3_MISSING_KEYS_RE, _classify_missing_keys
+from custom_sam_peft.models.sam3 import (
+    _KNOWN_MISSING_KEYS,
+    _SAM3_MISSING_KEYS_RE,
+    _classify_missing_keys,
+)
 
 # ---------------------------------------------------------------------------
 # Happy-path: exactly the known set → "ok"

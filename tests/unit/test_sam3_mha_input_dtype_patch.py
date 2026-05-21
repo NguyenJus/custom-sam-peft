@@ -1,7 +1,7 @@
 """CPU unit tests for _patch_mha_input_dtype.
 
 Covers the MHA input-dtype backstop described at
-src/esam3/models/sam3.py::_patch_mha_input_dtype.
+src/custom_sam_peft/models/sam3.py::_patch_mha_input_dtype.
 
 The patch hooks every nn.MultiheadAttention (and sam3's custom MHA, if
 present) and casts query/key/value to the module's first-parameter dtype
@@ -19,7 +19,7 @@ import pytest
 import torch
 from torch import nn
 
-from esam3.models.sam3 import _patch_mha_input_dtype
+from custom_sam_peft.models.sam3 import _patch_mha_input_dtype
 
 
 def _make_bf16_mha(embed_dim: int = 8, num_heads: int = 2) -> nn.MultiheadAttention:
@@ -131,7 +131,7 @@ def test_idempotency() -> None:
     _patch_mha_input_dtype(mha)
     hooks_after_second = len(mha._forward_pre_hooks)
     assert hooks_after_first == hooks_after_second
-    assert getattr(mha, "_esam3_mha_input_dtype_patched", False) is True
+    assert getattr(mha, "_custom_sam_peft_mha_input_dtype_patched", False) is True
 
 
 def test_module_without_mha_is_silent() -> None:
@@ -139,7 +139,7 @@ def test_module_without_mha_is_silent() -> None:
     m = nn.Sequential(nn.Linear(4, 4), nn.LayerNorm(4))
     _patch_mha_input_dtype(m)  # must not raise
     for submodule in m.modules():
-        assert not getattr(submodule, "_esam3_mha_input_dtype_patched", False)
+        assert not getattr(submodule, "_custom_sam_peft_mha_input_dtype_patched", False)
 
 
 def test_sam3_custom_mha_also_patched(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -188,4 +188,4 @@ def test_degrades_to_torch_only_without_sam3(monkeypatch: pytest.MonkeyPatch) ->
 
     mha = _make_bf16_mha()
     _patch_mha_input_dtype(mha)
-    assert getattr(mha, "_esam3_mha_input_dtype_patched", False) is True
+    assert getattr(mha, "_custom_sam_peft_mha_input_dtype_patched", False) is True

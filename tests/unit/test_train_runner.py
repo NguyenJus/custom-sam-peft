@@ -8,7 +8,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from esam3.train.runner import make_run_dir, run_training
+from custom_sam_peft.train.runner import make_run_dir, run_training
 
 
 def _make_cfg(tmp_path: Path) -> MagicMock:
@@ -22,7 +22,7 @@ def _make_cfg(tmp_path: Path) -> MagicMock:
     cfg.model.name = "facebook/sam3.1"
     cfg.peft.method = "lora"
     cfg.tracking.backend = "none"
-    cfg.tracking.wandb.project = "esam3"
+    cfg.tracking.wandb.project = "custom_sam_peft"
     cfg.tracking.wandb.entity = None
     return cfg
 
@@ -49,10 +49,10 @@ def test_run_training_dispatches_via_registry(
             return lambda wrapper, _peft_cfg: wrapper
         return lambda *a, **kw: MagicMock(__len__=lambda self: 0, class_names=[])
 
-    monkeypatch.setattr("esam3.train.runner.lookup", fake_lookup)
-    monkeypatch.setattr("esam3.train.runner.load_sam31", lambda _m: MagicMock())
+    monkeypatch.setattr("custom_sam_peft.train.runner.lookup", fake_lookup)
+    monkeypatch.setattr("custom_sam_peft.train.runner.load_sam31", lambda _m: MagicMock())
     monkeypatch.setattr(
-        "esam3.train.runner.build_tracker",
+        "custom_sam_peft.train.runner.build_tracker",
         lambda _cfg: MagicMock(close=MagicMock(), start_run=MagicMock()),
     )
 
@@ -61,7 +61,7 @@ def test_run_training_dispatches_via_registry(
     def fake_fit(self, *, run_dir, resume_from=None):
         return fake_result
 
-    monkeypatch.setattr("esam3.train.runner.Trainer.fit", fake_fit)
+    monkeypatch.setattr("custom_sam_peft.train.runner.Trainer.fit", fake_fit)
 
     result = run_training(cfg)
     assert result is fake_result

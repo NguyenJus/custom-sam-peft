@@ -9,7 +9,7 @@ import pytest
 import torch
 from torch import nn
 
-from esam3.config.schema import (
+from custom_sam_peft.config.schema import (
     BoxHintSchedule,
     DataConfig,
     DataSplit,
@@ -18,9 +18,9 @@ from esam3.config.schema import (
     TrainConfig,
     TrainHyperparams,
 )
-from esam3.data.base import Instance, TextPrompts
-from esam3.models.sam3 import Sam3Wrapper
-from esam3.train.loop import _box_hint_p, train_step
+from custom_sam_peft.data.base import Instance, TextPrompts
+from custom_sam_peft.models.sam3 import Sam3Wrapper
+from custom_sam_peft.train.loop import _box_hint_p, train_step
 from tests.fixtures.tiny_sam3_stub import TinySam3Stub
 
 

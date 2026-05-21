@@ -16,7 +16,7 @@ from typing import Any
 import torch
 from torch import nn
 
-from esam3.models.sam3 import Sam3Wrapper
+from custom_sam_peft.models.sam3 import Sam3Wrapper
 
 
 class _AttnBlock(nn.Module):
@@ -111,7 +111,7 @@ def make_stub_wrapper(dim: int = 128, working: bool = False) -> Sam3Wrapper:
 
 
 # Regex patterns matching the renamed fixture subtrees. The production
-# SCOPE_TARGETS in src/esam3/peft_adapters/lora.py target the REAL SAM 3.1
+# SCOPE_TARGETS in src/custom_sam_peft/peft_adapters/lora.py target the REAL SAM 3.1
 # names (backbone.vision_backbone.trunk.blocks.*); the fixture below uses
 # truncated prefixes (`vision_trunk`, `transformer_decoder`) because the full
 # nested chain would balloon the fixture without adding coverage.

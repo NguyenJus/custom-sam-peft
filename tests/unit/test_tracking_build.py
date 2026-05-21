@@ -9,7 +9,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from esam3.config.schema import (
+from custom_sam_peft.config.schema import (
     DataConfig,
     DataSplit,
     PEFTConfig,
@@ -49,7 +49,7 @@ def _cfg(tmp_path: Path, backend: str = "none") -> TrainConfig:
 
 
 def test_build_tracker_returns_noop(tmp_path: Path) -> None:
-    from esam3.tracking import build_tracker
+    from custom_sam_peft.tracking import build_tracker
 
     t = build_tracker(_cfg(tmp_path, "none"))
     assert type(t).__name__ == "NoopTracker"
@@ -57,7 +57,7 @@ def test_build_tracker_returns_noop(tmp_path: Path) -> None:
 
 def test_build_tracker_returns_tensorboard(tmp_path: Path) -> None:
     pytest.importorskip("tensorboard")
-    from esam3.tracking import build_tracker
+    from custom_sam_peft.tracking import build_tracker
 
     t = build_tracker(_cfg(tmp_path, "tensorboard"))
     assert type(t).__name__ == "TensorBoardTracker"
@@ -70,10 +70,10 @@ def test_build_tracker_returns_wandb(tmp_path: Path, monkeypatch: pytest.MonkeyP
     fake.init = MagicMock(return_value=fake_run)  # type: ignore[attr-defined]
     fake.Image = lambda arr: arr  # type: ignore[attr-defined]
     # The WandBTracker constructor does `import wandb` lazily, so installing
-    # the fake in sys.modules is sufficient; no need to reload esam3.tracking.wandb.
+    # the fake in sys.modules is sufficient; no need to reload custom_sam_peft.tracking.wandb.
     monkeypatch.setitem(sys.modules, "wandb", fake)
 
-    from esam3.tracking import build_tracker
+    from custom_sam_peft.tracking import build_tracker
 
     t = build_tracker(_cfg(tmp_path, "wandb"))
     assert type(t).__name__ == "WandBTracker"
@@ -86,7 +86,7 @@ def test_build_tracker_raises_when_tensorboard_extra_missing(
     # The TensorBoardTracker constructor's `import tensorboard` will hit this.
     monkeypatch.setitem(sys.modules, "tensorboard", None)
 
-    from esam3.tracking import build_tracker
+    from custom_sam_peft.tracking import build_tracker
 
     with pytest.raises(ImportError, match=r"\[tensorboard\]"):
         build_tracker(_cfg(tmp_path, "tensorboard"))
@@ -97,7 +97,7 @@ def test_build_tracker_raises_when_wandb_extra_missing(
 ) -> None:
     monkeypatch.setitem(sys.modules, "wandb", None)
 
-    from esam3.tracking import build_tracker
+    from custom_sam_peft.tracking import build_tracker
 
     with pytest.raises(ImportError, match=r"\[wandb\]"):
         build_tracker(_cfg(tmp_path, "wandb"))
