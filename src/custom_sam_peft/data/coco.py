@@ -172,7 +172,8 @@ class COCODataset:
         image_id = self._image_ids[i]
         rec = self._coco.loadImgs([image_id])[0]
         img_path = self._image_root / rec["file_name"]
-        np_img = np.asarray(Image.open(img_path).convert("RGB"))
+        with Image.open(img_path) as pil_img:
+            np_img = np.asarray(pil_img.convert("RGB"))
         h, w = int(rec["height"]), int(rec["width"])
 
         anns = self._ann_index[image_id]

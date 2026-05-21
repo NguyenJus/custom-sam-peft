@@ -103,6 +103,27 @@ def _worker_init_fn(seed: int) -> Any:
     return init
 
 
+def _maybe_use_file_system_sharing(num_workers: int) -> str | None:
+    """Switch torch multiprocessing sharing strategy to ``file_system``.
+
+    PyTorch's Linux default is ``file_descriptor``: one FD per shared tensor
+    storage between the DataLoader worker and the main process. With many
+    workers shipping many tensors per sample, the per-process FD limit
+    (commonly ``ulimit -n = 1024``) is easy to exhaust and surfaces as
+    ``RuntimeError: unable to open shared memory object ... Too many open files``.
+
+    Returns the new strategy if it was switched, else ``None``.
+    """
+    if num_workers <= 0:
+        return None
+    import torch.multiprocessing as torch_mp
+
+    if torch_mp.get_sharing_strategy() != "file_descriptor":  # type: ignore[no-untyped-call]
+        return None
+    torch_mp.set_sharing_strategy("file_system")  # type: ignore[no-untyped-call]
+    return "file_system"
+
+
 class Trainer:
     def __init__(
         self,
@@ -147,6 +168,11 @@ class Trainer:
 
         device = next(self.model.parameters()).device
         pin = device.type == "cuda"
+        new_strategy = _maybe_use_file_system_sharing(cfg.train.num_workers)
+        if new_strategy is not None:
+            _LOG.info(
+                "torch mp sharing_strategy=%s (avoid EMFILE under many workers)", new_strategy
+            )
         train_loader: DataLoader[Any] = DataLoader(
             self.train_ds,  # type: ignore[arg-type]
             batch_size=cfg.train.batch_size,
