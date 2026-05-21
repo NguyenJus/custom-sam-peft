@@ -836,7 +836,7 @@ These two steps must be performed by the operator after the first semver tag pus
 
 1. **Flip GHCR package visibility to public.** GitHub Packages → `custom-sam-peft` → Package settings → Change visibility → Public. GHCR packages default to private on first publish.
 2. **Verify source auto-link.** Confirm the `org.opencontainers.image.source` label caused GitHub to auto-link the package to `NguyenJus/custom-sam-peft` (visible on the repo sidebar).
-3. **Colab T4 dry-run.** Pull and run the published image on a Colab T4 to verify GPU correctness (see Phase 5 of the implementation plan). Close issue #34 once confirmed.
+Close issue #34 once the tag publishes successfully and GHCR visibility is public.
 
 ## Test plan
 
@@ -860,7 +860,7 @@ After the PR is created, watch for CI to run (the `lint-hygiene` and `lock-check
 ## Phase 5: Post-merge manual steps (not part of the PR)
 
 **Owner:** Operator (Justin Nguyen). **Not automated.**
-**Spec:** §10 (one-time first-publish setup), §9 (Colab T4 dry-run).
+**Spec:** §10 (one-time first-publish setup).
 
 These steps are performed after the PR is merged and a semver tag is pushed to trigger the first image publish.
 
@@ -889,42 +889,10 @@ Required because GHCR packages default to private on first publish. Without this
 
 Confirm that the `org.opencontainers.image.source` label (set in the Dockerfile's `LABEL` block) has caused GitHub to auto-link the package to the `NguyenJus/custom-sam-peft` repository. The package should appear in the repo's sidebar under "Packages".
 
-- [ ] **Step P5-4: Colab T4 dry-run (release gate)**
-
-This is the interim GPU verification gate (per spec §9 and §12). Until automated GPU CI for the published image lands, one manual dry-run is required per tagged release:
-
-1. Open a new Google Colab notebook.
-2. Select Runtime → Change runtime type → GPU (T4).
-3. Run the following in a cell:
-
-```python
-# Install nvidia-container-toolkit check (Colab does not support Docker pulls;
-# run this verification on a local machine or a RunPod instance with Docker instead)
-```
-
-**Correction:** Colab cannot pull custom Docker images. Run the dry-run on a RunPod or Vast.ai instance with Docker installed:
+- [ ] **Step P5-4: Close issue #34**
 
 ```bash
-# On a GPU pod with Docker and nvidia-container-toolkit:
-docker pull ghcr.io/nguyenjus/custom-sam-peft:v0.7.0
-docker run --gpus all --rm \
-  -v $PWD:/workspace \
-  -e HF_TOKEN=$HF_TOKEN \
-  ghcr.io/nguyenjus/custom-sam-peft:v0.7.0 \
-  --help
-docker run --gpus all --rm \
-  -v $PWD:/workspace \
-  -e HF_TOKEN=$HF_TOKEN \
-  ghcr.io/nguyenjus/custom-sam-peft:v0.7.0 \
-  doctor --json
-```
-
-Expected: both commands exit 0. GPU correctness (actual training) is out of scope for this release gate; CLI resolution and doctor passing is sufficient.
-
-- [ ] **Step P5-5: Close issue #34**
-
-```bash
-gh issue close 34 --comment "Docker image published to ghcr.io/nguyenjus/custom-sam-peft. Visibility flipped to public. T4 dry-run confirmed."
+gh issue close 34 --comment "Docker image published to ghcr.io/nguyenjus/custom-sam-peft. Visibility flipped to public. Source auto-link verified."
 ```
 
 ---
@@ -960,7 +928,7 @@ All items below must be checked before the PR can be marked ready for review:
 - `pyproject.toml` → Phase 0.
 - `uv.lock` → Phase 0.
 
-Spec §5.2 intentional SHA placeholders → resolved in Phase 2, Step P2-1 (instructions for the implementer to look up and pin five actions at PR time). Spec §10 (one-time GHCR flip) → Phase 5, Step P5-2. Spec §9 Colab T4 dry-run → Phase 5, Step P5-4 (noted as post-merge release gate, not PR CI).
+Spec §5.2 intentional SHA placeholders → resolved in Phase 2, Step P2-1 (instructions for the implementer to look up and pin five actions at PR time). Spec §10 (one-time GHCR flip) → Phase 5, Step P5-2. Spec §9 (Colab T4 dry-run) → dropped; CI smoke test (`--help` + `doctor --json` in `docker.yml`) verifies the entrypoint and module imports; no Docker-vs-venv GPU failure mode warrants a manual gate.
 
 **2. Placeholder scan:** No "TBD", "TODO", "implement later", or "fill in details" language. The only remaining `<sha>` references are in Step P2-2 as explicit placeholders the implementer fills in — they are accompanied by exact instructions on how to resolve them (Step P2-1). These are not plan failures; they are intentional delegation points requiring runtime data (current upstream SHAs) that cannot be known at plan-write time.
 
@@ -968,4 +936,4 @@ Spec §5.2 intentional SHA placeholders → resolved in Phase 2, Step P2-1 (inst
 
 **4. Parallelism:** Phases 1, 2, 3 are explicitly called out as parallelizable and file-disjoint. Phase 0 is called out as the serial blocker. The dependency graph is drawn explicitly at the top of the plan.
 
-**5. Post-merge steps:** The Colab T4 dry-run (spec §9) and the GHCR visibility flip (spec §10) are placed in Phase 5 as operator work — not in the PR's CI. This matches the coverage requirement.
+**5. Post-merge steps:** The GHCR visibility flip (spec §10) and source auto-link verification are placed in Phase 5 as operator work — not in the PR's CI. The spec §9 Colab T4 dry-run has been dropped; CI smoke tests (`--help` + `doctor --json`) are sufficient to verify the image entrypoint, and GPU correctness is covered by the forthcoming CI GPU testing work. Issue #34 closes after the tag publishes successfully and GHCR visibility is public.
