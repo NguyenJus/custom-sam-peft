@@ -170,7 +170,7 @@ touch src/custom_sam_peft/_version.py && git check-ignore -v src/custom_sam_peft
 Expected output (the line/pattern numbers may differ; the key is that `git check-ignore` exits 0 and prints a matching line):
 
 ```
-.gitignore:<N>:src/custom_sam_peft/_version.py	src/custom_sam_peft/_version.py
+.gitignore:<N>:src/custom_sam_peft/_version.py <TAB> src/custom_sam_peft/_version.py
 ```
 
 - [ ] **Step 4: Verify `__init__.py` is syntactically valid**
