@@ -18,6 +18,8 @@ from custom_sam_peft.cli.main import app
 
 
 @pytest.mark.gpu
+@pytest.mark.requires_checkpoint
+@pytest.mark.requires_compatible_gpu
 def test_calibrate_real_activation_in_sane_range(tmp_path: Path) -> None:
     runner = CliRunner()
     os.chdir(tmp_path)

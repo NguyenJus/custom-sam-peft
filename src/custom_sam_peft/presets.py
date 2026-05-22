@@ -14,9 +14,8 @@ import logging
 import math
 import os
 from dataclasses import asdict, dataclass
-from datetime import datetime, timezone
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal
 
 import torch
 
@@ -37,16 +36,18 @@ _CUDA_HINT = (
 # These ride with the SAM 3.1 checkpoint identity. If Meta ships a new
 # checkpoint, re-derive via scripts/_derive_preset_constants.py and update.
 
-MODEL_PARAMS = 5_000_000_000        # SAM 3.1 base parameter count — analytic seed for full model stack
-                                    # (vision encoder ~762M + text encoder ~302M + decoder/neck ~50M,
-                                    #  plus retained activations and optimizer state heuristic; superseded
-                                    #  by calibration cache. Re-derive via scripts/_derive_preset_constants.py)
-LORA_LAYERS = 96                    # vision_decoder scope, count of nn.Linear LoRA targets (from _resolve_targets)
-D_IN = 768                          # avg input feature dim across LoRA targets
-D_OUT = 768                         # avg output feature dim across LoRA targets
-Q_OVERHEAD = 64 * _MIB              # bnb NF4 per-block scale + zero-point overhead
-WORKSPACE_BYTES = 256 * _MIB        # cuDNN workspace + autograd graph + tmp buffers (spec §3)
-CKPT_FACTOR = 0.3                   # activation reduction with gradient_checkpointing on (spec §3, ~sqrt(num_layers))
+MODEL_PARAMS = 5_000_000_000  # SAM 3.1 base parameter count — analytic seed for full model stack
+# (vision encoder ~762M + text encoder ~302M + decoder/neck ~50M,
+#  plus retained activations and optimizer state heuristic; superseded
+#  by calibration cache. Re-derive via scripts/_derive_preset_constants.py)
+LORA_LAYERS = 96  # vision_decoder scope, count of nn.Linear LoRA targets (from _resolve_targets)
+D_IN = 768  # avg input feature dim across LoRA targets
+D_OUT = 768  # avg output feature dim across LoRA targets
+Q_OVERHEAD = 64 * _MIB  # bnb NF4 per-block scale + zero-point overhead
+WORKSPACE_BYTES = 256 * _MIB  # cuDNN workspace + autograd graph + tmp buffers (spec §3)
+CKPT_FACTOR = (
+    0.3  # activation reduction with gradient_checkpointing on (spec §3, ~sqrt(num_layers))
+)
 BASE_ACTIVATION_AT_1024 = int(1.5 * _GB)  # seed; superseded by calibration cache
 
 # === CALIBRATION CACHE =====================================================
@@ -141,30 +142,37 @@ def _model_bytes(method: str) -> int:
 
 
 def _adapter_bytes(r: int) -> int:
-    # LORA_LAYERS × r × (D_IN + D_OUT) × 2 bytes (bf16 adapter weights).
+    # LORA_LAYERS * r * (D_IN + D_OUT) * 2 bytes (bf16 adapter weights).
     return LORA_LAYERS * r * (D_IN + D_OUT) * 2
 
 
 def _optimizer_bytes(r: int) -> int:
     # AdamW state on the bf16 adapter — fp32 m, fp32 v, fp32 master copy.
-    # Adapter weights are 2 B/param; state is 8 B/param → 4× adapter_bytes.
+    # Adapter weights are 2 B/param; state is 8 B/param -> 4x adapter_bytes.
     return _adapter_bytes(r) * 4
 
 
-def _activation_per_example(image_size: int, cache: dict[str, object] | None) -> int:
+def _activation_per_example(image_size: int, cache: dict[str, Any] | None) -> int:
     if cache is not None:
         return int(cache["activation_bytes_per_example"])
     return int(BASE_ACTIVATION_AT_1024 * (image_size / 1024) ** 2)
 
 
-def _activation_bytes(image_size: int, batch: int, ckpt: bool, cache: dict | None) -> int:
+def _activation_bytes(
+    image_size: int, batch: int, ckpt: bool, cache: dict[str, Any] | None
+) -> int:
     per = _activation_per_example(image_size, cache)
     factor = CKPT_FACTOR if ckpt else 1.0
     return int(per * batch * factor)
 
 
 def _predicted_bytes(
-    method: str, r: int, batch: int, ckpt: bool, image_size: int, cache: dict | None
+    method: str,
+    r: int,
+    batch: int,
+    ckpt: bool,
+    image_size: int,
+    cache: dict[str, Any] | None,
 ) -> int:
     return (
         _model_bytes(method)
@@ -193,7 +201,9 @@ def _current_sam3_checkpoint_sha() -> str:
     return h.hexdigest()
 
 
-def _load_cache(image_size: int, gpu_name: str) -> tuple[dict | None, Path | None]:
+def _load_cache(
+    image_size: int, gpu_name: str
+) -> tuple[dict[str, Any] | None, Path | None]:
     """Return (cache_dict, absolute_cache_path) iff the cache matches."""
     cache_path = Path(CACHE_FILENAME).resolve()
     if not cache_path.is_file():
@@ -233,9 +243,7 @@ def _headroom_bytes() -> int:
             "CUSTOM_SAM_PEFT_VRAM_HEADROOM_GIB must be a non-negative float"
         ) from exc
     if gib < 0 or math.isnan(gib):
-        raise RuntimeError(
-            "CUSTOM_SAM_PEFT_VRAM_HEADROOM_GIB must be a non-negative float"
-        )
+        raise RuntimeError("CUSTOM_SAM_PEFT_VRAM_HEADROOM_GIB must be a non-negative float")
     return int(gib * _GB)
 
 
@@ -247,9 +255,7 @@ def _candidates() -> list[tuple[str, int, int, bool]]:
     rs = (8, 16, 24, 32, 48, 64)
     batches = tuple(range(1, 17))
     ckpts = (False, True)
-    return [
-        (m, r, b, c) for m in methods for r in rs for b in batches for c in ckpts
-    ]
+    return [(m, r, b, c) for m in methods for r in rs for b in batches for c in ckpts]
 
 
 def _sort_key(c: tuple[str, int, int, bool]) -> tuple[int, int, int, int]:
@@ -290,9 +296,7 @@ def decide_preset(image_size: int) -> PresetDecision:
     provenance: Literal["calibrated", "analytic"] = (
         "calibrated" if cache is not None else "analytic"
     )
-    calibrated_at: str | None = (
-        str(cache["calibrated_at"]) if cache is not None else None
-    )
+    calibrated_at: str | None = str(cache["calibrated_at"]) if cache is not None else None
 
     feasible = []
     for method, r, batch, ckpt in _candidates():

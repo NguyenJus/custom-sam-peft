@@ -7,7 +7,6 @@ All `models.sam3.load_sam31`, `peft_adapters.lora.apply_lora`, and
 from __future__ import annotations
 
 import json
-import os
 from pathlib import Path
 from unittest.mock import MagicMock
 
@@ -74,9 +73,7 @@ def test_calibrate_writes_cache_with_schema_v1(
     assert data["sam3_checkpoint_sha"] == "deadbeef"
 
 
-def test_calibrate_cache_fresh_exits_zero(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_calibrate_cache_fresh_exits_zero(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     _patch_probe(monkeypatch)
     monkeypatch.chdir(tmp_path)
     cache = tmp_path / ".custom_sam_peft_calibration.json"
@@ -103,9 +100,7 @@ def test_calibrate_cache_fresh_exits_zero(
     assert cache.stat().st_mtime == mtime_before  # not rewritten
 
 
-def test_calibrate_force_overwrites_cache(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_calibrate_force_overwrites_cache(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     _patch_probe(monkeypatch)
     monkeypatch.chdir(tmp_path)
     cache = tmp_path / ".custom_sam_peft_calibration.json"
@@ -116,9 +111,7 @@ def test_calibrate_force_overwrites_cache(
     assert data.get("schema_version") == 1
 
 
-def test_calibrate_non_cuda_exits_2(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_calibrate_non_cuda_exits_2(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
     monkeypatch.chdir(tmp_path)
     result = runner.invoke(app, ["calibrate"])
@@ -140,9 +133,7 @@ def test_calibrate_negative_activation_warns(
     assert "negative" in result.output.lower() or "clamp" in result.output.lower()
 
 
-def test_calibrate_atomic_write(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_calibrate_atomic_write(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     _patch_probe(monkeypatch)
     monkeypatch.chdir(tmp_path)
     cache = tmp_path / ".custom_sam_peft_calibration.json"

@@ -22,9 +22,7 @@ def _force_cuda_available(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
 
 
-def _stub_gpu(
-    monkeypatch: pytest.MonkeyPatch, total_bytes: int, name: str = "StubGPU"
-) -> None:
+def _stub_gpu(monkeypatch: pytest.MonkeyPatch, total_bytes: int, name: str = "StubGPU") -> None:
     props = MagicMock(total_memory=total_bytes)
     props.name = name
     monkeypatch.setattr(torch.cuda, "get_device_properties", lambda _idx: props)
@@ -81,7 +79,7 @@ def test_decide_preset_unfittable_raises(
     monkeypatch: pytest.MonkeyPatch, _force_cuda_available: None
 ) -> None:
     _stub_gpu(monkeypatch, int(4 * _GB))
-    with pytest.raises(RuntimeError, match="SAM 3.1 needs"):
+    with pytest.raises(RuntimeError, match=r"SAM 3\.1 needs"):
         decide_preset(image_size=1024)
 
 

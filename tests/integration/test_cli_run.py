@@ -268,6 +268,7 @@ def test_run_reads_preset_sidecar_when_present(
     # first, then override the stub with the real function.
     captured = _patch_phases(monkeypatch, run_dir=tmp_path / "runs" / "r")
     import custom_sam_peft.cli.run_cmd as _run_cmd
+
     monkeypatch.setattr(
         "custom_sam_peft.cli.run_cmd._load_preset_or_fallback",
         _run_cmd._load_preset_or_fallback,
@@ -290,11 +291,10 @@ def test_run_synthesizes_analytic_preset_when_sidecar_absent(
     # Stub _fallback_preset so we don't need CUDA in this test.
     fake_decision = _write_preset_sidecar(tmp_path)  # writes & returns a PresetDecision
     (tmp_path / "preset.json").unlink()  # remove the sidecar so the fallback path runs
-    monkeypatch.setattr(
-        "custom_sam_peft.cli.run_cmd._fallback_preset", lambda cfg: fake_decision
-    )
+    monkeypatch.setattr("custom_sam_peft.cli.run_cmd._fallback_preset", lambda cfg: fake_decision)
     # Also restore the real _load_preset_or_fallback so the fallback path actually runs.
     import custom_sam_peft.cli.run_cmd as _run_cmd
+
     monkeypatch.setattr(
         "custom_sam_peft.cli.run_cmd._load_preset_or_fallback",
         _run_cmd._load_preset_or_fallback,

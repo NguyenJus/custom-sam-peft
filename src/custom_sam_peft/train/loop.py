@@ -50,7 +50,7 @@ class OomState:
 def _train_step_with_oom_ladder(
     model: Any,
     batch: Any,
-    state: Any,                          # _State (test) | OomState (prod)
+    state: Any,  # _State (test) | OomState (prod)
     *,
     forward_call: Callable[[Any, Any], torch.Tensor],
 ) -> torch.Tensor:
@@ -84,7 +84,7 @@ def _train_step_with_oom_ladder(
                 (loss / n_micro).backward()
                 last_loss = loss.detach()
             return last_loss if last_loss is not None else torch.tensor(0.0)
-        except torch.cuda.OutOfMemoryError:
+        except torch.cuda.OutOfMemoryError as oom_err:
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
             if state.micro_batch_size > 1:
@@ -99,7 +99,8 @@ def _train_step_with_oom_ladder(
                 )
                 _LOG.warning(
                     "OOM at step %d — halving micro_batch_size to %d",
-                    state.step, state.micro_batch_size,
+                    state.step,
+                    state.micro_batch_size,
                 )
                 continue
             if not state.gradient_checkpointing:
@@ -120,7 +121,7 @@ def _train_step_with_oom_ladder(
             raise RuntimeError(
                 f"OOM at step {state.step} after micro_batch=1 + "
                 f"gradient_checkpointing=on. Use a larger GPU or smaller image_size."
-            )
+            ) from oom_err
 
 
 @dataclass
@@ -232,6 +233,7 @@ def train_step(
                     _hints_c: list[Tensor | None] = hints_c,
                     _n_classes: int = len(classes_in_batch),
                     _grad_accum: int = cfg.train.grad_accum_steps,
+                    _losses_out: list[dict[str, Tensor]] = _last_class_losses,
                 ) -> Tensor:
                     micro_prompts = [_prompts_c[i] for i in micro_indices]
                     micro_targets = [_targets_c[i] for i in micro_indices]
@@ -240,8 +242,8 @@ def train_step(
                     with _autocast_ctx(cfg):
                         micro_out = _model(micro_imgs, micro_prompts, box_hints=micro_hints)
                         micro_cls_losses = total_loss(micro_out, micro_targets, cfg.train.loss)
-                    _last_class_losses.clear()
-                    _last_class_losses.append(micro_cls_losses)
+                    _losses_out.clear()
+                    _losses_out.append(micro_cls_losses)
                     # Divide only by n_classes and grad_accum — NOT by n_micro.
                     # The ladder helper applies / n_micro in (loss / n_micro).backward().
                     return micro_cls_losses["total"] / (_n_classes * _grad_accum)

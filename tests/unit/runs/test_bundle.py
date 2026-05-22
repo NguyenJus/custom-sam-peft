@@ -314,9 +314,7 @@ def test_write_bundle_preset_block_structured(
 def test_write_bundle_preset_block_analytic(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    decision = replace(
-        _make_decision(), provenance="analytic", cache_path=None, calibrated_at=None
-    )
+    decision = replace(_make_decision(), provenance="analytic", cache_path=None, calibrated_at=None)
     ctx = _make_ctx(tmp_path, per_example_iou=[], preset=decision)
     monkeypatch.setattr(
         "custom_sam_peft.runs.bundle._reinfer_one_example",

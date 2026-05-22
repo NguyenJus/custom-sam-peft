@@ -23,14 +23,16 @@ import typer
 from custom_sam_peft import __version__ as _PKG_VERSION
 from custom_sam_peft.config.schema import ModelConfig, PEFTConfig
 from custom_sam_peft.presets import (
+    _CUDA_HINT,
     CACHE_FILENAME,
     CACHE_SCHEMA_VERSION,
     WORKSPACE_BYTES,
-    _CUDA_HINT,
     _adapter_bytes,
-    _current_sam3_checkpoint_sha as _sam3_checkpoint_sha,
     _model_bytes,
     _optimizer_bytes,
+)
+from custom_sam_peft.presets import (
+    _current_sam3_checkpoint_sha as _sam3_checkpoint_sha,
 )
 
 _LOG = logging.getLogger(__name__)
@@ -66,7 +68,7 @@ def _atomic_write_json(path: Path, payload: dict[str, Any]) -> None:
 def _run_probe(image_size: int) -> int:
     """Run one forward+backward at LoRA r=4, return peak bytes. CUDA only.
 
-    Steps mirror §4 procedure 3–7: load wrapper, attach LoRA stub at r=4,
+    Steps mirror §4 procedure 3-7: load wrapper, attach LoRA stub at r=4,
     build one synthetic batch, reset peak stats, forward+backward, read
     max_memory_allocated.
     """
@@ -87,8 +89,11 @@ def _run_probe(image_size: int) -> int:
     torch.cuda.reset_peak_memory_stats()
     out = wrapper(images, prompts, box_hints=None)
     # Synthetic loss: sum of all output tensors that require grad.
-    loss = sum(t.float().sum() for t in out.values() if isinstance(t, torch.Tensor))
-    loss.backward()
+    loss = torch.zeros((), device=device, dtype=torch.float32)
+    for t in out.values():
+        if isinstance(t, torch.Tensor):
+            loss = loss + t.float().sum()
+    loss.backward()  # type: ignore[no-untyped-call]
     return int(torch.cuda.max_memory_allocated())
 
 
@@ -96,12 +101,8 @@ def calibrate(
     image_size: int = typer.Option(
         1008, "--image-size", help="Image side length the probe runs at."
     ),
-    output: Path = typer.Option(
-        Path(CACHE_FILENAME), "--output", help="Cache file path."
-    ),
-    force: bool = typer.Option(
-        False, "--force", help="Re-probe even if the cache is fresh."
-    ),
+    output: Path = typer.Option(Path(CACHE_FILENAME), "--output", help="Cache file path."),
+    force: bool = typer.Option(False, "--force", help="Re-probe even if the cache is fresh."),
 ) -> None:
     """Probe peak VRAM at LoRA r=4 and cache the result."""
     if not torch.cuda.is_available():
@@ -130,12 +131,7 @@ def calibrate(
         typer.echo(f"ERROR: LoRA stub attach failed: {exc}", err=True)
         raise typer.Exit(code=4) from exc
 
-    overhead = (
-        _model_bytes("lora")
-        + _adapter_bytes(4)
-        + _optimizer_bytes(4)
-        + WORKSPACE_BYTES
-    )
+    overhead = _model_bytes("lora") + _adapter_bytes(4) + _optimizer_bytes(4) + WORKSPACE_BYTES
     activation = peak - overhead
     if activation < 0:
         typer.echo(
