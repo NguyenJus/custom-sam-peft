@@ -105,7 +105,8 @@ class Evaluator:
         dataset: Dataset,
         *,
         return_per_example_iou: Literal[False] = False,
-    ) -> MetricsReport: ...
+    ) -> MetricsReport:
+        pass
 
     @overload
     def evaluate(
@@ -114,7 +115,8 @@ class Evaluator:
         dataset: Dataset,
         *,
         return_per_example_iou: Literal[True],
-    ) -> tuple[MetricsReport, list[float]]: ...
+    ) -> tuple[MetricsReport, list[float]]:
+        pass
 
     def evaluate(
         self,

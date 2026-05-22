@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 from pathlib import Path
 from typing import Any, ClassVar
 from unittest.mock import patch
@@ -150,7 +151,7 @@ def test_evaluate_returns_per_example_iou_when_requested(stub_model, tiny_text_d
     assert isinstance(report, MetricsReport)
     assert isinstance(ious, list)
     assert len(ious) == len(tiny_text_dataset)
-    assert all(0.0 <= v <= 1.0 or v != v for v in ious)  # 0..1 or NaN
+    assert all(0.0 <= v <= 1.0 or math.isnan(v) for v in ious)  # 0..1 or NaN
 
 
 def test_evaluate_default_unchanged_returns_report_only(stub_model, tiny_text_dataset):
