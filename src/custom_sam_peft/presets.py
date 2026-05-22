@@ -16,7 +16,7 @@ import logging
 import math
 import os
 from dataclasses import asdict, dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Literal
 
@@ -83,6 +83,7 @@ class PresetDecision:
     gpu_name: str
     provenance: Literal["calibrated", "analytic"]
     cache_path: Path | None
+    calibrated_at: str | None  # ISO 8601 string when provenance == "calibrated", None otherwise
 
     @property
     def config_patch(self) -> dict[str, dict[str, object]]:
@@ -105,8 +106,8 @@ class PresetDecision:
         used_gib = self.predicted_bytes / _GB
         total_gib = (self.budget_bytes + self.headroom_bytes) / _GB
         if self.provenance == "calibrated":
-            today = datetime.utcnow().strftime("%Y-%m-%d")
-            suffix = f"(calibrated {today})"
+            date_str = self.calibrated_at[:10] if self.calibrated_at else "unknown"
+            suffix = f"(calibrated {date_str})"
         else:
             suffix = "(analytic estimate)"
         return (
@@ -118,12 +119,14 @@ class PresetDecision:
     def to_json(self) -> str:
         d = asdict(self)
         d["cache_path"] = None if self.cache_path is None else str(self.cache_path)
+        # calibrated_at is str | None — JSON handles it directly
         return json.dumps(d)
 
     @classmethod
     def from_json(cls, s: str) -> PresetDecision:
         d = json.loads(s)
         d["cache_path"] = None if d["cache_path"] is None else Path(d["cache_path"])
+        # calibrated_at is str | None — pass through as-is
         return cls(**d)
 
 
@@ -289,6 +292,9 @@ def decide_preset(image_size: int) -> PresetDecision:
     provenance: Literal["calibrated", "analytic"] = (
         "calibrated" if cache is not None else "analytic"
     )
+    calibrated_at: str | None = (
+        str(cache["calibrated_at"]) if cache is not None else None
+    )
 
     feasible = []
     for method, r, batch, ckpt in _candidates():
@@ -325,4 +331,5 @@ def decide_preset(image_size: int) -> PresetDecision:
         gpu_name=gpu_name,
         provenance=provenance,
         cache_path=cache_path,
+        calibrated_at=calibrated_at,
     )

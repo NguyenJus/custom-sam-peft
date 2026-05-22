@@ -215,6 +215,7 @@ def _make_decision(provenance: str = "calibrated") -> PresetDecision:
         gpu_name="NVIDIA A100-SXM4-40GB",
         provenance=provenance,  # type: ignore[arg-type]
         cache_path=Path(".custom_sam_peft_calibration.json"),
+        calibrated_at="2026-05-22T00:00:00+00:00" if provenance == "calibrated" else None,
     )
 
 
@@ -223,6 +224,7 @@ def test_preset_decision_label_calibrated() -> None:
     label = d.label()
     assert "LoRA r=32" in label
     assert "calibrated" in label
+    assert "2026-05-22" in label
 
 
 def test_preset_decision_label_analytic() -> None:
