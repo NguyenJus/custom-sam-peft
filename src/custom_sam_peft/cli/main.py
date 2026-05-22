@@ -15,6 +15,11 @@ from custom_sam_peft.cli import (
     run_cmd,
     train_cmd,
 )
+from custom_sam_peft.cli._progress import _silence_third_party_progress
+
+# Suppress HF / datasets progress bars once at app entry, unconditionally.
+# progress_session also calls this defensively on entry — the double-call is safe.
+_silence_third_party_progress()
 
 app = typer.Typer(
     name="custom-sam-peft",

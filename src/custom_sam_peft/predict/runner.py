@@ -27,6 +27,8 @@ from typing import Any, Literal, cast
 import numpy as np
 import torch
 
+from custom_sam_peft.cli._progress import progress as P
+
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
@@ -342,6 +344,10 @@ def run_predict(opts: PredictOptions) -> PredictReport:
     n_successful = 0
     t_start = time.perf_counter()
 
+    # Initialise progress inner bar to the real image count (no-op outside a session).
+    P.reset_inner(total=len(image_paths))
+    log_every_n = max(1, len(image_paths) // 50)
+
     # We process images one at a time (spec §12 — postprocess hard-asserts batch==1)
     for i, img_path in enumerate(image_paths):
         img_t0 = time.perf_counter()
@@ -411,6 +417,15 @@ def run_predict(opts: PredictOptions) -> PredictReport:
                 len(image_paths),
                 img_path.name,
                 img_latency_ms,
+            )
+
+        # Progress tick: per-image inner advance; postfix update at cadence.
+        P.advance_inner()
+        if (i + 1) % log_every_n == 0:
+            elapsed_so_far = max(time.perf_counter() - t_start, 1e-9)
+            P.update_postfix(
+                done=f"{i + 1}/{len(image_paths)}",
+                it_s=(i + 1) / elapsed_so_far,
             )
 
     elapsed_sec = time.perf_counter() - t_start
@@ -497,7 +512,11 @@ def _print_dry_run_preview(
     prompts: list[str],
     rcfg: _ResolvedConfig,
 ) -> None:
-    """Print the dry-run preview to stdout (spec §9 item 3)."""
+    """Print the dry-run preview to stdout (spec §9 item 3).
+
+    Uses bare ``print`` (T201 ignored for this file via per-file-ignore) to keep
+    output grep-friendly and avoid Rich's word-wrap on long filesystem paths.
+    """
     print("=== csp predict --dry-run ===")
     print()
     print("Resolved config:")

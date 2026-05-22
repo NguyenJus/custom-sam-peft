@@ -17,6 +17,7 @@ import pycocotools.mask as mask_utils
 import torch
 from pycocotools.coco import COCO
 
+from custom_sam_peft.cli._progress import progress as P
 from custom_sam_peft.config.schema import EvalConfig
 from custom_sam_peft.data.base import Dataset, Example, TextPrompts
 from custom_sam_peft.eval.metrics import MetricsReport, compute_coco_map
@@ -147,6 +148,7 @@ class Evaluator:
         # Fetch each example exactly once — used for both GT construction and
         # model inference, avoiding a double dataset traversal.
         examples = [dataset[i] for i in indices]
+        P.reset_inner(total=len(examples))
 
         gt, _ = _build_coco_gt_from_examples(examples, dataset)
 
@@ -165,10 +167,11 @@ class Evaluator:
         except (StopIteration, AttributeError):
             device = torch.device("cpu")
 
+        log_every_n = max(1, len(examples) // 50)
         predictions: list[dict[str, object]] = []
         try:
             with torch.no_grad():
-                for ex in examples:
+                for img_idx, ex in enumerate(examples):
                     original_hw = (int(ex.image.shape[-2]), int(ex.image.shape[-1]))
                     int_id = _int_image_id(ex.image_id)
                     # Note: mode="lite" bounds only the image dimension; the
@@ -189,6 +192,9 @@ class Evaluator:
                             cfg.mask_threshold,
                         )
                         predictions.extend(entries)
+                    P.advance_inner()
+                    if (img_idx + 1) % log_every_n == 0:
+                        P.update_postfix(it_s=float(img_idx + 1))
         finally:
             if was_training and hasattr(model, "train"):
                 model.train()

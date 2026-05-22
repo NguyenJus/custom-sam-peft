@@ -14,6 +14,7 @@ import torch
 import yaml
 from torch.utils.data import DataLoader
 
+from custom_sam_peft.cli._progress import progress as P
 from custom_sam_peft.config.schema import Optimizer, TrainConfig
 from custom_sam_peft.data.base import Dataset
 from custom_sam_peft.data.collate import collate_batch
@@ -234,6 +235,8 @@ class Trainer:
         merged_path: Path | None = None
         try:
             for epoch in range(start_epoch, cfg.train.epochs):
+                total_batches = max(len(train_loader), 1)
+                P.reset_inner(total=total_batches)
                 global_step, nan_streak = run_epoch(
                     self.model,
                     train_loader,
@@ -251,6 +254,7 @@ class Trainer:
                     on_eval,
                     oom_state=oom_state,
                 )
+                P.advance_outer()
 
             adapter_path = run_dir / "adapter"
             save_adapter(self.model, adapter_path)

@@ -9,15 +9,19 @@ Spec: docs/superpowers/specs/2026-05-18-simplify-ux-design.md §3.
 from __future__ import annotations
 
 import logging
+import os
+import sys
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, cast
 
 import typer
 from rich import print as rprint
+from rich.console import Console
 
 from custom_sam_peft._registry import lookup
 from custom_sam_peft.cli._logging import configure_logging
+from custom_sam_peft.cli._progress import ProgressKind, ProgressMode, progress_session, resolve_mode
 from custom_sam_peft.config.loader import load_config
 from custom_sam_peft.config.schema import TrainConfig
 from custom_sam_peft.data.base import Dataset
@@ -48,12 +52,18 @@ def _build_val_dataset(cfg: TrainConfig) -> Dataset:
     return cast(Dataset, builder(cfg.data.model_dump(), model_name=cfg.model.name, pipeline="eval"))
 
 
-def _orchestrate(cfg: TrainConfig, resume: Path | None) -> int:
+def _orchestrate(cfg: TrainConfig, resume: Path | None, mode: ProgressMode) -> int:
     start_ts = datetime.now(UTC)
 
     # Phase: train.
     try:
-        train_result = run_training(cfg, resume_from=resume)
+        with progress_session(
+            kind=ProgressKind.TRAIN,
+            total_epochs=cfg.train.epochs,
+            total_batches_per_epoch=0,  # Trainer updates dynamically via reset_inner
+            mode=mode,
+        ):
+            train_result = run_training(cfg, resume_from=resume)
     except Exception as exc:
         rprint(f"[red]train failed[/red] {exc}")
         raise typer.Exit(code=1) from exc
@@ -67,17 +77,22 @@ def _orchestrate(cfg: TrainConfig, resume: Path | None) -> int:
 
     # Phase: eval.
     try:
-        report, per_example_iou = cast(
-            tuple[Any, list[float]],
-            run_eval(
-                cfg,
-                checkpoint=adapter_path,
-                output_dir=run_dir,
-                val_dataset=val_dataset,
-                model=wrapper,
-                return_per_example_iou=True,
-            ),
-        )
+        with progress_session(
+            kind=ProgressKind.EVAL,
+            total_batches_per_epoch=0,  # Evaluator updates via P.advance_inner
+            mode=mode,
+        ):
+            report, per_example_iou = cast(
+                tuple[Any, list[float]],
+                run_eval(
+                    cfg,
+                    checkpoint=adapter_path,
+                    output_dir=run_dir,
+                    val_dataset=val_dataset,
+                    model=wrapper,
+                    return_per_example_iou=True,
+                ),
+            )
     except Exception as exc:
         rprint(f"[red]eval failed[/red] run_dir={run_dir} — {exc}")
         raise typer.Exit(code=1) from exc
@@ -90,7 +105,12 @@ def _orchestrate(cfg: TrainConfig, resume: Path | None) -> int:
     if cfg.export.merge:
         target = run_dir / "merged"
         try:
-            save_merged(wrapper, target)
+            with progress_session(
+                kind=ProgressKind.EXPORT_MERGE,
+                total_batches_per_epoch=0,
+                mode=mode,
+            ):
+                save_merged(wrapper, target)
             merged_dir = target
         except Exception as exc:
             _LOG.warning("export-merge failed: %s", exc)
@@ -127,6 +147,12 @@ def run(
     config: Path = typer.Option(..., "--config", help="Path to config YAML."),
     resume: Path | None = typer.Option(None, "--resume", help="Path to resume checkpoint."),
     verbose: bool = typer.Option(False, "-v", "--verbose", help="Enable DEBUG logging."),
+    progress_flag: str = typer.Option(
+        "auto",
+        "--progress",
+        help="Progress display mode: auto|on|off|plain.",
+        metavar="MODE",
+    ),
 ) -> None:
     """Train + eval + (optional) export + bundle, in one shot."""
     configure_logging(verbose)
@@ -136,4 +162,10 @@ def run(
             "prompt_mode='bbox' is not supported for training in v0.",
             param_hint="--config",
         )
-    _orchestrate(cfg, resume)
+    mode = resolve_mode(
+        progress_flag if progress_flag != "auto" else None,
+        os.environ,
+        sys.stdout.isatty(),
+        Console().is_jupyter,
+    )
+    _orchestrate(cfg, resume, mode)

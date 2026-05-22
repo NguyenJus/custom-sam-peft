@@ -2,14 +2,18 @@
 
 from __future__ import annotations
 
+import os
+import sys
 from pathlib import Path
 from typing import Literal, cast
 
 import click
 import typer
 from rich import print as rprint
+from rich.console import Console
 
 from custom_sam_peft.cli._logging import configure_logging
+from custom_sam_peft.cli._progress import ProgressKind, progress_session, resolve_mode
 from custom_sam_peft.predict.runner import PredictOptions, PredictReport, run_predict
 
 # ---------------------------------------------------------------------------
@@ -100,6 +104,12 @@ def predict(
         False, "--dry-run", help="Preview resolved inputs; skip model load and inference."
     ),
     verbose: bool = typer.Option(False, "-v", "--verbose", help="Enable DEBUG logging."),
+    progress_flag: str = typer.Option(
+        "auto",
+        "--progress",
+        help="Progress display mode: auto|on|off|plain.",
+        metavar="MODE",
+    ),
 ) -> None:
     """Run inference on images with optional adapter."""
     configure_logging(verbose)
@@ -121,13 +131,28 @@ def predict(
         dry_run=dry_run,
         verbose=verbose,
     )
+
+    mode = resolve_mode(
+        progress_flag if progress_flag != "auto" else None,
+        os.environ,
+        sys.stdout.isatty(),
+        Console().is_jupyter,
+    )
+
     try:
-        report: PredictReport = run_predict(opts)
+        with progress_session(
+            kind=ProgressKind.PREDICT,
+            total_batches_per_epoch=0,  # runner updates via P.reset_inner(total=len(image_paths))
+            mode=mode,
+            # total_epochs omitted — no outer bar for predict (spec §5.4)
+        ):
+            report: PredictReport = run_predict(opts)
     except RuntimeError as exc:
         if "all images failed" in str(exc).lower():
             rprint(f"[red]error[/red] {exc}")
             raise typer.Exit(code=1) from exc
         raise
+
     rprint(
         f"[green]predict complete[/green] — "
         f"images={report.n_images} predictions={report.n_predictions} "

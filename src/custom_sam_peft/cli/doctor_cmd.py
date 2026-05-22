@@ -100,6 +100,6 @@ def doctor(
     """Report environment + dependency status."""
     report = run_doctor(weights_path=weights_path, config_path=config_path)
     if json_output:
-        print(json.dumps(dataclasses.asdict(report), default=str, indent=2))
+        print(json.dumps(dataclasses.asdict(report), default=str, indent=2))  # noqa: T201
     else:
         _render_table(report)

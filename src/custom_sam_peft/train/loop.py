@@ -21,6 +21,7 @@ from typing import Any
 import torch
 from torch import Tensor
 
+from custom_sam_peft.cli._progress import progress as P
 from custom_sam_peft.config.schema import BoxHintSchedule, TrainConfig
 from custom_sam_peft.data.base import Instance, TextPrompts
 from custom_sam_peft.models.losses import total_loss
@@ -411,8 +412,15 @@ def run_epoch(
         nan_streak = result.nan_streak
         global_step += 1
         window.update(result, lr=float(scheduler.get_last_lr()[0]))
+        P.advance_inner()
         if global_step % cfg.train.log_every == 0:
-            tracker.log_scalars(global_step, window.flush())
+            scalars = window.flush()
+            tracker.log_scalars(global_step, scalars)
+            P.update_postfix(
+                loss=scalars.get("loss/total", 0.0),
+                lr=scalars.get("lr", 0.0),
+                it_s=scalars.get("throughput/img_s", 0.0),
+            )
         if global_step % cfg.train.save_every == 0:
             on_checkpoint(global_step, epoch, result.p_t, nan_streak)
         if global_step > 0 and global_step % cfg.train.eval_every == 0:
