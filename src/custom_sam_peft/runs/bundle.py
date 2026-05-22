@@ -158,8 +158,6 @@ def render_overlay(
         )
 
     base = image.convert("RGBA")
-    pred_layer = Image.new("RGBA", base.size, (0, 0, 0, 0))
-    gt_layer = Image.new("RGBA", base.size, (0, 0, 0, 0))
 
     pred_pixels = np.zeros((expected_hw[0], expected_hw[1], 4), dtype=np.uint8)
     pred_pixels[predicted_mask.astype(bool)] = _PRED_RGBA

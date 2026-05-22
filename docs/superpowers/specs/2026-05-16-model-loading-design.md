@@ -117,6 +117,12 @@ class Sam3Wrapper(nn.Module):
 
 ### 4.2 Forward behavior
 
+> **Superseded for normalization (2026-05-21).** The `mean=std=[0.5, 0.5, 0.5]` claim
+> on line 120 and the example-config edits on lines 283-285 are **wrong** for SAM3.1.
+> See [`2026-05-21-yaml-config-defaults-audit-design.md`](2026-05-21-yaml-config-defaults-audit-design.md)
+> for the corrected ground truth (ImageNet stats) and the three-step resolver.
+> Everything else in this spec — image-size 1008, wrapper API, matcher, losses — stands.
+
 - **`images`**: `(B, 3, 1008, 1008)` bf16, normalized with `mean=std=[0.5, 0.5, 0.5]`.
   Normalization is the data layer's responsibility; the wrapper does not re-normalize.
 - **`prompts`**: list of length `B`. Every entry **must** be the same variant — mixing

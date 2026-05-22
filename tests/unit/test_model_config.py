@@ -14,7 +14,7 @@ def test_model_config_defaults() -> None:
     assert cfg.local_dir == "models/sam3.1"
     assert cfg.checkpoint_file == "sam3.1_multiplex.pt"
     assert cfg.revision is None
-    assert cfg.gradient_checkpointing is True
+    assert cfg.gradient_checkpointing is False
     assert cfg.dtype == "bfloat16"
     assert cfg.device is None
 

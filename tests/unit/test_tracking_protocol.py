@@ -17,9 +17,14 @@ def test_noop_is_a_tracker() -> None:
 
 def test_missing_start_run_is_not_a_tracker() -> None:
     class Incomplete:
-        def log_scalars(self, step: int, values: dict[str, float]) -> None: ...
-        def log_images(self, step: int, images: dict[str, np.ndarray[Any, Any]]) -> None: ...
-        def close(self) -> None: ...
+        def log_scalars(self, step: int, values: dict[str, float]) -> None:
+            pass
+
+        def log_images(self, step: int, images: dict[str, np.ndarray[Any, Any]]) -> None:
+            pass
+
+        def close(self) -> None:
+            pass
 
     assert not isinstance(Incomplete(), Tracker)
 
@@ -31,8 +36,13 @@ def test_missing_close_is_not_a_tracker() -> None:
             run_dir: Path,
             config: dict[str, Any],
             resume_from: Path | None = None,
-        ) -> None: ...
-        def log_scalars(self, step: int, values: dict[str, float]) -> None: ...
-        def log_images(self, step: int, images: dict[str, np.ndarray[Any, Any]]) -> None: ...
+        ) -> None:
+            pass
+
+        def log_scalars(self, step: int, values: dict[str, float]) -> None:
+            pass
+
+        def log_images(self, step: int, images: dict[str, np.ndarray[Any, Any]]) -> None:
+            pass
 
     assert not isinstance(Incomplete(), Tracker)

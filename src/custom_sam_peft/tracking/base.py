@@ -20,13 +20,17 @@ class Tracker(Protocol):
         run_dir: Path,
         config: dict[str, Any],
         resume_from: Path | None = None,
-    ) -> None: ...
+    ) -> None:
+        pass
 
-    def log_scalars(self, step: int, values: dict[str, float]) -> None: ...
+    def log_scalars(self, step: int, values: dict[str, float]) -> None:
+        pass
 
-    def log_images(self, step: int, images: dict[str, np.ndarray[Any, Any]]) -> None: ...
+    def log_images(self, step: int, images: dict[str, np.ndarray[Any, Any]]) -> None:
+        pass
 
-    def close(self) -> None: ...
+    def close(self) -> None:
+        pass
 
 
 def _validate_image(tag: str, arr: np.ndarray[Any, Any]) -> None:

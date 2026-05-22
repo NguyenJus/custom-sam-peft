@@ -57,10 +57,15 @@ class Example:
 class Dataset(Protocol):
     """Read-only mapping from index to Example, plus a class vocabulary."""
 
-    def __len__(self) -> int: ...
-    def __getitem__(self, i: int) -> Example: ...
+    def __len__(self) -> int:
+        pass
+
+    def __getitem__(self, i: int) -> Example:
+        pass
+
     @property
-    def class_names(self) -> list[str]: ...
+    def class_names(self) -> list[str]:
+        pass
 
 
 def is_dataset(obj: object) -> bool:
