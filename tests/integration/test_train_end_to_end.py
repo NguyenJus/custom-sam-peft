@@ -34,7 +34,7 @@ def _ds(tiny_coco_dir: Path, pipeline: str) -> COCODataset:
 
     if pipeline == "train":
         transforms = build_train_transforms(
-            AugmentationsConfig(hflip=False, color_jitter=0.0),
+            AugmentationsConfig(preset="none"),
             32,
             model_name="facebook/sam3.1",
             normalize=NormalizeConfig(),
@@ -165,7 +165,7 @@ def test_malformed_coco_json_raises_clear_error(tmp_path: Path) -> None:
             images=str(images),
             prompt_mode="text",
             transforms=build_train_transforms(
-                AugmentationsConfig(hflip=False, color_jitter=0.0),
+                AugmentationsConfig(preset="none"),
                 32,
                 model_name="facebook/sam3.1",
                 normalize=NormalizeConfig(),
@@ -206,7 +206,7 @@ def test_missing_image_file_raises_clear_error(tmp_path: Path) -> None:
         images=str(images),
         prompt_mode="text",
         transforms=build_train_transforms(
-            AugmentationsConfig(hflip=False, color_jitter=0.0),
+            AugmentationsConfig(preset="none"),
             32,
             model_name="facebook/sam3.1",
             normalize=NormalizeConfig(),
@@ -271,7 +271,7 @@ def test_missing_annotation_entry_does_not_crash(tmp_path: Path) -> None:
         images=str(images),
         prompt_mode="text",
         transforms=build_train_transforms(
-            AugmentationsConfig(hflip=False, color_jitter=0.0),
+            AugmentationsConfig(preset="none"),
             32,
             model_name="facebook/sam3.1",
             normalize=NormalizeConfig(),

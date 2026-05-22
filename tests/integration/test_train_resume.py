@@ -32,7 +32,7 @@ pytestmark = pytest.mark.integration
 def _ds(tiny_coco_dir: Path) -> COCODataset:
     # NOTE: build_train_transforms takes (aug_cfg, image_size, ...) — positional order matches impl.
     transforms = build_train_transforms(
-        AugmentationsConfig(hflip=False, color_jitter=0.0),
+        AugmentationsConfig(preset="none"),
         32,
         model_name="facebook/sam3.1",
         normalize=NormalizeConfig(),

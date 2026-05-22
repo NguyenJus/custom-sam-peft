@@ -177,7 +177,7 @@ def test_fit_calls_start_run_once_before_first_log(tmp_path: Path) -> None:
     from custom_sam_peft.config.schema import NormalizeConfig
 
     transforms_t = build_train_transforms(
-        AugmentationsConfig(hflip=False, color_jitter=0.0),
+        AugmentationsConfig(preset="none"),
         32,
         model_name="facebook/sam3.1",
         normalize=NormalizeConfig(),

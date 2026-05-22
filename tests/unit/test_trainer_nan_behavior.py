@@ -44,7 +44,7 @@ from tests.fixtures.tiny_sam3_lora_stub import FIXTURE_SCOPE_PATTERNS, make_stub
 
 def _ds(tiny_coco_dir: Path) -> COCODataset:
     transforms = build_train_transforms(
-        AugmentationsConfig(hflip=False, color_jitter=0.0),
+        AugmentationsConfig(preset="none"),
         32,
         model_name="facebook/sam3.1",
         normalize=NormalizeConfig(),

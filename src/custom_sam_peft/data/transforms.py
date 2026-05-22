@@ -202,6 +202,9 @@ def build_train_transforms(
     import cv2
     from albumentations.pytorch import ToTensorV2
 
+    from custom_sam_peft.data.aug_presets import resolve
+
+    resolved = resolve(aug_cfg)
     mean, std = resolve_normalization(model_name, normalize)
     steps: list[object] = [
         A.LongestMaxSize(max_size=image_size, interpolation=cv2.INTER_LINEAR),
@@ -214,14 +217,14 @@ def build_train_transforms(
             position="top_left",
         ),
     ]
-    if aug_cfg.hflip:
+    if resolved.hflip:
         steps.append(A.HorizontalFlip(p=0.5))
     steps.append(
         A.ColorJitter(
-            brightness=aug_cfg.color_jitter,
-            contrast=aug_cfg.color_jitter,
-            saturation=aug_cfg.color_jitter,
-            hue=aug_cfg.color_jitter * 0.5,
+            brightness=resolved.color_jitter,
+            contrast=resolved.color_jitter,
+            saturation=resolved.color_jitter,
+            hue=resolved.color_jitter * 0.5,
             p=0.5,
         )
     )
