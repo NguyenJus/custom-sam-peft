@@ -274,7 +274,7 @@ def _preset_block(preset: PresetDecision) -> str:
         source_line = "- Source: analytic estimate"
     return (
         f"- Method: {method_pretty} r={preset.r}, batch={preset.batch_size}, "
-        f"grad_accum={preset.grad_accum_steps}, ckpt={ckpt_word}, bf16\n"
+        f"grad_accum={preset.grad_accum_steps}, gradient_checkpointing={ckpt_word}, bf16\n"
         f"- GPU:    {preset.gpu_name} ({total_gib:.1f} GiB)\n"
         f"- Budget: {used_gib:.1f} / {total_gib:.1f} GiB used ({headroom_gib:.1f} GiB headroom)\n"
         f"{source_line}"

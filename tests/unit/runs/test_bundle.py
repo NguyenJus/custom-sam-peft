@@ -304,7 +304,7 @@ def test_write_bundle_preset_block_structured(
     assert "- Method: LoRA r=32" in summary
     assert "batch=2" in summary
     assert "grad_accum=8" in summary
-    assert "ckpt=off" in summary
+    assert "gradient_checkpointing=off" in summary
     assert "- GPU:    NVIDIA A100-SXM4-40GB" in summary
     assert "38.4 / " in summary  # used/total GiB
     assert "calibrated" in summary.lower()
