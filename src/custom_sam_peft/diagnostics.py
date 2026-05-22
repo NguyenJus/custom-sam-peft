@@ -41,6 +41,19 @@ class HuggingFaceAuthInfo:
 
 
 @dataclass(frozen=True)
+class DatasetResolution:
+    format: str
+    train_total: int
+    train_kept: int
+    val_total: int
+    val_kept: int
+    limit_strategy: str
+    limit_seed: int
+    limit_train: int | float | None
+    limit_val: int | float | None
+
+
+@dataclass(frozen=True)
 class DoctorReport:
     python_version: str
     platform: str
@@ -52,6 +65,7 @@ class DoctorReport:
     core_versions: dict[str, str]
     sam3_weights: WeightsInfo
     hf_auth: HuggingFaceAuthInfo
+    dataset: DatasetResolution | None = None
     issues: list[str] = field(default_factory=list)
 
 
@@ -115,8 +129,58 @@ def _default_weights_path() -> Path:
     return Path(m.local_dir or "") / m.checkpoint_file
 
 
-def run_doctor(*, weights_path: Path | None = None) -> DoctorReport:
-    """Cheap-to-run environment audit."""
+def _build_dataset_for_doctor(config_path: Path, issues: list[str]) -> DatasetResolution | None:
+    """Load config + build train/val datasets. Returns None and appends to issues on any error.
+
+    Failure modes (all result in return None, exit code 0):
+      - Config file not found or bad YAML  → appends "couldn't load config: <msg>"
+      - Schema validation error             → appends "couldn't load config: <msg>"
+      - Dataset build error                 → appends "couldn't build train/val dataset: <msg>"
+    """
+    from custom_sam_peft.config.loader import ConfigError, load_config
+    from custom_sam_peft.data.subset import SubsetDataset
+    from custom_sam_peft.train.runner import _build_dataset
+
+    try:
+        cfg = load_config(config_path)
+    except (ConfigError, Exception) as e:
+        issues.append(f"couldn't load config {config_path}: {e}")
+        return None
+
+    try:
+        train_ds = _build_dataset(cfg, "train")
+        val_ds = _build_dataset(cfg, "eval")
+    except Exception as e:
+        issues.append(f"couldn't build train/val dataset: {e}")
+        return None
+
+    train_total = len(train_ds._inner) if isinstance(train_ds, SubsetDataset) else len(train_ds)
+    val_total = len(val_ds._inner) if isinstance(val_ds, SubsetDataset) else len(val_ds)
+    lim = cfg.data.limit
+    return DatasetResolution(
+        format=cfg.data.format,
+        train_total=train_total,
+        train_kept=len(train_ds),
+        val_total=val_total,
+        val_kept=len(val_ds),
+        limit_strategy=lim.strategy,
+        limit_seed=lim.seed,
+        limit_train=lim.train,
+        limit_val=lim.val,
+    )
+
+
+def run_doctor(
+    *,
+    weights_path: Path | None = None,
+    config_path: Path | None = None,
+) -> DoctorReport:
+    """Cheap-to-run environment audit.
+
+    config_path is optional and heavy: loads the YAML, validates the config,
+    builds train and val datasets (may trigger pycocotools or datasets.load_dataset).
+    The existing no-config path remains cheap and network-free.
+    """
     import torch
 
     issues: list[str] = []
@@ -147,6 +211,10 @@ def run_doctor(*, weights_path: Path | None = None) -> DoctorReport:
             "will not download (set HF_TOKEN or run `huggingface-cli login`)"
         )
 
+    dataset_resolution: DatasetResolution | None = None
+    if config_path is not None:
+        dataset_resolution = _build_dataset_for_doctor(config_path, issues)
+
     return DoctorReport(
         python_version=sys.version.split()[0],
         platform=platform.platform(),
@@ -158,5 +226,6 @@ def run_doctor(*, weights_path: Path | None = None) -> DoctorReport:
         core_versions=core,
         sam3_weights=weights,
         hf_auth=hf_auth,
+        dataset=dataset_resolution,
         issues=issues,
     )

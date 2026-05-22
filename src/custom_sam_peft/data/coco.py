@@ -162,6 +162,16 @@ class COCODataset:
             annotations,
         )
 
+        # Eager per-image class label sets for stratified subset sampling.
+        # Built once here because _ann_index is already in memory.
+        self.image_class_labels: list[frozenset[int]] = [
+            frozenset(
+                self._cat_id_to_dense[int(ann["category_id"])]
+                for ann in self._ann_index.get(img_id, [])
+            )
+            for img_id in self._image_ids
+        ]
+
     def __len__(self) -> int:
         return len(self._image_ids)
 
