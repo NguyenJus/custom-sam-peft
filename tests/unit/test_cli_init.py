@@ -192,3 +192,104 @@ def test_init_download_failure_surfaces_as_exit_1(
     )
     assert result.exit_code != 0
     assert "gated" in result.output.lower()
+
+
+# ---------------------------------------------------------------------------
+# spec/domain-aware-augmentation-presets — --preset / --intensity flags
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "preset,intensity",
+    [
+        ("natural", "safe"), ("natural", "medium"), ("natural", "aggressive"),
+        ("medical", "safe"), ("medical", "medium"), ("medical", "aggressive"),
+        ("satellite", "safe"), ("satellite", "medium"), ("satellite", "aggressive"),
+        ("microscopy", "safe"), ("microscopy", "medium"), ("microscopy", "aggressive"),
+        ("none", "medium"),
+        ("custom", "medium"),
+    ],
+)
+def test_init_renders_preset_intensity(
+    tmp_path: Path, preset: str, intensity: str
+) -> None:
+    _make_data_paths(tmp_path)
+    out = tmp_path / "config.yaml"
+    result = runner.invoke(
+        app,
+        [
+            "init", "--template", "coco-text-lora",
+            "--preset", preset, "--intensity", intensity,
+            "--output", str(out),
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    cfg = load_config(out)
+    assert cfg.data.augmentations.preset == preset
+    assert cfg.data.augmentations.intensity == intensity
+
+
+def test_init_custom_writes_uncommented_overrides_scaffold(tmp_path: Path) -> None:
+    _make_data_paths(tmp_path)
+    out = tmp_path / "config.yaml"
+    result = runner.invoke(
+        app,
+        ["init", "--template", "coco-text-lora", "--preset", "custom", "--output", str(out)],
+    )
+    assert result.exit_code == 0, result.output
+    body = out.read_text()
+    assert "overrides: {}" in body  # uncommented form
+    assert "# overrides:" not in body  # NOT the commented scaffold
+    cfg = load_config(out)
+    assert cfg.data.augmentations.preset == "custom"
+
+
+def test_init_default_preset_writes_commented_overrides_scaffold(tmp_path: Path) -> None:
+    """Non-custom presets render the commented `# overrides:` scaffold."""
+    _make_data_paths(tmp_path)
+    out = tmp_path / "config.yaml"
+    result = runner.invoke(
+        app,
+        ["init", "--template", "coco-text-lora", "--output", str(out)],
+    )
+    assert result.exit_code == 0, result.output
+    body = out.read_text()
+    assert "# overrides:" in body
+    assert "overrides: {}" not in body
+
+
+def test_init_invalid_preset_rejected(tmp_path: Path) -> None:
+    _make_data_paths(tmp_path)
+    out = tmp_path / "config.yaml"
+    result = runner.invoke(
+        app,
+        ["init", "--preset", "typoo", "--output", str(out)],
+    )
+    assert result.exit_code != 0
+    assert "preset" in result.output.lower()
+
+
+def test_init_invalid_intensity_rejected(tmp_path: Path) -> None:
+    _make_data_paths(tmp_path)
+    out = tmp_path / "config.yaml"
+    result = runner.invoke(
+        app,
+        ["init", "--intensity", "huge", "--output", str(out)],
+    )
+    assert result.exit_code != 0
+    assert "intensity" in result.output.lower()
+
+
+def test_init_other_fields_parse_identically(tmp_path: Path) -> None:
+    """Defaults render preserves non-augmentation fields verbatim from the template."""
+    _make_data_paths(tmp_path)
+    out = tmp_path / "config.yaml"
+    result = runner.invoke(
+        app,
+        ["init", "--template", "coco-text-lora", "--output", str(out)],
+    )
+    assert result.exit_code == 0
+    cfg = load_config(out)
+    assert cfg.run.name == "my-run"
+    assert cfg.model.name == "facebook/sam3.1"
+    assert cfg.train.epochs == 10

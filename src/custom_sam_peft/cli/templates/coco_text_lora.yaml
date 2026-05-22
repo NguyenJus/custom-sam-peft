@@ -41,8 +41,9 @@ data:
   prompt_mode: text
   image_size: 1008
   augmentations:
-    hflip: true
-    color_jitter: 0.1
+    preset: ${preset}
+    intensity: ${intensity}
+    ${overrides_block}
   text_prompt:
     mode: present_plus_negatives
     negatives_per_image: 4

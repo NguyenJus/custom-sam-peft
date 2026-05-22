@@ -6,14 +6,17 @@ After writing the config, optionally download SAM 3.1 weights via the
 
 from __future__ import annotations
 
+import string
 import sys
 from importlib.resources import files
 from pathlib import Path
+from typing import get_args
 
 import typer
 from rich import print as rprint
 
 from custom_sam_peft.config.loader import load_config
+from custom_sam_peft.config.schema import Intensity, Preset
 from custom_sam_peft.utils.huggingface import download_model
 
 TEMPLATES: dict[str, str] = {
@@ -27,6 +30,18 @@ def init(
         "coco-text-lora",
         "--template",
         help=f"Starter config template. One of: {', '.join(TEMPLATES)}.",
+    ),
+    preset: str = typer.Option(
+        "natural",
+        "--preset",
+        case_sensitive=False,
+        help="Augmentation domain preset. One of: natural, medical, satellite, microscopy, none, custom.",
+    ),
+    intensity: str = typer.Option(
+        "medium",
+        "--intensity",
+        case_sensitive=False,
+        help="Augmentation intensity tier. One of: safe, medium, aggressive.",
     ),
     output: Path = typer.Option(Path("config.yaml"), "--output", help="Destination path."),
     force: bool = typer.Option(False, "--force", help="Overwrite if output exists."),
@@ -53,12 +68,45 @@ def init(
             f"unknown template '{template}'. Available: {', '.join(TEMPLATES)}",
             param_hint="--template",
         )
+    preset_lc = preset.lower()
+    intensity_lc = intensity.lower()
+    valid_presets = set(get_args(Preset))
+    valid_intensities = set(get_args(Intensity))
+    if preset_lc not in valid_presets:
+        raise typer.BadParameter(
+            f"unknown preset '{preset}'. Available: {sorted(valid_presets)}",
+            param_hint="--preset",
+        )
+    if intensity_lc not in valid_intensities:
+        raise typer.BadParameter(
+            f"unknown intensity '{intensity}'. Available: {sorted(valid_intensities)}",
+            param_hint="--intensity",
+        )
     if output.exists() and not force:
         raise typer.BadParameter(
             f"refusing to overwrite existing {output}; pass --force",
             param_hint="--output",
         )
-    body = (files("custom_sam_peft.cli.templates") / TEMPLATES[template]).read_text()
+
+    if preset_lc == "custom":
+        overrides_block = (
+            "overrides: {}  # fill in knobs: hflip, vflip, rotate90, "
+            "rotate_arbitrary, color_jitter, stain_jitter, blur, gauss_noise"
+        )
+    else:
+        overrides_block = (
+            "# Override individual knobs here; unset keys inherit from (preset, intensity).\n"
+            "    # overrides:\n"
+            "    #   hflip: false\n"
+            "    #   color_jitter: 0.15"
+        )
+
+    raw = (files("custom_sam_peft.cli.templates") / TEMPLATES[template]).read_text()
+    body = string.Template(raw).substitute(
+        preset=preset_lc,
+        intensity=intensity_lc,
+        overrides_block=overrides_block,
+    )
     output.write_text(body)
     rprint(f"[green]wrote[/green] {output}")
 
