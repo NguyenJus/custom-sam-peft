@@ -196,22 +196,33 @@ def test_realized_fraction_close_to_requested_for_single_class() -> None:
 
 
 def test_multiclass_coverage_rare_class_appears_in_both_sides() -> None:
-    # 50 items: classes 0..9; one item has rare class 9 paired with class 0,
-    # plus one more rare class-9 item to ensure 2 rare items overall.
+    # 50 items: classes 0..9. The 47 "bulk" items cover classes 0..8 (i % 9),
+    # and 3 "rare" items each carry class 9 alone so n_c=3 for class 9. With
+    # fraction=0.2 the quota is `quota_val[9] = round(3 * 0.2) = 1`, so the
+    # spec's greedy placement must land at least one rare item in val and the
+    # rest in train — i.e. class 9 appears on both sides.
+    #
+    # NOTE: the rare items are intentionally single-label. The spec's score
+    # uses `max(quota[c] for c in item.class_ids)`, so pairing class 9 with an
+    # abundant class would let the abundant class dominate scoring and pull
+    # every rare item into train. Single-label rare items isolate class 9 in
+    # the score, which is what the test is meant to exercise.
     item_specs: list[tuple[str, frozenset[int]]] = []
-    for i in range(48):
-        item_specs.append((str(i), frozenset({i % 9})))  # classes 0..8 (each ~5-6 items)
-    item_specs.append(("48", frozenset({0, 9})))
-    item_specs.append(("49", frozenset({1, 9})))
+    for i in range(47):
+        item_specs.append((str(i), frozenset({i % 9})))  # classes 0..8
+    item_specs.append(("47", frozenset({9})))
+    item_specs.append(("48", frozenset({9})))
+    item_specs.append(("49", frozenset({9})))
     items = _items(item_specs)
     res = stratified_split(items, fraction=0.2, seed=42)
     train_set = set(res.train_ids)
     val_set = set(res.val_ids)
-    rare_train = "48" in train_set or "49" in train_set
-    rare_val = "48" in val_set or "49" in val_set
+    rare = {"47", "48", "49"}
+    rare_train = bool(rare & train_set)
+    rare_val = bool(rare & val_set)
     assert rare_train and rare_val, (
-        f"rare class 9 must land in both sides: train={train_set & {'48','49'}}, "
-        f"val={val_set & {'48','49'}}"
+        f"rare class 9 must land in both sides: "
+        f"train={rare & train_set}, val={rare & val_set}"
     )
 
 
