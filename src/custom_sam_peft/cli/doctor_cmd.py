@@ -64,6 +64,18 @@ def _render_table(report: DoctorReport) -> None:
     auth.add_row("has token", str(hf.has_token))
     console.print(auth)
 
+    if report.dataset is not None:
+        ds = report.dataset
+        tbl = Table(title="Dataset", show_header=False, box=None)
+        tbl.add_row("format", ds.format)
+        tbl.add_row("train", f"{ds.train_kept}/{ds.train_total}")
+        tbl.add_row("val", f"{ds.val_kept}/{ds.val_total}")
+        tbl.add_row("limit.strategy", ds.limit_strategy)
+        tbl.add_row("limit.seed", str(ds.limit_seed))
+        tbl.add_row("limit.train", str(ds.limit_train))
+        tbl.add_row("limit.val", str(ds.limit_val))
+        console.print(tbl)
+
     if report.issues:
         issues = Table(title="Issues", show_header=False, box=None)
         for msg in report.issues:
@@ -76,9 +88,17 @@ def doctor(
         None, "--weights-path", help="Override SAM 3.1 weights file path."
     ),
     json_output: bool = typer.Option(False, "--json", help="Emit JSON instead of a table."),
+    config_path: Path | None = typer.Option(
+        None,
+        "--config",
+        help=(
+            "Load + validate a config YAML and report resolved dataset sizes. "
+            "Heavy: may import pycocotools or trigger datasets.load_dataset."
+        ),
+    ),
 ) -> None:
     """Report environment + dependency status."""
-    report = run_doctor(weights_path=weights_path)
+    report = run_doctor(weights_path=weights_path, config_path=config_path)
     if json_output:
         print(json.dumps(dataclasses.asdict(report), default=str, indent=2))
     else:
