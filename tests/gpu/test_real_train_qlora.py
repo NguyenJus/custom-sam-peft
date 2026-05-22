@@ -13,6 +13,7 @@ recipe (architecture §6).
 
 from __future__ import annotations
 
+import json
 import math
 from pathlib import Path
 
@@ -70,6 +71,16 @@ def test_qlora_overfits_in_50_steps(
     )
     assert peak_vram_gb <= VRAM_CEIL_GB, (
         f"peak VRAM {peak_vram_gb:.2f}GB exceeded ceiling {VRAM_CEIL_GB}GB"
+    )
+
+    # T3 (spec §6.1): assert the Evaluator's metrics.json overall.mAP is finite.
+    runs = sorted(tmp_path.glob("gpu-smoke-qlora-*"))
+    assert runs, f"no run dir under {tmp_path}"
+    metrics = json.loads((runs[-1] / "metrics.json").read_text())
+    assert "overall" in metrics, f"metrics.json missing 'overall': {metrics}"
+    mAP = metrics["overall"].get("mAP")
+    assert isinstance(mAP, (int, float)) and math.isfinite(mAP) and mAP >= 0.0, (
+        f"overall.mAP not finite/non-negative: {mAP}"
     )
 
 
