@@ -7,6 +7,7 @@ fixture used by the other GPU smoke tests. Asserts on the artefacts on disk.
 from __future__ import annotations
 
 import json
+import math
 from pathlib import Path
 
 import pytest
@@ -56,7 +57,10 @@ def test_run_end_to_end_writes_bundle(tmp_path: Path, tiny_coco_dir: Path) -> No
     # metrics.json parses; has overall.mAP numeric.
     metrics = json.loads((run_dir / "metrics.json").read_text())
     assert "overall" in metrics
-    assert isinstance(metrics["overall"].get("mAP"), (int, float))
+    mAP = metrics["overall"].get("mAP")
+    assert isinstance(mAP, (int, float)) and math.isfinite(mAP) and mAP >= 0.0, (
+        f"overall.mAP not finite/non-negative: {mAP}"
+    )
 
     # summary.md exists and mentions mAP.
     summary = (run_dir / "summary.md").read_text()

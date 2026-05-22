@@ -137,3 +137,24 @@ def test_merge_lora_unloads_qlora_wrapper() -> None:
     assert w.peft_model is None
     # The base model must still be accessible after the merge.
     assert w.model.model is not None
+
+
+@pytest.mark.skipif(not _bnb_available(), reason="bitsandbytes not installed")
+def test_apply_qlora_vision_scope_targets_only_vision_backbone() -> None:
+    """T6 per spec §6.1: mirror of T5 for QLoRA scope='vision'."""
+    w = load_sam31(ModelConfig())
+    apply_qlora(w, PEFTConfig(method="qlora", scope="vision"))
+
+    lora_names = [n for n, _ in w.model.model.named_parameters() if "lora_" in n]
+    assert lora_names, "no lora_ params after apply_qlora(scope='vision')"
+    assert any("vision_backbone" in n for n in lora_names), (
+        f"no vision-trunk LoRA targets at scope='vision': {lora_names[:5]}"
+    )
+    assert all("transformer.decoder" not in n for n in lora_names), (
+        f"transformer.decoder targets present at scope='vision' (should be excluded): "
+        f"{[n for n in lora_names if 'transformer.decoder' in n][:5]}"
+    )
+    assert all("mask_decoder" not in n for n in lora_names), (
+        f"mask_decoder targets present at scope='vision' (should be excluded): "
+        f"{[n for n in lora_names if 'mask_decoder' in n][:5]}"
+    )
