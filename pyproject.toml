@@ -42,6 +42,7 @@ dev = [
 
 [project.scripts]
 custom-sam-peft = "custom_sam_peft.cli.main:app"
+csp = "custom_sam_peft.cli.main:app"
 
 [build-system]
 requires = ["hatchling"]
