@@ -24,6 +24,7 @@ def _make_cfg(
         "image_size": 1008,
     }
     cfg.data.val = MagicMock()
+    cfg.data.val_split = None
     cfg.data.test = MagicMock() if has_test else None
     cfg.model.name = "facebook/sam3.1"
     cfg.peft.method = peft_method
@@ -166,3 +167,76 @@ def test_run_eval_return_per_example_iou_default_false_unchanged(
     out = run_eval(cfg, checkpoint=tmp_path, split="val", output_dir=tmp_path)
     assert out is fake_report
     assert not isinstance(out, tuple)
+
+
+# ---------------------------------------------------------------------------
+# spec/data-no-val-auto-split (#71): --split val guard + auto-split in eval
+# ---------------------------------------------------------------------------
+
+
+def test_run_eval_rejects_val_split_when_data_val_and_val_split_none(
+    tmp_path: Path,
+) -> None:
+    """Spec §7.4 A: --split val requires data.val or data.val_split."""
+    cfg = _make_cfg(format_="coco", peft_method="lora")
+    cfg.data.val = None  # type: ignore[attr-defined]
+    cfg.data.val_split = None  # type: ignore[attr-defined]
+    cfg.data.test = None
+    with pytest.raises(ValueError, match=r"--split val requires data\.val or data\.val_split"):
+        run_eval(cfg, checkpoint=tmp_path, split="val")
+
+
+def test_run_eval_auto_split_threads_resolved_image_ids_to_builder(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Spec §7.4 B: when val_dataset is None and val_split is set, builder receives
+    _resolved_image_ids."""
+    cfg = _make_cfg(format_="coco", peft_method="lora")
+    cfg.data.val = None  # type: ignore[attr-defined]
+    # Build a real ValSplitConfig so the guard passes.
+    from custom_sam_peft.config.schema import ValSplitConfig
+
+    cfg.data.val_split = ValSplitConfig(fraction=0.5, seed=1)  # type: ignore[attr-defined]
+
+    # Mock resolve_val_source to return a known partition.
+    from custom_sam_peft.data.val_source import ValSource
+
+    fake_vs = ValSource(
+        mode="auto_split",
+        train_ids=("1", "2"),
+        val_ids=("3", "4"),
+        realized_fraction=0.5,
+        per_class_counts={0: (2, 2)},
+        missing_in_val=(),
+        fraction_requested=0.5,
+        seed_used=1,
+    )
+    monkeypatch.setattr(
+        "custom_sam_peft.eval.runner.resolve_val_source", lambda *_a, **_kw: fake_vs
+    )
+
+    captured: dict[str, object] = {}
+    fake_ds = MagicMock(__len__=lambda self: 2, class_names=["c"])
+
+    def fake_builder(cfg_dict: object, **kwargs: object) -> object:
+        captured["cfg_dict"] = cfg_dict
+        return fake_ds
+
+    monkeypatch.setattr(
+        "custom_sam_peft.eval.runner.lookup",
+        lambda kind, name: fake_builder,
+    )
+    monkeypatch.setattr("custom_sam_peft.eval.runner.load_sam31", lambda _m: MagicMock())
+    monkeypatch.setattr("custom_sam_peft.eval.runner.load_lora", lambda *_a, **_kw: None)
+    fake_report = MagicMock(overall={"mAP": 0.5}, per_class={}, n_images=2, n_predictions=2)
+    monkeypatch.setattr(
+        "custom_sam_peft.eval.runner.Evaluator",
+        lambda _cfg: MagicMock(evaluate_and_save=MagicMock(return_value=fake_report)),
+    )
+
+    run_eval(cfg, checkpoint=tmp_path, split="val", output_dir=tmp_path)
+    assert "cfg_dict" in captured
+    cfg_dict = captured["cfg_dict"]
+    assert isinstance(cfg_dict, dict)
+    assert "_resolved_image_ids" in cfg_dict
+    assert cfg_dict["_resolved_image_ids"] == {"eval": ["3", "4"]}
