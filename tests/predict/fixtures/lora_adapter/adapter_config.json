@@ -1,0 +1,1 @@
+{"base_model_name_or_path": "facebook/sam3.1", "peft_type": "LORA", "r": 8}
