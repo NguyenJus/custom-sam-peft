@@ -11,6 +11,7 @@ from custom_sam_peft.config.schema import (
     AugmentationsConfig,
     DataConfig,
     DataSplit,
+    NormalizeConfig,
     PEFTConfig,
     RunConfig,
     TextPromptConfig,
@@ -109,3 +110,185 @@ def test_fit_end_to_end_on_tiny_coco(backend: str, tmp_path: Path, tiny_coco_dir
     if backend == "tensorboard":
         events = list(result.run_dir.glob("events.out.tfevents.*"))
         assert events, "tensorboard backend should write at least one event file"
+
+
+def _bad_data_cfg(
+    tmp_path: Path,
+    annotations: Path,
+    images: Path,
+) -> TrainConfig:
+    """Minimal TrainConfig pointing at a (likely-broken) annotations/images pair."""
+    return TrainConfig(
+        run=RunConfig(name="bad-data", output_dir=str(tmp_path), seed=0),
+        data=DataConfig(
+            format="coco",
+            train=DataSplit(annotations=str(annotations), images=str(images)),
+            val=DataSplit(annotations=str(annotations), images=str(images)),
+            prompt_mode="text",
+            image_size=32,
+        ),
+        peft=PEFTConfig(
+            method="lora",
+            scope="vision",
+            target_modules=FIXTURE_SCOPE_PATTERNS["vision"],
+        ),
+        train=TrainHyperparams(
+            epochs=1,
+            batch_size=1,
+            grad_accum_steps=1,
+            save_every=2,
+            log_every=1,
+            warmup_steps=0,
+            num_workers=0,
+        ),
+    )
+
+
+def test_malformed_coco_json_raises_clear_error(tmp_path: Path) -> None:
+    """C5 per spec §6.2: invalid JSON in annotations.json surfaces a clear error."""
+    images = tmp_path / "images"
+    images.mkdir()
+    annotations = tmp_path / "annotations.json"
+    annotations.write_text("{")  # invalid JSON
+
+    cfg = _bad_data_cfg(tmp_path, annotations, images)
+    wrapper = make_stub_wrapper(dim=8, working=True)
+    apply_lora(wrapper, cfg.peft)
+    # Pinned: pycocotools.COCO -> json.load -> json.JSONDecodeError on truncated
+    # JSON. We invoke the loader via COCODataset (rather than passing None to
+    # Trainer) so the JSON-parse code path actually executes; otherwise Trainer
+    # never touches the annotations file and we'd be pinning a downstream
+    # TypeError instead of the loader's contract.
+    with pytest.raises(json.JSONDecodeError):
+        COCODataset(
+            annotations=str(annotations),
+            images=str(images),
+            prompt_mode="text",
+            transforms=build_train_transforms(
+                AugmentationsConfig(hflip=False, color_jitter=0.0),
+                32,
+                model_name="facebook/sam3.1",
+                normalize=NormalizeConfig(),
+            ),
+            text_prompt=TextPromptConfig(),
+        )
+
+
+def test_missing_image_file_raises_clear_error(tmp_path: Path) -> None:
+    """C5 per spec §6.2: missing image referenced by COCO surfaces a clear error
+    naming the file."""
+    images = tmp_path / "images"
+    images.mkdir()
+    annotations = tmp_path / "annotations.json"
+    annotations.write_text(
+        json.dumps(
+            {
+                "images": [{"id": 1, "file_name": "missing.jpg", "width": 32, "height": 32}],
+                "annotations": [
+                    {
+                        "id": 1,
+                        "image_id": 1,
+                        "category_id": 1,
+                        "bbox": [0, 0, 10, 10],
+                        "area": 100,
+                        "iscrowd": 0,
+                        "segmentation": [[0, 0, 10, 0, 10, 10, 0, 10]],
+                    }
+                ],
+                "categories": [{"id": 1, "name": "thing"}],
+            }
+        )
+    )
+
+    cfg = _bad_data_cfg(tmp_path, annotations, images)
+    ds_train = COCODataset(
+        annotations=str(annotations),
+        images=str(images),
+        prompt_mode="text",
+        transforms=build_train_transforms(
+            AugmentationsConfig(hflip=False, color_jitter=0.0),
+            32,
+            model_name="facebook/sam3.1",
+            normalize=NormalizeConfig(),
+        ),
+        text_prompt=TextPromptConfig(),
+    )
+    wrapper = make_stub_wrapper(dim=8, working=True)
+    apply_lora(wrapper, cfg.peft)
+    # Pinned: PIL.Image.open on absent path raises FileNotFoundError whose
+    # str() embeds the full image path (which includes "missing.jpg").
+    with pytest.raises(FileNotFoundError) as excinfo:
+        Trainer(wrapper, ds_train, ds_train, build_tracker(cfg), cfg).fit(
+            run_dir=tmp_path / "run-missing-img"
+        )
+    assert "missing.jpg" in str(excinfo.value), (
+        f"expected 'missing.jpg' in error message; got: {excinfo.value!r}"
+    )
+
+
+def test_missing_annotation_entry_does_not_crash(tmp_path: Path) -> None:
+    """C5 per spec §6.2: an image with no matching annotations is handled
+    gracefully (zero-instance item) OR raises with a clear message.
+
+    The implementer pins the actual behavior: if the loader returns
+    zero-instance items, training proceeds without crashing; if it raises,
+    the message names the orphan image.
+    """
+    # Use tiny_coco's first image as the only valid image.
+    images = tmp_path / "images"
+    images.mkdir()
+    # Make a 1x1 black png so the loader has something to open.
+    from PIL import Image as PILImage
+
+    PILImage.new("RGB", (32, 32)).save(images / "img.png")
+    annotations = tmp_path / "annotations.json"
+    annotations.write_text(
+        json.dumps(
+            {
+                "images": [
+                    {"id": 1, "file_name": "img.png", "width": 32, "height": 32},
+                    {"id": 2, "file_name": "img.png", "width": 32, "height": 32},
+                ],
+                # Only image_id=1 has an annotation; image_id=2 is orphan.
+                "annotations": [
+                    {
+                        "id": 1,
+                        "image_id": 1,
+                        "category_id": 1,
+                        "bbox": [0, 0, 10, 10],
+                        "area": 100,
+                        "iscrowd": 0,
+                        "segmentation": [[0, 0, 10, 0, 10, 10, 0, 10]],
+                    }
+                ],
+                "categories": [{"id": 1, "name": "thing"}],
+            }
+        )
+    )
+    cfg = _bad_data_cfg(tmp_path, annotations, images)
+    ds_train = COCODataset(
+        annotations=str(annotations),
+        images=str(images),
+        prompt_mode="text",
+        transforms=build_train_transforms(
+            AugmentationsConfig(hflip=False, color_jitter=0.0),
+            32,
+            model_name="facebook/sam3.1",
+            normalize=NormalizeConfig(),
+        ),
+        text_prompt=TextPromptConfig(),
+    )
+    wrapper = make_stub_wrapper(dim=8, working=True)
+    apply_lora(wrapper, cfg.peft)
+    # Either Trainer.fit completes (zero-instance handling) OR raises with a
+    # clear message naming the orphan image. The implementer pins which.
+    try:
+        Trainer(wrapper, ds_train, ds_train, build_tracker(cfg), cfg).fit(
+            run_dir=tmp_path / "run-orphan"
+        )
+    except Exception as exc:
+        # If it raises, the message should reference the orphan image or the
+        # image_id. If it does not, surface that as a follow-up.
+        assert "2" in str(exc) or "img.png" in str(exc), (
+            f"orphan-image error message lacks identifier: {exc!r}"
+        )

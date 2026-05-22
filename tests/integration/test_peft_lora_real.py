@@ -59,3 +59,30 @@ def test_merge_lora_on_real_sam31() -> None:
     merge_lora(w)
     assert w.peft_model is None
     assert "Peft" not in type(w.model.model).__name__
+
+
+def test_apply_lora_vision_scope_targets_only_vision_backbone() -> None:
+    """T5 per spec §6.1: scope='vision' attaches LoRA only to vision_backbone.
+
+    The test asserts the production SCOPE_TARGETS['vision'] regex matches the
+    real SAM 3.1 module names (a regression like Meta renaming vision_backbone
+    to image_encoder would slip past C2 in tests/unit/test_peft_scope_coverage.py
+    because that test uses a stub). Forward-free; cost is dominated by
+    load_sam31 which is already paid by the other tests in this file.
+    """
+    w = load_sam31(ModelConfig())
+    apply_lora(w, PEFTConfig(method="lora", scope="vision"))
+
+    lora_names = [n for n, _ in w.model.model.named_parameters() if "lora_" in n]
+    assert lora_names, "no lora_ params after apply_lora(scope='vision')"
+    assert any("vision_backbone" in n for n in lora_names), (
+        f"no vision-trunk LoRA targets at scope='vision': {lora_names[:5]}"
+    )
+    assert all("transformer.decoder" not in n for n in lora_names), (
+        f"transformer.decoder targets present at scope='vision' (should be excluded): "
+        f"{[n for n in lora_names if 'transformer.decoder' in n][:5]}"
+    )
+    assert all("mask_decoder" not in n for n in lora_names), (
+        f"mask_decoder targets present at scope='vision' (should be excluded): "
+        f"{[n for n in lora_names if 'mask_decoder' in n][:5]}"
+    )
