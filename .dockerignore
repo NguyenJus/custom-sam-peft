@@ -1,0 +1,15 @@
+.venv/
+.git/
+.worktrees/
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+htmlcov/
+runs/
+models/
+data/
+notebooks/
+tests/
+docs/
+**/__pycache__
+*.egg-info/
