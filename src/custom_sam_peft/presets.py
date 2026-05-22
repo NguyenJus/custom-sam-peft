@@ -158,9 +158,7 @@ def _activation_per_example(image_size: int, cache: dict[str, Any] | None) -> in
     return int(BASE_ACTIVATION_AT_1024 * (image_size / 1024) ** 2)
 
 
-def _activation_bytes(
-    image_size: int, batch: int, ckpt: bool, cache: dict[str, Any] | None
-) -> int:
+def _activation_bytes(image_size: int, batch: int, ckpt: bool, cache: dict[str, Any] | None) -> int:
     per = _activation_per_example(image_size, cache)
     factor = CKPT_FACTOR if ckpt else 1.0
     return int(per * batch * factor)
@@ -201,9 +199,7 @@ def _current_sam3_checkpoint_sha() -> str:
     return h.hexdigest()
 
 
-def _load_cache(
-    image_size: int, gpu_name: str
-) -> tuple[dict[str, Any] | None, Path | None]:
+def _load_cache(image_size: int, gpu_name: str) -> tuple[dict[str, Any] | None, Path | None]:
     """Return (cache_dict, absolute_cache_path) iff the cache matches."""
     cache_path = Path(CACHE_FILENAME).resolve()
     if not cache_path.is_file():
