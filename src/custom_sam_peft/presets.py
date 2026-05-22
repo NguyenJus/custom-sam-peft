@@ -1,9 +1,7 @@
 """Algorithmic VRAM-tier PEFT preset chooser.
 
-Replaces the prior four-tier lookup table with an analytic memory model
-plus an optional calibration cache. Public surface is `decide_preset()` +
-`PresetDecision`. `pick_preset()`, `preset_label()`, and `_tier_for_gb`
-have been removed.
+Analytic memory model + optional calibration cache. Public surface is
+`decide_preset()` + `PresetDecision`.
 
 Spec: docs/superpowers/specs/2026-05-22-algo-vram-preset-design.md.
 """

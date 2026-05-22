@@ -46,11 +46,11 @@ class BundleContext:
     config_path: Path
     start_ts: datetime
     end_ts: datetime
-    preset: PresetDecision                  # required (replaces preset_label: str | None)
+    preset: PresetDecision
     per_example_iou: list[float]
     merged_dir: Path | None
     merged_export_error: str | None
-    oom_events: tuple[OomEvent, ...]        # required, no default
+    oom_events: tuple[OomEvent, ...]
 
 
 # ---------------------------------------------------------------------------
