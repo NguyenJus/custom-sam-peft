@@ -24,6 +24,8 @@ def _make_cfg(tmp_path: Path) -> MagicMock:
     cfg.tracking.backend = "none"
     cfg.tracking.wandb.project = "custom_sam_peft"
     cfg.tracking.wandb.entity = None
+    cfg.data.limit.train = None
+    cfg.data.limit.val = None
     return cfg
 
 
