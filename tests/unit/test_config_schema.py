@@ -368,8 +368,14 @@ def test_augmentations_overrides_all_none_by_default() -> None:
     dumped = AugmentationsConfig().overrides.model_dump()
     assert all(v is None for v in dumped.values())
     assert set(dumped.keys()) == {
-        "hflip", "vflip", "rotate90", "rotate_arbitrary",
-        "color_jitter", "stain_jitter", "blur", "gauss_noise",
+        "hflip",
+        "vflip",
+        "rotate90",
+        "rotate_arbitrary",
+        "color_jitter",
+        "stain_jitter",
+        "blur",
+        "gauss_noise",
     }
 
 

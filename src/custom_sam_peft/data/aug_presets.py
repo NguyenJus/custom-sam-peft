@@ -1,8 +1,9 @@
 """Domain-aware augmentation presets — resolver and run-metadata helpers.
 
-Pure-Python (numpy at most). Does NOT import albumentations; the resolver can
-be imported into `csp doctor` without dragging Albumentations into the doctor
-import graph.
+Pure-Python (numpy at most); this module itself does not import albumentations.
+Note that `csp doctor` still pulls albumentations transitively via
+`data.transforms.resolve_normalization_with_path`, so the practical isolation
+benefit is limited to keeping `aug_presets` cheap to import in tests.
 
 Public API:
   - PRESET_TABLE: dict[(Preset, Intensity), dict[str, bool | float]]
@@ -31,18 +32,126 @@ _LOG = logging.getLogger(__name__)
 
 # Twelve cells for the four real domains. `none` and `custom` are short-circuited.
 PRESET_TABLE: dict[tuple[Preset, Intensity], dict[str, bool | float]] = {
-    ("natural", "safe"):       {"hflip": True,  "vflip": False, "rotate90": False, "rotate_arbitrary": 0.0,  "color_jitter": 0.05, "stain_jitter": 0.0,  "blur": 0.0,  "gauss_noise": 0.0},
-    ("natural", "medium"):     {"hflip": True,  "vflip": False, "rotate90": False, "rotate_arbitrary": 0.0,  "color_jitter": 0.1,  "stain_jitter": 0.0,  "blur": 0.0,  "gauss_noise": 0.0},
-    ("natural", "aggressive"): {"hflip": True,  "vflip": True,  "rotate90": False, "rotate_arbitrary": 10.0, "color_jitter": 0.2,  "stain_jitter": 0.0,  "blur": 0.05, "gauss_noise": 0.02},
-    ("medical", "safe"):       {"hflip": False, "vflip": False, "rotate90": False, "rotate_arbitrary": 0.0,  "color_jitter": 0.0,  "stain_jitter": 0.0,  "blur": 0.0,  "gauss_noise": 0.0},
-    ("medical", "medium"):     {"hflip": False, "vflip": False, "rotate90": False, "rotate_arbitrary": 5.0,  "color_jitter": 0.0,  "stain_jitter": 0.03, "blur": 0.0,  "gauss_noise": 0.01},
-    ("medical", "aggressive"): {"hflip": False, "vflip": False, "rotate90": False, "rotate_arbitrary": 10.0, "color_jitter": 0.0,  "stain_jitter": 0.07, "blur": 0.03, "gauss_noise": 0.03},
-    ("satellite", "safe"):     {"hflip": True,  "vflip": True,  "rotate90": True,  "rotate_arbitrary": 0.0,  "color_jitter": 0.0,  "stain_jitter": 0.0,  "blur": 0.0,  "gauss_noise": 0.0},
-    ("satellite", "medium"):   {"hflip": True,  "vflip": True,  "rotate90": True,  "rotate_arbitrary": 0.0,  "color_jitter": 0.05, "stain_jitter": 0.0,  "blur": 0.0,  "gauss_noise": 0.0},
-    ("satellite", "aggressive"): {"hflip": True, "vflip": True, "rotate90": True,  "rotate_arbitrary": 15.0, "color_jitter": 0.1,  "stain_jitter": 0.0,  "blur": 0.05, "gauss_noise": 0.02},
-    ("microscopy", "safe"):    {"hflip": False, "vflip": True,  "rotate90": True,  "rotate_arbitrary": 0.0,  "color_jitter": 0.0,  "stain_jitter": 0.0,  "blur": 0.0,  "gauss_noise": 0.0},
-    ("microscopy", "medium"):  {"hflip": False, "vflip": True,  "rotate90": True,  "rotate_arbitrary": 0.0,  "color_jitter": 0.0,  "stain_jitter": 0.0,  "blur": 0.0,  "gauss_noise": 0.0},
-    ("microscopy", "aggressive"): {"hflip": False, "vflip": True, "rotate90": True, "rotate_arbitrary": 15.0, "color_jitter": 0.0, "stain_jitter": 0.0, "blur": 0.05, "gauss_noise": 0.02},
+    ("natural", "safe"): {
+        "hflip": True,
+        "vflip": False,
+        "rotate90": False,
+        "rotate_arbitrary": 0.0,
+        "color_jitter": 0.05,
+        "stain_jitter": 0.0,
+        "blur": 0.0,
+        "gauss_noise": 0.0,
+    },
+    ("natural", "medium"): {
+        "hflip": True,
+        "vflip": False,
+        "rotate90": False,
+        "rotate_arbitrary": 0.0,
+        "color_jitter": 0.1,
+        "stain_jitter": 0.0,
+        "blur": 0.0,
+        "gauss_noise": 0.0,
+    },
+    ("natural", "aggressive"): {
+        "hflip": True,
+        "vflip": True,
+        "rotate90": False,
+        "rotate_arbitrary": 10.0,
+        "color_jitter": 0.2,
+        "stain_jitter": 0.0,
+        "blur": 0.05,
+        "gauss_noise": 0.02,
+    },
+    ("medical", "safe"): {
+        "hflip": False,
+        "vflip": False,
+        "rotate90": False,
+        "rotate_arbitrary": 0.0,
+        "color_jitter": 0.0,
+        "stain_jitter": 0.0,
+        "blur": 0.0,
+        "gauss_noise": 0.0,
+    },
+    ("medical", "medium"): {
+        "hflip": False,
+        "vflip": False,
+        "rotate90": False,
+        "rotate_arbitrary": 5.0,
+        "color_jitter": 0.0,
+        "stain_jitter": 0.03,
+        "blur": 0.0,
+        "gauss_noise": 0.01,
+    },
+    ("medical", "aggressive"): {
+        "hflip": False,
+        "vflip": False,
+        "rotate90": False,
+        "rotate_arbitrary": 10.0,
+        "color_jitter": 0.0,
+        "stain_jitter": 0.07,
+        "blur": 0.03,
+        "gauss_noise": 0.03,
+    },
+    ("satellite", "safe"): {
+        "hflip": True,
+        "vflip": True,
+        "rotate90": True,
+        "rotate_arbitrary": 0.0,
+        "color_jitter": 0.0,
+        "stain_jitter": 0.0,
+        "blur": 0.0,
+        "gauss_noise": 0.0,
+    },
+    ("satellite", "medium"): {
+        "hflip": True,
+        "vflip": True,
+        "rotate90": True,
+        "rotate_arbitrary": 0.0,
+        "color_jitter": 0.05,
+        "stain_jitter": 0.0,
+        "blur": 0.0,
+        "gauss_noise": 0.0,
+    },
+    ("satellite", "aggressive"): {
+        "hflip": True,
+        "vflip": True,
+        "rotate90": True,
+        "rotate_arbitrary": 15.0,
+        "color_jitter": 0.1,
+        "stain_jitter": 0.0,
+        "blur": 0.05,
+        "gauss_noise": 0.02,
+    },
+    ("microscopy", "safe"): {
+        "hflip": False,
+        "vflip": True,
+        "rotate90": True,
+        "rotate_arbitrary": 0.0,
+        "color_jitter": 0.0,
+        "stain_jitter": 0.0,
+        "blur": 0.0,
+        "gauss_noise": 0.0,
+    },
+    ("microscopy", "medium"): {
+        "hflip": False,
+        "vflip": True,
+        "rotate90": True,
+        "rotate_arbitrary": 0.0,
+        "color_jitter": 0.0,
+        "stain_jitter": 0.0,
+        "blur": 0.0,
+        "gauss_noise": 0.0,
+    },
+    ("microscopy", "aggressive"): {
+        "hflip": False,
+        "vflip": True,
+        "rotate90": True,
+        "rotate_arbitrary": 15.0,
+        "color_jitter": 0.0,
+        "stain_jitter": 0.0,
+        "blur": 0.05,
+        "gauss_noise": 0.02,
+    },
 }
 
 
@@ -52,16 +161,16 @@ PRESET_TABLE: dict[tuple[Preset, Intensity], dict[str, bool | float]] = {
 
 LOCKED_OFF: dict[str, dict[str, str]] = {
     "medical": {
-        "hflip":        "laterality (left vs right) is clinically meaningful in most medical modalities (CXR, mammography, derm)",
-        "vflip":        "laterality (superior vs inferior) is clinically meaningful in most medical modalities",
-        "rotate90":     "laterality is clinically meaningful; arbitrary 90° rotation breaks canonical orientation",
+        "hflip": "laterality (left vs right) is clinically meaningful in most medical modalities (CXR, mammography, derm)",
+        "vflip": "laterality (superior vs inferior) is clinically meaningful in most medical modalities",
+        "rotate90": "laterality is clinically meaningful; arbitrary 90° rotation breaks canonical orientation",
         "color_jitter": "color carries diagnostic signal (e.g. melanoma); use stain_jitter for H&E instead",
     },
     "natural": {
         "rotate90": "arbitrary 90° rotation breaks 'up' for natural photography; use rotate_arbitrary for mild tilt",
     },
     "microscopy": {
-        "hflip":        "horizontal flip can break channel-ordering conventions in multiplexed microscopy",
+        "hflip": "horizontal flip can break channel-ordering conventions in multiplexed microscopy",
         "color_jitter": "color identifies fluorescence channels and must be preserved",
     },
     "satellite": {
@@ -75,9 +184,14 @@ LOCKED_OFF: dict[str, dict[str, str]] = {
 # ---------------------------------------------------------------------------
 
 _ZERO_BASE: dict[str, bool | float] = {
-    "hflip": False, "vflip": False, "rotate90": False,
-    "rotate_arbitrary": 0.0, "color_jitter": 0.0, "stain_jitter": 0.0,
-    "blur": 0.0, "gauss_noise": 0.0,
+    "hflip": False,
+    "vflip": False,
+    "rotate90": False,
+    "rotate_arbitrary": 0.0,
+    "color_jitter": 0.0,
+    "stain_jitter": 0.0,
+    "blur": 0.0,
+    "gauss_noise": 0.0,
 }
 
 
@@ -127,7 +241,10 @@ def resolve(cfg: AugmentationsConfig) -> ResolvedAugmentations:
             reason = LOCKED_OFF[cfg.preset][field]
             _LOG.warning(
                 "You enabled %s=%s under preset=%s; %s. The override will be applied as-is.",
-                field, override, cfg.preset, reason,
+                field,
+                override,
+                cfg.preset,
+                reason,
             )
 
     return ResolvedAugmentations(**base)  # type: ignore[arg-type]
@@ -136,6 +253,7 @@ def resolve(cfg: AugmentationsConfig) -> ResolvedAugmentations:
 # ---------------------------------------------------------------------------
 # Step-name list — spec §8 assembly mirrored for sidecar + doctor display
 # ---------------------------------------------------------------------------
+
 
 def _STEP_NAMES_FOR(resolved: ResolvedAugmentations) -> list[str]:
     """Ordered Albumentations class-name list produced by build_train_transforms.

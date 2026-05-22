@@ -84,6 +84,8 @@ ignore = []
 "src/custom_sam_peft/predict/runner.py" = ["T201"]
 "tests/unit/test_data_*.py" = ["E402"]
 "tests/**/*.py" = ["S101", "S105", "S311"]
+# Preset table is aligned tabularly for readability vs spec §5; "×" is intentional.
+"src/custom_sam_peft/data/aug_presets.py" = ["E501", "RUF003"]
 # Colab notebook: subprocess.run("git", ...) with partial path is intentional in a Colab
 # environment where git is always on PATH; asserts are runtime environment guards.
 # T201 (bare print) is the expected interaction model for notebooks.

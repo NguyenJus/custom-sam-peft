@@ -15,6 +15,7 @@ from typing import Literal
 
 import albumentations as A
 import numpy as np
+from numpy.typing import NDArray
 
 from custom_sam_peft.config.schema import AugmentationsConfig, NormalizeConfig
 
@@ -44,7 +45,7 @@ _STATS_DIVERGENCE_ATOL = 1e-3
 # ---------------------------------------------------------------------------
 
 # Ruifrok & Johnston 2001 HED basis vectors (rows = stains: H, E, DAB).
-_HED_FROM_RGB_MATRIX: np.ndarray = np.array(
+_HED_FROM_RGB_MATRIX: NDArray[np.float32] = np.array(
     [
         [0.65, 0.70, 0.29],
         [0.07, 0.99, 0.11],
@@ -52,7 +53,7 @@ _HED_FROM_RGB_MATRIX: np.ndarray = np.array(
     ],
     dtype=np.float32,
 )
-_HED_FROM_RGB_INV: np.ndarray = np.linalg.inv(_HED_FROM_RGB_MATRIX).astype(np.float32)
+_HED_FROM_RGB_INV: NDArray[np.float32] = np.linalg.inv(_HED_FROM_RGB_MATRIX).astype(np.float32)
 
 # Magnitude → Albumentations parameter projection constants — spec §8.1.
 _GAUSS_NOISE_MAX_VAR: float = 0.05
@@ -239,9 +240,12 @@ def build_train_transforms(
             )
         )
     if resolved.gauss_noise > 0.0:
-        # Albumentations 2.x renamed var_limit→std_range (std as fraction of max_pixel_value).
-        # Spec intent (scale noise magnitude by knob) is preserved; numeric range is equivalent
-        # since _GAUSS_NOISE_MAX_VAR=0.05 is small and std ≈ sqrt(var) at this scale.
+        # Albumentations 2.x replaced var_limit (variance, value-space) with std_range
+        # (std as a fraction of max_pixel_value=255 here, since GaussNoise runs pre-Normalize).
+        # We preserve the spec's per-knob scaling intent (magnitude * _GAUSS_NOISE_MAX_VAR) but
+        # the numeric semantics differ: a knob of 1 caps std at ~12.75 pixel units, not the
+        # sub-LSB variance the literal 1.x reading of the spec would produce. This is the
+        # behaviorally meaningful interpretation.
         steps.append(
             A.GaussNoise(
                 std_range=(0.0, resolved.gauss_noise * _GAUSS_NOISE_MAX_VAR),
@@ -260,7 +264,11 @@ def build_train_transforms(
         v = resolved.color_jitter
         steps.append(
             A.ColorJitter(
-                brightness=v, contrast=v, saturation=v, hue=v * 0.5, p=0.5,
+                brightness=v,
+                contrast=v,
+                saturation=v,
+                hue=v * 0.5,
+                p=0.5,
             )
         )
     if resolved.stain_jitter > 0.0:
@@ -304,7 +312,7 @@ class StainJitter(A.ImageOnlyTransform):  # type: ignore[misc]
             raise ValueError(f"StainJitter sigma must be >= 0, got {sigma}")
         self.sigma = float(sigma)
 
-    def apply(self, img: np.ndarray, **params: object) -> np.ndarray:
+    def apply(self, img: NDArray[np.uint8], **params: object) -> NDArray[np.uint8]:
         """Apply HED-space stain perturbation to img (uint8 RGB, HWC)."""
         if self.sigma == 0.0:
             return img
@@ -315,7 +323,7 @@ class StainJitter(A.ImageOnlyTransform):  # type: ignore[misc]
         hed = hed * (1.0 + alpha) + beta
         od_back = hed @ _HED_FROM_RGB_MATRIX
         out = 256.0 * np.power(10.0, -od_back) - 1.0
-        return np.clip(out, 0.0, 255.0).astype(np.uint8)
+        return np.clip(out, 0.0, 255.0).astype(np.uint8)  # type: ignore[no-any-return]
 
     def get_transform_init_args_names(self) -> tuple[str, ...]:
         return ("sigma",)

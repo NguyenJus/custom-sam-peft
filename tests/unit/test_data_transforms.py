@@ -303,9 +303,19 @@ def _class_names(compose: object) -> list[str]:
         ("natural", "medium", ["HorizontalFlip", "ColorJitter"]),
         ("medical", "medium", ["Affine", "GaussNoise", "StainJitter"]),
         ("medical", "safe", []),  # all-zero → no optional steps
-        ("satellite", "aggressive",
-         ["HorizontalFlip", "VerticalFlip", "RandomRotate90", "Affine",
-          "GaussNoise", "GaussianBlur", "ColorJitter"]),
+        (
+            "satellite",
+            "aggressive",
+            [
+                "HorizontalFlip",
+                "VerticalFlip",
+                "RandomRotate90",
+                "Affine",
+                "GaussNoise",
+                "GaussianBlur",
+                "ColorJitter",
+            ],
+        ),
         ("microscopy", "safe", ["VerticalFlip", "RandomRotate90"]),
     ],
 )
@@ -364,9 +374,12 @@ def test_pipeline_custom_with_overrides_step_list() -> None:
     )
     names = _class_names(compose)
     assert names == [
-        "LongestMaxSize", "PadIfNeeded",
-        "HorizontalFlip", "StainJitter",
-        "Normalize", "ToTensorV2",
+        "LongestMaxSize",
+        "PadIfNeeded",
+        "HorizontalFlip",
+        "StainJitter",
+        "Normalize",
+        "ToTensorV2",
     ]
 
 

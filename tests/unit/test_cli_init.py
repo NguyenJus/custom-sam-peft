@@ -202,25 +202,37 @@ def test_init_download_failure_surfaces_as_exit_1(
 @pytest.mark.parametrize(
     "preset,intensity",
     [
-        ("natural", "safe"), ("natural", "medium"), ("natural", "aggressive"),
-        ("medical", "safe"), ("medical", "medium"), ("medical", "aggressive"),
-        ("satellite", "safe"), ("satellite", "medium"), ("satellite", "aggressive"),
-        ("microscopy", "safe"), ("microscopy", "medium"), ("microscopy", "aggressive"),
+        ("natural", "safe"),
+        ("natural", "medium"),
+        ("natural", "aggressive"),
+        ("medical", "safe"),
+        ("medical", "medium"),
+        ("medical", "aggressive"),
+        ("satellite", "safe"),
+        ("satellite", "medium"),
+        ("satellite", "aggressive"),
+        ("microscopy", "safe"),
+        ("microscopy", "medium"),
+        ("microscopy", "aggressive"),
         ("none", "medium"),
         ("custom", "medium"),
     ],
 )
-def test_init_renders_preset_intensity(
-    tmp_path: Path, preset: str, intensity: str
-) -> None:
+def test_init_renders_preset_intensity(tmp_path: Path, preset: str, intensity: str) -> None:
     _make_data_paths(tmp_path)
     out = tmp_path / "config.yaml"
     result = runner.invoke(
         app,
         [
-            "init", "--template", "coco-text-lora",
-            "--preset", preset, "--intensity", intensity,
-            "--output", str(out),
+            "init",
+            "--template",
+            "coco-text-lora",
+            "--preset",
+            preset,
+            "--intensity",
+            intensity,
+            "--output",
+            str(out),
         ],
     )
     assert result.exit_code == 0, result.output

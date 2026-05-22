@@ -35,7 +35,10 @@ def init(
         "natural",
         "--preset",
         case_sensitive=False,
-        help="Augmentation domain preset. One of: natural, medical, satellite, microscopy, none, custom.",
+        help=(
+            "Augmentation domain preset. One of: natural, medical, satellite, "
+            "microscopy, none, custom."
+        ),
     ),
     intensity: str = typer.Option(
         "medium",

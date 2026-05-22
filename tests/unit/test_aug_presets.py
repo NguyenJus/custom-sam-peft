@@ -7,16 +7,13 @@ import logging
 
 import pytest
 
-from custom_sam_peft.config.schema import AugmentationsConfig, AugmentationOverrides
+from custom_sam_peft.config.schema import AugmentationOverrides, AugmentationsConfig
 from custom_sam_peft.data.aug_presets import (
-    LOCKED_OFF,
-    PRESET_TABLE,
-    ResolvedAugmentations,
     _STEP_NAMES_FOR,
+    PRESET_TABLE,
     dump_augmentation_pipeline,
     resolve,
 )
-
 
 _LOGGER = "custom_sam_peft.data.aug_presets"
 
@@ -187,8 +184,13 @@ def test_dump_augmentation_pipeline_shape_medical_medium() -> None:
         "gauss_noise": 0.01,
     }
     assert d["steps"] == [
-        "LongestMaxSize", "PadIfNeeded", "Affine", "GaussNoise", "StainJitter",
-        "Normalize", "ToTensorV2",
+        "LongestMaxSize",
+        "PadIfNeeded",
+        "Affine",
+        "GaussNoise",
+        "StainJitter",
+        "Normalize",
+        "ToTensorV2",
     ]
     assert isinstance(d["library_version"], str) and d["library_version"]
 
@@ -203,8 +205,14 @@ def test_step_names_for_natural_aggressive() -> None:
     cfg = AugmentationsConfig(preset="natural", intensity="aggressive")
     resolved = resolve(cfg)
     assert _STEP_NAMES_FOR(resolved) == [
-        "LongestMaxSize", "PadIfNeeded",
-        "HorizontalFlip", "VerticalFlip",
-        "Affine", "GaussNoise", "GaussianBlur", "ColorJitter",
-        "Normalize", "ToTensorV2",
+        "LongestMaxSize",
+        "PadIfNeeded",
+        "HorizontalFlip",
+        "VerticalFlip",
+        "Affine",
+        "GaussNoise",
+        "GaussianBlur",
+        "ColorJitter",
+        "Normalize",
+        "ToTensorV2",
     ]
