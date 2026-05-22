@@ -2,7 +2,7 @@
 
 **Status:** Draft (2026-05-21)
 **Tracking issue:** #65
-**Scope:** Audit the post-`v0.6.1` GPU/CPU test suite against issue #65's eight coverage dimensions, categorize each dimension as covered well / covered weakly / not covered, cross-reference dimensions now owned by dedicated follow-up issues (#23, #64, #68, #74, #78, #79), and land the test additions for the gaps that remain uniquely owned by #65. Adds one new release-tier GPU test (`tests/gpu/test_real_train_qlora_resume.py`), extends three existing GPU tests with eval-metric and PEFT-scope assertions, adds three new CPU unit tests (`tests/unit/test_evaluator_schema.py`, `tests/unit/test_peft_scope_coverage.py`, `tests/unit/test_trainer_nan_behavior.py`), and extends two existing CPU/integration tests (`tests/integration/test_train_resume.py`, `tests/integration/test_train_end_to_end.py`). No change under `src/custom_sam_peft/`, no new YAML config, no new dependency. Closing #65 with this PR also satisfies the `GPU test gate decision shipped — #65` line on issue #70's pre-v1.0 checklist.
+**Scope:** Audit the post-`v0.6.1` GPU/CPU test suite against issue #65's eight coverage dimensions, categorize each dimension as covered well / covered weakly / not covered, cross-reference dimensions now owned by dedicated follow-up issues (#23, #64, #68, #74, #78, #79), and land the test additions for the gaps that remain uniquely owned by #65. Adds one new release-tier GPU test (`tests/gpu/test_real_train_qlora_resume.py`), extends three existing GPU tests with eval-metric and PEFT-scope assertions, adds four new CPU unit tests (`tests/unit/test_evaluator_schema.py`, `tests/unit/test_peft_scope_coverage.py`, `tests/unit/test_trainer_nan_behavior.py`, `tests/unit/test_checkpoint_roundtrip.py`), and extends two existing CPU/integration tests (`tests/integration/test_train_resume.py`, `tests/integration/test_train_end_to_end.py`). No change under `src/custom_sam_peft/`, no new YAML config, no new dependency. Closing #65 with this PR also satisfies the `GPU test gate decision shipped — #65` line on issue #70's pre-v1.0 checklist.
 
 ---
 
@@ -111,7 +111,7 @@ tests/gpu/
 tests/integration/
   test_peft_lora_real.py                           # CHANGED — T5, add apply_lora(scope="vision") subtest
   test_peft_qlora_real.py                          # CHANGED — T6, add apply_qlora(scope="vision") subtest
-  test_train_resume.py                             # CHANGED — C4, optimizer/scheduler/RNG continuity
+  test_train_resume.py                             # CHANGED — C4, monotone optimizer/scheduler ≥ assertions
   test_train_end_to_end.py                         # CHANGED — C5, malformed-dataset error contracts
                                                    #          (extend in place; do NOT create a sibling)
 
@@ -119,6 +119,7 @@ tests/unit/
   test_evaluator_schema.py                         # NEW — C1, MetricsReport schema + edge cases
   test_peft_scope_coverage.py                      # NEW — C2, scope→trainable-set wiring on stub
   test_trainer_nan_behavior.py                     # NEW — C3, pin NaN-abort-after-N policy
+  test_checkpoint_roundtrip.py                     # NEW — C4, save_full_state ↔ load_full_state bit-equality
 ```
 
 No file under `src/custom_sam_peft/` is modified. No CI workflow is modified. No new YAML, no new Python module under `src/`, no new dependency.
@@ -275,15 +276,34 @@ This is the test C2 is named for: it covers the per-scope wiring contract on CPU
 
 If the current trainer behavior diverges from what's pinned here (e.g., `nan_abort_after` defaults to a value that makes case 2 hard to trigger, or the threshold is per-step vs. per-micro-step), the implementer pins what the code actually does and leaves a follow-up issue.
 
-#### C4 — `tests/integration/test_train_resume.py` (CHANGED)
+#### C4 — `tests/unit/test_checkpoint_roundtrip.py` (NEW) + `tests/integration/test_train_resume.py` (CHANGED)
 
-Extend the existing `test_resume_matches_uninterrupted` (do not create a new test function). After the existing `state_a` / `state_c` capture and the finiteness check (lines 95–122), add:
+**Amendment (2026-05-21, mid-implementation, tier-2):** the original C4 spec asserted bit-identical optimizer `step` counter and `exp_avg`/`exp_avg_sq` continuity across a reference run vs. an interrupted-then-resumed run. That contract is impossible to satisfy given the trainer's documented epoch-boundary resume semantics (`src/custom_sam_peft/train/checkpoint.py:7`): `load_full_state` sets `start_epoch` to the saved epoch, and `Trainer.fit` does `for epoch in range(start_epoch, cfg.train.epochs)` — so the resumed run *re-walks* the interrupted epoch, taking strictly more optimizer steps than the reference run (verified empirically: tiny_coco 2 images, batch_size=1, save_every=2, epochs=2 → reference run `step=4`, resumed run `step=6`). The existing `test_resume_matches_uninterrupted` already calls this out in its comment ("not bit-identical … because the re-walked epoch retreads some examples"). C4 is therefore split into two pieces that, between them, cover the actual contracts cleanly:
 
-- **Optimizer-state continuity.** Capture `optimizer_a.state_dict()` and `optimizer_c.state_dict()` after both runs complete. Assert `param_groups` equal (each group's `lr`, `betas`, `weight_decay`, etc.). For each parameter ID present in both `state` dicts, assert the `"step"` counter is equal and any `"exp_avg"` / `"exp_avg_sq"` tensors are `torch.allclose(...)` with `atol=1e-6` (the same numerical band the existing finiteness check operates in).
-- **Scheduler-state continuity.** Assert `scheduler_a.state_dict() == scheduler_c.state_dict()` on `last_epoch` and `_step_count` (other entries are bespoke per scheduler class; equality on the two canonical keys is the contract).
-- **RNG-state continuity.** At the resume checkpoint, snapshot `torch.get_rng_state()` and (if cuda available) `torch.cuda.get_rng_state()`. After resuming and completing, snapshot again. Compare the post-resume RNG state of `run-c` against the equivalent snapshot from `run-a` taken at the same global step — they should match because `checkpoint.py:160-165` restores Python / NumPy / torch CPU / torch CUDA RNG state on load.
+**Unit-level (primary C4 coverage): `tests/unit/test_checkpoint_roundtrip.py` (NEW).**
 
-Capturing optimizer / scheduler / RNG state requires the test to hold references to the `optimizer` and `scheduler` instances built inside `Trainer.fit`. Use `pytest.MonkeyPatch.setattr` against the `_build_optimizer` and `_build_scheduler` helpers in `custom_sam_peft.train.trainer`: wrap each builder in a closure that calls the real implementation, stashes the returned instance in a test-local list, and returns it. This requires no `src/custom_sam_peft/` change and gives the test direct access to the constructed optimizer / scheduler at the moment `fit` instantiates them. The pattern is documented inline in the test with a short comment.
+Pins the save→load roundtrip contract directly — the seam C4 was always trying to assert, without the re-walk noise. Build a small `Sam3Wrapper` LoRA stub (reuse `tiny_sam3_lora_stub.make_stub_wrapper` + `apply_lora`); build a real Adam optimizer + a real `LRScheduler` (reuse `_build_optimizer` / `_build_scheduler` from `custom_sam_peft.train.trainer`); step the optimizer a handful of times against the stub to populate `exp_avg` / `exp_avg_sq` / `step`; snapshot RNG state; call `save_full_state(...)` to a `tmp_path`; build a *fresh* optimizer + scheduler against the same model; call `load_full_state(...)`; then assert:
+
+- `optimizer.state_dict()["param_groups"]` equals the pre-save value on `lr`, `betas`, `weight_decay`, `eps`.
+- For every parameter ID in the pre-save `state`: `step` is exactly equal, and `exp_avg` / `exp_avg_sq` are `torch.equal(...)` (bit-identical — this is a save/load roundtrip, not a training-step comparison).
+- `scheduler.state_dict()["last_epoch"]` and `["_step_count"]` are exactly equal.
+- Post-load `torch.get_rng_state()` is bit-identical to the pre-save snapshot. (CUDA RNG is left to the GPU resume test T1; this unit test runs CPU-only.)
+- `ResumeState` returned by `load_full_state` matches the values passed to `save_full_state` (`start_step == global_step`, `start_epoch == epoch`, `nan_streak`, `box_hint_p`).
+
+Expected runtime: <1 second (one stub forward+backward, three optimizer steps, one save, one load, then asserts).
+
+**Integration-level (smoke retention): `tests/integration/test_train_resume.py` (CHANGED).**
+
+Keep the existing `test_resume_matches_uninterrupted` end-to-end smoke (uninterrupted reference run + truncated-then-resumed run, both via `Trainer.fit`). The current finiteness assertion stays. Add only the assertions that **are** consistent with the re-walk semantics — i.e. monotone "the resumed run did at least as much work as the reference":
+
+- Capture both optimizers via a `monkeypatch.setattr` spy on `custom_sam_peft.train.trainer._build_optimizer` (same closure pattern as the original amendment described). Same for `_build_scheduler`.
+- Assert `param_groups` equal on `lr`, `betas`, `weight_decay`, `eps` (these are config-driven, so they should be identical across both runs regardless of step count).
+- Assert `int(opt_c.state_dict()["state"][pid]["step"]) >= int(opt_a.state_dict()["state"][pid]["step"])` for every shared parameter ID (the resumed run runs strictly ≥ steps because it re-walks the interrupted epoch). At least one strict-greater is acceptable; do not assert strict inequality (the contract is "≥").
+- Assert `sched_c.state_dict()["last_epoch"] >= sched_a.state_dict()["last_epoch"]` and `sched_c.state_dict()["_step_count"] >= sched_a.state_dict()["_step_count"]`.
+- Do NOT assert `exp_avg` / `exp_avg_sq` allclose — these diverge legitimately under re-walk.
+- Do NOT assert RNG-state equality at the end of `run-c` against `run-a` — the unit test above pins the save/load RNG contract; an integration-level RNG assertion would require a per-step hook (out of scope, see original plan note line 1371).
+
+The integration test continues to catch regressions where the resume path fails to *function* end-to-end (e.g., a future bug that drops the optimizer state entirely would surface as `step_c < step_a`). The unit test catches regressions in the serialized contract itself (e.g., a future bug that drops `exp_avg` from the payload).
 
 #### C5 — `tests/integration/test_train_end_to_end.py` (CHANGED)
 
@@ -331,7 +351,7 @@ Post-change inspection tier: 11 tests, ~3.5 minutes total. Negligible.
 - C1 (test_evaluator_schema.py) — 5 small test functions; expected runtime <1 second total (`pycocotools` on 2-image fixtures is fast).
 - C2 (test_peft_scope_coverage.py) — 5 small test functions; PEFT apply + one forward+backward on an 8-dim stub; expected runtime <2 seconds.
 - C3 (test_trainer_nan_behavior.py) — 3 test functions; each drives ~5–10 trainer micro-steps on the stub; expected runtime ~3–5 seconds total.
-- C4 (extending `test_train_resume.py`) — same test pattern as the existing one, with additional state captures; expected delta <1 second.
+- C4 (new `test_checkpoint_roundtrip.py` + extension of `test_train_resume.py`) — unit roundtrip pins save/load bit-equality (<1 second); integration extension adds monotone ≥ assertions with no additional fit() invocations (<1 second delta).
 - C5 (extending `test_train_end_to_end.py`) — 3 small failure-mode tests; each drives `run_training` until the first bad-data exception fires; expected runtime ~3–5 seconds.
 
 Post-change CPU suite: +18 test functions, +~10–13 seconds total CI time. Well within the 80% coverage budget and the existing CI runtime envelope (`ci.yml` runs `uv run pytest` on `ubuntu-latest`; current wall-clock <2 minutes).
@@ -423,7 +443,8 @@ The orchestrator posts the following comment on issue #65 when this PR merges, t
 - [ ] `tests/unit/test_evaluator_schema.py` exists with the five test cases listed in §6.2.
 - [ ] `tests/unit/test_peft_scope_coverage.py` exists with per-scope target assertions + per-scope forward+backward smokes.
 - [ ] `tests/unit/test_trainer_nan_behavior.py` exists with the three test cases listed in §6.2; pins whatever the trainer currently does without modifying `src/custom_sam_peft/train/loop.py`.
-- [ ] `tests/integration/test_train_resume.py::test_resume_matches_uninterrupted` gains optimizer / scheduler / RNG continuity assertions.
+- [ ] `tests/unit/test_checkpoint_roundtrip.py` exists; pins `save_full_state` → `load_full_state` bit-identical roundtrip on optimizer state (`step`, `exp_avg`, `exp_avg_sq`, `param_groups`), scheduler state (`last_epoch`, `_step_count`), CPU RNG, and `ResumeState` fields. See §6.2 C4 for the full assertion list.
+- [ ] `tests/integration/test_train_resume.py::test_resume_matches_uninterrupted` gains monotone optimizer / scheduler continuity assertions (`step_c >= step_a`, `last_epoch_c >= last_epoch_a`, `_step_count_c >= _step_count_a`) consistent with the trainer's epoch-boundary re-walk semantics. No `exp_avg` allclose; no end-of-run RNG equality (those live in the unit test above).
 - [ ] `tests/integration/test_train_end_to_end.py` gains malformed-JSON / missing-image / missing-annotation failure-mode tests.
 
 **Tests + lint (CPU CI gates).**
