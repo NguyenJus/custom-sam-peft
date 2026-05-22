@@ -31,6 +31,7 @@ When the run finishes, scroll to the bottom of the notebook for a
 summary, sample mask overlays, and a one-line download command.
 
 For RunPod, see [cloud/runpod/README.md](cloud/runpod/README.md).
+Already on a GPU pod? Skip the pip-install wait — see [cloud/docker/README.md](cloud/docker/README.md).
 
 ## Advanced
 
@@ -47,6 +48,19 @@ uv run custom-sam-peft doctor
 # Run the (currently stubbed) train command against an example config
 uv run custom-sam-peft train --config configs/examples/coco_bbox_qlora.yaml
 ```
+
+#### From the prebuilt image (no local Python install required)
+
+```bash
+docker run --gpus all --rm \
+  -v $PWD:/workspace \
+  -e HF_TOKEN=$HF_TOKEN \
+  ghcr.io/nguyenjus/custom-sam-peft:latest \
+  --help
+```
+
+<!-- markdownlint-disable-next-line MD013 -->
+See [cloud/docker/README.md](cloud/docker/README.md) for the full CLI and Jupyter usage.
 
 ### CLI
 

@@ -1,6 +1,6 @@
 [project]
 name = "custom-sam-peft"
-version = "0.6.1"
+version = "0.7.0"
 description = "Closed-vocab finetuning of SAM-family models with LoRA / QLoRA on a single consumer GPU"
 readme = "README.md"
 license = { text = "Apache-2.0" }
@@ -30,6 +30,7 @@ dependencies = [
 wandb = ["wandb>=0.18"]
 qlora = ["bitsandbytes>=0.43"]
 tensorboard = ["tensorboard>=2.18"]
+jupyter = ["jupyterlab>=4"]
 dev = [
   "ruff>=0.7",
   "mypy>=1.13",

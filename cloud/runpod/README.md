@@ -1,3 +1,8 @@
+<!-- markdownlint-disable-next-line MD041 -->
+> **Faster path:** If you're comfortable with Docker, see
+> [cloud/docker/README.md#runpod](../docker/README.md#runpod) — it skips
+> the pip-install wait and gets you to training in one `docker run` command.
+
 # Running custom-sam-peft on RunPod
 
 A step-by-step guide for non-technical users. If you're on Colab, use the
