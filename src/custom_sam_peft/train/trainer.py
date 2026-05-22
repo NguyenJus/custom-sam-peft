@@ -28,7 +28,8 @@ from custom_sam_peft.train.checkpoint import (
     save_full_state,
     save_merged,
 )
-from custom_sam_peft.train.loop import _box_hint_p, run_epoch
+from custom_sam_peft.train.loop import OomState, _box_hint_p, run_epoch
+from custom_sam_peft.train.types import OomEvent
 from custom_sam_peft.train.visualize import render_mask_panel
 
 _LOG = logging.getLogger(__name__)
@@ -40,6 +41,7 @@ class RunResult:
     adapter_path: Path
     merged_path: Path | None
     final_metrics: MetricsReport | None  # None if end-of-run eval raises
+    oom_events: tuple[OomEvent, ...] = ()
 
 
 def _resolve_optimizer_name(cfg: TrainConfig) -> Optimizer:
@@ -203,6 +205,7 @@ class Trainer:
         start_epoch = rs.start_epoch
 
         class_names = self.train_ds.class_names
+        oom_state = OomState(micro_batch_size=cfg.train.batch_size)
 
         def on_checkpoint(step: int, epoch: int, p_t: float, streak: int) -> None:
             state_dir = run_dir / "checkpoints" / f"step_{step}"
@@ -246,6 +249,7 @@ class Trainer:
                     self.val_ds,
                     on_checkpoint,
                     on_eval,
+                    oom_state=oom_state,
                 )
 
             adapter_path = run_dir / "adapter"
@@ -277,6 +281,7 @@ class Trainer:
             adapter_path=run_dir / "adapter",
             merged_path=merged_path,
             final_metrics=full_report,
+            oom_events=tuple(oom_state.pending_oom_events),
         )
 
     def _log_image_panel(

@@ -9,7 +9,6 @@ Spec: docs/superpowers/specs/2026-05-18-simplify-ux-design.md §3.
 from __future__ import annotations
 
 import logging
-import os
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, cast
@@ -24,11 +23,24 @@ from custom_sam_peft.config.schema import TrainConfig
 from custom_sam_peft.data.base import Dataset
 from custom_sam_peft.eval.runner import run_eval
 from custom_sam_peft.models.sam3 import load_sam31
+from custom_sam_peft.presets import PresetDecision, decide_preset
 from custom_sam_peft.runs.bundle import BundleContext, write_bundle
 from custom_sam_peft.train.checkpoint import load_adapter, save_merged
 from custom_sam_peft.train.runner import run_training
 
 _LOG = logging.getLogger(__name__)
+
+
+def _fallback_preset(cfg: TrainConfig) -> PresetDecision:
+    """No sidecar — synthesize one from cfg + decide_preset(). Spec §11.4."""
+    return decide_preset(image_size=cfg.data.image_size)
+
+
+def _load_preset_or_fallback(cfg: TrainConfig) -> PresetDecision:
+    sidecar = Path("preset.json")
+    if sidecar.is_file():
+        return PresetDecision.from_json(sidecar.read_text())
+    return _fallback_preset(cfg)
 
 
 def _build_val_dataset(cfg: TrainConfig) -> Dataset:
@@ -85,15 +97,17 @@ def _orchestrate(cfg: TrainConfig, resume: Path | None) -> int:
             merged_export_error = str(exc)
 
     # Phase: bundle.
+    preset = _load_preset_or_fallback(cfg)
     ctx = BundleContext(
         run_dir=run_dir,
         config_path=run_dir / "config.yaml",
         start_ts=start_ts,
         end_ts=end_ts,
-        preset_label=os.environ.get("CUSTOM_SAM_PEFT_PRESET_LABEL"),
+        preset=preset,
         per_example_iou=per_example_iou,
         merged_dir=merged_dir,
         merged_export_error=merged_export_error,
+        oom_events=train_result.oom_events,
     )
     try:
         write_bundle(ctx, report, val_dataset=val_dataset, model_wrapper=wrapper)

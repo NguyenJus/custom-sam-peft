@@ -27,6 +27,8 @@ from PIL import Image, ImageDraw
 
 from custom_sam_peft.data.base import Dataset, Example, TextPrompts
 from custom_sam_peft.eval.metrics import MetricsReport
+from custom_sam_peft.presets import PresetDecision
+from custom_sam_peft.train.types import OomEvent
 
 _LOG = logging.getLogger(__name__)
 
@@ -44,10 +46,11 @@ class BundleContext:
     config_path: Path
     start_ts: datetime
     end_ts: datetime
-    preset_label: str | None
+    preset: PresetDecision
     per_example_iou: list[float]
     merged_dir: Path | None
     merged_export_error: str | None
+    oom_events: tuple[OomEvent, ...]
 
 
 # ---------------------------------------------------------------------------
@@ -257,6 +260,39 @@ def _hardware_lines() -> tuple[str, float | None]:
     return props.name, props.total_memory / (1024**3)
 
 
+def _preset_block(preset: PresetDecision) -> str:
+    ckpt_word = "on" if preset.gradient_checkpointing else "off"
+    method_pretty = "LoRA" if preset.method == "lora" else "QLoRA"
+    used_gib = preset.predicted_bytes / (1024**3)
+    total_gib = (preset.budget_bytes + preset.headroom_bytes) / (1024**3)
+    headroom_gib = preset.headroom_bytes / (1024**3)
+    if preset.provenance == "calibrated":
+        date_str = preset.calibrated_at[:10] if preset.calibrated_at else "unknown"
+        cache_name = Path(preset.cache_path).name if preset.cache_path else "(unknown)"
+        source_line = f"- Source: calibrated {date_str} (cache: {cache_name})"
+    else:
+        source_line = "- Source: analytic estimate"
+    return (
+        f"- Method: {method_pretty} r={preset.r}, batch={preset.batch_size}, "
+        f"grad_accum={preset.grad_accum_steps}, gradient_checkpointing={ckpt_word}, bf16\n"
+        f"- GPU:    {preset.gpu_name} ({total_gib:.1f} GiB)\n"
+        f"- Budget: {used_gib:.1f} / {total_gib:.1f} GiB used ({headroom_gib:.1f} GiB headroom)\n"
+        f"{source_line}"
+    )
+
+
+def _oom_edge_note(events: tuple[OomEvent, ...]) -> str | None:
+    """Return the OOM-summary line for `## Edge cases`, or None when there were none."""
+    if not events:
+        return None
+    final_mb = events[-1].new_micro_batch_size
+    ckpt_event = next((e for e in events if e.action == "grad_ckpt_enabled"), None)
+    base = f"OOM retries: {len(events)} — final micro_batch={final_mb}"
+    if ckpt_event is not None:
+        base += f", gradient_checkpointing enabled at step {ckpt_event.step}"
+    return base
+
+
 def write_bundle(
     ctx: BundleContext,
     metrics_report: MetricsReport,
@@ -324,11 +360,15 @@ def write_bundle(
         details = ", ".join(f"{i} raised {cls}" for i, cls in skipped)
         edge_notes.append(f"skipped samples: {details} — see log")
 
+    oom_line = _oom_edge_note(ctx.oom_events)
+    if oom_line is not None:
+        edge_notes.append(oom_line)
+
     # ---- summary.md -----------------------------------------------------
     headline = f"# {ctx.config_path.parent.name} — {mAP:.4f}"
     gpu_name, vram_gb = _hardware_lines()
     vram_line = f"- VRAM: {vram_gb:.1f} GB" if vram_gb is not None else "- VRAM: (n/a)"
-    preset_line = f"- Applied: {ctx.preset_label or 'manual'}"
+    preset_block = _preset_block(ctx.preset)
 
     adapter_path = (ctx.run_dir / "adapter").resolve()
     try:
@@ -362,7 +402,7 @@ def write_bundle(
         f"- GPU:  {gpu_name}\n"
         f"{vram_line}\n\n"
         f"## Preset\n"
-        f"{preset_line}\n\n"
+        f"{preset_block}\n\n"
         f"## Outputs\n"
         f"- Adapter: {adapter_rel}\n"
         f"{merged_line}\n"

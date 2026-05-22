@@ -26,8 +26,102 @@ from custom_sam_peft.data.base import Instance, TextPrompts
 from custom_sam_peft.models.losses import total_loss
 from custom_sam_peft.models.sam3 import Sam3Wrapper
 from custom_sam_peft.tracking.base import Tracker
+from custom_sam_peft.train.types import OomEvent
 
 _LOG = logging.getLogger(__name__)
+
+
+@dataclass
+class OomState:
+    """Mutable state the OOM ladder reads/writes across steps.
+
+    Held by the Trainer for the lifetime of a `fit()` call. The trainer's
+    inner per-class loss block calls `_train_step_with_oom_ladder` once per
+    step; on OOM the helper mutates `micro_batch_size` / `gradient_checkpointing`
+    in place (sticky) and appends to `pending_oom_events`.
+    """
+
+    step: int = 0
+    micro_batch_size: int = 1
+    gradient_checkpointing: bool = False
+    pending_oom_events: list[OomEvent] = field(default_factory=list)
+
+
+def _train_step_with_oom_ladder(
+    model: Any,
+    batch: Any,
+    state: Any,  # _State (test) | OomState (prod)
+    *,
+    forward_call: Callable[[Any, Any], torch.Tensor],
+) -> torch.Tensor:
+    """Run one optimizer-step's worth of microbatches; ladder OOM downward.
+
+    Caller is responsible for `optimizer.zero_grad()` (once, outside this
+    helper) and `optimizer.step()` (once, after this helper returns).
+
+    Spec §6 invariants:
+      - microbatch shrink is sticky
+      - gradient_checkpointing toggles at most once per run
+      - optimizer.zero_grad never called mid-microbatch (helper does not call it)
+      - mid-step OOM replays from i=0 at the smaller size
+
+    Returns the final detached loss tensor of the last successful microbatch.
+    """
+    n = len(batch)
+    last_loss: torch.Tensor | None = None
+    while True:
+        try:
+            mb = state.micro_batch_size
+            n_micro = (n + mb - 1) // mb
+            for i in range(n_micro):
+                start = i * mb
+                end = min(start + mb, n)
+                micro = batch[start:end]
+                loss = forward_call(model, micro)
+                # Caller divides by grad_accum_steps separately; we divide by
+                # n_micro here so the gradient magnitude matches the pre-ladder
+                # path. Outer loop must NOT divide again.
+                (loss / n_micro).backward()
+                last_loss = loss.detach()
+            return last_loss if last_loss is not None else torch.tensor(0.0)
+        except torch.cuda.OutOfMemoryError as oom_err:
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+            if state.micro_batch_size > 1:
+                state.micro_batch_size //= 2
+                state.pending_oom_events.append(
+                    OomEvent(
+                        step=state.step,
+                        action="microbatch_halved",
+                        new_micro_batch_size=state.micro_batch_size,
+                        new_gradient_checkpointing=state.gradient_checkpointing,
+                    )
+                )
+                _LOG.warning(
+                    "OOM at step %d — halving micro_batch_size to %d",
+                    state.step,
+                    state.micro_batch_size,
+                )
+                continue
+            if not state.gradient_checkpointing:
+                state.gradient_checkpointing = True
+                state.pending_oom_events.append(
+                    OomEvent(
+                        step=state.step,
+                        action="grad_ckpt_enabled",
+                        new_micro_batch_size=state.micro_batch_size,
+                        new_gradient_checkpointing=True,
+                    )
+                )
+                _LOG.warning(
+                    "OOM at step %d — enabling gradient_checkpointing",
+                    state.step,
+                )
+                continue
+            raise RuntimeError(
+                f"OOM at step {state.step} after micro_batch=1 + "
+                f"gradient_checkpointing=on. Use a larger GPU or smaller image_size."
+            ) from oom_err
 
 
 @dataclass
@@ -80,6 +174,7 @@ def train_step(
     class_names: list[str],
     global_step: int,
     nan_streak: int,
+    oom_state: OomState | None = None,
 ) -> StepResult:
     device = next(model.parameters()).device
     images: Tensor = batch["images"].to(device)
@@ -97,6 +192,9 @@ def train_step(
     finite_class_count = 0
     n_hint_applied = 0
 
+    if oom_state is not None:
+        oom_state.step = global_step
+
     for c in classes_in_batch:
         prompts_c = [TextPrompts(classes=[c]) for _ in range(B)]
         c_dense = class_names.index(c)
@@ -111,14 +209,64 @@ def train_step(
 
         class_losses: dict[str, Tensor] | None = None
         class_scaled: Tensor | None = None
+        is_finite = False
         try:
-            with _autocast_ctx(cfg):
-                out = model(images, prompts_c, box_hints=hints_c)
-                class_losses = total_loss(out, targets_c, cfg.train.loss)
-            class_scaled = class_losses["total"] / (
-                len(classes_in_batch) * cfg.train.grad_accum_steps
-            )
-            is_finite = bool(torch.isfinite(class_scaled))
+            if oom_state is not None:
+                # OOM ladder (Pattern B): treat the batch indices as the microbatch
+                # sequence so the ladder can halve B on OOM. The forward_call
+                # receives a list of image indices (one microbatch slice at a time)
+                # and returns the per-microbatch loss divided only by
+                # (n_classes * grad_accum_steps). The helper applies / n_micro via
+                # `(loss / n_micro).backward()`, so the closure must NOT include
+                # n_micro in its denominator — doing so would double-scale gradients
+                # whenever n_micro > 1 (i.e., after any OOM halving).
+                #
+                # We also capture the per-key loss dict for logging by storing it on
+                # a mutable container visible to the closure.
+                _last_class_losses: list[dict[str, Tensor]] = []
+
+                def _forward_class(
+                    _model: Any,
+                    micro_indices: list[int],
+                    _prompts_c: list[Any] = prompts_c,
+                    _targets_c: list[list[Instance]] = targets_c,
+                    _hints_c: list[Tensor | None] = hints_c,
+                    _n_classes: int = len(classes_in_batch),
+                    _grad_accum: int = cfg.train.grad_accum_steps,
+                    _losses_out: list[dict[str, Tensor]] = _last_class_losses,
+                ) -> Tensor:
+                    micro_prompts = [_prompts_c[i] for i in micro_indices]
+                    micro_targets = [_targets_c[i] for i in micro_indices]
+                    micro_hints = [_hints_c[i] for i in micro_indices]
+                    micro_imgs = images[micro_indices]
+                    with _autocast_ctx(cfg):
+                        micro_out = _model(micro_imgs, micro_prompts, box_hints=micro_hints)
+                        micro_cls_losses = total_loss(micro_out, micro_targets, cfg.train.loss)
+                    _losses_out.clear()
+                    _losses_out.append(micro_cls_losses)
+                    # Divide only by n_classes and grad_accum — NOT by n_micro.
+                    # The ladder helper applies / n_micro in (loss / n_micro).backward().
+                    return micro_cls_losses["total"] / (_n_classes * _grad_accum)
+
+                image_indices = list(range(B))
+                _train_step_with_oom_ladder(
+                    model, image_indices, oom_state, forward_call=_forward_class
+                )
+                # Use the last microbatch's losses for scalar logging.
+                class_losses = _last_class_losses[0] if _last_class_losses else None
+                if class_losses is not None:
+                    class_scaled_val = class_losses["total"] / (
+                        len(classes_in_batch) * cfg.train.grad_accum_steps
+                    )
+                    is_finite = bool(torch.isfinite(class_scaled_val))
+            else:
+                with _autocast_ctx(cfg):
+                    out = model(images, prompts_c, box_hints=hints_c)
+                    class_losses = total_loss(out, targets_c, cfg.train.loss)
+                class_scaled = class_losses["total"] / (
+                    len(classes_in_batch) * cfg.train.grad_accum_steps
+                )
+                is_finite = bool(torch.isfinite(class_scaled))
         except ValueError as exc:
             # Hungarian matcher raises ValueError on non-finite cost matrices;
             # treat as a NaN-class skip. Other exceptions (RuntimeError for OOM,
@@ -126,8 +274,10 @@ def train_step(
             _LOG.warning("train_step: class %r raised %s; treating as non-finite.", c, exc)
             is_finite = False
 
-        if is_finite and class_scaled is not None and class_losses is not None:
-            class_scaled.backward()  # type: ignore[no-untyped-call]
+        if is_finite and class_losses is not None:
+            if oom_state is None and class_scaled is not None:
+                class_scaled.backward()  # type: ignore[no-untyped-call]
+            # (when oom_state is not None, backward already happened in the ladder)
             finite_class_count += 1
             for k in ("mask", "box", "obj", "presence", "total"):
                 accum[k] += float(class_losses[k].detach())
@@ -239,6 +389,7 @@ def run_epoch(
     val_ds: Any,
     on_checkpoint: Callable[[int, int, float, int], None],
     on_eval: Callable[[int], None],
+    oom_state: OomState | None = None,
 ) -> tuple[int, int]:
     """Drive one epoch. `on_checkpoint(global_step, epoch, p_t, nan_streak)`
     is called at every `save_every` boundary; the trainer wires it to the
@@ -255,6 +406,7 @@ def run_epoch(
             class_names=class_names,
             global_step=global_step,
             nan_streak=nan_streak,
+            oom_state=oom_state,
         )
         nan_streak = result.nan_streak
         global_step += 1
