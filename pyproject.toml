@@ -1,6 +1,6 @@
 [project]
 name = "custom-sam-peft"
-version = "0.8.0"
+version = "0.8.1"
 description = "Closed-vocab finetuning of SAM-family models with LoRA / QLoRA on a single consumer GPU"
 readme = "README.md"
 license = { text = "Apache-2.0" }
@@ -42,6 +42,7 @@ dev = [
 
 [project.scripts]
 custom-sam-peft = "custom_sam_peft.cli.main:app"
+csp = "custom_sam_peft.cli.main:app"
 
 [build-system]
 requires = ["hatchling"]

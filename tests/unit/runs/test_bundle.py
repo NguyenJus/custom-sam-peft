@@ -11,12 +11,14 @@ import numpy as np
 import pytest
 from PIL import Image
 
+from custom_sam_peft.presets import PresetDecision
 from custom_sam_peft.runs.bundle import (
     BundleContext,
     pick_samples,
     render_overlay,
     write_bundle,
 )
+from custom_sam_peft.train.types import OomEvent
 
 # ---- pick_samples --------------------------------------------------------
 
@@ -148,16 +150,36 @@ def _make_metrics(mAP: float) -> MagicMock:
     return r
 
 
+def _make_decision() -> PresetDecision:
+    return PresetDecision(
+        method="lora",
+        r=32,
+        batch_size=2,
+        grad_accum_steps=8,
+        gradient_checkpointing=False,
+        dtype="bfloat16",
+        headroom_bytes=int(1.6 * 1024**3),
+        predicted_bytes=int(38.4 * 1024**3),
+        budget_bytes=39 * 1024**3,
+        image_size=1008,
+        gpu_name="NVIDIA A100-SXM4-40GB",
+        provenance="calibrated",
+        cache_path="/tmp/.custom_sam_peft_calibration.json",  # noqa: S108
+        calibrated_at="2026-05-18",
+    )
+
+
 def _make_ctx(tmp_path: Path, **overrides: object) -> BundleContext:
     base = BundleContext(
         run_dir=tmp_path / "run",
         config_path=tmp_path / "config.yaml",
         start_ts=datetime(2026, 5, 18, 12, 0, 0, tzinfo=UTC),
         end_ts=datetime(2026, 5, 18, 12, 5, 0, tzinfo=UTC),
-        preset_label="auto: 24-48GB tier",
+        preset=_make_decision(),
         per_example_iou=[0.1, 0.5, 0.9],
         merged_dir=None,
         merged_export_error=None,
+        oom_events=(),
     )
     base.run_dir.mkdir(parents=True, exist_ok=True)
     (tmp_path / "config.yaml").write_text("run: {name: r}\n")
@@ -258,3 +280,104 @@ def test_write_bundle_skipped_sample_logged_and_summary_notes_it(
     assert "forward kaboom" in caplog.text or any(
         "forward kaboom" in r.message for r in caplog.records
     )
+
+
+def _fake_reinfer(*_a: object, **_k: object) -> tuple[Image.Image, np.ndarray, np.ndarray]:
+    return (
+        Image.new("RGB", (8, 8)),
+        np.zeros((8, 8), bool),
+        np.zeros((8, 8), bool),
+    )
+
+
+def test_write_bundle_preset_block_structured(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ctx = _make_ctx(tmp_path, per_example_iou=[])
+    monkeypatch.setattr(
+        "custom_sam_peft.runs.bundle._reinfer_one_example",
+        _fake_reinfer,
+    )
+    write_bundle(ctx, _make_metrics(0.5), val_dataset=_make_dataset(0), model_wrapper=MagicMock())
+    summary = (ctx.run_dir / "summary.md").read_text()
+    assert "## Preset" in summary
+    assert "- Method: LoRA r=32" in summary
+    assert "batch=2" in summary
+    assert "grad_accum=8" in summary
+    assert "gradient_checkpointing=off" in summary
+    assert "- GPU:    NVIDIA A100-SXM4-40GB" in summary
+    assert "38.4 / " in summary  # used/total GiB
+    assert "calibrated" in summary.lower()
+    assert "2026-05-18" in summary
+
+
+def test_write_bundle_preset_block_analytic(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    decision = replace(_make_decision(), provenance="analytic", cache_path=None, calibrated_at=None)
+    ctx = _make_ctx(tmp_path, per_example_iou=[], preset=decision)
+    monkeypatch.setattr(
+        "custom_sam_peft.runs.bundle._reinfer_one_example",
+        _fake_reinfer,
+    )
+    write_bundle(ctx, _make_metrics(0.5), val_dataset=_make_dataset(0), model_wrapper=MagicMock())
+    summary = (ctx.run_dir / "summary.md").read_text()
+    assert "- Source: analytic estimate" in summary
+
+
+def test_write_bundle_oom_edge_note_with_ckpt(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    events = (
+        OomEvent(
+            step=10,
+            action="microbatch_halved",
+            new_micro_batch_size=4,
+            new_gradient_checkpointing=False,
+        ),
+        OomEvent(
+            step=20,
+            action="microbatch_halved",
+            new_micro_batch_size=2,
+            new_gradient_checkpointing=False,
+        ),
+        OomEvent(
+            step=412,
+            action="grad_ckpt_enabled",
+            new_micro_batch_size=2,
+            new_gradient_checkpointing=True,
+        ),
+    )
+    ctx = _make_ctx(tmp_path, per_example_iou=[], oom_events=events)
+    monkeypatch.setattr(
+        "custom_sam_peft.runs.bundle._reinfer_one_example",
+        _fake_reinfer,
+    )
+    write_bundle(ctx, _make_metrics(0.5), val_dataset=_make_dataset(0), model_wrapper=MagicMock())
+    summary = (ctx.run_dir / "summary.md").read_text()
+    assert "OOM retries: 3" in summary
+    assert "final micro_batch=2" in summary
+    assert "gradient_checkpointing enabled at step 412" in summary
+
+
+def test_write_bundle_oom_edge_note_no_ckpt(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    events = (
+        OomEvent(
+            step=10,
+            action="microbatch_halved",
+            new_micro_batch_size=4,
+            new_gradient_checkpointing=False,
+        ),
+    )
+    ctx = _make_ctx(tmp_path, per_example_iou=[], oom_events=events)
+    monkeypatch.setattr(
+        "custom_sam_peft.runs.bundle._reinfer_one_example",
+        _fake_reinfer,
+    )
+    write_bundle(ctx, _make_metrics(0.5), val_dataset=_make_dataset(0), model_wrapper=MagicMock())
+    summary = (ctx.run_dir / "summary.md").read_text()
+    assert "OOM retries: 1" in summary
+    # The "gradient_checkpointing enabled at step X" clause must be omitted.
+    assert "gradient_checkpointing enabled" not in summary

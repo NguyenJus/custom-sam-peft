@@ -10,6 +10,7 @@ import pytest
 from typer.testing import CliRunner
 
 from custom_sam_peft.cli.main import app
+from custom_sam_peft.presets import PresetDecision
 
 runner = CliRunner()
 
@@ -39,6 +40,46 @@ export: {{merge: {str(merge).lower()}}}
     return cfg
 
 
+def _make_preset_decision() -> PresetDecision:
+    return PresetDecision(
+        method="lora",
+        r=32,
+        batch_size=2,
+        grad_accum_steps=8,
+        gradient_checkpointing=False,
+        dtype="bfloat16",
+        headroom_bytes=int(1.6 * 1024**3),
+        predicted_bytes=int(38.4 * 1024**3),
+        budget_bytes=(39 * 1024**3),
+        image_size=1008,
+        gpu_name="StubGPU",
+        provenance="analytic",
+        cache_path=None,
+        calibrated_at=None,
+    )
+
+
+def _write_preset_sidecar(tmp_path: Path) -> PresetDecision:
+    d = PresetDecision(
+        method="lora",
+        r=32,
+        batch_size=2,
+        grad_accum_steps=8,
+        gradient_checkpointing=False,
+        dtype="bfloat16",
+        headroom_bytes=int(1.6 * 1024**3),
+        predicted_bytes=int(38.4 * 1024**3),
+        budget_bytes=(39 * 1024**3),
+        image_size=1008,
+        gpu_name="StubGPU",
+        provenance="analytic",
+        cache_path=None,
+        calibrated_at=None,
+    )
+    (tmp_path / "preset.json").write_text(d.to_json())
+    return d
+
+
 def _patch_phases(
     monkeypatch: pytest.MonkeyPatch,
     *,
@@ -56,9 +97,17 @@ def _patch_phases(
         adapter_path=run_dir / "adapter",
         merged_path=None,
         final_metrics=None,
+        oom_events=(),
     )
     run_dir.mkdir(parents=True, exist_ok=True)
     (run_dir / "adapter").mkdir(exist_ok=True)
+
+    # Stub _load_preset_or_fallback so tests that don't write a sidecar don't hit CUDA.
+    fake_preset = _make_preset_decision()
+    monkeypatch.setattr(
+        "custom_sam_peft.cli.run_cmd._load_preset_or_fallback",
+        lambda _cfg: fake_preset,
+    )
 
     fake_report = MagicMock(overall={"mAP": 0.42})
     fake_per_ex = [0.1, 0.5, 0.9]
@@ -210,25 +259,47 @@ def test_run_rejects_bbox_prompt_mode(tmp_path: Path, monkeypatch: pytest.Monkey
     assert "bbox" in _plain(result.output).lower()
 
 
-def test_run_passes_preset_label_env_var_through(
+def test_run_reads_preset_sidecar_when_present(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setenv("CUSTOM_SAM_PEFT_PRESET_LABEL", "auto: 12-24GB tier")
+    expected = _write_preset_sidecar(tmp_path)
+    # Do NOT stub _load_preset_or_fallback for this test — we want the real sidecar path.
+    # We must un-stub it after _patch_phases has set it; easier to call _patch_phases
+    # first, then override the stub with the real function.
     captured = _patch_phases(monkeypatch, run_dir=tmp_path / "runs" / "r")
+    import custom_sam_peft.cli.run_cmd as _run_cmd
+
+    monkeypatch.setattr(
+        "custom_sam_peft.cli.run_cmd._load_preset_or_fallback",
+        _run_cmd._load_preset_or_fallback,
+    )
     cfg = _make_cfg_yaml(tmp_path)
+    monkeypatch.chdir(tmp_path)  # so run_cmd resolves preset.json relative to cwd
     result = runner.invoke(app, ["run", "--config", str(cfg)])
     assert result.exit_code == 0, result.output
     ctx = captured["bundle_ctx"]
-    assert ctx.preset_label == "auto: 12-24GB tier"
+    assert ctx.preset == expected
+    assert ctx.oom_events == ()
 
 
-def test_run_preset_label_absent_yields_none(
+def test_run_synthesizes_analytic_preset_when_sidecar_absent(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.delenv("CUSTOM_SAM_PEFT_PRESET_LABEL", raising=False)
     captured = _patch_phases(monkeypatch, run_dir=tmp_path / "runs" / "r")
     cfg = _make_cfg_yaml(tmp_path)
+    monkeypatch.chdir(tmp_path)
+    # Stub _fallback_preset so we don't need CUDA in this test.
+    fake_decision = _write_preset_sidecar(tmp_path)  # writes & returns a PresetDecision
+    (tmp_path / "preset.json").unlink()  # remove the sidecar so the fallback path runs
+    monkeypatch.setattr("custom_sam_peft.cli.run_cmd._fallback_preset", lambda cfg: fake_decision)
+    # Also restore the real _load_preset_or_fallback so the fallback path actually runs.
+    import custom_sam_peft.cli.run_cmd as _run_cmd
+
+    monkeypatch.setattr(
+        "custom_sam_peft.cli.run_cmd._load_preset_or_fallback",
+        _run_cmd._load_preset_or_fallback,
+    )
     result = runner.invoke(app, ["run", "--config", str(cfg)])
     assert result.exit_code == 0, result.output
     ctx = captured["bundle_ctx"]
-    assert ctx.preset_label is None
+    assert ctx.preset.provenance == "analytic"

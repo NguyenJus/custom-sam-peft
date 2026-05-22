@@ -151,6 +151,45 @@ class HFDatasetConfig(_Strict):
     field_map: HFFieldMap = Field(default_factory=HFFieldMap)
 
 
+SubsetStrategy = Literal["random", "stratified", "first_n"]
+
+
+class LimitConfig(_Strict):
+    """Optional per-split dataset size limits.
+
+    Each limit is either:
+    - None  — no limit (use all samples)
+    - int   — absolute sample count (must be >= 1)
+    - float — fraction of the split (must be in (0.0, 1.0])
+
+    Booleans are explicitly rejected: Pydantic v2 coerces bool → int,
+    so we check isinstance(v, bool) BEFORE the numeric range check.
+    """
+
+    train: int | float | None = None
+    val: int | float | None = None
+    seed: int = 42
+    strategy: SubsetStrategy = "random"
+
+    @model_validator(mode="before")
+    @classmethod
+    def _check_limits(cls, data: object) -> object:
+        if not isinstance(data, dict):
+            return data
+        for name in ("train", "val"):
+            v = data.get(name)
+            if v is None:
+                continue
+            if isinstance(v, bool):
+                raise ValueError(f"limit.{name} must not be a bool; got {v!r}")
+            if isinstance(v, int):
+                if v < 1:
+                    raise ValueError(f"limit.{name} must be >= 1 when an int; got {v!r}")
+            elif isinstance(v, float) and not (0.0 < v <= 1.0):
+                raise ValueError(f"limit.{name} must be in (0.0, 1.0] when a float; got {v!r}")
+        return data
+
+
 class DataConfig(_Strict):
     format: DataFormat
     train: DataSplit
@@ -162,6 +201,7 @@ class DataConfig(_Strict):
     augmentations: AugmentationsConfig = Field(default_factory=AugmentationsConfig)
     text_prompt: TextPromptConfig = Field(default_factory=TextPromptConfig)
     normalize: NormalizeConfig = Field(default_factory=NormalizeConfig)
+    limit: LimitConfig = Field(default_factory=LimitConfig)
 
     @model_validator(mode="after")
     def _check_format_specific(self) -> DataConfig:

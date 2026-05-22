@@ -148,6 +148,7 @@ class HFDataset:
         self._multiplex_cap = 16
         self._warned_truncation = False
         self._warned_masks_from_boxes = False
+        self._image_class_labels: list[frozenset[int]] | None = None
 
         self._ds = hf_load_dataset(name, split=split)
         _validate_required_fields(self._ds, field_map)
@@ -155,6 +156,28 @@ class HFDataset:
 
     def __len__(self) -> int:
         return len(self._ds)
+
+    @property
+    def image_class_labels(self) -> list[frozenset[int]]:
+        """Per-image dense class id sets for stratified subset sampling.
+
+        Computed lazily on first access; subsequent accesses return the cache.
+        Emits exactly one INFO log per dataset instance when computed.
+        """
+        if self._image_class_labels is None:
+            _LOG.info(
+                "stratified subset: scanning %d rows for class labels…",
+                len(self._ds),
+            )
+            cat_field = self._field_map.category
+            result: list[frozenset[int]] = []
+            for i in range(len(self._ds)):
+                row = self._ds[i]
+                raw = _resolve_field(row, cat_field)
+                cats = [int(c) for c in raw] if isinstance(raw, list) else [int(raw)]
+                result.append(frozenset(cats))
+            self._image_class_labels = result
+        return self._image_class_labels
 
     def __getitem__(self, i: int) -> Example:
         import random as _random
