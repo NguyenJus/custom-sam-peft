@@ -119,9 +119,7 @@ def resolve_normalization(
             _STATS_DIVERGENCE_ATOL,
         )
     else:
-        _LOG.info(
-            "Using image_mean/image_std from AutoImageProcessor for %r.", model_name
-        )
+        _LOG.info("Using image_mean/image_std from AutoImageProcessor for %r.", model_name)
     return mean, std
 
 

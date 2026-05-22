@@ -42,7 +42,9 @@ class ModelConfig(_Strict):
     local_dir: str | None = "models/sam3.1"
     checkpoint_file: str = "sam3.1_multiplex.pt"
     revision: str | None = None
-    gradient_checkpointing: bool = False  # TODO(#60): re-enable when sam3 activation-checkpointing recompute mismatch is fixed
+    gradient_checkpointing: bool = (
+        False  # TODO(#60): re-enable when sam3 activation-checkpointing recompute mismatch is fixed
+    )
     dtype: Dtype = "bfloat16"
     device: str | None = None
 

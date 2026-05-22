@@ -12,12 +12,10 @@ from unittest.mock import MagicMock, patch
 import numpy as np
 import pytest
 import torch
+import transformers as _transformers
 
 from custom_sam_peft.config.schema import NormalizeConfig
 from custom_sam_peft.data.transforms import build_eval_transforms, resolve_normalization
-
-
-import transformers as _transformers
 
 # Pre-warm the transformers lazy module so patch("transformers.AutoImageProcessor", ...)
 # works correctly. The _LazyModule caches attribute resolutions on first access; without
@@ -114,7 +112,7 @@ def test_resolve_normalization_processor_loads_matches_table(
     """Path 1, model in table, values within 1e-3 of table entry: no WARN, INFO present."""
     fake_proc = SimpleNamespace(
         image_mean=[0.4855, 0.4555, 0.4055],  # within 1e-3 of [0.485, 0.456, 0.406]
-        image_std=[0.2295, 0.2245, 0.2255],   # within 1e-3 of [0.229, 0.224, 0.225]
+        image_std=[0.2295, 0.2245, 0.2255],  # within 1e-3 of [0.229, 0.224, 0.225]
     )
     mock_aip = MagicMock()
     mock_aip.from_pretrained.return_value = fake_proc
@@ -135,7 +133,7 @@ def test_resolve_normalization_processor_loads_matches_table(
 def test_resolve_normalization_processor_loads_diverges_from_table(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    """Path 1, model in table, divergence > 1e-3: returns processor values + exactly one WARN naming both vectors."""
+    """Path 1, in-table divergence > 1e-3: returns proc values + one WARN naming both vectors."""
     fake_proc = SimpleNamespace(image_mean=[0.5, 0.5, 0.5], image_std=[0.5, 0.5, 0.5])
     mock_aip = MagicMock()
     mock_aip.from_pretrained.return_value = fake_proc
@@ -159,7 +157,7 @@ def test_resolve_normalization_processor_loads_diverges_from_table(
 def test_resolve_normalization_processor_fails_model_in_table(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    """Path 2: OSError + model in table -> returns table values, exactly one WARN naming the table fallback."""
+    """Path 2: OSError + model in table -> returns table values, one WARN naming the fallback."""
     mock_aip = MagicMock()
     mock_aip.from_pretrained.side_effect = OSError("no cache")
 
@@ -181,7 +179,7 @@ def test_resolve_normalization_processor_fails_model_in_table(
 def test_resolve_normalization_processor_fails_model_not_in_table(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    """Path 3: OSError + model NOT in table -> returns user's fallback, exactly one WARN naming the YAML values."""
+    """Path 3: OSError + not in table -> returns user's fallback, one WARN naming YAML values."""
     mock_aip = MagicMock()
     mock_aip.from_pretrained.side_effect = OSError("no cache")
 
@@ -308,6 +306,7 @@ def test_shipped_yamls_match_schema_defaults() -> None:
     # NormalizeConfig defaults are constructed via default_factory; build an
     # instance to read them.
     from custom_sam_peft.config.schema import NormalizeConfig
+
     schema_mean = NormalizeConfig().mean
     schema_std = NormalizeConfig().std
 
