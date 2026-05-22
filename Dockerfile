@@ -10,7 +10,6 @@ COPY --from=ghcr.io/astral-sh/uv:0.5.11 /uv /uvx /usr/local/bin/
 
 ENV UV_LINK_MODE=copy \
     UV_COMPILE_BYTECODE=1 \
-    UV_PYTHON_DOWNLOADS=never \
     PYTHONUNBUFFERED=1 \
     HF_HOME=/workspace/.cache/huggingface
 
