@@ -30,6 +30,7 @@ dependencies = [
 wandb = ["wandb>=0.18"]
 qlora = ["bitsandbytes>=0.43"]
 tensorboard = ["tensorboard>=2.18"]
+jupyter = ["jupyterlab>=4"]
 dev = [
   "ruff>=0.7",
   "mypy>=1.13",
