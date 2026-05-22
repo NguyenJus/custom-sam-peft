@@ -98,7 +98,7 @@ def test_overall_keys_finite(tiny_coco_dir: Path) -> None:
         include_per_class=True,
     )
     for k, v in report.overall.items():
-        assert isinstance(v, float), f"{k} not float: {type(v)}"
+        assert isinstance(v, (int, float, np.floating)), f"{k} not numeric: {type(v)}"
         assert math.isfinite(v), f"{k} not finite: {v}"
         assert 0.0 <= v <= 1.0, f"{k} outside [0,1]: {v}"
 

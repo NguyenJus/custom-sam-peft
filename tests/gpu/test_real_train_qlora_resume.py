@@ -103,15 +103,20 @@ def test_qlora_resume_survives_quant_state_roundtrip(
     assert len(runs_b) >= 2, f"phase B did not create a fresh run dir: {runs_b}"
     final_ckpts = sorted((runs_b[-1] / "checkpoints").glob("step_*"))
     assert final_ckpts, "phase B wrote no final checkpoint"
+    adapter_dir = final_ckpts[-1] / "adapter"
+    assert adapter_dir.exists(), f"phase B wrote no adapter dir under {final_ckpts[-1]}"
     import safetensors.torch  # peft's default adapter format
 
-    adapter_file = final_ckpts[-1] / "adapter" / "adapter_model.safetensors"
-    if adapter_file.exists():
-        adapter_state = safetensors.torch.load_file(str(adapter_file))
+    adapter_safetensors = adapter_dir / "adapter_model.safetensors"
+    adapter_bin = adapter_dir / "adapter_model.bin"
+    if adapter_safetensors.exists():
+        adapter_state = safetensors.torch.load_file(str(adapter_safetensors))
+    elif adapter_bin.exists():
+        adapter_state = torch.load(adapter_bin, map_location="cpu")
     else:
-        # Fallback: bin format.
-        adapter_state = torch.load(
-            final_ckpts[-1] / "adapter" / "adapter_model.bin", map_location="cpu"
+        raise AssertionError(
+            f"adapter_dir {adapter_dir} contains neither adapter_model.safetensors "
+            f"nor adapter_model.bin (peft naming variant?): {list(adapter_dir.iterdir())}"
         )
     lora_params = {k: v for k, v in adapter_state.items() if "lora_" in k}
     assert lora_params, "no lora_ params in final adapter state"

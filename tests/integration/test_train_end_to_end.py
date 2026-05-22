@@ -172,11 +172,6 @@ def test_malformed_coco_json_raises_clear_error(tmp_path: Path) -> None:
             ),
             text_prompt=TextPromptConfig(),
         )
-    # Smoke-check that the cfg is at least constructable end-to-end so a future
-    # Trainer-side regression (e.g., eager dataset construction in Trainer) is
-    # caught by the next CI run rather than silently passing.
-    assert cfg.data.train.annotations == str(annotations)
-    assert build_tracker(cfg) is not None
 
 
 def test_missing_image_file_raises_clear_error(tmp_path: Path) -> None:

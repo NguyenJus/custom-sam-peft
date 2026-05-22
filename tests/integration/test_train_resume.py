@@ -8,6 +8,7 @@ from typing import Any
 import pytest
 import torch
 
+import custom_sam_peft.train.trainer as trainer_mod
 from custom_sam_peft.config.schema import (
     AugmentationsConfig,
     DataConfig,
@@ -23,7 +24,6 @@ from custom_sam_peft.data.coco import COCODataset
 from custom_sam_peft.data.transforms import build_train_transforms
 from custom_sam_peft.peft_adapters.lora import apply_lora
 from custom_sam_peft.tracking.noop import NoopTracker
-from custom_sam_peft.train.trainer import Trainer
 from tests.fixtures.tiny_sam3_lora_stub import FIXTURE_SCOPE_PATTERNS, make_stub_wrapper
 
 pytestmark = pytest.mark.integration
@@ -97,8 +97,6 @@ def test_resume_matches_uninterrupted(
     # builds. Wrap _build_optimizer / _build_scheduler with closures that stash
     # the constructed instance in a test-local list. Requires no
     # src/custom_sam_peft/ change.
-    import custom_sam_peft.train.trainer as trainer_mod
-
     real_opt_builder = trainer_mod._build_optimizer
     real_sched_builder = trainer_mod._build_scheduler
     captured_opts: list[Any] = []
@@ -120,7 +118,7 @@ def test_resume_matches_uninterrupted(
     # Uninterrupted reference run (2 epochs).
     w_a = make_stub_wrapper(dim=8, working=True)
     apply_lora(w_a, cfg.peft)
-    trainer_a = Trainer(w_a, ds, ds, NoopTracker(), cfg)
+    trainer_a = trainer_mod.Trainer(w_a, ds, ds, NoopTracker(), cfg)
     trainer_a.fit(run_dir=tmp_path / "run-a")
     state_a = _adapter_state(w_a)
     opt_a = captured_opts[-1]
@@ -131,7 +129,7 @@ def test_resume_matches_uninterrupted(
     apply_lora(w_b, cfg.peft)
     cfg_short = _cfg(tmp_path, tiny_coco_dir, save_every=2)
     cfg_short.train.epochs = 1
-    trainer_b = Trainer(w_b, ds, ds, NoopTracker(), cfg_short)
+    trainer_b = trainer_mod.Trainer(w_b, ds, ds, NoopTracker(), cfg_short)
     result_b1 = trainer_b.fit(run_dir=tmp_path / "run-b1")
 
     ckpts = sorted((result_b1.run_dir / "checkpoints").glob("step_*"))
@@ -140,7 +138,7 @@ def test_resume_matches_uninterrupted(
 
     w_c = make_stub_wrapper(dim=8, working=True)
     apply_lora(w_c, cfg.peft)
-    trainer_c = Trainer(w_c, ds, ds, NoopTracker(), cfg)
+    trainer_c = trainer_mod.Trainer(w_c, ds, ds, NoopTracker(), cfg)
     trainer_c.fit(run_dir=tmp_path / "run-c", resume_from=resume_dir)
     state_c = _adapter_state(w_c)
     opt_c = captured_opts[-1]
