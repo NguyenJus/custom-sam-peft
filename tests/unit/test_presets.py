@@ -261,3 +261,15 @@ def test_decide_preset_requires_cuda(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
     with pytest.raises(RuntimeError, match="CUDA"):
         decide_preset(image_size=1024)
+
+
+def test_predicted_bytes_train_mode_unchanged() -> None:
+    """Existing train-mode callers stay byte-identical after the mode param."""
+    from custom_sam_peft.presets import _predicted_bytes
+
+    # Default mode='train' — same value as the pre-change signature.
+    n = _predicted_bytes("lora", r=4, batch=1, ckpt=False, image_size=1024, cache=None)
+    # And the explicit mode='train' matches.
+    assert n == _predicted_bytes(
+        "lora", r=4, batch=1, ckpt=False, image_size=1024, cache=None, mode="train"
+    )
