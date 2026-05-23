@@ -9,7 +9,6 @@ from pydantic import ValidationError
 
 from custom_sam_peft.config.schema import (
     BoxHintSchedule,
-    LossConfig,
     MatcherWeights,
     TrainHyperparams,
 )
@@ -55,17 +54,14 @@ def test_train_hyperparams_optimizer_accepts_explicit_values() -> None:
         assert h.optimizer == opt
 
 
-def test_loss_config_default_w_box_is_zero() -> None:
-    """v0 text-only training drops box supervision."""
-    assert LossConfig().w_box == 0.0
-
-
-def test_matcher_weights_default_is_mask_only() -> None:
+def test_matcher_weights_default_box_terms_are_zero() -> None:
     """v0 matcher is mask-only by default.
 
-    lambda_l1/giou demoted to inline 0.0 in losses.py (#92).
+    lambda_l1/giou are demoted internal constants (always 0.0); they remain
+    as fields on MatcherWeights so that compose.py can pass them to
+    HungarianMatcher without attribute errors (audit Section E, #92).
     """
     w = MatcherWeights()
     assert w.lambda_mask == 5.0
-    assert not hasattr(w, "lambda_l1")
-    assert not hasattr(w, "lambda_giou")
+    assert w.lambda_l1 == 0.0
+    assert w.lambda_giou == 0.0

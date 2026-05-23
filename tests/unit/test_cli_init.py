@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 import pytest
@@ -305,3 +306,97 @@ def test_init_other_fields_parse_identically(tmp_path: Path) -> None:
     assert cfg.run.name == "my-run"
     assert cfg.model.name == "facebook/sam3.1"
     assert cfg.train.epochs == 10
+
+
+# ---------------------------------------------------------------------------
+# spec/domain-aware-loss-presets — --class-imbalance flag
+# ---------------------------------------------------------------------------
+
+_REAL_PRESETS = ["natural", "medical", "satellite", "microscopy"]
+_TIERS = ["balanced", "moderate", "severe"]
+
+
+@pytest.mark.parametrize("preset", _REAL_PRESETS)
+@pytest.mark.parametrize("tier", _TIERS)
+def test_init_renders_class_imbalance(preset: str, tier: str, tmp_path: Path) -> None:
+    _make_data_paths(tmp_path)
+    out = tmp_path / "cfg.yaml"
+    res = runner.invoke(
+        app,
+        [
+            "init",
+            "--preset",
+            preset,
+            "--class-imbalance",
+            tier,
+            "--output",
+            str(out),
+        ],
+    )
+    assert res.exit_code == 0, res.output
+    cfg = load_config(out)
+    assert cfg.train.loss.preset == preset
+    assert cfg.train.loss.class_imbalance == tier
+
+
+def test_init_custom_preset_renders_loss_overrides_scaffold(tmp_path: Path) -> None:
+    _make_data_paths(tmp_path)
+    out = tmp_path / "cfg.yaml"
+    res = runner.invoke(
+        app,
+        [
+            "init",
+            "--preset",
+            "custom",
+            "--output",
+            str(out),
+        ],
+    )
+    assert res.exit_code == 0, res.output
+    body = out.read_text()
+    # The custom branch writes uncommented `overrides: {}` with the inline knob comment
+    assert "overrides: {}" in body
+    assert "mask_family" in body and "boundary_weight" in body
+    cfg = load_config(out)
+    assert cfg.train.loss.preset == "custom"
+
+
+def test_init_invalid_class_imbalance_rejected(tmp_path: Path) -> None:
+    _make_data_paths(tmp_path)
+    out = tmp_path / "cfg.yaml"
+    res = runner.invoke(
+        app,
+        [
+            "init",
+            "--class-imbalance",
+            "extreme",
+            "--output",
+            str(out),
+        ],
+    )
+    assert res.exit_code != 0
+    # Strip ANSI codes — CI terminal width can break the substring across styling escapes.
+    combined = re.sub(r"\x1b\[[0-9;]*m", "", res.output + (res.stderr or ""))
+    assert "class-imbalance" in combined
+
+
+def test_init_non_custom_preset_renders_commented_scaffold(tmp_path: Path) -> None:
+    _make_data_paths(tmp_path)
+    out = tmp_path / "cfg.yaml"
+    res = runner.invoke(
+        app,
+        [
+            "init",
+            "--preset",
+            "medical",
+            "--class-imbalance",
+            "moderate",
+            "--output",
+            str(out),
+        ],
+    )
+    assert res.exit_code == 0
+    body = out.read_text()
+    # Commented scaffold lives under train.loss:
+    assert "# overrides:" in body
+    assert "#   mask_family:" in body

@@ -205,6 +205,11 @@ class Trainer:
                 sort_keys=False,
             )
         )
+        from custom_sam_peft.models.losses import dump_loss_bundle
+
+        (run_dir / "loss_bundle.json").write_text(
+            json.dumps(dump_loss_bundle(cfg.train.loss), indent=2, sort_keys=False)
+        )
         return run_dir
 
     def _build_optimizer(self) -> torch.optim.Optimizer:
