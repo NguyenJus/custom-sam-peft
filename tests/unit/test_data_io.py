@@ -54,6 +54,13 @@ def test_tiff_multiband(tmp_path):
     assert out.shape == (6, 8, 7)
 
 
+def test_npz_dispatch(tmp_path):
+    arr = (np.random.rand(8, 10, 4)).astype(np.float32)
+    p = tmp_path / "x.npz"
+    np.savez(p, arr)  # single array stored under key "arr_0"
+    assert read_image(p, 4).shape == (8, 10, 4)
+
+
 def test_coerce_pil_2d_array_triplicate_and_keep1():
     arr2d = (np.random.rand(8, 10) * 255).astype(np.uint8)
     assert _coerce_to_channels(arr2d, 3).shape == (8, 10, 3)

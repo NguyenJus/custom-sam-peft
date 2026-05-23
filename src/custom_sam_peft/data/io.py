@@ -4,6 +4,7 @@ channel_semantics never reaches this module."""
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 
@@ -11,7 +12,7 @@ _PIL_MODE = {1: "L", 3: "RGB", 4: "RGBA"}
 _RASTER_EXTS = {".png", ".jpg", ".jpeg", ".bmp", ".gif", ".webp"}
 
 
-def _coerce_to_channels(obj: object, channels: int) -> np.ndarray:
+def _coerce_to_channels(obj: object, channels: int) -> np.ndarray[Any, Any]:
     """Coerce a PIL image OR an ndarray to (H, W, C) with C == channels.
 
     PIL path uses mode conversion (1->L, 3->RGB, 4->RGBA). Array path accepts
@@ -51,7 +52,7 @@ def _coerce_to_channels(obj: object, channels: int) -> np.ndarray:
     return np.ascontiguousarray(hwc)
 
 
-def read_image(path: str | Path, channels: int) -> np.ndarray:
+def read_image(path: str | Path, channels: int) -> np.ndarray[Any, Any]:
     """Read an image file to (H, W, C) with C == channels. Dispatch on extension."""
     path = Path(path)
     ext = path.suffix.lower()
