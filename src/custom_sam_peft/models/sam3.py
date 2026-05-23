@@ -319,6 +319,35 @@ def _resolve_checkpoint_path(cfg: ModelConfig) -> Path:
     return path
 
 
+def _build_channel_adapter(channels: int, channel_semantics: str) -> nn.Conv2d | None:
+    """Build the N->3 channel adapter per the semantic profile (spec §5.2/§5.3).
+
+    Returns None for semantic=='rgb' (passthrough, zero new params). Otherwise a
+    fully-trainable Conv2d(channels, 3, 1) initialized per profile.adapter_init.
+    """
+    from custom_sam_peft.data.channel_semantics import CHANNEL_SEMANTICS
+
+    profile = CHANNEL_SEMANTICS[channel_semantics]
+    if not profile.use_adapter:
+        return None
+    conv = nn.Conv2d(channels, 3, kernel_size=1, bias=True)
+    with torch.no_grad():
+        conv.weight.zero_()
+        conv.bias.zero_()
+        if profile.adapter_init == "average_broadcast":
+            conv.weight.fill_(1.0 / channels)
+        elif profile.adapter_init == "identity_passthrough":
+            # Identity on first 3 input channels, zero on the rest.
+            for o in range(3):
+                if o < channels:
+                    conv.weight[o, o, 0, 0] = 1.0
+        else:  # pragma: no cover - registry guards this
+            raise ValueError(f"unknown adapter_init: {profile.adapter_init!r}")
+    conv.weight.requires_grad_(True)
+    conv.bias.requires_grad_(True)
+    return conv
+
+
 class _Sam3ImageAdapter(nn.Module):
     """Adapt raw Sam3Image to the (images, prompts, box_hints) calling convention.
 
