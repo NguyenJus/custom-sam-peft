@@ -423,6 +423,41 @@ class DataConfig(_Strict):
         return self
 
     @model_validator(mode="after")
+    def _check_channels_semantics_normalize(self) -> "DataConfig":
+        profile = CHANNEL_SEMANTICS[self.channel_semantics]
+
+        # (a) semantic <-> channels match
+        if self.channels not in profile.allowed_channels:
+            allowed = sorted(profile.allowed_channels)
+            allowed_str = (
+                f"{allowed[0]}" if len(allowed) == 1 else f"{allowed[0]}..{allowed[-1]}"
+            )
+            raise ValueError(
+                f"data.channel_semantics={self.channel_semantics!r} requires "
+                f"data.channels={allowed_str}, but data.channels={self.channels}."
+            )
+
+        # (c) resolve normalize: explicit wins; else profile default; freeform requires explicit.
+        if self.normalize is None:
+            if profile.normalize_default is None:
+                raise ValueError(
+                    f"data.channel_semantics={self.channel_semantics!r} requires explicit "
+                    f"data.normalize.mean/std (one value per channel; no default exists for "
+                    f"freeform). Provide N={self.channels} mean and {self.channels} std values."
+                )
+            mean, std = profile.normalize_default
+            self.normalize = NormalizeConfig(mean=list(mean), std=list(std))
+
+        # (b) length cross-check (after default materialization)
+        if len(self.normalize.mean) != self.channels or len(self.normalize.std) != self.channels:
+            raise ValueError(
+                f"data.normalize.mean has {len(self.normalize.mean)} entries but "
+                f"data.channels={self.channels}; provide exactly {self.channels} per-channel "
+                f"mean values (and {self.channels} std values)."
+            )
+        return self
+
+    @model_validator(mode="after")
     def _check_val_modes(self) -> DataConfig:
         if self.val is not None and self.val_split is not None:
             raise ValueError(
