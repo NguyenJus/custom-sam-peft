@@ -77,6 +77,19 @@ See [cloud/docker/README.md](cloud/docker/README.md) for the full CLI and Jupyte
 
 `coco-bbox` and `hf-text` init templates are deferred (see `logs/TODO.md`).
 
+#### Run inference on your images
+
+After installing the package, point `csp predict` at a directory of images and pass class prompts:
+
+```bash
+uv run csp predict \
+  --images path/to/images/ \
+  --prompts "cat,dog,person" \
+  --output out/
+```
+
+This produces `out/predictions.json` (COCO-flat), `out/image_id_map.json` (id → source path), and `out/run.json` (reproducibility metadata). Pass `--checkpoint path/to/adapter/` to apply a LoRA or QLoRA adapter (auto-detected); add `--visualize` to write per-image overlays. See `csp predict --help` for every flag.
+
 ### What's supported in v0
 
 | | v0 | Deferred |

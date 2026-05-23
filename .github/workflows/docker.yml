@@ -36,6 +36,9 @@ jobs:
             type=semver,pattern={{major}},enable=${{ !startsWith(github.ref, 'refs/tags/v0.') }}
             type=raw,value=latest
 
+      - id: strip-v
+        run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+
       - uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8   # v6.19.2
         with:
           context: .
@@ -43,6 +46,8 @@ jobs:
           load: true
           push: false
           tags: ghcr.io/nguyenjus/custom-sam-peft:ci-smoke
+          build-args: |
+            HATCH_VCS_PRETEND_VERSION_FOR_CUSTOM_SAM_PEFT=${{ steps.strip-v.outputs.version }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
@@ -58,4 +63,6 @@ jobs:
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            HATCH_VCS_PRETEND_VERSION_FOR_CUSTOM_SAM_PEFT=${{ steps.strip-v.outputs.version }}
           cache-from: type=gha

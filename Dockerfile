@@ -8,6 +8,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 COPY --from=ghcr.io/astral-sh/uv:0.5.11 /uv /uvx /usr/local/bin/
 
+ARG HATCH_VCS_PRETEND_VERSION_FOR_CUSTOM_SAM_PEFT
+ENV HATCH_VCS_PRETEND_VERSION_FOR_CUSTOM_SAM_PEFT=${HATCH_VCS_PRETEND_VERSION_FOR_CUSTOM_SAM_PEFT}
+
 ENV UV_LINK_MODE=copy \
     UV_COMPILE_BYTECODE=1 \
     PYTHONUNBUFFERED=1 \

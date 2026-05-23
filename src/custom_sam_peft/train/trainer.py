@@ -14,6 +14,7 @@ import torch
 import yaml
 from torch.utils.data import DataLoader
 
+from custom_sam_peft.cli._progress import progress as P
 from custom_sam_peft.config.schema import Optimizer, TrainConfig
 from custom_sam_peft.data.base import Dataset
 from custom_sam_peft.data.collate import collate_batch
@@ -28,7 +29,8 @@ from custom_sam_peft.train.checkpoint import (
     save_full_state,
     save_merged,
 )
-from custom_sam_peft.train.loop import _box_hint_p, run_epoch
+from custom_sam_peft.train.loop import OomState, _box_hint_p, run_epoch
+from custom_sam_peft.train.types import OomEvent
 from custom_sam_peft.train.visualize import render_mask_panel
 
 _LOG = logging.getLogger(__name__)
@@ -40,6 +42,7 @@ class RunResult:
     adapter_path: Path
     merged_path: Path | None
     final_metrics: MetricsReport | None  # None if end-of-run eval raises
+    oom_events: tuple[OomEvent, ...] = ()
 
 
 def _resolve_optimizer_name(cfg: TrainConfig) -> Optimizer:
@@ -221,6 +224,7 @@ class Trainer:
         start_epoch = rs.start_epoch
 
         class_names = self.train_ds.class_names
+        oom_state = OomState(micro_batch_size=cfg.train.batch_size)
 
         def on_checkpoint(step: int, epoch: int, p_t: float, streak: int) -> None:
             state_dir = run_dir / "checkpoints" / f"step_{step}"
@@ -251,6 +255,8 @@ class Trainer:
         merged_path: Path | None = None
         try:
             for epoch in range(start_epoch, cfg.train.epochs):
+                total_batches = max(len(train_loader), 1)
+                P.reset_inner(total=total_batches)
                 global_step, nan_streak = run_epoch(
                     self.model,
                     train_loader,
@@ -265,7 +271,9 @@ class Trainer:
                     class_names,
                     on_checkpoint,
                     on_eval,
+                    oom_state=oom_state,
                 )
+                P.advance_outer()
 
             adapter_path = run_dir / "adapter"
             save_adapter(self.model, adapter_path)
@@ -310,6 +318,7 @@ class Trainer:
             adapter_path=run_dir / "adapter",
             merged_path=merged_path,
             final_metrics=full_report,
+            oom_events=tuple(oom_state.pending_oom_events),
         )
 
     def _log_image_panel(

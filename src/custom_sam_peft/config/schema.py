@@ -17,6 +17,8 @@ DataFormat = Literal["coco", "hf"]
 PromptMode = Literal["text", "bbox"]
 PEFTMethod = Literal["lora", "qlora"]
 QuantType = Literal["nf4", "fp4"]
+# "auto" resolves at trainer construction (src/custom_sam_peft/train/trainer.py:45-49):
+# adamw8bit if peft.method == "qlora" else adamw.
 Optimizer = Literal["adamw", "adamw8bit", "auto"]
 LRSchedule = Literal["constant", "cosine", "linear"]
 TrackerBackend = Literal["tensorboard", "wandb", "none"]
@@ -40,7 +42,9 @@ class ModelConfig(_Strict):
     local_dir: str | None = "models/sam3.1"
     checkpoint_file: str = "sam3.1_multiplex.pt"
     revision: str | None = None
-    gradient_checkpointing: bool = True
+    gradient_checkpointing: bool = (
+        False  # TODO(#60): re-enable when sam3 activation-checkpointing recompute mismatch is fixed
+    )
     dtype: Dtype = "bfloat16"
     device: str | None = None
 
@@ -70,17 +74,38 @@ class TextPromptConfig(_Strict):
     """
 
     mode: TextPromptMode = "present"
-    negatives_per_image: int = Field(default=0, ge=0)
+    negatives_per_image: int = Field(
+        default=0,
+        ge=0,
+        description=(
+            "How many randomly-sampled negative class names to add per image when "
+            "mode='present_plus_negatives'. Bounded above by TextPrompts' multiplex "
+            "cap of 16 (k field). Example configs ship 4, which leaves headroom for "
+            "typical COCO present-class counts (~3-7 per image)."
+        ),
+    )
     k: int = Field(default=16, ge=1, le=16)
 
 
 class NormalizeConfig(_Strict):
-    """Normalization stats used when AutoImageProcessor cannot be loaded.
+    """Normalization stats used as a user-controllable fallback for image preprocessing.
 
-    Resolution order at dataset construction:
-      1. AutoImageProcessor.from_pretrained(model.name, local_files_only=True)
-         and read image_mean/image_std.
-      2. On OSError/AttributeError/ValueError, fall back to (mean, std) here.
+    Resolution is delegated to
+    :func:`custom_sam_peft.data.transforms.resolve_normalization`, which consults
+    three sources in order:
+
+      1. ``AutoImageProcessor.from_pretrained(model.name, local_files_only=True)``
+         (succeeds when the HF cache is populated). Emits INFO.
+      2. On ``OSError/AttributeError/ValueError``: look up ``model.name`` in
+         :data:`custom_sam_peft.data.transforms.KNOWN_PROCESSOR_STATS`. If
+         present, return the table values (emits WARNING).
+      3. Otherwise, return the (mean, std) here (emits WARNING — verify these
+         are correct for the backbone).
+
+    Defaults are ImageNet stats, matching ``facebook/sam3.1``'s
+    ``Sam3ImageProcessor`` and the ``KNOWN_PROCESSOR_STATS`` entry. Users with a
+    non-SAM3 backbone should override these and the YAML's ``data.normalize``
+    block accordingly.
     """
 
     mean: list[float] = Field(
@@ -142,6 +167,45 @@ class ValSplitConfig(_Strict):
     seed: int | None = None  # None → inherit run.seed at resolve time
 
 
+SubsetStrategy = Literal["random", "stratified", "first_n"]
+
+
+class LimitConfig(_Strict):
+    """Optional per-split dataset size limits.
+
+    Each limit is either:
+    - None  — no limit (use all samples)
+    - int   — absolute sample count (must be >= 1)
+    - float — fraction of the split (must be in (0.0, 1.0])
+
+    Booleans are explicitly rejected: Pydantic v2 coerces bool → int,
+    so we check isinstance(v, bool) BEFORE the numeric range check.
+    """
+
+    train: int | float | None = None
+    val: int | float | None = None
+    seed: int = 42
+    strategy: SubsetStrategy = "random"
+
+    @model_validator(mode="before")
+    @classmethod
+    def _check_limits(cls, data: object) -> object:
+        if not isinstance(data, dict):
+            return data
+        for name in ("train", "val"):
+            v = data.get(name)
+            if v is None:
+                continue
+            if isinstance(v, bool):
+                raise ValueError(f"limit.{name} must not be a bool; got {v!r}")
+            if isinstance(v, int):
+                if v < 1:
+                    raise ValueError(f"limit.{name} must be >= 1 when an int; got {v!r}")
+            elif isinstance(v, float) and not (0.0 < v <= 1.0):
+                raise ValueError(f"limit.{name} must be in (0.0, 1.0] when a float; got {v!r}")
+        return data
+
+
 class DataConfig(_Strict):
     format: DataFormat
     train: DataSplit
@@ -150,10 +214,11 @@ class DataConfig(_Strict):
     test: DataSplit | None = None
     hf: HFDatasetConfig | None = None
     prompt_mode: PromptMode
-    image_size: PositiveInt = 1024
+    image_size: PositiveInt = 1008  # SAM3.1's native input; see models/sam3.py:192,304,1202-1203.
     augmentations: AugmentationsConfig = Field(default_factory=AugmentationsConfig)
     text_prompt: TextPromptConfig = Field(default_factory=TextPromptConfig)
     normalize: NormalizeConfig = Field(default_factory=NormalizeConfig)
+    limit: LimitConfig = Field(default_factory=LimitConfig)
 
     @model_validator(mode="after")
     def _check_format_specific(self) -> DataConfig:

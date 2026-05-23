@@ -10,20 +10,24 @@ from __future__ import annotations
 
 import logging
 import os
+import sys
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 
 import typer
 from rich import print as rprint
+from rich.console import Console
 
 from custom_sam_peft._registry import lookup
 from custom_sam_peft.cli._logging import configure_logging
+from custom_sam_peft.cli._progress import ProgressKind, ProgressMode, progress_session, resolve_mode
 from custom_sam_peft.config.loader import load_config
 from custom_sam_peft.config.schema import TrainConfig
 from custom_sam_peft.data.base import Dataset
 from custom_sam_peft.eval.runner import run_eval
 from custom_sam_peft.models.sam3 import load_sam31
+from custom_sam_peft.presets import PresetDecision, decide_preset
 from custom_sam_peft.runs.bundle import BundleContext, write_bundle
 from custom_sam_peft.train.checkpoint import load_adapter, save_merged
 from custom_sam_peft.train.runner import run_training
@@ -32,6 +36,18 @@ if TYPE_CHECKING:
     from custom_sam_peft.data.val_source import ValSource
 
 _LOG = logging.getLogger(__name__)
+
+
+def _fallback_preset(cfg: TrainConfig) -> PresetDecision:
+    """No sidecar — synthesize one from cfg + decide_preset(). Spec §11.4."""
+    return decide_preset(image_size=cfg.data.image_size)
+
+
+def _load_preset_or_fallback(cfg: TrainConfig) -> PresetDecision:
+    sidecar = Path("preset.json")
+    if sidecar.is_file():
+        return PresetDecision.from_json(sidecar.read_text())
+    return _fallback_preset(cfg)
 
 
 def _build_val_dataset(cfg: TrainConfig, vs: ValSource) -> Dataset:
@@ -47,14 +63,20 @@ def _build_val_dataset(cfg: TrainConfig, vs: ValSource) -> Dataset:
     return cast(Dataset, builder(data_cfg_dict, model_name=cfg.model.name, pipeline="eval"))
 
 
-def _orchestrate(cfg: TrainConfig, resume: Path | None) -> int:
+def _orchestrate(cfg: TrainConfig, resume: Path | None, mode: ProgressMode) -> int:
     from custom_sam_peft.data.val_source import load_val_source
 
     start_ts = datetime.now(UTC)
 
     # Phase: train.
     try:
-        train_result = run_training(cfg, resume_from=resume)
+        with progress_session(
+            kind=ProgressKind.TRAIN,
+            total_epochs=cfg.train.epochs,
+            total_batches_per_epoch=0,  # Trainer updates dynamically via reset_inner
+            mode=mode,
+        ):
+            train_result = run_training(cfg, resume_from=resume)
     except Exception as exc:
         rprint(f"[red]train failed[/red] {exc}")
         raise typer.Exit(code=1) from exc
@@ -77,17 +99,22 @@ def _orchestrate(cfg: TrainConfig, resume: Path | None) -> int:
 
         # Phase: eval.
         try:
-            report, per_example_iou = cast(
-                tuple[Any, list[float]],
-                run_eval(
-                    cfg,
-                    checkpoint=adapter_path,
-                    output_dir=run_dir,
-                    val_dataset=val_dataset,
-                    model=wrapper,
-                    return_per_example_iou=True,
-                ),
-            )
+            with progress_session(
+                kind=ProgressKind.EVAL,
+                total_batches_per_epoch=0,  # Evaluator updates via P.advance_inner
+                mode=mode,
+            ):
+                report, per_example_iou = cast(
+                    tuple[Any, list[float]],
+                    run_eval(
+                        cfg,
+                        checkpoint=adapter_path,
+                        output_dir=run_dir,
+                        val_dataset=val_dataset,
+                        model=wrapper,
+                        return_per_example_iou=True,
+                    ),
+                )
         except Exception as exc:
             rprint(f"[red]eval failed[/red] run_dir={run_dir} — {exc}")
             raise typer.Exit(code=1) from exc
@@ -100,22 +127,29 @@ def _orchestrate(cfg: TrainConfig, resume: Path | None) -> int:
     if cfg.export.merge:
         target = run_dir / "merged"
         try:
-            save_merged(wrapper, target)
+            with progress_session(
+                kind=ProgressKind.EXPORT_MERGE,
+                total_batches_per_epoch=0,
+                mode=mode,
+            ):
+                save_merged(wrapper, target)
             merged_dir = target
         except Exception as exc:
             _LOG.warning("export-merge failed: %s", exc)
             merged_export_error = str(exc)
 
     # Phase: bundle.
+    preset = _load_preset_or_fallback(cfg)
     ctx = BundleContext(
         run_dir=run_dir,
         config_path=run_dir / "config.yaml",
         start_ts=start_ts,
         end_ts=end_ts,
-        preset_label=os.environ.get("CUSTOM_SAM_PEFT_PRESET_LABEL"),
+        preset=preset,
         per_example_iou=per_example_iou,
         merged_dir=merged_dir,
         merged_export_error=merged_export_error,
+        oom_events=train_result.oom_events,
     )
     try:
         write_bundle(ctx, report, val_dataset=val_dataset, model_wrapper=wrapper)
@@ -138,6 +172,12 @@ def run(
     config: Path = typer.Option(..., "--config", help="Path to config YAML."),
     resume: Path | None = typer.Option(None, "--resume", help="Path to resume checkpoint."),
     verbose: bool = typer.Option(False, "-v", "--verbose", help="Enable DEBUG logging."),
+    progress_flag: str = typer.Option(
+        "auto",
+        "--progress",
+        help="Progress display mode: auto|on|off|plain.",
+        metavar="MODE",
+    ),
 ) -> None:
     """Train + eval + (optional) export + bundle, in one shot."""
     configure_logging(verbose)
@@ -147,4 +187,10 @@ def run(
             "prompt_mode='bbox' is not supported for training in v0.",
             param_hint="--config",
         )
-    _orchestrate(cfg, resume)
+    mode = resolve_mode(
+        progress_flag if progress_flag != "auto" else None,
+        os.environ,
+        sys.stdout.isatty(),
+        Console().is_jupyter,
+    )
+    _orchestrate(cfg, resume, mode)

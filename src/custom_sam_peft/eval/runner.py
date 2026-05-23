@@ -31,7 +31,8 @@ def run_eval(
     val_dataset: Dataset | None = None,
     model: Any | None = None,
     return_per_example_iou: Literal[False] = False,
-) -> MetricsReport: ...
+) -> MetricsReport:
+    pass
 
 
 @overload
@@ -45,7 +46,8 @@ def run_eval(
     val_dataset: Dataset | None = None,
     model: Any | None = None,
     return_per_example_iou: Literal[True],
-) -> tuple[MetricsReport, list[float]]: ...
+) -> tuple[MetricsReport, list[float]]:
+    pass
 
 
 def run_eval(
