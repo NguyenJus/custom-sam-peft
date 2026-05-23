@@ -19,6 +19,9 @@ from custom_sam_peft.data.aug_presets import (
 )
 from custom_sam_peft.data.transforms import resolve_normalization_with_path
 from custom_sam_peft.diagnostics import DoctorReport, run_doctor
+from custom_sam_peft.models.losses import dump_loss_bundle
+from custom_sam_peft.models.losses import resolve as resolve_losses
+from custom_sam_peft.models.losses.presets import _TERM_CLASS_NAMES
 
 
 def _render_table(report: DoctorReport) -> None:
@@ -118,6 +121,40 @@ def _render_resolved_config_tables(cfg: TrainConfig) -> None:
     norm.add_row("resolution path", path)
     console.print(norm)
 
+    losses_resolved = resolve_losses(cfg.train.loss)
+    loss_table = Table(title="Resolved losses", show_header=False, box=None)
+    loss_table.add_column("knob")
+    loss_table.add_column("value")
+    loss_table.add_row("preset", cfg.train.loss.preset)
+    loss_table.add_row("class_imbalance", cfg.train.loss.class_imbalance)
+    for fname in (
+        "mask_family",
+        "box_family",
+        "obj_family",
+        "presence_family",
+        "w_mask",
+        "w_box",
+        "w_obj",
+        "w_presence",
+        "focal_gamma",
+        "focal_alpha",
+        "tversky_alpha",
+        "tversky_gamma",
+        "boundary_weight",
+    ):
+        loss_table.add_row(fname, str(getattr(losses_resolved, fname)))
+    term_classes = {
+        "mask": _TERM_CLASS_NAMES["mask"][losses_resolved.mask_family],
+        "box": _TERM_CLASS_NAMES["box"][losses_resolved.box_family],
+        "obj": _TERM_CLASS_NAMES["obj"][losses_resolved.obj_family],
+        "presence": _TERM_CLASS_NAMES["presence"][losses_resolved.presence_family],
+    }
+    loss_table.add_row(
+        "term_classes",
+        ", ".join(f"{k}={v}" for k, v in term_classes.items()),
+    )
+    console.print(loss_table)
+
 
 def _build_resolved_config_json(cfg: TrainConfig) -> dict[str, object]:
     """Spec §11.2.3 — additive `resolved_config` block injected into --json."""
@@ -136,6 +173,7 @@ def _build_resolved_config_json(cfg: TrainConfig) -> dict[str, object]:
             "std": std,
             "resolution_path": path,
         },
+        "loss": dump_loss_bundle(cfg.train.loss),
     }
 
 
