@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 import pytest
@@ -374,7 +375,9 @@ def test_init_invalid_class_imbalance_rejected(tmp_path: Path) -> None:
         ],
     )
     assert res.exit_code != 0
-    assert "class-imbalance" in (res.output + (res.stderr or ""))
+    # Strip ANSI codes — CI terminal width can break the substring across styling escapes.
+    combined = re.sub(r"\x1b\[[0-9;]*m", "", res.output + (res.stderr or ""))
+    assert "class-imbalance" in combined
 
 
 def test_init_non_custom_preset_renders_commented_scaffold(tmp_path: Path) -> None:

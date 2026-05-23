@@ -868,7 +868,7 @@ These currently exercise YAML/dict shapes for `data.augmentations:` (post-#75). 
 This file monkey-patches `total_loss` (the import path `custom_sam_peft.train.loop.total_loss`). The shim path stays unchanged: `total_loss` is re-exported from `models/losses/__init__.py` and re-imported by `train/loop.py`. The existing monkeypatch contract works without modification — but the test should be re-run after the migration to confirm.
 
 - No code change to the test required; the assertions on `_LOG.warning(...)` continue to fire against the pre-existing trainer NaN handling.
-- Add a one-line comment in the test docstring noting "monkey-patches the shim from models/losses/__init__.py".
+- Add a one-line comment in the test docstring noting "monkey-patches the shim from `models/losses/__init__.py`".
 
 ### 11.8 Extend: `tests/unit/test_trainer_run_dir.py`
 
