@@ -20,7 +20,9 @@ def test_box_hint_schedule_defaults() -> None:
     assert s.p_start == 1.0
     assert s.p_end == 0.0
     assert s.decay_steps == 5000
-    assert s.early_stop_p_threshold == 0.05
+    # early_stop_p_threshold demoted (audit Section E): removed from user-facing schema;
+    # no active src consumer. See follow-up issue (Section J4).
+    assert not hasattr(s, "early_stop_p_threshold")
 
 
 def test_box_hint_schedule_rejects_non_monotone() -> None:

@@ -83,7 +83,7 @@ def test_train_invokes_runner(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -
         called["resume_from"] = resume_from
         return fake_result
 
-    monkeypatch.setattr(train_cmd, "run_training", fake_run)
+    monkeypatch.setattr(train_cmd, "run_train", fake_run)
 
     local_runner = CliRunner()
     result = local_runner.invoke(app, ["train", "--config", str(cfg)])

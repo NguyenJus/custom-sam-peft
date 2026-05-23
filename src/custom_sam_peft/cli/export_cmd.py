@@ -1,4 +1,4 @@
-"""`custom-sam-peft export` — export adapter or merged model."""
+"""`custom-sam-peft export` — thin CLI shell over custom_sam_peft.runs.bundle.run_export."""
 
 from __future__ import annotations
 
@@ -13,8 +13,7 @@ from rich.console import Console
 from custom_sam_peft.cli._logging import configure_logging
 from custom_sam_peft.cli._progress import ProgressKind, progress_session, resolve_mode
 from custom_sam_peft.config.loader import load_config
-from custom_sam_peft.models.sam3 import load_sam31
-from custom_sam_peft.train.checkpoint import load_adapter, save_adapter, save_merged
+from custom_sam_peft.runs.bundle import run_export
 
 
 def _discover_config(checkpoint: Path) -> Path:
@@ -55,25 +54,12 @@ def export(
 
     config_path = config if config is not None else _discover_config(checkpoint)
     cfg = load_config(config_path)
-    run_dir = config_path.parent
 
-    if merge:
-        out = output if output is not None else (run_dir / "merged")
-    else:
-        if output is None:
-            raise typer.BadParameter(
-                "--output is required when not using --merge (refusing to overwrite source)",
-                param_hint="--output",
-            )
-        out = output
-
-    wrapper = load_sam31(cfg.model)
-    load_adapter(wrapper, checkpoint)
-    with progress_session(kind=ProgressKind.EXPORT_MERGE, total_batches_per_epoch=0, mode=mode):
-        if merge:
-            save_merged(wrapper, out)
-        else:
-            save_adapter(wrapper, out)
+    try:
+        with progress_session(kind=ProgressKind.EXPORT_MERGE, total_batches_per_epoch=0, mode=mode):
+            out = run_export(cfg, checkpoint, merge=merge, output=output)
+    except ValueError as e:
+        raise typer.BadParameter(str(e), param_hint="--output") from e
 
     if merge:
         rprint(f"[green]merged[/green] {out}")

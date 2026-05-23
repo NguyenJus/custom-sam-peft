@@ -3,6 +3,10 @@
 This module is the source of truth for every default and constraint. The
 loader merges YAML + CLI overrides into a plain dict, then validates once
 against TrainConfig.
+
+Internal sub-configs (MatcherWeights, LossConfig, WandbConfig, ExportConfig)
+have been moved to config._internal per audit Section G. They are re-exported
+here for backward compatibility during this PR; Task 7.1 will update consumers.
 """
 
 from __future__ import annotations
@@ -12,13 +16,65 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, PositiveFloat, PositiveInt, model_validator
 
+from custom_sam_peft.config._internal import (
+    ExportConfig,
+    LossConfig,
+    MatcherWeights,
+    WandbConfig,
+)
+
+__all__ = [  # noqa: RUF022
+    # User-facing Pydantic models
+    "AugmentationOverrides",
+    "AugmentationsConfig",
+    "BoxHintSchedule",
+    "DataConfig",
+    "DataSplit",
+    "EvalConfig",
+    "HFDatasetConfig",
+    "HFFieldMap",
+    "LimitConfig",
+    "ModelConfig",
+    "NormalizeConfig",
+    "PEFTConfig",
+    "QLoRAConfig",
+    "RunConfig",
+    "TextPromptConfig",
+    "TrackingConfig",
+    "TrainConfig",
+    "TrainHyperparams",
+    "ValSplitConfig",
+    # Type aliases
+    "DataFormat",
+    "Dtype",
+    "EvalMode",
+    "Intensity",
+    "LoraScope",
+    "LRSchedule",
+    "Optimizer",
+    "PEFTMethod",
+    "Preset",
+    "PromptMode",
+    "QuantType",
+    "SubsetStrategy",
+    "TextPromptMode",
+    "TrackerBackend",
+    # Internal classes re-exported for backward compatibility (audit Section G)
+    # These are dataclasses, not Pydantic models. Import from config._internal
+    # directly in new code.
+    "ExportConfig",
+    "LossConfig",
+    "MatcherWeights",
+    "WandbConfig",
+]
+
 Dtype = Literal["bfloat16", "float16"]
 DataFormat = Literal["coco", "hf"]
 PromptMode = Literal["text", "bbox"]
 PEFTMethod = Literal["lora", "qlora"]
 QuantType = Literal["nf4", "fp4"]
-# "auto" resolves at trainer construction (src/custom_sam_peft/train/trainer.py:45-49):
-# adamw8bit if peft.method == "qlora" else adamw.
+# "auto" resolves at trainer construction via peft_method.recommended_optimizer()
+# (src/custom_sam_peft/train/trainer.py): adamw8bit for QLoRA, adamw for LoRA.
 Optimizer = Literal["adamw", "adamw8bit", "auto"]
 LRSchedule = Literal["constant", "cosine", "linear"]
 TrackerBackend = Literal["tensorboard", "wandb", "none"]
@@ -41,11 +97,12 @@ class ModelConfig(_Strict):
     name: str = "facebook/sam3.1"
     local_dir: str | None = "models/sam3.1"
     checkpoint_file: str = "sam3.1_multiplex.pt"
-    revision: str | None = None
     gradient_checkpointing: bool = (
         False  # TODO(#60): re-enable when sam3 activation-checkpointing recompute mismatch is fixed
     )
     dtype: Dtype = "bfloat16"
+    # --- advanced ---
+    revision: str | None = None
     device: str | None = None
 
 
@@ -131,6 +188,7 @@ class NormalizeConfig(_Strict):
     block accordingly.
     """
 
+    # --- advanced --- (all normalize fields override the AutoImageProcessor-derived stats)
     mean: list[float] = Field(
         default_factory=lambda: [0.485, 0.456, 0.406], min_length=3, max_length=3
     )
@@ -234,14 +292,15 @@ class DataConfig(_Strict):
     train: DataSplit
     val: DataSplit | None = None
     val_split: ValSplitConfig | None = None
-    test: DataSplit | None = None
-    hf: HFDatasetConfig | None = None
     prompt_mode: PromptMode
     image_size: PositiveInt = 1008  # SAM3.1's native input; see models/sam3.py:192,304,1202-1203.
     augmentations: AugmentationsConfig = Field(default_factory=AugmentationsConfig)
     text_prompt: TextPromptConfig = Field(default_factory=TextPromptConfig)
     normalize: NormalizeConfig = Field(default_factory=NormalizeConfig)
     limit: LimitConfig = Field(default_factory=LimitConfig)
+    # --- advanced ---
+    test: DataSplit | None = None
+    hf: HFDatasetConfig | None = None
 
     @model_validator(mode="after")
     def _check_format_specific(self) -> DataConfig:
@@ -285,6 +344,7 @@ class PEFTConfig(_Strict):
     alpha: PositiveInt = 32
     dropout: float = Field(default=0.05, ge=0.0, lt=1.0)
     scope: LoraScope = "vision_decoder"
+    # --- advanced ---
     target_modules: list[str] | None = Field(
         default=None,
         description=(
@@ -294,19 +354,6 @@ class PEFTConfig(_Strict):
     )
     bias: Literal["none", "all", "lora_only"] = "none"
     qlora: QLoRAConfig = Field(default_factory=QLoRAConfig)
-
-
-class MatcherWeights(_Strict):
-    """Per-term cost weights for the Hungarian matcher.
-
-    v0 defaults are mask-only (box terms = 0) because v0 trains text-only
-    with no box supervision. Users who later want box supervision can
-    override these in config.
-    """
-
-    lambda_l1: float = Field(default=0.0, ge=0.0)
-    lambda_giou: float = Field(default=0.0, ge=0.0)
-    lambda_mask: PositiveFloat = 5.0
 
 
 class BoxHintSchedule(_Strict):
@@ -326,7 +373,9 @@ class BoxHintSchedule(_Strict):
     p_start: float = Field(default=1.0, ge=0.0, le=1.0)
     p_end: float = Field(default=0.0, ge=0.0, le=1.0)
     decay_steps: PositiveInt = 5000
-    early_stop_p_threshold: float = Field(default=0.05, ge=0.0, le=1.0)
+    # early_stop_p_threshold demoted (audit Section E): no active src consumer;
+    # retained as seam scaffolding for a future early-stopping mechanism.
+    # See follow-up issue (Section J4). Not user-settable from YAML.
 
     @model_validator(mode="after")
     def _check_monotone(self) -> BoxHintSchedule:
@@ -337,38 +386,21 @@ class BoxHintSchedule(_Strict):
         return self
 
 
-class LossConfig(_Strict):
-    """Loss-mix weights and focal CE params for SAM 3.1 training.
-
-    No `w_cls`: discrimination across classes comes from running one forward
-    pass per class prompt. `w_presence` weights the image-level
-    "any-instance-of-this-class-present?" supervision applied to
-    `presence_logit_dec`.
-    """
-
-    w_mask: PositiveFloat = 1.0
-    w_box: float = Field(default=0.0, ge=0.0)
-    w_obj: PositiveFloat = 1.0
-    w_presence: PositiveFloat = 1.0
-    matcher_weights: MatcherWeights = Field(default_factory=MatcherWeights)
-    focal_gamma: PositiveFloat = 2.0
-    focal_alpha: float = Field(default=0.25, ge=0.0, le=1.0)
-
-
 class TrainHyperparams(_Strict):
     epochs: PositiveInt
     batch_size: PositiveInt = 1
     grad_accum_steps: PositiveInt = 8
     optimizer: Optimizer = "auto"
-    lr: PositiveFloat = 1.0e-4
+    learning_rate: PositiveFloat = 1.0e-4
     lr_schedule: LRSchedule = "cosine"
     warmup_steps: int = Field(default=100, ge=0)
-    max_grad_norm: PositiveFloat = 1.0
-    eval_every: PositiveInt = 500
     save_every: PositiveInt = 1000
-    loss: LossConfig = Field(default_factory=LossConfig)
     box_hint: BoxHintSchedule = Field(default_factory=BoxHintSchedule)
     log_every: PositiveInt = 50
+    # --- advanced ---
+    max_grad_norm: PositiveFloat = 1.0
+    eval_every: PositiveInt = 500
+    loss: LossConfig = Field(default_factory=LossConfig)
     nan_abort_after: PositiveInt = 20
     num_workers: int = Field(
         default_factory=lambda: min(4, os.cpu_count() or 1),
@@ -378,7 +410,7 @@ class TrainHyperparams(_Strict):
 
 
 class EvalConfig(_Strict):
-    metrics: list[str] = Field(default_factory=lambda: ["mAP", "mAP_50", "mAP_75", "per_class_AP"])
+    # --- advanced --- (all eval fields are optional overrides; section defaults are usable as-is)
     iou_thresholds: list[float] = Field(
         default_factory=lambda: [0.5, 0.55, 0.6, 0.65, 0.7, 0.75, 0.8, 0.85, 0.9, 0.95]
     )
@@ -388,18 +420,15 @@ class EvalConfig(_Strict):
     save_predictions: bool = False
 
 
-class WandbConfig(_Strict):
-    project: str = "custom_sam_peft"
-    entity: str | None = None
+# WandbConfig, ExportConfig moved to config._internal (audit Section G).
+# They are re-exported from this module for backward compatibility.
+# New code should import from custom_sam_peft.config._internal directly.
 
 
 class TrackingConfig(_Strict):
     backend: TrackerBackend = "tensorboard"
+    # --- advanced ---
     wandb: WandbConfig = Field(default_factory=WandbConfig)
-
-
-class ExportConfig(_Strict):
-    merge: bool = False
 
 
 class TrainConfig(_Strict):

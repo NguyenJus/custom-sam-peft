@@ -20,7 +20,7 @@ from custom_sam_peft.config.schema import (
     TrainHyperparams,
 )
 from custom_sam_peft.data.base import Example, Instance, TextPrompts
-from custom_sam_peft.eval.metrics import MetricsReport
+from custom_sam_peft.eval._artifacts import EvalArtifacts
 from custom_sam_peft.peft_adapters.lora import apply_lora
 from custom_sam_peft.tracking.noop import NoopTracker
 from custom_sam_peft.train.trainer import Trainer
@@ -41,7 +41,7 @@ def test_fit_uses_caller_provided_run_dir(tmp_path: Path, monkeypatch: pytest.Mo
     cfg.train.epochs = 0  # Skip the train loop entirely.
     cfg.train.warmup_steps = 0
     cfg.train.lr_schedule = "constant"
-    cfg.train.lr = 1e-4
+    cfg.train.learning_rate = 1e-4
     cfg.train.optimizer = "adamw"
     cfg.train.box_hint.p_start = 0.0
     cfg.train.box_hint.p_end = 0.0
@@ -147,8 +147,8 @@ def test_fit_creates_expected_layout(tmp_path: Path) -> None:
     assert (rd / "adapter" / "adapter_config.json").exists()
     assert (rd / "metrics.json").exists()
     assert (rd / "checkpoints").exists()
-    assert isinstance(result.final_metrics, MetricsReport)
-    assert result.merged_path is None
+    assert isinstance(result, EvalArtifacts)
+    assert result.peft_method == "lora"
     payload = json.loads((rd / "metrics.json").read_text())
     assert "global_step" in payload
     assert "overall" in payload

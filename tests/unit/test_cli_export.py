@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from pathlib import Path
-from unittest.mock import MagicMock
 
 import pytest
 from typer.testing import CliRunner
@@ -33,22 +32,28 @@ train: {epochs: 1}
 
 
 def _patch_export(monkeypatch: pytest.MonkeyPatch, captured: dict[str, object]) -> None:
-    from custom_sam_peft.cli import export_cmd
+    import custom_sam_peft.cli.export_cmd as export_cmd
 
-    monkeypatch.setattr(export_cmd, "load_sam31", lambda _m: MagicMock())
-    monkeypatch.setattr(
-        export_cmd,
-        "load_adapter",
-        lambda wrapper, path: captured.update({"loaded_from": path}) or wrapper,
-    )
-    monkeypatch.setattr(
-        export_cmd,
-        "save_adapter",
-        lambda wrapper, path: captured.update({"saved_adapter_to": path}),
-    )
-    monkeypatch.setattr(
-        export_cmd, "save_merged", lambda wrapper, path: captured.update({"saved_merged_to": path})
-    )
+    def _fake_run_export(
+        cfg: object,
+        checkpoint: object,
+        *,
+        merge: bool = False,
+        output: object = None,
+    ) -> object:
+        if merge:
+            out = output if output is not None else (checkpoint.parent / "merged")  # type: ignore[union-attr]
+            captured["saved_merged_to"] = out
+        else:
+            if output is None:
+                raise ValueError(
+                    "output is required when not merging (refusing to overwrite source checkpoint)"
+                )
+            out = output
+            captured["saved_adapter_to"] = out
+        return out
+
+    monkeypatch.setattr(export_cmd, "run_export", _fake_run_export)
 
 
 def test_export_auto_discovers_config(fake_run_dir: Path, monkeypatch: pytest.MonkeyPatch) -> None:

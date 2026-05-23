@@ -14,6 +14,7 @@ import torch
 from custom_sam_peft.config.schema import EvalConfig
 from custom_sam_peft.eval.evaluator import Evaluator
 from custom_sam_peft.eval.metrics import MetricsReport
+from custom_sam_peft.paths import predictions_path
 
 
 def test_evaluate_full_returns_metrics_report(stub_model, tiny_text_dataset):
@@ -45,7 +46,8 @@ def test_evaluate_and_save_full_writes_predictions(stub_model, tiny_text_dataset
     out = tmp_path / "out"
     Evaluator(cfg).evaluate_and_save(stub_model, tiny_text_dataset, out)
     assert (out / "metrics.json").exists()
-    assert (out / "predictions.json").exists()
+    # Predictions are written via paths.predictions_path → artifacts/predictions_val.jsonl
+    assert (out / "artifacts" / "predictions_val.jsonl").exists()
     metrics = json.loads((out / "metrics.json").read_text())
     assert "overall" in metrics
 
@@ -232,3 +234,65 @@ def test_evaluate_falls_back_to_cpu_for_parameterless_model(tiny_text_dataset) -
     cfg = EvalConfig(mode="lite", lite_max_images=1, iou_thresholds=[0.5])
     Evaluator(cfg).evaluate(stub, tiny_text_dataset)
     assert stub.seen and all(d.type == "cpu" for d in stub.seen)
+
+
+# ---------------------------------------------------------------------------
+# Tests for decomposed private helpers
+# ---------------------------------------------------------------------------
+
+
+def test_iter_predictions_returns_list(stub_model, tiny_text_dataset):
+    """_iter_predictions returns a list of COCO-format prediction dicts."""
+    from custom_sam_peft.eval.evaluator import _build_coco_gt_from_examples
+
+    cfg = EvalConfig(mode="lite", lite_max_images=1, iou_thresholds=[0.5])
+    ev = Evaluator(cfg)
+    examples = [tiny_text_dataset[0]]
+    _gt, _ = _build_coco_gt_from_examples(examples, tiny_text_dataset)
+    preds = ev._iter_predictions(stub_model, examples, tiny_text_dataset)
+    assert isinstance(preds, list)
+    for p in preds:
+        assert "image_id" in p
+        assert "category_id" in p
+        assert "score" in p
+
+
+def test_aggregate_metrics_returns_metrics_report(stub_model, tiny_text_dataset):
+    """_aggregate_metrics wraps compute_coco_map and returns a MetricsReport."""
+    from custom_sam_peft.eval.evaluator import _build_coco_gt_from_examples
+
+    cfg = EvalConfig(mode="full", iou_thresholds=[0.5])
+    ev = Evaluator(cfg)
+    n = len(tiny_text_dataset)
+    examples = [tiny_text_dataset[i] for i in range(n)]
+    gt, _ = _build_coco_gt_from_examples(examples, tiny_text_dataset)
+    preds = ev._iter_predictions(stub_model, examples, tiny_text_dataset)
+    report = ev._aggregate_metrics(preds, gt, tiny_text_dataset)
+    assert isinstance(report, MetricsReport)
+    assert "mAP" in report.overall
+
+
+def test_maybe_save_predictions_noop_when_run_dir_none(stub_model, tiny_text_dataset):
+    """_maybe_save_predictions is a no-op when run_dir is None."""
+    cfg = EvalConfig(mode="full", iou_thresholds=[0.5], save_predictions=True)
+    ev = Evaluator(cfg)
+    # Should not raise; no file should be written.
+    ev._maybe_save_predictions([{"image_id": 1}], run_dir=None)
+
+
+def test_maybe_save_predictions_uses_canonical_path(tmp_path: Path):
+    """_maybe_save_predictions writes to paths.predictions_path, not a bare filename."""
+    cfg = EvalConfig(mode="full", iou_thresholds=[0.5], save_predictions=True)
+    ev = Evaluator(cfg)
+    preds = [{"image_id": 1, "category_id": 1, "score": 0.9, "segmentation": {}}]
+    ev._maybe_save_predictions(preds, run_dir=tmp_path, split="val")
+    expected = predictions_path(tmp_path, split="val")
+    assert expected.exists(), f"expected predictions at {expected}"
+
+
+def test_maybe_save_predictions_noop_in_lite_mode(tmp_path: Path):
+    """_maybe_save_predictions skips disk I/O in lite mode."""
+    cfg = EvalConfig(mode="lite", lite_max_images=1, iou_thresholds=[0.5], save_predictions=True)
+    ev = Evaluator(cfg)
+    ev._maybe_save_predictions([{"image_id": 1}], run_dir=tmp_path, split="val")
+    assert not predictions_path(tmp_path, split="val").exists()

@@ -20,7 +20,6 @@ from custom_sam_peft.config.schema import (
     TrainConfig,
     TrainHyperparams,
 )
-from custom_sam_peft.eval.metrics import MetricsReport
 from custom_sam_peft.peft_adapters.lora import apply_lora
 from custom_sam_peft.train.trainer import Trainer
 from tests.fixtures.tiny_sam3_lora_stub import FIXTURE_SCOPE_PATTERNS, make_stub_wrapper
@@ -65,7 +64,7 @@ def _make_cfg(tmp_path: Path) -> TrainConfig:
             epochs=1,
             batch_size=1,
             grad_accum_steps=1,
-            lr=1e-4,
+            learning_rate=1e-4,
             warmup_steps=0,
             eval_every=1,
             save_every=1000,
@@ -92,15 +91,13 @@ def test_trainer_fit_runs_lite_eval_and_final_full_eval(
         cfg=cfg,
     )
     result = trainer.fit(run_dir=tmp_path / "train-then-eval")
-    assert isinstance(result.final_metrics, MetricsReport)
-    assert "mAP" in result.final_metrics.overall
 
     metrics_path = result.run_dir / "metrics.json"
     assert metrics_path.exists()
     data = json.loads(metrics_path.read_text())
     assert "overall" in data
     assert "global_step" in data
-    assert data["overall"]["mAP"] == result.final_metrics.overall["mAP"]
+    assert "mAP" in data["overall"]
 
     # Tracker must have received eval scalars (from on_eval mid-run callback).
     eval_calls = [values for _step, values in tracker.scalars if "mAP" in values]

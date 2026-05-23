@@ -26,6 +26,8 @@ from custom_sam_peft.config.schema import BoxHintSchedule, TrainConfig
 from custom_sam_peft.data.base import Instance, TextPrompts
 from custom_sam_peft.models.losses import total_loss
 from custom_sam_peft.models.sam3 import Sam3Wrapper
+from custom_sam_peft.peft_adapters import PEFTMethod, make_peft_method
+from custom_sam_peft.runtime import Runtime, to_device
 from custom_sam_peft.tracking.base import Tracker
 from custom_sam_peft.train.types import OomEvent
 
@@ -157,8 +159,8 @@ def _box_hint_p(global_step: int, cfg: BoxHintSchedule) -> float:
     return cfg.p_start + (cfg.p_end - cfg.p_start) * frac
 
 
-def _autocast_ctx(cfg: TrainConfig) -> Any:
-    if cfg.peft.method == "qlora":
+def _autocast_ctx(cfg: TrainConfig, peft_method: PEFTMethod) -> Any:
+    if peft_method.disables_outer_autocast():
         return contextlib.nullcontext()
     if not torch.cuda.is_available():
         return contextlib.nullcontext()
@@ -175,10 +177,19 @@ def train_step(
     class_names: list[str],
     global_step: int,
     nan_streak: int,
+    peft_method: PEFTMethod | None = None,
+    runtime: Runtime | None = None,
     oom_state: OomState | None = None,
 ) -> StepResult:
-    device = next(model.parameters()).device
-    images: Tensor = batch["images"].to(device)
+    _peft_method: PEFTMethod = (
+        peft_method if peft_method is not None else make_peft_method(cfg.peft.method)
+    )
+    # Device moves are routed through runtime.to_device (§3 seam discipline).
+    # If no runtime was passed, synthesize one from the model's parameter device.
+    if runtime is None:
+        param_device = next(model.parameters()).device
+        runtime = Runtime(device=param_device, dtype=torch.float32)
+    images: Tensor = to_device(batch["images"], runtime)
     prompts = batch["prompts"]
     targets: list[list[Instance]] = batch["instances"]
     B = images.shape[0]
@@ -203,7 +214,7 @@ def train_step(
         hints_c: list[Tensor | None] = []
         for i in range(B):
             if targets_c[i] and random.random() < p_t:  # noqa: S311 — training sampling probability, not security-sensitive
-                hints_c.append(torch.stack([inst.box for inst in targets_c[i]]).to(device))
+                hints_c.append(to_device(torch.stack([inst.box for inst in targets_c[i]]), runtime))
                 n_hint_applied += 1
             else:
                 hints_c.append(None)
@@ -235,12 +246,13 @@ def train_step(
                     _n_classes: int = len(classes_in_batch),
                     _grad_accum: int = cfg.train.grad_accum_steps,
                     _losses_out: list[dict[str, Tensor]] = _last_class_losses,
+                    _pm: PEFTMethod = _peft_method,
                 ) -> Tensor:
                     micro_prompts = [_prompts_c[i] for i in micro_indices]
                     micro_targets = [_targets_c[i] for i in micro_indices]
                     micro_hints = [_hints_c[i] for i in micro_indices]
                     micro_imgs = images[micro_indices]
-                    with _autocast_ctx(cfg):
+                    with _autocast_ctx(cfg, _pm):
                         micro_out = _model(micro_imgs, micro_prompts, box_hints=micro_hints)
                         micro_cls_losses = total_loss(micro_out, micro_targets, cfg.train.loss)
                     _losses_out.clear()
@@ -261,7 +273,7 @@ def train_step(
                     )
                     is_finite = bool(torch.isfinite(class_scaled_val))
             else:
-                with _autocast_ctx(cfg):
+                with _autocast_ctx(cfg, _peft_method):
                     out = model(images, prompts_c, box_hints=hints_c)
                     class_losses = total_loss(out, targets_c, cfg.train.loss)
                 class_scaled = class_losses["total"] / (
@@ -389,12 +401,17 @@ def run_epoch(
     class_names: list[str],
     on_checkpoint: Callable[[int, int, float, int], None],
     on_eval: Callable[[int], None],
+    peft_method: PEFTMethod | None = None,
+    runtime: Runtime | None = None,
     oom_state: OomState | None = None,
 ) -> tuple[int, int]:
     """Drive one epoch. `on_checkpoint(global_step, epoch, p_t, nan_streak)`
     is called at every `save_every` boundary; the trainer wires it to the
     checkpoint + image-panel routines. `on_eval(global_step)` is called at
     every `eval_every` boundary for lite mid-run evaluation."""
+    _peft_method: PEFTMethod = (
+        peft_method if peft_method is not None else make_peft_method(cfg.peft.method)
+    )
     window = _ScalarWindow()
     for batch in loader:
         result = train_step(
@@ -406,6 +423,8 @@ def run_epoch(
             class_names=class_names,
             global_step=global_step,
             nan_streak=nan_streak,
+            peft_method=_peft_method,
+            runtime=runtime,
             oom_state=oom_state,
         )
         nan_streak = result.nan_streak

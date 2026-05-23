@@ -72,7 +72,7 @@ def test_save_load_roundtrip_preserves_optimizer_scheduler_rng_state(tmp_path: P
     trainable = [p for p in wrapper.model.parameters() if p.requires_grad]
     assert trainable, "stub LoRA wrapper has no trainable params"
 
-    optimizer = _build_optimizer("adamw", trainable, cfg.train.lr)
+    optimizer = _build_optimizer("adamw", trainable, cfg.train.learning_rate)
     scheduler = _build_scheduler(optimizer, cfg, total_steps=10)
 
     # Drive a few real optimizer steps so exp_avg / exp_avg_sq / step are
@@ -112,7 +112,7 @@ def test_save_load_roundtrip_preserves_optimizer_scheduler_rng_state(tmp_path: P
     torch.manual_seed(12345)
 
     # Fresh optimizer + scheduler (load_full_state mutates in-place).
-    fresh_opt = _build_optimizer("adamw", trainable, cfg.train.lr)
+    fresh_opt = _build_optimizer("adamw", trainable, cfg.train.learning_rate)
     fresh_sched = _build_scheduler(fresh_opt, cfg, total_steps=10)
     rs = load_full_state(state_dir, wrapper, fresh_opt, fresh_sched, cfg)
 

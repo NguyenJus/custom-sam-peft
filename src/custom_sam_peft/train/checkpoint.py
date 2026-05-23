@@ -23,7 +23,9 @@ import numpy as np
 import torch
 
 from custom_sam_peft.config.schema import TrainConfig
+from custom_sam_peft.errors import CheckpointError
 from custom_sam_peft.models.sam3 import Sam3Wrapper
+from custom_sam_peft.peft_adapters import make_peft_method
 from custom_sam_peft.peft_adapters.lora import load_lora, merge_lora, save_lora
 from custom_sam_peft.peft_adapters.qlora import load_qlora, save_qlora
 
@@ -134,8 +136,9 @@ def load_full_state(
     state_file = state_dir / _TRAINING_STATE_FILENAME
     if not state_file.exists():
         raise FileNotFoundError(
-            f"load_full_state: {state_file} not found. Expected "
-            f"<run_dir>/checkpoints/step_N/{_TRAINING_STATE_FILENAME}."
+            f"load_full_state: {state_file} not found. "
+            f"Pass the step subdirectory produced by save_full_state "
+            f"(e.g. paths.checkpoint_path(run_dir, step=N).parent)."
         )
     state = torch.load(state_file, weights_only=False)
     if state.get("format_version") != _FORMAT_VERSION:
@@ -145,13 +148,25 @@ def load_full_state(
         )
 
     adapter_dir = state_dir / "adapter"
-    has_qlora_marker = (adapter_dir / _QLORA_META_FILENAME).exists()
     saved_method = state["peft_method"]
-    detected_method = "qlora" if has_qlora_marker else "lora"
-    if saved_method != detected_method:
-        raise RuntimeError(
+    saved_peft = make_peft_method(saved_method)
+    try:
+        detected_method = saved_peft.detect_method_from_checkpoint(adapter_dir)
+    except CheckpointError as exc:
+        raise CheckpointError(
             f"load_full_state: peft_method mismatch — training_state.pt says "
-            f"{saved_method!r} but adapter dir contents say {detected_method!r}"
+            f"{saved_method!r} but adapter dir contents are inconsistent: {exc}",
+            expected=f"adapter dir consistent with peft_method={saved_method!r}",
+            found=f"inconsistent adapter dir at {adapter_dir!r}",
+            fix="use the checkpoint directory produced by the same training run, or delete the checkpoint and retrain",  # noqa: E501
+        ) from exc
+    if saved_method != detected_method:
+        raise CheckpointError(
+            f"load_full_state: peft_method mismatch — training_state.pt says "
+            f"{saved_method!r} but adapter dir contents say {detected_method!r}",
+            expected=f"adapter dir matching peft_method={saved_method!r}",
+            found=f"adapter dir appears to be {detected_method!r}",
+            fix="ensure --resume points to the checkpoint directory from the correct training run",
         )
     load_adapter(wrapper, adapter_dir)
     optimizer.load_state_dict(state["optimizer"])

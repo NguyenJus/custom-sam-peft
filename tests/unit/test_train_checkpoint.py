@@ -140,7 +140,9 @@ def test_load_full_state_raises_on_peft_method_mismatch(tmp_path: Path) -> None:
     w_b = make_stub_wrapper(dim=8)
     opt_b = _trainable_optimizer(w_b)
     sched_b = torch.optim.lr_scheduler.LambdaLR(opt_b, lr_lambda=lambda s: 1.0)
-    with pytest.raises(RuntimeError, match="peft_method"):
+    from custom_sam_peft.errors import CheckpointError
+
+    with pytest.raises((RuntimeError, CheckpointError), match="peft_method"):
         load_full_state(state_dir, w_b, opt_b, sched_b, cfg)
 
 

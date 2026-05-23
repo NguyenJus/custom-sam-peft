@@ -2,10 +2,15 @@
 
 from __future__ import annotations
 
+import sys
+
 import typer
 
-import custom_sam_peft._bootstrap  # noqa: F401  # populate plugin registry before subcommand imports
-from custom_sam_peft.cli import (
+from custom_sam_peft._bootstrap import bootstrap
+
+bootstrap()  # populate plugin registry + configure logging before subcommand imports
+
+from custom_sam_peft.cli import (  # noqa: E402
     calibrate_cmd,
     doctor_cmd,
     eval_cmd,
@@ -15,7 +20,8 @@ from custom_sam_peft.cli import (
     run_cmd,
     train_cmd,
 )
-from custom_sam_peft.cli._progress import _silence_third_party_progress
+from custom_sam_peft.cli._progress import _silence_third_party_progress  # noqa: E402
+from custom_sam_peft.errors import CustomSamPeftError  # noqa: E402
 
 # Suppress HF / datasets progress bars once at app entry, unconditionally.
 # progress_session also calls this defensively on entry — the double-call is safe.
@@ -37,8 +43,40 @@ app.command("doctor", help="Report environment + dependency status.")(doctor_cmd
 app.command("calibrate", help="Probe peak VRAM and cache for tighter preset packing.")(
     calibrate_cmd.calibrate
 )
-app.command("run", help="Train + eval + (optional) export + bundle, in one shot.")(run_cmd.run)
+app.command(
+    "run", help="Train + eval + (optional) export + bundle. Alias for train --eval --export."
+)(run_cmd.run)
+
+# Module-level flag: set to True by main() when -v / --verbose appears in sys.argv
+# so that the CustomSamPeftError handler can decide whether to render or re-raise.
+_verbose: bool = False
+
+
+def _render_error(e: CustomSamPeftError) -> str:
+    """Format a CustomSamPeftError into the four-part user-facing message."""
+    parts = [str(e)]
+    if e.expected:
+        parts.append(f"Expected: {e.expected}")
+    if e.found:
+        parts.append(f"Found: {e.found}")
+    if e.fix:
+        parts.append(f"Fix: {e.fix}")
+    parts.append("Rerun with -v for full traceback.")
+    return "\n".join(parts)
+
+
+def main() -> None:
+    """Entry point that wraps app() with CustomSamPeftError handling."""
+    global _verbose
+    _verbose = "-v" in sys.argv or "--verbose" in sys.argv
+    try:
+        app()
+    except CustomSamPeftError as e:
+        if _verbose:
+            raise
+        typer.secho(_render_error(e), err=True, fg=typer.colors.RED)
+        raise typer.Exit(code=1) from None
 
 
 if __name__ == "__main__":  # pragma: no cover
-    app()
+    main()

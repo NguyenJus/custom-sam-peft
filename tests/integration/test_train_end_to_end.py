@@ -149,6 +149,7 @@ def _bad_data_cfg(
             warmup_steps=0,
             num_workers=0,
         ),
+        tracking=TrackingConfig(backend="none"),  # tensorboard not in dev deps
     )
 
 
@@ -339,6 +340,7 @@ def test_e2e_auto_split_on_tiny_coco(tmp_path: Path, tiny_coco_dir: Path) -> Non
             warmup_steps=0,
             num_workers=0,
         ),
+        tracking=TrackingConfig(backend="none"),  # tensorboard not in dev deps
     )
 
     # Stub the model so this runs on CPU.
@@ -389,6 +391,7 @@ def test_e2e_no_val_on_tiny_coco(tmp_path: Path, tiny_coco_dir: Path) -> None:
             warmup_steps=0,
             num_workers=0,
         ),
+        tracking=TrackingConfig(backend="none"),  # tensorboard not in dev deps
     )
 
     orig_load = runner_mod.load_sam31

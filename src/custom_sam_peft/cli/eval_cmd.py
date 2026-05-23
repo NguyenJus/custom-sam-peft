@@ -15,6 +15,7 @@ from custom_sam_peft.cli._logging import configure_logging
 from custom_sam_peft.cli._progress import ProgressKind, progress_session, resolve_mode
 from custom_sam_peft.config.loader import load_config
 from custom_sam_peft.eval.runner import run_eval
+from custom_sam_peft.runs.bundle import run_export
 
 
 def evaluate(
@@ -28,6 +29,11 @@ def evaluate(
         None,
         "--save-predictions/--no-save-predictions",
         help="Override cfg.eval.save_predictions.",
+    ),
+    do_export: bool = typer.Option(
+        False,
+        "--export",
+        help="After evaluation, export a run bundle.",
     ),
     verbose: bool = typer.Option(False, "-v", "--verbose", help="Enable DEBUG logging."),
     progress_flag: str = typer.Option(
@@ -69,3 +75,9 @@ def evaluate(
         raise typer.BadParameter(str(e), param_hint="--checkpoint") from e
 
     rprint(f"[green]eval complete[/green] — {report.overall}")
+    if do_export:
+        try:
+            run_export(cfg, checkpoint)
+        except Exception as e:
+            rprint(f"[red]export error[/red] {e}")
+            raise typer.Exit(code=1) from e

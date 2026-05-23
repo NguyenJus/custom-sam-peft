@@ -1,8 +1,19 @@
-"""custom_sam_peft._bootstrap imports every registrant so the registry is populated."""
+"""Tests for ``custom_sam_peft._bootstrap``.
+
+Coverage targets:
+- Module-level imports populate the registry (unchanged from pre-v0.7.0).
+- ``bootstrap()`` accepts seed + log_level kwargs and is safe to call multiple
+  times (idempotent w.r.t. registration).
+- ``bootstrap(seed=N)`` seeds torch / random / numpy deterministically.
+"""
 
 from __future__ import annotations
 
+import logging
+import random
 import sys
+
+import pytest
 
 from custom_sam_peft._registry import _REGISTRY, list_registered, reset_registry
 
@@ -63,3 +74,50 @@ def test_bootstrap_populates_all_kinds() -> None:
         # in sibling tests resolves through the package attribute chain correctly.
         for parent, attr, orig_val in _pkg_attr_snapshot:
             setattr(parent, attr, orig_val)
+
+
+def test_bootstrap_function_is_callable() -> None:
+    """``bootstrap()`` can be imported and called without error."""
+    from custom_sam_peft._bootstrap import bootstrap
+
+    # Should not raise; second call must also be idempotent.
+    bootstrap()
+    bootstrap()
+
+
+def test_bootstrap_accepts_seed_kwarg() -> None:
+    """``bootstrap(seed=N)`` seeds the random module deterministically."""
+    from custom_sam_peft._bootstrap import bootstrap
+
+    bootstrap(seed=42)
+    a = random.random()
+
+    bootstrap(seed=42)
+    b = random.random()
+
+    assert a == b, "bootstrap(seed=42) must produce a deterministic RNG state"
+
+
+def test_bootstrap_accepts_log_level_kwarg(caplog: pytest.LogCaptureFixture) -> None:
+    """``bootstrap(log_level='WARNING')`` changes the root logger level."""
+    from custom_sam_peft._bootstrap import bootstrap
+
+    bootstrap(log_level="WARNING")
+    assert logging.getLogger().level == logging.WARNING
+
+    # Restore so other tests aren't affected.
+    bootstrap(log_level="INFO")
+
+
+def test_bootstrap_seed_none_leaves_rng_unchanged() -> None:
+    """``bootstrap(seed=None)`` (default) does not touch the RNG state."""
+    import torch
+
+    from custom_sam_peft._bootstrap import bootstrap
+
+    # Snapshot the RNG state.
+    before = torch.get_rng_state().clone()
+    bootstrap(seed=None)
+    after = torch.get_rng_state()
+
+    assert torch.equal(before, after), "seed=None must not mutate torch RNG state"

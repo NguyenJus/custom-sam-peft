@@ -1,10 +1,11 @@
 """Results bundler — writes ``runs/<id>/summary.md`` + ``samples/*.png``.
 
-Three public functions in dependency order:
+Four public functions in dependency order:
 
-1. ``pick_samples`` — pure: index selection from per-example IoU + overall mAP.
-2. ``render_overlay`` — pure: image + pred/gt masks → PIL image with caption.
-3. ``write_bundle`` — composes the above, runs per-sample re-inference, writes disk.
+1. ``run_export`` — library: load adapter, export adapter or merged model to disk.
+2. ``pick_samples`` — pure: index selection from per-example IoU + overall mAP.
+3. ``render_overlay`` — pure: image + pred/gt masks → PIL image with caption.
+4. ``write_bundle`` — composes the above, runs per-sample re-inference, writes disk.
 
 The orchestrator (``custom_sam_peft run``) assembles a frozen ``BundleContext`` and
 calls ``write_bundle(ctx, …)``. The notebook does not import this module.
@@ -14,8 +15,10 @@ Spec: docs/superpowers/specs/2026-05-18-simplify-ux-design.md §6.
 
 from __future__ import annotations
 
+import json
 import logging
 import math
+import zipfile as _zipfile
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -25,12 +28,57 @@ import numpy as np
 import torch
 from PIL import Image, ImageDraw
 
+from custom_sam_peft import paths
+from custom_sam_peft.config.schema import TrainConfig
 from custom_sam_peft.data.base import Dataset, Example, TextPrompts
 from custom_sam_peft.eval.metrics import MetricsReport
+from custom_sam_peft.peft_adapters import method_pretty_name
 from custom_sam_peft.presets import PresetDecision
 from custom_sam_peft.train.types import OomEvent
 
 _LOG = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# run_export
+# ---------------------------------------------------------------------------
+
+
+def run_export(
+    cfg: TrainConfig,
+    checkpoint: Path,
+    *,
+    merge: bool = False,
+    output: Path | None = None,
+) -> Path:
+    """Load an adapter from *checkpoint* and export it.
+
+    When *merge* is True, LoRA deltas are folded into the base weights and the
+    merged ``state_dict`` is written to *output* (default: ``<run_dir>/merged``).
+    When *merge* is False, the raw adapter files are copied to *output*
+    (required when not merging, to avoid overwriting the source).
+
+    Returns the path to the written output directory.
+    """
+    from custom_sam_peft.models.sam3 import load_sam31
+    from custom_sam_peft.train.checkpoint import load_adapter, save_adapter, save_merged
+
+    run_dir = checkpoint.parent
+    wrapper = load_sam31(cfg.model)
+    load_adapter(wrapper, checkpoint)
+
+    if merge:
+        out = output if output is not None else (run_dir / "merged")
+        save_merged(wrapper, out)
+    else:
+        if output is None:
+            raise ValueError(
+                "output is required when not merging (refusing to overwrite source checkpoint)"
+            )
+        out = output
+        save_adapter(wrapper, out)
+
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -262,7 +310,7 @@ def _hardware_lines() -> tuple[str, float | None]:
 
 def _preset_block(preset: PresetDecision) -> str:
     ckpt_word = "on" if preset.gradient_checkpointing else "off"
-    method_pretty = "LoRA" if preset.method == "lora" else "QLoRA"
+    method_pretty = method_pretty_name(preset.method)
     used_gib = preset.predicted_bytes / (1024**3)
     total_gib = (preset.budget_bytes + preset.headroom_bytes) / (1024**3)
     headroom_gib = preset.headroom_bytes / (1024**3)
@@ -353,27 +401,31 @@ def _write_summary_no_val(ctx: BundleContext) -> None:
     (ctx.run_dir / "summary.md").write_text(body)
 
 
-def write_bundle(
+def _collect_artifacts(
     ctx: BundleContext,
     metrics_report: MetricsReport | None,
     val_dataset: Dataset | None,
     model_wrapper: Any,
-) -> None:
-    """Write `ctx.run_dir/summary.md` and `ctx.run_dir/samples/*.png`.
+) -> list[Path]:
+    """Render sample overlays + write ``summary.md``; return all artifact paths.
 
     No-val mode: when val_dataset is None, writes summary.md only with the
     "no-val" headline and skips the samples/ directory.
 
+    Artifacts collected (in order):
+      - ``summary.md`` at ``ctx.run_dir``
+      - Per-sample PNGs under ``ctx.run_dir/samples/``
+
     Idempotent: re-runs overwrite. Failure modes:
       - Per-sample inference raises → that PNG is skipped; WARNING logged;
-        "skipped samples" note in summary.md. Bundle does not abort.
+        "skipped samples" note in summary.md. Collection does not abort.
       - All other errors propagate.
 
     Spec: docs/superpowers/specs/2026-05-22-data-no-val-auto-split-design.md §7.5.
     """
     if val_dataset is None:
         _write_summary_no_val(ctx)
-        return
+        return []
     samples_dir = ctx.run_dir / "samples"
     samples_dir.mkdir(parents=True, exist_ok=True)
     # Clear any stale samples from prior runs.
@@ -482,4 +534,70 @@ def write_bundle(
     if edges_md:
         body += f"\n## Edge cases\n{edges_md}\n"
 
-    (ctx.run_dir / "summary.md").write_text(body)
+    summary_path = ctx.run_dir / "summary.md"
+    summary_path.write_text(body)
+
+    artifacts: list[Path] = [summary_path]
+    artifacts.extend(samples_dir / fn for fn in sample_filenames)
+    return artifacts
+
+
+def _write_manifest(run_dir: Path, artifacts: list[Path]) -> Path:
+    """Write a JSON manifest of *artifacts* to the artifacts sub-directory.
+
+    The manifest lists each artifact as a relative path from *run_dir*. Returns
+    the path to the written manifest file.
+    """
+    manifest_path = paths.artifact_path(run_dir, name="manifest.json")
+    manifest_path.parent.mkdir(parents=True, exist_ok=True)
+    entries = []
+    for p in artifacts:
+        try:
+            entries.append(str(p.relative_to(run_dir)))
+        except ValueError:
+            entries.append(str(p))
+    manifest_path.write_text(json.dumps({"artifacts": entries}, indent=2))
+    return manifest_path
+
+
+def _zip_bundle(run_dir: Path, artifacts: list[Path], manifest: Path) -> Path:
+    """Zip *artifacts* + *manifest* into ``bundle_path(run_dir)``.
+
+    All files are stored relative to *run_dir* so the archive is portable.
+    Returns the path to the written zip file.
+    """
+    out = paths.bundle_path(run_dir)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    all_files = [*list(artifacts), manifest]
+    with _zipfile.ZipFile(out, "w", compression=_zipfile.ZIP_DEFLATED) as zf:
+        for p in all_files:
+            if not p.exists():
+                continue
+            try:
+                arcname = str(p.relative_to(run_dir))
+            except ValueError:
+                arcname = p.name
+            zf.write(p, arcname)
+    _LOG.info("bundle: wrote %s (%d files)", out, len(zf.namelist()))
+    return out
+
+
+def write_bundle(
+    ctx: BundleContext,
+    metrics_report: MetricsReport | None,
+    val_dataset: Dataset | None,
+    model_wrapper: Any,
+) -> None:
+    """Write sample overlays, ``summary.md``, a manifest, and a zip bundle.
+
+    No-val mode: when val_dataset is None, writes summary.md only with the
+    "no-val" headline and skips the samples/ directory.
+
+    Idempotent: re-runs overwrite. See ``_collect_artifacts`` for failure-mode
+    semantics (per-sample errors are warned and skipped; other errors propagate).
+
+    Spec: docs/superpowers/specs/2026-05-22-data-no-val-auto-split-design.md §7.5.
+    """
+    artifacts = _collect_artifacts(ctx, metrics_report, val_dataset, model_wrapper)
+    manifest = _write_manifest(ctx.run_dir, artifacts)
+    _zip_bundle(ctx.run_dir, artifacts, manifest)

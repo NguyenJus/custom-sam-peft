@@ -218,7 +218,7 @@ def run_predict(opts: PredictOptions) -> PredictReport:
       1. resolve images + prompts
       2. preflight log
       3. dry-run short-circuit (BEFORE load_sam31)
-      4. load_sam31 + .to(device, dtype)
+      4. load_sam31 + move to device + cast dtype
       5. adapter load + optional merge
       6. build transforms
       7. VRAM hint (cuda + bs=1 + free > 12 GB)

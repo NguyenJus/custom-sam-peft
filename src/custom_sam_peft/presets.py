@@ -20,6 +20,7 @@ from typing import Any, Literal
 import torch
 
 from custom_sam_peft.config.schema import ModelConfig
+from custom_sam_peft.peft_adapters import method_pretty_name
 
 _LOG = logging.getLogger(__name__)
 
@@ -101,7 +102,7 @@ class PresetDecision:
 
     def label(self) -> str:
         ckpt = "on" if self.gradient_checkpointing else "off"
-        method = "LoRA" if self.method == "lora" else "QLoRA"
+        method = method_pretty_name(self.method)
         used_gib = self.predicted_bytes / _GB
         total_gib = (self.budget_bytes + self.headroom_bytes) / _GB
         if self.provenance == "calibrated":

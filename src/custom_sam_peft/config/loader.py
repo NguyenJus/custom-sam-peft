@@ -3,6 +3,7 @@
 Responsibilities:
   - Load YAML.
   - Apply `--override key.subkey=value` flags onto the dict.
+  - Env-var interpolation (preserved — no env-var interpolation in v0.x baseline).
   - Resolve every path in DataConfig relative to the config file's directory.
   - Validate via pydantic; surface errors as ConfigError.
 """
@@ -17,6 +18,11 @@ import yaml
 from pydantic import ValidationError
 
 from custom_sam_peft.config.schema import TrainConfig
+from custom_sam_peft.errors import ConfigError
+
+# Re-export ConfigError from errors so existing `from config.loader import ConfigError`
+# imports continue to work during this PR. Task 7.1 will migrate callers.
+__all__ = ["ConfigError", "apply_overrides", "load_config"]
 
 _PATH_KEYS: tuple[tuple[str, ...], ...] = (
     ("data", "train", "annotations"),
@@ -27,10 +33,6 @@ _PATH_KEYS: tuple[tuple[str, ...], ...] = (
 )
 
 
-class ConfigError(ValueError):
-    """Raised when a config cannot be loaded, parsed, or validated."""
-
-
 def load_config(
     path: str | Path,
     overrides: Sequence[str] | None = None,
@@ -38,15 +40,33 @@ def load_config(
     """Load YAML at `path`, apply overrides, resolve paths, return TrainConfig."""
     p = Path(path)
     if not p.is_file():
-        raise ConfigError(f"config not found: {p}")
+        raise ConfigError(
+            f"config not found: {p}",
+            field_path="<path>",
+            expected="an existing YAML file",
+            found=f"{p!r} (does not exist or is not a file)",
+            fix="create the file or pass the correct path with --config",
+        )
 
     try:
         raw = yaml.safe_load(p.read_text(encoding="utf-8")) or {}
     except yaml.YAMLError as e:
-        raise ConfigError(f"invalid YAML in {p}: {e}") from e
+        raise ConfigError(
+            f"invalid YAML in {p}: {e}",
+            field_path="<yaml>",
+            expected="valid YAML",
+            found=f"{p!r} contains a YAML parse error",
+            fix="fix the YAML syntax error shown above",
+        ) from e
 
     if not isinstance(raw, dict):
-        raise ConfigError(f"config root must be a mapping, got {type(raw).__name__}")
+        raise ConfigError(
+            f"config root must be a mapping, got {type(raw).__name__}",
+            field_path="<root>",
+            expected="a YAML mapping at the document root",
+            found=f"{type(raw).__name__} (not a mapping)",
+            fix="ensure the top-level of your config file is a YAML mapping (key: value pairs)",
+        )
 
     if overrides:
         apply_overrides(raw, overrides)
@@ -56,7 +76,13 @@ def load_config(
     try:
         return TrainConfig.model_validate(raw)
     except ValidationError as e:
-        raise ConfigError(f"invalid config {p}:\n{e}") from e
+        raise ConfigError(
+            f"invalid config {p}:\n{e}",
+            field_path="<schema>",
+            expected="a valid TrainConfig (see docs/superpowers/specs/ for schema reference)",
+            found=f"{p!r} has one or more schema validation errors (see above)",
+            fix="correct the field(s) listed in the validation error above",
+        ) from e
 
 
 def apply_overrides(target: dict[str, Any], overrides: Sequence[str]) -> None:
@@ -67,11 +93,23 @@ def apply_overrides(target: dict[str, Any], overrides: Sequence[str]) -> None:
     """
     for ov in overrides:
         if "=" not in ov:
-            raise ConfigError(f"malformed override (expected key=value): {ov!r}")
+            raise ConfigError(
+                f"malformed override (expected key=value): {ov!r}",
+                field_path="<override>",
+                expected="key=value format, e.g. train.epochs=10",
+                found=repr(ov),
+                fix="rewrite the override as dotted.key=value",
+            )
         key, _, raw_value = ov.partition("=")
         keys = key.split(".")
         if not key or any(not k for k in keys):
-            raise ConfigError(f"malformed override (empty key segment): {ov!r}")
+            raise ConfigError(
+                f"malformed override (empty key segment): {ov!r}",
+                field_path="<override>",
+                expected="a non-empty dotted key, e.g. train.epochs",
+                found=repr(ov),
+                fix="ensure the key contains no empty segments (e.g. avoid 'a..b' or '=value')",
+            )
         node = target
         for k in keys[:-1]:
             existing = node.get(k)
@@ -80,7 +118,11 @@ def apply_overrides(target: dict[str, Any], overrides: Sequence[str]) -> None:
                 node[k] = existing
             elif not isinstance(existing, dict):
                 raise ConfigError(
-                    f"override {ov!r} traverses non-dict at '{k}' (have {type(existing).__name__})"
+                    f"override {ov!r} traverses non-dict at '{k}' (have {type(existing).__name__})",
+                    field_path=key,
+                    expected=f"a dict at config key '{k}'",
+                    found=f"{type(existing).__name__} (cannot descend into a scalar)",
+                    fix=f"remove the intermediate key '{k}' from your override path or restructure the config",  # noqa: E501
                 )
             node = existing
         node[keys[-1]] = _parse_scalar(raw_value)

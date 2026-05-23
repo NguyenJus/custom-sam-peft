@@ -191,28 +191,45 @@ class HFDataset:
             self._image_class_labels = result
         return self._image_class_labels
 
-    def __getitem__(self, i: int) -> Example:
-        import random as _random
+    # ------------------------------------------------------------------
+    # Internal pipeline helpers
+    # ------------------------------------------------------------------
 
-        import torch
+    def _fetch_raw(self, i: int) -> dict[str, Any]:
+        """Return the raw HF dataset row for logical index *i*.
+
+        When an index map is set (subset mode), translates *i* to the
+        underlying dataset index before fetching.
+        """
+        row_i = self._index_map[i] if self._index_map is not None else i
+        return self._ds[row_i]  # type: ignore[no-any-return]
+
+    def _decode_image(self, raw: dict[str, Any]) -> np.ndarray[Any, Any]:
+        """Decode a raw HF row's image field to an (H, W, 3) uint8 ndarray."""
         from PIL import Image as PILImage
 
-        from custom_sam_peft.data.base import BoxPrompts, Instance, TextPrompts
-        from custom_sam_peft.data.coco import _build_text_prompts
-
-        row_i = self._index_map[i] if self._index_map is not None else i
-        row = self._ds[row_i]
-        img_obj = _resolve_field(row, self._field_map.image)
+        img_obj = _resolve_field(raw, self._field_map.image)
         if isinstance(img_obj, PILImage.Image):
-            np_img = np.asarray(img_obj.convert("RGB"))
-        else:
-            np_img = np.asarray(img_obj)
-            if np_img.ndim == 2:
-                np_img = np.stack([np_img] * 3, axis=-1)
-        h, w = int(np_img.shape[0]), int(np_img.shape[1])
+            return np.asarray(img_obj.convert("RGB"))
+        np_img = np.asarray(img_obj)
+        if np_img.ndim == 2:
+            np_img = np.stack([np_img] * 3, axis=-1)
+        return np_img
 
-        bboxes_raw = _resolve_field(row, self._field_map.bbox)
-        classes = list(_resolve_field(row, self._field_map.category))
+    def _decode_targets(
+        self, raw: dict[str, Any], np_img: np.ndarray[Any, Any]
+    ) -> tuple[
+        list[tuple[float, float, float, float]],
+        list[np.ndarray[Any, Any]],
+        list[Any],
+    ]:
+        """Decode bounding boxes, masks, and class labels from a raw HF row.
+
+        Returns ``(bboxes_xyxy, masks, classes)``.
+        """
+        h, w = int(np_img.shape[0]), int(np_img.shape[1])
+        bboxes_raw = _resolve_field(raw, self._field_map.bbox)
+        classes = list(_resolve_field(raw, self._field_map.category))
         bboxes_xyxy = [_normalize_bbox(list(b), self._field_map.bbox_format) for b in bboxes_raw]
 
         masks: list[np.ndarray[Any, Any]] = []
@@ -220,7 +237,7 @@ class HFDataset:
         seg_resolved: Any = None
         if seg_path:
             try:
-                seg_resolved = _resolve_field(row, seg_path)
+                seg_resolved = _resolve_field(raw, seg_path)
             except KeyError:
                 seg_resolved = None
         if seg_resolved is None:
@@ -244,37 +261,72 @@ class HFDataset:
             for ann in seg_resolved:
                 masks.append(_decode_segmentation({"segmentation": ann}, h, w).astype(np.uint8))
 
+        return bboxes_xyxy, masks, classes
+
+    def _apply_transforms(
+        self,
+        np_img: np.ndarray[Any, Any],
+        bboxes_xyxy: list[tuple[float, float, float, float]],
+        masks: list[np.ndarray[Any, Any]],
+        classes: list[Any],
+    ) -> tuple[Any, list[Any], list[Any], list[int]]:
+        """Run the configured transform pipeline.
+
+        Returns ``(image_tensor, out_bboxes, out_masks, out_classes)``.
+        """
+        import torch
+
         out = self._transforms(
             image=np_img,
             bboxes=[list(b) for b in bboxes_xyxy],
             masks=masks,
             class_labels=classes,
         )
-        image_tensor: torch.Tensor = out["image"]
+        image_tensor: Any = out["image"]
         out_bboxes = list(out["bboxes"])
         out_masks = list(out["masks"])
         out_classes = [int(c) for c in out["class_labels"]]
+        # Reference torch to satisfy the import; image_tensor is already a Tensor.
+        _ = torch.Tensor
+        return image_tensor, out_bboxes, out_masks, out_classes
+
+    def _pack_example(
+        self,
+        i: int,
+        image_tensor: Any,
+        out_bboxes: list[Any],
+        out_masks: list[Any],
+        out_classes: list[int],
+    ) -> Example:
+        """Assemble `Instance` objects and return the final `Example`."""
+        import random as _random
+
+        import numpy as _np
+        import torch
+
+        from custom_sam_peft.data.base import BoxPrompts, Instance, TextPrompts
+        from custom_sam_peft.data.coco import _build_text_prompts
 
         instances: list[Instance] = []
         for box, mask_np, cls in zip(out_bboxes, out_masks, out_classes, strict=True):
             instances.append(
                 Instance(
-                    mask=torch.from_numpy(np.asarray(mask_np).astype(bool)),
+                    mask=torch.from_numpy(_np.asarray(mask_np).astype(bool)),
                     class_id=int(cls),
                     box=torch.tensor(box, dtype=torch.float32),
                 )
             )
 
-        image_id = str(row_i)
+        image_id = str(i)
         if self._prompt_mode == "text":
             present = sorted(set(out_classes))
-            rng = _random.Random(f"{self._seed}:{row_i}")  # noqa: S311 — deterministic seeded RNG for prompt sampling, not security
+            rng = _random.Random(f"{self._seed}:{i}")  # noqa: S311 — deterministic seeded RNG for prompt sampling, not security
             prompts_list = _build_text_prompts(
                 present_dense_ids=present,
                 class_names=self._class_names,
                 cfg=self._text_prompt_cfg,
                 rng=rng,
-                image_id=row_i,
+                image_id=i,
             )
             if len(prompts_list) > self._multiplex_cap:
                 if not self._warned_truncation:
@@ -326,6 +378,19 @@ class HFDataset:
             prompts=BoxPrompts(boxes=boxes_t.to(torch.float32), class_ids=class_ids_t),
             instances=kept_instances,
         )
+
+    def __getitem__(self, i: int) -> Example:
+        # Resolve the underlying row index before fetching and packing.
+        # Spec §6.2: image_id uses the underlying dataset row index, not the
+        # post-subset position, so that image_ids are stable across subsets.
+        underlying_i = self._index_map[i] if self._index_map is not None else i
+        raw = self._fetch_raw(i)
+        np_img = self._decode_image(raw)
+        bboxes_xyxy, masks, classes = self._decode_targets(raw, np_img)
+        image_tensor, out_bboxes, out_masks, out_classes = self._apply_transforms(
+            np_img, bboxes_xyxy, masks, classes
+        )
+        return self._pack_example(underlying_i, image_tensor, out_bboxes, out_masks, out_classes)
 
     @property
     def class_names(self) -> list[str]:

@@ -11,9 +11,13 @@ import numpy as np
 import pytest
 from PIL import Image
 
+from custom_sam_peft import paths
 from custom_sam_peft.presets import PresetDecision
 from custom_sam_peft.runs.bundle import (
     BundleContext,
+    _collect_artifacts,
+    _write_manifest,
+    _zip_bundle,
     pick_samples,
     render_overlay,
     write_bundle,
@@ -417,3 +421,109 @@ def test_write_bundle_oom_edge_note_no_ckpt(
     assert "OOM retries: 1" in summary
     # The "gradient_checkpointing enabled at step X" clause must be omitted.
     assert "gradient_checkpointing enabled" not in summary
+
+
+# ---- _collect_artifacts --------------------------------------------------
+
+
+def test_collect_artifacts_returns_summary_and_sample_paths(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ctx = _make_ctx(tmp_path)
+    val_ds = _make_dataset(3)
+    report = _make_metrics(mAP=0.42)
+
+    def _fake_run_one(
+        _model: object, _ds: object, _idx: int
+    ) -> tuple[Image.Image, np.ndarray, np.ndarray]:
+        return Image.new("RGB", (8, 8)), np.zeros((8, 8), dtype=bool), np.zeros((8, 8), dtype=bool)
+
+    monkeypatch.setattr("custom_sam_peft.runs.bundle._reinfer_one_example", _fake_run_one)
+
+    artifacts = _collect_artifacts(ctx, report, val_ds, MagicMock())
+    assert isinstance(artifacts, list)
+    assert len(artifacts) >= 1
+    # First artifact is always summary.md.
+    assert artifacts[0] == ctx.run_dir / "summary.md"
+    assert artifacts[0].exists()
+    # Remaining artifacts are PNG sample files.
+    for p in artifacts[1:]:
+        assert p.suffix == ".png"
+        assert p.exists()
+
+
+def test_collect_artifacts_empty_val_returns_only_summary(
+    tmp_path: Path,
+) -> None:
+    ctx = _make_ctx(tmp_path, per_example_iou=[])
+    val_ds = _make_dataset(0)
+    report = _make_metrics(mAP=0.0)
+
+    artifacts = _collect_artifacts(ctx, report, val_ds, MagicMock())
+    assert len(artifacts) == 1
+    assert artifacts[0].name == "summary.md"
+
+
+# ---- _write_manifest -----------------------------------------------------
+
+
+def test_write_manifest_creates_artifact_path_json(tmp_path: Path) -> None:
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    fake = [run_dir / "summary.md", run_dir / "samples" / "0_best.png"]
+    # Files don't need to exist for manifest writing.
+    manifest = _write_manifest(run_dir, fake)
+
+    # Path must go through paths.artifact_path.
+    assert manifest == paths.artifact_path(run_dir, name="manifest.json")
+    assert manifest.exists()
+
+    import json as _json
+
+    data = _json.loads(manifest.read_text())
+    assert "artifacts" in data
+    # Relative paths stored (summary.md is directly under run_dir).
+    assert "summary.md" in data["artifacts"]
+
+
+# ---- _zip_bundle ---------------------------------------------------------
+
+
+def test_zip_bundle_creates_bundle_at_paths_bundle_path(tmp_path: Path) -> None:
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    # Create a real artifact file.
+    summary = run_dir / "summary.md"
+    summary.write_text("# test")
+    manifest = _write_manifest(run_dir, [summary])
+
+    result = _zip_bundle(run_dir, [summary], manifest)
+
+    assert result == paths.bundle_path(run_dir)
+    assert result.exists()
+
+    import zipfile as _zf
+
+    with _zf.ZipFile(result) as zf:
+        names = zf.namelist()
+    assert "summary.md" in names
+    assert "artifacts/manifest.json" in names
+
+
+def test_zip_bundle_skips_missing_files(tmp_path: Path) -> None:
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    missing = run_dir / "nonexistent.png"
+    summary = run_dir / "summary.md"
+    summary.write_text("# test")
+    manifest = _write_manifest(run_dir, [summary])
+
+    # Should not raise even though missing doesn't exist.
+    result = _zip_bundle(run_dir, [summary, missing], manifest)
+    assert result.exists()
+
+    import zipfile as _zf
+
+    with _zf.ZipFile(result) as zf:
+        names = zf.namelist()
+    assert "nonexistent.png" not in names

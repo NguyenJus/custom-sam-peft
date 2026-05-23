@@ -1,4 +1,4 @@
-"""`custom-sam-peft init` — write a starter config from a packaged template.
+"""`custom-sam-peft init` — thin CLI shell over run_init.
 
 After writing the config, optionally download SAM 3.1 weights via the
 ``--download-weights`` flag, or prompt interactively when stdout is a TTY.
@@ -23,6 +23,53 @@ TEMPLATES: dict[str, str] = {
     "coco-text-lora": "coco_text_lora.yaml",
     "coco-text-qlora": "coco_text_qlora.yaml",
 }
+
+
+def run_init(
+    template: str,
+    output: Path,
+    *,
+    preset: str = "natural",
+    intensity: str = "medium",
+    force: bool = False,
+) -> None:
+    """Write a starter config template to *output*.
+
+    Raises:
+        ValueError: unknown template name, preset, or intensity.
+        FileExistsError: output exists and *force* is False.
+    """
+    if template not in TEMPLATES:
+        raise ValueError(f"unknown template '{template}'. Available: {', '.join(TEMPLATES)}")
+    valid_presets = set(get_args(Preset))
+    valid_intensities = set(get_args(Intensity))
+    if preset not in valid_presets:
+        raise ValueError(f"unknown preset '{preset}'. Available: {sorted(valid_presets)}")
+    if intensity not in valid_intensities:
+        raise ValueError(f"unknown intensity '{intensity}'. Available: {sorted(valid_intensities)}")
+    if output.exists() and not force:
+        raise FileExistsError(f"refusing to overwrite existing {output}; pass force=True")
+
+    if preset == "custom":
+        overrides_block = (
+            "overrides: {}  # fill in knobs: hflip, vflip, rotate90, "
+            "rotate_arbitrary, color_jitter, stain_jitter, blur, gauss_noise"
+        )
+    else:
+        overrides_block = (
+            "# Override individual knobs here; unset keys inherit from (preset, intensity).\n"
+            "    # overrides:\n"
+            "    #   hflip: false\n"
+            "    #   color_jitter: 0.15"
+        )
+
+    raw = (files("custom_sam_peft.cli.templates") / TEMPLATES[template]).read_text()
+    body = string.Template(raw).substitute(
+        preset=preset,
+        intensity=intensity,
+        overrides_block=overrides_block,
+    )
+    output.write_text(body)
 
 
 def init(
@@ -66,51 +113,12 @@ def init(
     ),
 ) -> None:
     """Write a starter config, then optionally download weights."""
-    if template not in TEMPLATES:
-        raise typer.BadParameter(
-            f"unknown template '{template}'. Available: {', '.join(TEMPLATES)}",
-            param_hint="--template",
-        )
-    preset_lc = preset.lower()
-    intensity_lc = intensity.lower()
-    valid_presets = set(get_args(Preset))
-    valid_intensities = set(get_args(Intensity))
-    if preset_lc not in valid_presets:
-        raise typer.BadParameter(
-            f"unknown preset '{preset}'. Available: {sorted(valid_presets)}",
-            param_hint="--preset",
-        )
-    if intensity_lc not in valid_intensities:
-        raise typer.BadParameter(
-            f"unknown intensity '{intensity}'. Available: {sorted(valid_intensities)}",
-            param_hint="--intensity",
-        )
-    if output.exists() and not force:
-        raise typer.BadParameter(
-            f"refusing to overwrite existing {output}; pass --force",
-            param_hint="--output",
-        )
-
-    if preset_lc == "custom":
-        overrides_block = (
-            "overrides: {}  # fill in knobs: hflip, vflip, rotate90, "
-            "rotate_arbitrary, color_jitter, stain_jitter, blur, gauss_noise"
-        )
-    else:
-        overrides_block = (
-            "# Override individual knobs here; unset keys inherit from (preset, intensity).\n"
-            "    # overrides:\n"
-            "    #   hflip: false\n"
-            "    #   color_jitter: 0.15"
-        )
-
-    raw = (files("custom_sam_peft.cli.templates") / TEMPLATES[template]).read_text()
-    body = string.Template(raw).substitute(
-        preset=preset_lc,
-        intensity=intensity_lc,
-        overrides_block=overrides_block,
-    )
-    output.write_text(body)
+    try:
+        run_init(template, output, preset=preset.lower(), intensity=intensity.lower(), force=force)
+    except ValueError as e:
+        raise typer.BadParameter(str(e), param_hint="--template") from e
+    except FileExistsError as e:
+        raise typer.BadParameter(str(e), param_hint="--output") from e
     rprint(f"[green]wrote[/green] {output}")
 
     _maybe_download_weights(output, download_weights=download_weights, yes=yes)

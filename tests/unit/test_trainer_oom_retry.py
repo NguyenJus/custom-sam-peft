@@ -137,11 +137,11 @@ def test_oom_optimizer_zero_grad_called_once_per_step() -> None:
     assert optimizer.zero_grad.call_count == 1
 
 
-def test_oom_events_propagated_in_run_result() -> None:
-    """run_training's RunResult exposes the accumulated events list."""
-    from custom_sam_peft.train.trainer import RunResult
+def test_oom_events_propagated_in_eval_artifacts() -> None:
+    """Trainer.fit returns an EvalArtifacts exposing the accumulated events tuple."""
+    from custom_sam_peft.eval._artifacts import EvalArtifacts
 
-    fields = {f.name for f in __import__("dataclasses").fields(RunResult)}
+    fields = {f.name for f in __import__("dataclasses").fields(EvalArtifacts)}
     assert "oom_events" in fields
 
 

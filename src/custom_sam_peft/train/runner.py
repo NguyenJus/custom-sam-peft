@@ -17,9 +17,10 @@ from custom_sam_peft.data.val_source import (
     resolve_val_source,
     save_val_source,
 )
+from custom_sam_peft.eval._artifacts import EvalArtifacts
 from custom_sam_peft.models.sam3 import load_sam31
 from custom_sam_peft.tracking import build_tracker
-from custom_sam_peft.train.trainer import RunResult, Trainer
+from custom_sam_peft.train.trainer import Trainer
 
 _LOG = logging.getLogger(__name__)
 
@@ -78,7 +79,7 @@ def run_training(
     cfg: TrainConfig,
     *,
     resume_from: Path | None = None,
-) -> RunResult:
+) -> EvalArtifacts:
     """Build datasets, load model + PEFT, build tracker, run Trainer.fit.
 
     Spec: docs/superpowers/specs/2026-05-22-data-no-val-auto-split-design.md §6.4.
@@ -149,3 +150,7 @@ def _write_subset_manifest(
             "indices": val_ds._indices,
         }
     (run_dir / "subset.json").write_text(json.dumps(manifest, indent=2))
+
+
+# Canonical library alias: run_train(config) -> EvalArtifacts
+run_train = run_training

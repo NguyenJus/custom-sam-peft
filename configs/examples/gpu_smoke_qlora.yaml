@@ -36,7 +36,7 @@ train:
   batch_size: 1
   grad_accum_steps: 1
   optimizer: adamw8bit
-  lr: 5.0e-4
+  learning_rate: 5.0e-4
   lr_schedule: constant
   warmup_steps: 0
   save_every: 50

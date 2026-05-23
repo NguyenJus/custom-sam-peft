@@ -190,18 +190,38 @@ class COCODataset:
     def __len__(self) -> int:
         return len(self._image_ids)
 
-    def __getitem__(self, i: int) -> Example:
-        import torch
-        from PIL import Image
+    # ------------------------------------------------------------------
+    # Internal pipeline helpers
+    # ------------------------------------------------------------------
 
+    def _fetch_raw(self, i: int) -> tuple[int, dict[str, Any], list[dict[str, Any]]]:
+        """Return ``(image_id, img_record, annotations)`` for index *i*."""
         image_id = self._image_ids[i]
         rec = self._coco.loadImgs([image_id])[0]
+        anns = self._ann_index[image_id]
+        return image_id, rec, anns
+
+    def _decode_image(
+        self, raw: tuple[int, dict[str, Any], list[dict[str, Any]]]
+    ) -> np.ndarray[Any, Any]:
+        """Load and decode the image for *raw* to an (H, W, 3) uint8 ndarray."""
+        from PIL import Image
+
+        _image_id, rec, _anns = raw
         img_path = self._image_root / rec["file_name"]
         with Image.open(img_path) as pil_img:
-            np_img = np.asarray(pil_img.convert("RGB"))
-        h, w = int(rec["height"]), int(rec["width"])
+            return np.asarray(pil_img.convert("RGB"))
 
-        anns = self._ann_index[image_id]
+    def _decode_targets(
+        self,
+        raw: tuple[int, dict[str, Any], list[dict[str, Any]]],
+    ) -> tuple[list[list[float]], list[np.ndarray[Any, Any]], list[int]]:
+        """Decode bounding boxes, masks, and class labels from *raw*.
+
+        Returns ``(bboxes_xyxy, masks, class_labels)``.
+        """
+        _image_id, rec, anns = raw
+        h, w = int(rec["height"]), int(rec["width"])
         bboxes_xyxy: list[list[float]] = []
         masks: list[np.ndarray[Any, Any]] = []
         class_labels: list[int] = []
@@ -210,19 +230,45 @@ class COCODataset:
             bboxes_xyxy.append([float(x), float(y), float(x + bw), float(y + bh)])
             masks.append(_decode_segmentation(ann, h, w).astype(np.uint8))
             class_labels.append(self._cat_id_to_dense[int(ann["category_id"])])
+        return bboxes_xyxy, masks, class_labels
 
+    def _apply_transforms(
+        self,
+        np_img: np.ndarray[Any, Any],
+        bboxes_xyxy: list[list[float]],
+        masks: list[np.ndarray[Any, Any]],
+        class_labels: list[int],
+    ) -> tuple[Any, list[Any], list[Any], list[int]]:
+        """Run the configured transform pipeline.
+
+        Returns ``(image_tensor, out_bboxes, out_masks, out_classes)``.
+        """
         out = self._transforms(
             image=np_img,
             bboxes=bboxes_xyxy,
             masks=masks,
             class_labels=class_labels,
         )
-        image_tensor: torch.Tensor = out["image"]
-        out_bboxes: list[tuple[float, float, float, float]] = list(out["bboxes"])
-        out_masks: list[np.ndarray[Any, Any]] = list(out["masks"])
+        image_tensor: Any = out["image"]
+        out_bboxes: list[Any] = list(out["bboxes"])
+        out_masks: list[Any] = list(out["masks"])
         out_classes: list[int] = [int(c) for c in out["class_labels"]]
+        return image_tensor, out_bboxes, out_masks, out_classes
+
+    def _pack_example(
+        self,
+        raw: tuple[int, dict[str, Any], list[dict[str, Any]]],
+        image_tensor: Any,
+        out_bboxes: list[Any],
+        out_masks: list[Any],
+        out_classes: list[int],
+    ) -> Example:
+        """Assemble `Instance` objects and return the final `Example`."""
+        import torch
 
         from custom_sam_peft.data.base import BoxPrompts, Instance, TextPrompts
+
+        image_id, _rec, _anns = raw
 
         instances: list[Instance] = []
         for box, mask_np, cls in zip(out_bboxes, out_masks, out_classes, strict=True):
@@ -283,20 +329,27 @@ class COCODataset:
                 self._warned_truncation = True
             order = order[: self._multiplex_cap]
         kept_instances = [instances[k] for k in order]
-        import torch as _torch
-
         boxes_t = (
-            _torch.stack([inst.box for inst in kept_instances])
+            torch.stack([inst.box for inst in kept_instances])
             if kept_instances
-            else _torch.zeros((0, 4))
+            else torch.zeros((0, 4))
         )
-        class_ids_t = _torch.tensor([inst.class_id for inst in kept_instances], dtype=_torch.int64)
+        class_ids_t = torch.tensor([inst.class_id for inst in kept_instances], dtype=torch.int64)
         return Example(
             image=image_tensor,
             image_id=str(image_id),
-            prompts=BoxPrompts(boxes=boxes_t.to(_torch.float32), class_ids=class_ids_t),
+            prompts=BoxPrompts(boxes=boxes_t.to(torch.float32), class_ids=class_ids_t),
             instances=kept_instances,
         )
+
+    def __getitem__(self, i: int) -> Example:
+        raw = self._fetch_raw(i)
+        np_img = self._decode_image(raw)
+        bboxes_xyxy, masks, class_labels = self._decode_targets(raw)
+        image_tensor, out_bboxes, out_masks, out_classes = self._apply_transforms(
+            np_img, bboxes_xyxy, masks, class_labels
+        )
+        return self._pack_example(raw, image_tensor, out_bboxes, out_masks, out_classes)
 
     @property
     def class_names(self) -> list[str]:

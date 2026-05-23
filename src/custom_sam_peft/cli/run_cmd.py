@@ -81,7 +81,7 @@ def _orchestrate(cfg: TrainConfig, resume: Path | None, mode: ProgressMode) -> i
         rprint(f"[red]train failed[/red] {exc}")
         raise typer.Exit(code=1) from exc
     run_dir = train_result.run_dir
-    adapter_path = train_result.adapter_path
+    adapter_path = train_result.checkpoint_path
 
     # Decide val mode from the saved record — same source of truth the trainer used.
     vs = load_val_source(run_dir)
@@ -179,7 +179,11 @@ def run(
         metavar="MODE",
     ),
 ) -> None:
-    """Train + eval + (optional) export + bundle, in one shot."""
+    """Alias for `train --eval --export`.
+
+    Use this when you want the full pipeline in one command. The Colab
+    notebook uses `run` for the canonical end-to-end flow.
+    """
     configure_logging(verbose)
     cfg = load_config(config)
     if cfg.data.prompt_mode == "bbox":

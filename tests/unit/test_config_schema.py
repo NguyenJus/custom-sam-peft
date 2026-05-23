@@ -80,9 +80,9 @@ def test_invalid_tracker_backend_rejected() -> None:
         TrainConfig.model_validate(d)
 
 
-def test_negative_lr_rejected() -> None:
+def test_negative_learning_rate_rejected() -> None:
     d = _minimal_dict()
-    d["train"]["lr"] = -1.0  # type: ignore[index]
+    d["train"]["learning_rate"] = -1.0  # type: ignore[index]
     with pytest.raises(ValidationError):
         TrainConfig.model_validate(d)
 
@@ -110,26 +110,42 @@ def test_qlora_subconfig_defaults() -> None:
 
 
 def test_all_public_submodels_are_importable() -> None:
-    """Smoke check that every documented sub-model is a public attribute of schema."""
+    """Smoke check that every user-facing sub-model is a public attribute of schema.
+
+    Note: ExportConfig, WandbConfig, LossConfig, MatcherWeights have been moved
+    to config._internal (audit Section G) and are re-exported from schema for
+    backward compatibility. They are excluded from the user-facing set here.
+    """
     from custom_sam_peft.config import schema
 
-    expected = {
+    # User-facing Pydantic models (audit Section G: user-set fields)
+    expected_user_facing = {
         "AugmentationsConfig",
+        "BoxHintSchedule",
         "DataConfig",
         "DataSplit",
         "EvalConfig",
-        "ExportConfig",
+        "HFDatasetConfig",
+        "HFFieldMap",
         "ModelConfig",
+        "NormalizeConfig",
         "PEFTConfig",
         "QLoRAConfig",
         "RunConfig",
+        "TextPromptConfig",
         "TrackingConfig",
         "TrainConfig",
         "TrainHyperparams",
-        "WandbConfig",
     }
-    missing = {n for n in expected if not hasattr(schema, n)}
-    assert missing == set(), f"missing public sub-models: {missing}"
+    missing = {n for n in expected_user_facing if not hasattr(schema, n)}
+    assert missing == set(), f"missing user-facing sub-models: {missing}"
+
+    # Internal classes re-exported for backward compatibility
+    expected_internal_reexported = {"ExportConfig", "LossConfig", "MatcherWeights", "WandbConfig"}
+    missing_reexport = {n for n in expected_internal_reexported if not hasattr(schema, n)}
+    assert missing_reexport == set(), (
+        f"internal classes no longer re-exported from schema (update consumers): {missing_reexport}"
+    )
 
 
 def test_peft_defaults_include_scope_and_bias() -> None:

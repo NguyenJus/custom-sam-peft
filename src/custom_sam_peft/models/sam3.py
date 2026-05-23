@@ -360,301 +360,43 @@ class _Sam3ImageAdapter(nn.Module):
         return outputs
 
 
+# ---------------------------------------------------------------------------
+# Patch delegation wrappers — thin shims that keep the original _patch_*
+# names importable from this module (used by existing per-patch unit tests)
+# while the real implementations live under models/_patches/.
+# ---------------------------------------------------------------------------
+
+
 def _patch_pos_enc_dtype(model: nn.Module) -> None:
-    """Wrap every PositionEmbeddingSine._encode_xy to honor input dtype.
+    """Delegate to models/_patches/pos_enc_dtype.apply (see that module for rationale)."""
+    from custom_sam_peft.models._patches import pos_enc_dtype as _m
+    from custom_sam_peft.runtime._runtime import Runtime
 
-    sam3's ``PositionEmbeddingSine._encode_xy``
-    (sam3/model/position_encoding.py:60-77) builds its frequency table as
-    ``dim_t = torch.arange(..., dtype=torch.float32, ...)`` regardless of the
-    input dtype.  Downstream broadcasts produce fp32 output, which then feeds a
-    bf16-weight ``points_pos_enc_project`` Linear in
-    ``PointGeometryEncoder._encode_points`` (sam3/model/geometry_encoders.py:623)
-    and raises ``RuntimeError: mat1 and mat2 must have the same dtype`` on Colab
-    T4 with ``ModelConfig(dtype="bfloat16")``.  This is true even for zero-length
-    point sequences because ``F.linear`` validates dtypes regardless of seq len.
-
-    We wrap each ``_encode_xy`` method to cast its (pos_x, pos_y) outputs to the
-    dtype of the input ``x`` tensor BEFORE returning.  The bound method is
-    replaced via ``MethodType`` on each ``PositionEmbeddingSine`` instance so the
-    patch persists across forward calls and survives ``.to(device)`` /
-    ``.to(dtype)`` (only parameters move; methods do not).
-
-    This is a localized stop-gap.  The right long-term fix is upstream in
-    sam3's pos-enc to honor input dtype directly (tracked as a follow-up
-    in logs/TODO.md).  Re-evaluate every sam3 version bump.
-
-    Notes:
-    - We use a per-instance ``MethodType`` replacement (NOT class-level
-      monkey-patch) to avoid affecting other consumers of sam3 in the same
-      process.
-    - We do NOT introduce any ``torch.autocast`` scope; doing so re-triggered
-      the bf16-vs-fp32 collision inside ``sam3/model/decoder.py::forward_ffn``'s
-      ``with torch.amp.autocast(enabled=False)`` region during PR #13's v2 work.
-      The cast-on-return approach side-steps that entirely.
-    """
-    from types import MethodType
-
-    from sam3.model.position_encoding import PositionEmbeddingSine
-
-    patched_count = 0
-    for submodule in model.modules():
-        if not isinstance(submodule, PositionEmbeddingSine):
-            continue
-        if getattr(submodule, "_custom_sam_peft_pos_enc_dtype_patched", False):
-            continue
-        original = submodule._encode_xy
-
-        def _encode_xy_dtype_aware(self, x, y, _orig=original):  # type: ignore[no-untyped-def]
-            pos_x, pos_y = _orig(x, y)
-            return pos_x.to(dtype=x.dtype), pos_y.to(dtype=x.dtype)
-
-        submodule._encode_xy = MethodType(_encode_xy_dtype_aware, submodule)
-        submodule._custom_sam_peft_pos_enc_dtype_patched = True  # idempotency marker
-        patched_count += 1
-
-    logger.info(
-        "Patched %d PositionEmbeddingSine._encode_xy callsites for dtype awareness.",
-        patched_count,
-    )
+    _m.apply(model, Runtime(device=torch.device("cpu"), dtype=torch.float32))
 
 
 def _patch_roi_align_dtype() -> None:
-    """Wrap ``torchvision.ops.roi_align`` to handle bf16-incompatible kernels and dtype skew.
+    """Delegate to models/_patches/roi_align_dtype.apply (see that module for rationale)."""
+    from custom_sam_peft.models._patches import roi_align_dtype as _m
+    from custom_sam_peft.runtime._runtime import Runtime
 
-    Two cooperating problems:
-
-    1) **sam3 passes mismatched dtypes**: ``SequenceGeometryEncoder._encode_boxes``
-       (``sam3/model/geometry_encoders.py:651-653``) calls
-       ``torchvision.ops.roi_align`` with ``rois`` hard-cast to fp32 via ``.float()``,
-       while ``img_feats`` is bf16 when the model is loaded under
-       ``ModelConfig(dtype="bfloat16")``.  torchvision's C++ kernel requires both
-       arguments to share dtype, so this raises a ``RuntimeError`` on Colab T4.
-
-    2) **torchvision's CUDA roi_align kernel does not implement bfloat16**: even
-       after matching dtypes, calling the kernel with bf16 input + bf16 boxes
-       raises ``NotImplementedError: "roi_align_forward_kernel" not implemented for
-       'BFloat16'`` (observed on torchvision 0.x shipped with torch 2.10 on Colab
-       T4).  fp16 is supported; bf16 is not.  So simply casting boxes down to
-       input dtype isn't sufficient — bf16 inputs need to be upcast to fp32 for
-       the kernel call, then cast back.
-
-    The wrapper handles both:
-      - When ``input.dtype`` is bf16: upcast input and boxes to fp32, run kernel,
-        cast output back to bf16.  Trivial precision cost (roi_align is a 7x7
-        pooling; fp32 is more accurate than bf16 anyway).
-      - When ``input.dtype`` is fp32/fp16: keep the original "match boxes to input"
-        behavior so sam3's hardcoded ``.float()`` rois don't crash against fp16 input.
-
-    We patch BOTH ``torchvision.ops.roi_align`` (the package-level re-export, used
-    by sam3's functional call) AND ``torchvision.ops.roi_align.roi_align`` (the
-    submodule-local name used by ``torchvision.ops.RoIAlign.forward``).  Without
-    the submodule patch, ``RoIAlign`` instances (e.g.,
-    ``sam3/model/decoder.py:289``) keep calling the un-patched original.  Single
-    sentinel covers both rebindings (idempotent re-apply).
-
-    Notes:
-    - We do NOT introduce any ``torch.autocast`` scope; doing so re-triggers the
-      bf16-vs-fp32 collision inside ``sam3/model/decoder.py::forward_ffn``'s
-      ``with torch.amp.autocast(enabled=False)`` region — the same constraint
-      that drove the cast-on-output approach adopted in PR #13.
-    - The right long-term fix is upstream: either sam3 stops hardcoding
-      ``.float()`` on rois, or torchvision adds a bf16 kernel.  Re-evaluate every
-      torchvision/sam3 version bump.
-    """
-    import sys
-
-    import torchvision.ops as tvo  # type: ignore[import-untyped]
-
-    # ``torchvision.ops.__init__`` re-exports the ``roi_align`` FUNCTION under the
-    # same name as the submodule, so ``import torchvision.ops.roi_align`` resolves
-    # to the function, not the module.  Reach the actual submodule via
-    # ``sys.modules`` so we can patch its module-local ``roi_align`` symbol — the
-    # one that ``torchvision.ops.RoIAlign.forward`` resolves at call time.
-    tvo_ra_mod = sys.modules["torchvision.ops.roi_align"]
-
-    if getattr(tvo, "_custom_sam_peft_roi_align_dtype_patched", False):
-        return
-    _original = tvo.roi_align
-
-    def _roi_align_dtype_aware(input, boxes, *args, **kwargs):  # type: ignore[no-untyped-def]
-        original_dtype = input.dtype
-        # torchvision's CUDA roi_align kernel doesn't implement bf16.  Upcast
-        # both input and boxes to fp32 for the kernel; cast output back below.
-        if original_dtype == torch.bfloat16:
-            input = input.float()
-            if isinstance(boxes, (list, tuple)):
-                boxes = type(boxes)(b.float() for b in boxes)
-            elif hasattr(boxes, "float"):
-                boxes = boxes.float()
-        else:
-            # input dtype is kernel-supported; match boxes to input.
-            if isinstance(boxes, (list, tuple)):
-                boxes = type(boxes)(
-                    b.to(dtype=input.dtype) if b.dtype != input.dtype else b for b in boxes
-                )
-            elif hasattr(boxes, "dtype") and boxes.dtype != input.dtype:
-                boxes = boxes.to(dtype=input.dtype)
-        out = _original(input, boxes, *args, **kwargs)
-        if out.dtype != original_dtype:
-            out = out.to(dtype=original_dtype)
-        return out
-
-    tvo.roi_align = _roi_align_dtype_aware
-    # Also patch the submodule-local symbol so torchvision.ops.RoIAlign.forward
-    # (which looks up `roi_align` in its own module namespace) routes through
-    # the wrapper too.
-    tvo_ra_mod.roi_align = _roi_align_dtype_aware  # type: ignore[attr-defined]
-    tvo._custom_sam_peft_roi_align_dtype_patched = True
-    logger.info(
-        "Patched torchvision.ops.roi_align (functional + RoIAlign class) "
-        "for bf16-safe execution; bf16 inputs run via fp32 upcast."
-    )
+    _m.apply(nn.Module(), Runtime(device=torch.device("cpu"), dtype=torch.float32))
 
 
 def _patch_encode_prompt_dtype(model: nn.Module) -> None:
-    """Cast ``_encode_prompt``'s returned ``prompt`` to the model's parameter dtype.
+    """Delegate to models/_patches/encode_prompt_dtype.apply (see that module for rationale)."""
+    from custom_sam_peft.models._patches import encode_prompt_dtype as _m
+    from custom_sam_peft.runtime._runtime import Runtime
 
-    sam3's ``SAM3Image._encode_prompt``
-    (sam3/model/sam3_image.py:196-198) builds a fallback ``visual_prompt_embed``
-    via ``torch.zeros((0, *geo_feats.shape[1:]), device=...)`` with NO ``dtype=``
-    argument, so it defaults to ``torch.float32``.  Even though the tensor is
-    zero-length in dim 0, the immediately-following
-    ``torch.cat([txt_feats, geo_feats, visual_prompt_embed], dim=0)`` triggers
-    PyTorch's type-promotion rule and returns an fp32 ``prompt`` when the
-    model is loaded under ``ModelConfig(dtype="bfloat16")``.  The fp32 prompt
-    then flows into ``TransformerEncoderFusion`` as ``memory``; the encoder
-    layer's ``cross_attn_image`` does ``key = memory`` and feeds it to a
-    Linear with bf16 weight, producing
-    ``RuntimeError: mat1 and mat2 must have the same dtype, but got Float and BFloat16``.
-
-    We cannot modify sam3 source (installed package), and we cannot wrap the
-    call in ``torch.autocast`` for the same reason as the prior two patches:
-    sam3's ``decoder.py::forward_ffn`` contains an explicit
-    ``with torch.amp.autocast(enabled=False)`` region that re-triggers the
-    bf16/fp32 collision.
-
-    The patch rebinds ``_encode_prompt`` per instance via ``MethodType`` and
-    casts the returned ``prompt`` (and ``prompt_mask`` is left alone — it's
-    boolean) to the model's parameter dtype before returning.  When the model
-    is loaded in fp32 the cast is a no-op.
-
-    Notes:
-    - We use a per-instance ``MethodType`` replacement (NOT class-level
-      monkey-patch) so we don't affect other consumers of sam3 in the same
-      process.
-    - Idempotency sentinel mirrors ``_patch_pos_enc_dtype``.
-    - Re-evaluate every sam3 version bump; track upstream fix in logs/TODO.md.
-    """
-    from types import MethodType
-
-    if not hasattr(model, "_encode_prompt"):
-        return
-    if getattr(model, "_custom_sam_peft_encode_prompt_dtype_patched", False):
-        return
-    original = model._encode_prompt
-    target_dtype = next(model.parameters()).dtype
-
-    def _encode_prompt_dtype_aware(self, *args, _orig=original, _dtype=target_dtype, **kwargs):  # type: ignore[no-untyped-def]
-        prompt, prompt_mask, backbone_out = _orig(*args, **kwargs)
-        if prompt.dtype != _dtype:
-            prompt = prompt.to(dtype=_dtype)
-        return prompt, prompt_mask, backbone_out
-
-    model._encode_prompt = MethodType(_encode_prompt_dtype_aware, model)  # type: ignore[assignment]
-    model._custom_sam_peft_encode_prompt_dtype_patched = True  # type: ignore[assignment]
-    logger.info(
-        "Patched SAM3Image._encode_prompt for dtype awareness (prompt cast to %s).",
-        target_dtype,
-    )
+    _m.apply(model, Runtime(device=torch.device("cpu"), dtype=torch.float32))
 
 
 def _patch_text_pool_dtype() -> None:
-    """Replace sam3's text-pooling helpers to honor prompt dtype instead of fp32.
+    """Delegate to models/_patches/text_pool_dtype.apply (see that module for rationale)."""
+    from custom_sam_peft.models._patches import text_pool_dtype as _m
+    from custom_sam_peft.runtime._runtime import Runtime
 
-    Two sites in sam3 build a validity mask via ``(~prompt_mask).float()`` and
-    then do ``prompt * is_valid``, which promotes a bf16 ``prompt`` to fp32:
-
-      - ``sam3.model.encoder.pool_text_feat`` (module-level function at
-        ``encoder.py:583-595``).  Called from the encoder's text-pooling path.
-      - ``sam3.model.model_misc.DotProductScoring.mean_pool_text`` (method on
-        the class at ``model_misc.py:734-741``).  Called from
-        ``DotProductScoring.forward`` before
-        ``self.prompt_proj(pooled_prompt)``.
-
-    Under QLoRA the pooled-prompt then flows into a ``Linear4bit`` whose
-    compute_dtype is bf16, and the following ``torch.matmul`` at
-    ``model_misc.py:761`` crashes with
-    ``RuntimeError: expected scalar type BFloat16 but found Float``
-    against the bf16 ``proj_hs``.  Under plain LoRA, the bf16 model handles
-    fp32 input less violently but the result is still a silent precision
-    cliff.
-
-    Replace both with versions that cast ``is_valid`` to ``prompt.dtype``
-    instead of fp32.  The computation is otherwise byte-identical (mean
-    pool over valid tokens).  Module-level / class-level rebind (not
-    per-instance) so the fix applies to every ``Sam3Image`` built in the
-    process.  Idempotent via sentinels.
-
-    Notes:
-    - This is one of a small family of "hardcoded fp32 producer inside
-      sam3's forward" patches; see also ``_patch_encode_prompt_dtype``,
-      ``_patch_pos_enc_dtype``, ``_patch_roi_align_dtype``.  Each handles
-      a specific site that an outer ``torch.autocast`` would otherwise
-      paper over (autocast is off-limits in this codebase per PR #13;
-      ``decoder.py::forward_ffn`` has an internal
-      ``with torch.amp.autocast(enabled=False)`` region).
-    - sam3 imports are lazy/try-except so CPU unit tests can exercise the
-      patch behavior without the full sam3 install.
-    - Re-evaluate every sam3 version bump.  Long-term fix is upstream:
-      ``(~prompt_mask).to(dtype=prompt.dtype)`` instead of ``.float()``.
-    """
-    # encoder.pool_text_feat (module-level function)
-    try:
-        import sam3.model.encoder as _encoder_mod
-
-        if not getattr(_encoder_mod, "_custom_sam_peft_pool_text_feat_dtype_patched", False):
-
-            def _pool_text_feat_dtype_aware(prompt, prompt_mask, pool_with_mask):  # type: ignore[no-untyped-def]
-                if not pool_with_mask:
-                    return prompt.mean(dim=0)
-                if prompt_mask.dim() != 2:
-                    raise ValueError(
-                        f"pool_text_feat: prompt_mask.dim() must be 2; got {prompt_mask.dim()}"
-                    )
-                is_valid = (~prompt_mask).to(dtype=prompt.dtype).permute(1, 0)[..., None]
-                num_valid = torch.clamp(torch.sum(is_valid, dim=0), min=1.0)
-                pooled_text = (prompt * is_valid).sum(dim=0) / num_valid
-                return pooled_text
-
-            _encoder_mod.pool_text_feat = _pool_text_feat_dtype_aware
-            _encoder_mod._custom_sam_peft_pool_text_feat_dtype_patched = True
-            logger.info("Patched sam3.model.encoder.pool_text_feat for dtype-aware text pooling.")
-    except ImportError:
-        # sam3.model.encoder not importable (CPU-only unit env); skip the patch.
-        pass
-
-    # DotProductScoring.mean_pool_text (method on a class)
-    try:
-        import sam3.model.model_misc as _mm_mod
-
-        DotProductScoring = _mm_mod.DotProductScoring
-        if not getattr(DotProductScoring, "_custom_sam_peft_mean_pool_text_dtype_patched", False):
-
-            def _mean_pool_text_dtype_aware(self, prompt, prompt_mask):  # type: ignore[no-untyped-def]
-                is_valid = (~prompt_mask).to(dtype=prompt.dtype).permute(1, 0)[..., None]
-                num_valid = torch.clamp(torch.sum(is_valid, dim=0), min=1.0)
-                pooled_prompt = (prompt * is_valid).sum(dim=0) / num_valid
-                return pooled_prompt
-
-            DotProductScoring.mean_pool_text = _mean_pool_text_dtype_aware
-            DotProductScoring._custom_sam_peft_mean_pool_text_dtype_patched = True
-            logger.info(
-                "Patched sam3.model.model_misc.DotProductScoring.mean_pool_text "
-                "for dtype-aware text pooling."
-            )
-    except ImportError:
-        # sam3.model.model_misc not importable (CPU-only unit env); skip the patch.
-        pass
+    _m.apply(nn.Module(), Runtime(device=torch.device("cpu"), dtype=torch.float32))
 
 
 def _is_linear4bit(module: nn.Module) -> bool:
@@ -689,289 +431,31 @@ def _apply_activation(activation: Any, x: torch.Tensor) -> torch.Tensor:
 
 
 def _patch_addmm_act_grad_safe() -> None:
-    """Make sam3's ``addmm_act`` fused kernel grad-aware so LoRA training works.
+    """Delegate to models/_patches/addmm_act_grad_safe.apply (see that module for rationale)."""
+    from custom_sam_peft.models._patches import addmm_act_grad_safe as _m
+    from custom_sam_peft.runtime._runtime import Runtime
 
-    sam3 ships an inference-only fused matmul helper
-    (``sam3/perflib/fused.py::addmm_act``) used by every ViT-Det MLP block's
-    ``forward`` (``sam3/model/vitdet.py:71`` calls it as
-    ``addmm_act(type(self.act), self.fc1, x)``).  The helper hard-rejects
-    grad-enabled callers and explicitly detaches ``linear.weight`` /
-    ``linear.bias`` — both correct optimizations at inference, both fatal
-    for LoRA fine-tuning:
-
-        def addmm_act(activation, linear, mat1):
-            if torch.is_grad_enabled():
-                raise ValueError("Expected grad to be disabled.")
-            self = linear.bias.detach()
-            mat2 = linear.weight.detach()
-            ...
-
-    LoRA adapters attach to ``fc1`` (and other backbone Linears).  Their
-    backward path requires grad to flow through ``linear.weight`` so the
-    chain rule reaches the adapter matrices, but every MLP block hits
-    ``addmm_act`` first and raises ``ValueError("Expected grad to be
-    disabled.")``.  ``train_step``'s ``except ValueError`` clause counts
-    each raise as a non-finite micro-step, and after ``nan_abort_after``
-    consecutive raises the trainer aborts.  Net effect: SAM 3.1 fine-tuning
-    on GPU is impossible against this sam3 commit without this patch —
-    every gpu-marked training test fails this way (caught during the
-    manual GPU pass for issue #44).
-
-    Fix: replace ``addmm_act`` with a wrapper that branches on
-    ``torch.is_grad_enabled()``:
-      - grad-enabled  (training)  : ``F.{relu,gelu}(linear(mat1))`` —
-        plain, grad-tracking ``linear`` + activation.  Negligible perf
-        cost on T4 since cuBLAS already fuses addmm internally.
-      - grad-disabled (inference) : delegate to sam3's original fused
-        kernel for full perf parity.  However, if *linear* is a
-        bitsandbytes ``Linear4bit``, ``linear.weight`` is a ``Params4bit``
-        (uint8-packed storage, shape ≈ ``(out*in/2, 1)``); the fused
-        kernel's ``addmm_act_op`` cannot consume that shape and raises
-        ``RuntimeError: mat1 and mat2 shapes cannot be multiplied``.
-        Detect this case and route through ``Linear4bit.__call__`` (full
-        bnb dequant) + explicit activation instead.  Third instance of
-        the sam3-bypasses-bnb-dispatch family in this branch; same
-        pattern as the MHA-exclusion in ``qlora.py`` and the cdist
-        upcast in ``matching.py``.
-
-    The patch must update BOTH ``sam3.perflib.fused.addmm_act`` (the
-    definition) AND ``sam3.model.vitdet.addmm_act`` (vitdet does
-    ``from sam3.perflib.fused import addmm_act`` at import time, copying
-    the function object into its own module namespace; later updates to
-    ``perflib.fused.addmm_act`` alone do NOT reach vitdet's binding).
-
-    Notes:
-    - Module-level monkey-patch (not per-instance) since the call site is
-      inside sam3's installed package, not a sub-module of our wrapper.
-    - Activation support mirrors sam3's original kernel (ReLU and GELU
-      class- or functional-form only); other activations raise the same
-      ``ValueError`` as upstream — surfaces incompatibility loudly if
-      future sam3 versions add new activations.
-    - Idempotency sentinel mirrors the other ``_patch_*`` helpers.
-    - The right long-term fix is upstream: sam3's ``addmm_act`` should
-      branch on grad state itself.  Re-evaluate every sam3 version bump.
-    """
-    import sam3.model.vitdet as _vd
-    import sam3.perflib.fused as _pf
-    import torch.nn.functional as F
-
-    if getattr(_pf, "_custom_sam_peft_addmm_act_grad_safe_patched", False):
-        return
-
-    _orig = _pf.addmm_act
-
-    def _addmm_act_grad_safe(activation, linear, mat1):  # type: ignore[no-untyped-def]
-        if not torch.is_grad_enabled():
-            # sam3's perflib addmm_act extracts linear.weight as a raw tensor
-            # and calls the fused addmm_act_op kernel on it.  For bitsandbytes
-            # Linear4bit, .weight is a Params4bit (uint8-packed 4-bit storage,
-            # not shaped as (out, in)) and the fused kernel cannot consume it.
-            # Route 4-bit linears through Linear4bit.__call__ (which dispatches
-            # through bnb's dequant) and apply the activation explicitly.  Same
-            # pattern as the MHA-exclusion in qlora.py and the cdist upcast in
-            # matching.py — sam3 has several code paths that bypass bnb dispatch.
-            if _is_linear4bit(linear):
-                out = linear(mat1)
-                return _apply_activation(activation, out)
-            return _orig(activation, linear, mat1)
-        x = linear(mat1)
-        if activation in (nn.ReLU, F.relu):
-            return F.relu(x)
-        if activation in (nn.GELU, F.gelu):
-            return F.gelu(x)
-        raise ValueError(f"Unexpected activation {activation}")
-
-    _pf.addmm_act = _addmm_act_grad_safe
-    _vd.addmm_act = _addmm_act_grad_safe
-    _pf._custom_sam_peft_addmm_act_grad_safe_patched = True
-    logger.info(
-        "Patched sam3.perflib.fused.addmm_act (and vitdet binding) for "
-        "grad-aware forward; LoRA backbone fine-tuning now works on this "
-        "sam3 commit."
-    )
+    _m.apply(nn.Module(), Runtime(device=torch.device("cpu"), dtype=torch.float32))
 
 
 def _patch_forward_grounding_skip_matching_on_none_target(model: nn.Module) -> None:
-    """Neutralize sam3's training-mode matching side-effect when ``find_target`` is ``None``.
+    """Delegate to models/_patches/forward_grounding_skip_matching.apply."""
+    from custom_sam_peft.models._patches import forward_grounding_skip_matching as _m
+    from custom_sam_peft.runtime._runtime import Runtime
 
-    sam3's ``Sam3Image.forward_grounding`` (``sam3/model/sam3_image.py:440-496``)
-    runs an extra side-effect when the model is in train mode (or interactive
-    eval mode)::
-
-        if self.training or self.num_interactive_steps_val > 0:
-            self._compute_matching(out, self.back_convert(find_target))
-
-    The call writes ``out["indices"]`` (and into each ``aux_outputs[*]``) using
-    sam3's own matcher on a ``BatchedFindTarget``-shaped ``find_target``.  Our
-    ``_Sam3ImageAdapter`` does not carry a ``BatchedFindTarget`` and passes
-    ``find_target=None``; ``back_convert(None)`` then dereferences
-    ``None.boxes`` and raises ``AttributeError``
-    (``sam3/model/sam3_image.py:610``).  The crash is silent during inference
-    because the gate above is ``False`` in eval mode (the inspection-tier GPU
-    tests pass on a plain forward in eval), and only surfaces under
-    training-mode calls from ``train_step`` / ``run_epoch`` and the
-    eval/forward/train dance in ``Trainer._log_image_panel``.
-
-    Our trainer runs its OWN ``HungarianMatcher`` against
-    ``list[list[Instance]]`` targets inside
-    ``custom_sam_peft.models.losses.total_loss``, and never reads ``out["indices"]``
-    written by sam3's matching call (grep verified — the only ``.indices`` hit
-    in ``src/`` is ``torch.topk(...).indices`` in ``trainer._log_image_panel``,
-    unrelated).  The upstream side-effect is pure waste from our perspective
-    AND it crashes on the ``None`` we pass.  This patch short-circuits both
-    halves of that side-effect when ``find_target is None``:
-
-      - ``back_convert(targets)``        : returns ``None`` when
-        ``targets is None``; delegates to the original implementation
-        otherwise.
-      - ``_compute_matching(out, targets)`` : no-op when ``targets is None``;
-        delegates to the original implementation otherwise.
-
-    Behavior preserved: ``self.training`` stays ``True``; every other
-    training-mode branch inside ``forward_grounding`` (DAC at
-    ``sam3_image.py:266,310,397``, aux-output population at lines
-    ``341,355,358,364,371,377,383``, the o2m head at ``366``, and activation
-    checkpointing in the seg head at ``407``) fires normally.  The only
-    suppressed work is the side-effect on ``out["indices"]`` that we replace
-    via our own matcher downstream.  Non-``None`` ``find_target`` paths are
-    untouched, so eval-time runs with ``num_interactive_steps_val > 0`` and a
-    real target keep sam3-native matching intact.
-
-    Notes:
-    - Per-instance ``MethodType`` rebind (mirrors the other ``_patch_*``
-      helpers); idempotency sentinel
-      ``_custom_sam_peft_skip_matching_on_none_target_patched``.
-    - Models without ``back_convert`` / ``_compute_matching`` are skipped
-      (no-op), so unit tests with stand-ins that omit the methods do not
-      raise.
-    - The right long-term fix is upstream: ``forward_grounding`` should
-      tolerate ``find_target=None`` natively.  Re-evaluate every sam3
-      version bump.
-    """
-    from types import MethodType
-
-    if getattr(model, "_custom_sam_peft_skip_matching_on_none_target_patched", False):
-        return
-    if not hasattr(model, "back_convert") or not hasattr(model, "_compute_matching"):
-        return
-
-    orig_back_convert = model.back_convert
-    orig_compute_matching = model._compute_matching
-
-    def _back_convert_none_safe(self, targets, _orig=orig_back_convert):  # type: ignore[no-untyped-def]
-        if targets is None:
-            return None
-        return _orig(targets)
-
-    def _compute_matching_none_safe(self, out, targets, _orig=orig_compute_matching):  # type: ignore[no-untyped-def]
-        if targets is None:
-            return None
-        return _orig(out, targets)
-
-    model.back_convert = MethodType(_back_convert_none_safe, model)  # type: ignore[assignment]
-    model._compute_matching = MethodType(_compute_matching_none_safe, model)  # type: ignore[assignment]
-    model._custom_sam_peft_skip_matching_on_none_target_patched = True  # type: ignore[assignment]
-    logger.info(
-        "Patched sam3.Sam3Image.{back_convert,_compute_matching} to short-circuit "
-        "on find_target=None; training-mode forward_grounding now bypasses sam3's "
-        "internal matching side-effect (we run our own matcher in losses.total_loss)."
-    )
+    _m.apply(model, Runtime(device=torch.device("cpu"), dtype=torch.float32))
 
 
 def _patch_mha_input_dtype(model: nn.Module) -> None:
-    """Cast ``query``/``key``/``value`` of every MHA module to the MHA's weight dtype.
+    """Delegate to models/_patches/mha_input_dtype.apply (see that module for rationale)."""
+    from custom_sam_peft.models._patches import mha_input_dtype as _m
+    from custom_sam_peft.runtime._runtime import Runtime
 
-    ``_patch_module_input_dtype`` only hooks ``nn.Linear`` / ``nn.LayerNorm`` /
-    ``nn.Conv*`` and only casts the first positional arg.  It deliberately
-    skips ``nn.MultiheadAttention`` because MHA takes three tensor inputs
-    (query, key, value) with a shared dtype expectation that the simple
-    args[0]-only hook can't honor.  But that leaves MHA modules completely
-    unprotected against upstream dtype leaks: any fp32 tensor reaching the
-    MHA's ``F.linear(input, in_proj_weight, ...)`` path (inside torch's
-    ``_in_projection_packed`` or sam3's ``multi_head_attention_forward``)
-    collides with the bf16 weight and raises
-    ``RuntimeError: mat1 and mat2 must have the same dtype, but got Float
-    and BFloat16``.
-
-    Surfaced in the QLoRA release-tier test after the prior dtype-routing
-    fixes: with the model fully bf16 (our skip of
-    ``prepare_model_for_kbit_training``) and the weight side clean, an
-    upstream fp32 promotion (likely a positional-embedding cast or a
-    transient mixed-precision op in the decoder pipeline) ended up feeding
-    MHA with fp32 query/key while value/weight were bf16.
-
-    This hook is the symmetric backstop: cast every floating-point
-    query/key/value input to the MHA's first-parameter dtype (which is the
-    compute_dtype the MHA was set up for).  Both positional and keyword
-    forms are handled.  Other args (masks, scalars, ``need_weights``, etc.)
-    pass through untouched.
-
-    Applies to both ``torch.nn.MultiheadAttention`` and
-    ``sam3.model.model_misc.MultiheadAttention`` (the same custom class
-    already enumerated in ``custom_sam_peft.peft_adapters.qlora._mha_exclusion_types``).
-    sam3's custom MHA is imported lazily so the patch degrades gracefully
-    when sam3 is unavailable (CPU unit tests).
-
-    Notes:
-    - Per-instance ``register_forward_pre_hook`` (with ``with_kwargs=True``);
-      idempotency sentinel ``_custom_sam_peft_mha_input_dtype_patched``.
-    - Hook fires before sam3's ``with torch.amp.autocast(enabled=False)``
-      regions (which live INSIDE the MHA call), so we don't collide with
-      the constraint that drives every other ``_patch_*_dtype`` helper.
-    - Re-evaluate every sam3 version bump; track long-term fix in upstream
-      sam3 (or wait for MHA to natively support mixed-dtype inputs).
-    """
-    mha_types: tuple[type[nn.Module], ...] = (nn.MultiheadAttention,)
-    try:
-        from sam3.model.model_misc import MultiheadAttention as _Sam3CustomMHA
-
-        mha_types = (*mha_types, _Sam3CustomMHA)
-    except ImportError:
-        # sam3 not importable (CPU-only unit env); torch built-in MHA alone covers the path.
-        pass
-
-    def _mha_input_dtype_hook(module, args, kwargs):  # type: ignore[no-untyped-def]
-        try:
-            target_dtype = next(module.parameters()).dtype
-        except StopIteration:
-            return None
-        # Positional: args[0..2] are query/key/value in both torch and sam3 MHA.
-        new_args = list(args)
-        for i in range(min(3, len(new_args))):
-            t = new_args[i]
-            if isinstance(t, torch.Tensor) and t.is_floating_point() and t.dtype != target_dtype:
-                new_args[i] = t.to(dtype=target_dtype)
-        # Keyword: same three names. Other kwargs (masks, scalars) untouched.
-        new_kwargs = dict(kwargs)
-        for name in ("query", "key", "value"):
-            t = new_kwargs.get(name)
-            if isinstance(t, torch.Tensor) and t.is_floating_point() and t.dtype != target_dtype:
-                new_kwargs[name] = t.to(dtype=target_dtype)
-        return tuple(new_args), new_kwargs
-
-    patched_count = 0
-    for submodule in model.modules():
-        if not isinstance(submodule, mha_types):
-            continue
-        if getattr(submodule, "_custom_sam_peft_mha_input_dtype_patched", False):
-            continue
-        submodule.register_forward_pre_hook(_mha_input_dtype_hook, with_kwargs=True)
-        submodule._custom_sam_peft_mha_input_dtype_patched = True  # type: ignore[assignment]
-        patched_count += 1
-
-    logger.info(
-        "Patched %d MultiheadAttention modules with query/key/value input-dtype hook.",
-        patched_count,
-    )
+    _m.apply(model, Runtime(device=torch.device("cpu"), dtype=torch.float32))
 
 
 # Modules that own a `weight` parameter and require their floating-point
-# input to match that weight's dtype. We hook the forward pre-call on each
-# instance to cast input[0] in-flight. Embedding is intentionally excluded
-# (integer input). Attention-style fused modules (nn.MultiheadAttention and
-# sam3.model.model_misc.MultiheadAttention) are handled separately by
-# _patch_mha_input_dtype, which casts query/key/value (three positional
-# tensors) rather than just args[0].
+# input to match that weight's dtype. Referenced by models/_patches/module_input_dtype.py.
 _DTYPE_SENSITIVE_MODULE_TYPES: tuple[type[nn.Module], ...] = (
     nn.Linear,
     nn.LayerNorm,
@@ -982,89 +466,34 @@ _DTYPE_SENSITIVE_MODULE_TYPES: tuple[type[nn.Module], ...] = (
 
 
 def _patch_module_input_dtype(model: nn.Module) -> None:
-    """Install a generic fp-input-dtype backstop on every dtype-sensitive submodule.
+    """Delegate to models/_patches/module_input_dtype.apply (see that module for rationale)."""
+    from custom_sam_peft.models._patches import module_input_dtype as _m
+    from custom_sam_peft.runtime._runtime import Runtime
 
-    Several places in sam3 build activation tensors with hardcoded fp32
-    (e.g. ``torch.arange(..., dtype=torch.float32)`` in
-    ``model_misc.gen_sineembed_for_position`` at sam3/model/model_misc.py:915,
-    ``.float()`` in ``get_valid_ratio`` at sam3/model/model_misc.py:910).
-    When the model is loaded under ``ModelConfig(dtype="bfloat16")``, those
-    fp32 tensors flow into bf16-weighted ``nn.Linear``/``nn.LayerNorm``/conv
-    modules and raise ``RuntimeError: mat1 and mat2 must have the same
-    dtype, but got Float and BFloat16`` on Colab T4.  We've already patched
-    three specific producers (``_patch_pos_enc_dtype``,
-    ``_patch_roi_align_dtype``, ``_patch_encode_prompt_dtype``); this is the
-    generic backstop that catches any remaining or future cascading site by
-    coercing dtype at the *consumer* boundary.
+    _m.apply(model, Runtime(device=torch.device("cpu"), dtype=torch.float32))
 
-    The hook fires before each forward call, casts a floating-point first
-    positional input to the module's first-parameter dtype, and returns the
-    rewritten args tuple.  Non-tensor inputs and integer/bool tensors are
-    passed through untouched (preserves ``nn.Embedding`` semantics, though
-    Embedding is excluded from the iterated module-type set anyway).
-    Parameter-free submodules (no ``.parameters()``) are skipped.
 
-    The patch is idempotent per instance via a sentinel attribute.  Hooks
-    survive ``.to(dtype=)`` / ``.to(device)`` calls because they are
-    attached to the module, not its parameters.
+def _locate_weights(cfg: ModelConfig) -> Path:
+    """Resolve the checkpoint path from config (HF / local / cache).
 
-    Notes:
-    - This is a *consumer-side* defense.  We retain the producer-side
-      patches above for sites we already know about, partly to keep the
-      precision close to source and partly so the existing test suite for
-      those producer patches keeps documenting the upstream bug surface.
-      The two layers compose without redundancy in the happy path: the
-      consumer hook is a no-op once the producer already matches.
-    - We do NOT use ``torch.autocast`` because that re-triggers the bf16/fp32
-      collision in ``sam3/model/decoder.py::forward_ffn``'s
-      ``with torch.amp.autocast(enabled=False)`` region (PR #13 constraint).
-    - Re-evaluate every sam3 version bump; track upstream fix in logs/TODO.md.
+    Delegates to ``_resolve_checkpoint_path``; exists as a named seam so
+    ``load_sam31`` reads as a linear orchestration shell.
     """
-
-    def _input_dtype_hook(module: nn.Module, args: tuple[Any, ...]):  # type: ignore[no-untyped-def]
-        if not args:
-            return None
-        x = args[0]
-        if not isinstance(x, torch.Tensor) or not x.is_floating_point():
-            return None
-        try:
-            target_dtype = next(module.parameters()).dtype
-        except StopIteration:
-            return None
-        if x.dtype == target_dtype:
-            return None
-        return (x.to(dtype=target_dtype), *args[1:])
-
-    patched_count = 0
-    for submodule in model.modules():
-        if not isinstance(submodule, _DTYPE_SENSITIVE_MODULE_TYPES):
-            continue
-        if getattr(submodule, "_custom_sam_peft_module_input_dtype_patched", False):
-            continue
-        submodule.register_forward_pre_hook(_input_dtype_hook)
-        submodule._custom_sam_peft_module_input_dtype_patched = True  # type: ignore[assignment]
-        patched_count += 1
-
-    logger.info(
-        "Patched %d dtype-sensitive modules (Linear/LayerNorm/Conv) with input-dtype hook.",
-        patched_count,
-    )
+    return _resolve_checkpoint_path(cfg)
 
 
-def load_sam31(cfg: ModelConfig) -> Sam3Wrapper:
-    """Load SAM 3.1 via Meta's `sam3` package and wrap it for our trainer.
+def _construct_raw_model(cfg: ModelConfig) -> nn.Module:
+    """Instantiate Sam3Image from the checkpoint, suppressing known-harmless stdout noise.
 
-    Returns a `Sam3Wrapper` whose `forward(images, prompts, box_hints=None)` returns Meta's
-    native per-class output dict (`pred_logits`, `pred_boxes`, `pred_masks`,
-    `presence_logit_dec`).
+    sam3's ``_load_checkpoint`` (model_builder.py:539-561) calls ``print()`` to
+    stdout when ``load_state_dict`` reports missing keys.  We capture stdout
+    during the build call, filter out the known-harmless convs.3 noise, and
+    re-emit only unrecognised content.  Unrecognised missing keys raise
+    ``RuntimeError`` loudly so checkpoint regressions don't slip through silently.
     """
-    ckpt_path = _resolve_checkpoint_path(cfg)
+    ckpt_path = _locate_weights(cfg)
     device = cfg.device or ("cuda" if torch.cuda.is_available() else "cpu")
 
-    # sam3's _load_checkpoint (model_builder.py:539-561) calls print() to
-    # stdout when load_state_dict reports missing keys.  We capture stdout
-    # during the build call so we can inspect the message and either suppress
-    # the known-harmless convs.3 noise or raise loudly on anything unexpected.
     _captured_stdout = io.StringIO()
     with contextlib.redirect_stdout(_captured_stdout):
         raw_model = sam3.build_sam3_image_model(
@@ -1142,62 +571,76 @@ def load_sam31(cfg: ModelConfig) -> Sam3Wrapper:
                 "gradient_checkpointing=True is a no-op on this revision."
             )
 
+    assert isinstance(raw_model, nn.Module)  # noqa: S101
+    return raw_model
+
+
+def _apply_dtype(model: nn.Module, cfg: ModelConfig) -> nn.Module:
+    """Cast model parameters to the dtype specified in config (in-place, returns model).
+
+    Returns the model reference (which may be a new object for non-in-place casts,
+    though ``nn.Module.to`` modifies in-place and returns self).
+    """
     if cfg.dtype == "bfloat16":
-        raw_model = raw_model.to(dtype=torch.bfloat16)
+        model = model.to(dtype=torch.bfloat16)
     elif cfg.dtype == "float16":
-        raw_model = raw_model.to(dtype=torch.float16)
+        model = model.to(dtype=torch.float16)
+    return model
 
-    # Cast PositionEmbeddingSine._encode_xy outputs to input dtype to avoid
-    # fp32 inputs feeding bf16 Linear weights in the geometry encoder.
-    # See _patch_pos_enc_dtype for full rationale.
-    _patch_pos_enc_dtype(raw_model)
 
-    # Cast roi_align boxes to input dtype to avoid fp32 rois fed to bf16 img_feats
-    # in sam3's geometry encoder. See _patch_roi_align_dtype for full rationale.
-    _patch_roi_align_dtype()
+def _apply_patches(model: nn.Module) -> None:
+    """Apply all dtype-correctness patches to *model* via ``Sam3Patches.apply``.
 
-    # Cast _encode_prompt's `prompt` to model dtype — sam3 builds a fallback
-    # fp32 visual_prompt_embed via torch.zeros() without dtype=, and
-    # torch.cat type-promotes the concatenated prompt to fp32 even when
-    # txt_feats/geo_feats are bf16. See _patch_encode_prompt_dtype.
-    _patch_encode_prompt_dtype(raw_model)
+    Builds a ``Runtime`` from the model's current parameter dtype, then
+    delegates to ``Sam3Patches.apply`` which iterates ``_ALL_PATCHES``
+    (populated in Task 5.7 with one entry per patch module under
+    ``models/_patches/``).
+    """
+    from custom_sam_peft.runtime import Sam3Patches
+    from custom_sam_peft.runtime._runtime import Runtime
 
-    # Replace sam3's text-pooling helpers (encoder.pool_text_feat and
-    # DotProductScoring.mean_pool_text) so their internal (~mask).float()
-    # promotion is replaced by (~mask).to(prompt.dtype). Otherwise bf16
-    # prompts get promoted to fp32 mid-forward and crash downstream
-    # Linear4bit / matmul ops with "expected BFloat16 but found Float".
-    # See _patch_text_pool_dtype for full rationale.
-    _patch_text_pool_dtype()
+    _dtype_str = "float32"
+    try:
+        target_dtype = next(model.parameters()).dtype
+        _dtype_map_inv = {
+            torch.float32: "float32",
+            torch.float16: "float16",
+            torch.bfloat16: "bfloat16",
+        }
+        _dtype_str = _dtype_map_inv.get(target_dtype, "float32")
+    except StopIteration:
+        pass
+    runtime = Runtime.from_config(device="cpu", dtype=_dtype_str)
+    Sam3Patches.apply(model, runtime)
 
-    # Make sam3's inference-only addmm_act fused kernel grad-aware so the
-    # ViT-Det backbone supports LoRA fine-tuning. Without this, every
-    # MLP block raises ValueError on grad-enabled forward and training
-    # aborts after nan_abort_after consecutive non-finite micro-steps.
-    # See _patch_addmm_act_grad_safe for full rationale.
-    _patch_addmm_act_grad_safe()
 
-    # Neutralize sam3's training-mode matching side-effect when find_target
-    # is None. _Sam3ImageAdapter passes find_target=None; sam3's
-    # forward_grounding would otherwise call back_convert(None) -> crash.
-    # We run our own HungarianMatcher in losses.total_loss; sam3's matcher
-    # output (out["indices"]) is never read by us.
-    # See _patch_forward_grounding_skip_matching_on_none_target for full rationale.
-    _patch_forward_grounding_skip_matching_on_none_target(raw_model)
+def _freeze_base(model: nn.Module, peft_method: Any) -> None:
+    """Freeze base model parameters, leaving adapter params trainable.
 
-    # Generic backstop: cast fp inputs to weight dtype at every
-    # nn.Linear/LayerNorm/Conv* in the model. Catches any remaining or
-    # future cascading fp32 producer site we haven't patched directly.
-    # See _patch_module_input_dtype for full rationale.
-    _patch_module_input_dtype(raw_model)
+    Currently a no-op seam: freezing is done by the PEFT adapter factories
+    (``peft_adapters.lora``, ``peft_adapters.qlora``) after ``load_sam31``
+    returns.  This helper exists so the orchestration shell in ``load_sam31``
+    has a named step for the future case where we want to centralize freezing
+    here (e.g. for a "no-PEFT fine-tune" mode).
 
-    # MHA-specific backstop: same idea as _patch_module_input_dtype but for
-    # nn.MultiheadAttention and sam3.model.model_misc.MultiheadAttention,
-    # which take three tensor inputs (query/key/value) and so are excluded
-    # from the generic hook. Without this, any upstream fp32 promotion
-    # reaches MHA's internal F.linear and crashes against the bf16 weight.
-    # See _patch_mha_input_dtype for full rationale.
-    _patch_mha_input_dtype(raw_model)
+    Precondition: ``peft_method`` is ``None`` when called from the current
+    ``load_sam31`` path; the argument is reserved for callers that may pass a
+    ``PEFTMethod`` in the future.
+    """
+    # No-op: PEFT adapters handle freezing post-load.
+
+
+def load_sam31(cfg: ModelConfig) -> Sam3Wrapper:
+    """Load SAM 3.1 via Meta's `sam3` package and wrap it for our trainer.
+
+    Returns a `Sam3Wrapper` whose `forward(images, prompts, box_hints=None)` returns Meta's
+    native per-class output dict (`pred_logits`, `pred_boxes`, `pred_masks`,
+    `presence_logit_dec`).
+    """
+    raw_model = _construct_raw_model(cfg)
+    raw_model = _apply_dtype(raw_model, cfg)
+    _apply_patches(raw_model)
+    _freeze_base(raw_model, peft_method=None)
 
     adapter = _Sam3ImageAdapter(raw_model, image_size=1008)
     return Sam3Wrapper(adapter, image_size=1008, mask_size=288)
