@@ -175,7 +175,7 @@ def test_doctor_json_with_config_has_resolved_block(tmp_path) -> None:
     blob = json.loads(_plain(result.stdout))
     assert "resolved_config" in blob
     rc = blob["resolved_config"]
-    assert set(rc.keys()) == {"augmentations", "normalize"}
+    assert set(rc.keys()) == {"augmentations", "normalize", "loss"}
     assert rc["augmentations"]["preset"] == "medical"
     assert rc["augmentations"]["intensity"] == "medium"
     assert set(rc["augmentations"]["resolved"].keys()) == {
@@ -191,6 +191,92 @@ def test_doctor_json_with_config_has_resolved_block(tmp_path) -> None:
     assert isinstance(rc["augmentations"]["steps"], list)
     assert rc["normalize"]["model_name"] == "facebook/sam3.1"
     assert rc["normalize"]["resolution_path"] in {"processor", "table-fallback", "config-fallback"}
+
+
+# ---------------------------------------------------------------------------
+# spec/domain-aware-loss-presets — doctor --config resolved-losses (Phase F)
+# ---------------------------------------------------------------------------
+
+
+def test_doctor_with_config_renders_resolved_losses(tmp_path) -> None:
+    """Spec §10.2: --config renders a 'Resolved losses' table."""
+    from typer.testing import CliRunner
+
+    from custom_sam_peft.cli.main import app
+
+    cfg_path = tmp_path / "cfg.yaml"
+    CliRunner().invoke(
+        app,
+        ["init", "--preset", "medical", "--class-imbalance", "moderate", "--output", str(cfg_path)],
+    )
+    res = CliRunner().invoke(app, ["doctor", "--config", str(cfg_path)])
+    assert res.exit_code == 0, res.output
+    text = _plain(res.output)
+    assert "Resolved losses" in text
+    assert "preset" in text and "medical" in text
+    assert "class_imbalance" in text and "moderate" in text
+    assert "term_classes" in text
+    assert "FocalTverskyLoss" in text  # from med/moderate row
+
+
+def test_doctor_json_with_config_has_loss_block(tmp_path) -> None:
+    import json
+
+    from typer.testing import CliRunner
+
+    from custom_sam_peft.cli.main import app
+
+    cfg_path = tmp_path / "cfg.yaml"
+    CliRunner().invoke(
+        app,
+        [
+            "init",
+            "--preset",
+            "natural",
+            "--class-imbalance",
+            "balanced",
+            "--output",
+            str(cfg_path),
+        ],
+    )
+    res = CliRunner().invoke(app, ["doctor", "--config", str(cfg_path), "--json"])
+    assert res.exit_code == 0
+    body = json.loads(_plain(res.output))
+    assert "resolved_config" in body
+    assert "loss" in body["resolved_config"]
+    loss = body["resolved_config"]["loss"]
+    assert loss["preset"] == "natural"
+    assert loss["class_imbalance"] == "balanced"
+    assert set(loss["resolved"].keys()) == {
+        "mask_family",
+        "box_family",
+        "obj_family",
+        "presence_family",
+        "w_mask",
+        "w_box",
+        "w_obj",
+        "w_presence",
+        "focal_gamma",
+        "focal_alpha",
+        "tversky_alpha",
+        "tversky_gamma",
+        "boundary_weight",
+    }
+
+
+def test_doctor_json_without_config_no_loss_block() -> None:
+    """Spec §10.2: with no --config, output has no loss block."""
+    import json
+
+    from typer.testing import CliRunner
+
+    from custom_sam_peft.cli.main import app
+
+    res = CliRunner().invoke(app, ["doctor", "--json"])
+    assert res.exit_code == 0
+    body = json.loads(_plain(res.output))
+    if "resolved_config" in body:
+        assert "loss" not in body["resolved_config"]
 
 
 def test_doctor_no_config_json_shape_unchanged() -> None:

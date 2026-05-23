@@ -405,6 +405,110 @@ def test_augmentation_overrides_rejects_negative_floats() -> None:
         AugmentationOverrides.model_validate({"stain_jitter": -0.1})
 
 
+# ---------------------------------------------------------------------------
+# spec/domain-aware-loss-presets (#112): LossConfig / LossOverrides
+# ---------------------------------------------------------------------------
+
+
+def test_loss_config_defaults() -> None:
+    from custom_sam_peft.config.schema import LossConfig
+
+    cfg = LossConfig()
+    assert cfg.preset == "natural"
+    assert cfg.class_imbalance == "balanced"
+    assert cfg.overrides.model_dump() == {
+        "mask_family": None,
+        "box_family": None,
+        "obj_family": None,
+        "presence_family": None,
+        "w_mask": None,
+        "w_box": None,
+        "w_obj": None,
+        "w_presence": None,
+        "focal_gamma": None,
+        "focal_alpha": None,
+        "tversky_alpha": None,
+        "tversky_gamma": None,
+        "boundary_weight": None,
+        "matcher_weights": None,
+    }
+
+
+def test_loss_config_class_imbalance_literal_validation() -> None:
+    from pydantic import ValidationError
+
+    from custom_sam_peft.config.schema import LossConfig
+
+    with pytest.raises(ValidationError):
+        LossConfig(class_imbalance="moderete")  # type: ignore[arg-type]
+
+
+def test_loss_config_preset_literal_validation() -> None:
+    from pydantic import ValidationError
+
+    from custom_sam_peft.config.schema import LossConfig
+
+    with pytest.raises(ValidationError):
+        LossConfig(preset="medecal")  # type: ignore[arg-type]
+
+
+def test_loss_overrides_rejects_unknown_keys() -> None:
+    from pydantic import ValidationError
+
+    from custom_sam_peft.config.schema import LossOverrides
+
+    with pytest.raises(ValidationError):
+        LossOverrides(mask_familty="dice_bce")  # type: ignore[call-arg]
+
+
+def test_loss_overrides_default_factory_isolation() -> None:
+    from custom_sam_peft.config.schema import LossConfig
+
+    a = LossConfig()
+    b = LossConfig()
+    assert a.overrides is not b.overrides
+
+
+def test_loss_overrides_family_literal_validation() -> None:
+    from pydantic import ValidationError
+
+    from custom_sam_peft.config.schema import LossOverrides
+
+    with pytest.raises(ValidationError):
+        LossOverrides(mask_family="focle_bce")  # type: ignore[arg-type]
+    with pytest.raises(ValidationError):
+        LossOverrides(box_family="diou")  # type: ignore[arg-type]
+
+
+def test_loss_overrides_matcher_weights_dict_coerced() -> None:
+    from custom_sam_peft.config._internal import MatcherWeights
+    from custom_sam_peft.config.schema import LossOverrides
+
+    o = LossOverrides(matcher_weights={"lambda_mask": 7.0})  # type: ignore[arg-type]
+    assert isinstance(o.matcher_weights, MatcherWeights)
+    assert o.matcher_weights.lambda_mask == 7.0
+
+
+def test_loss_overrides_w_box_zero_allowed() -> None:
+    from custom_sam_peft.config.schema import LossOverrides
+
+    LossOverrides(w_box=0.0)  # ge=0.0; no exception
+
+
+def test_loss_overrides_w_mask_zero_rejected() -> None:
+    from pydantic import ValidationError
+
+    from custom_sam_peft.config.schema import LossOverrides
+
+    with pytest.raises(ValidationError):
+        LossOverrides(w_mask=0.0)  # PositiveFloat
+
+
+# ---------------------------------------------------------------------------
+# SAM 3.1 multiplex config (#122): MultiplexConfig
+# ---------------------------------------------------------------------------
+
+
 def test_multiplex_config_defaults() -> None:
     from custom_sam_peft.config.schema import MultiplexConfig
 
@@ -413,7 +517,6 @@ def test_multiplex_config_defaults() -> None:
 
 
 def test_multiplex_config_validates_range() -> None:
-    import pytest
     from pydantic import ValidationError
 
     from custom_sam_peft.config.schema import MultiplexConfig

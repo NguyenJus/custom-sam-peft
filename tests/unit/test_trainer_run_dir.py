@@ -14,6 +14,7 @@ from custom_sam_peft.config.schema import (
     AugmentationsConfig,
     DataConfig,
     DataSplit,
+    LossConfig,
     PEFTConfig,
     RunConfig,
     TrainConfig,
@@ -36,6 +37,7 @@ def test_fit_uses_caller_provided_run_dir(tmp_path: Path, monkeypatch: pytest.Mo
     cfg.run.seed = 0
     cfg.data.prompt_mode = "text"
     cfg.data.augmentations = AugmentationsConfig(preset="none")
+    cfg.train.loss = LossConfig()
     cfg.train.num_workers = 0
     cfg.train.batch_size = 1
     cfg.train.epochs = 0  # Skip the train loop entirely.
@@ -413,3 +415,98 @@ def test_run_dir_writes_augmentation_pipeline_json(
         "gauss_noise",
     }
     assert isinstance(blob["library_version"], str) and blob["library_version"]
+
+
+def test_run_dir_writes_loss_bundle_json(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Spec §9: trainer writes loss_bundle.json alongside augmentation_pipeline.json."""
+    from custom_sam_peft.config.schema import (
+        AugmentationsConfig,
+        DataConfig,
+        DataSplit,
+        NormalizeConfig,
+        PEFTConfig,
+        RunConfig,
+        TextPromptConfig,
+        TrainConfig,
+        TrainHyperparams,
+    )
+    from custom_sam_peft.data.coco import COCODataset
+    from custom_sam_peft.data.transforms import build_eval_transforms, build_train_transforms
+    from custom_sam_peft.peft_adapters.lora import apply_lora
+
+    tiny_coco_dir = Path(__file__).resolve().parents[1] / "fixtures" / "tiny_coco"
+    transforms_t = build_train_transforms(
+        AugmentationsConfig(preset="medical", intensity="medium"),
+        32,
+        model_name="facebook/sam3.1",
+        normalize=NormalizeConfig(),
+    )
+    transforms_v = build_eval_transforms(
+        32,
+        model_name="facebook/sam3.1",
+        normalize=NormalizeConfig(),
+    )
+    ds_train = COCODataset(
+        annotations=str(tiny_coco_dir / "annotations.json"),
+        images=str(tiny_coco_dir / "images"),
+        prompt_mode="text",
+        transforms=transforms_t,
+        text_prompt=TextPromptConfig(),
+    )
+    ds_val = COCODataset(
+        annotations=str(tiny_coco_dir / "annotations.json"),
+        images=str(tiny_coco_dir / "images"),
+        prompt_mode="text",
+        transforms=transforms_v,
+        text_prompt=TextPromptConfig(),
+    )
+    wrapper = make_stub_wrapper(dim=8, working=True)
+    cfg = TrainConfig(
+        run=RunConfig(name="loss-sidecar", output_dir=str(tmp_path), seed=0),
+        data=DataConfig(
+            format="coco",
+            train=DataSplit(
+                annotations=str(tiny_coco_dir / "annotations.json"),
+                images=str(tiny_coco_dir / "images"),
+            ),
+            val=DataSplit(
+                annotations=str(tiny_coco_dir / "annotations.json"),
+                images=str(tiny_coco_dir / "images"),
+            ),
+            prompt_mode="text",
+            image_size=32,
+            augmentations=AugmentationsConfig(preset="medical", intensity="medium"),
+        ),
+        peft=PEFTConfig(
+            method="lora",
+            scope="vision",
+            target_modules=FIXTURE_SCOPE_PATTERNS["vision"],
+        ),
+        train=TrainHyperparams(
+            epochs=1,
+            batch_size=1,
+            grad_accum_steps=1,
+            save_every=10_000,
+            log_every=10_000,
+            warmup_steps=0,
+            num_workers=0,
+        ),
+    )
+    apply_lora(wrapper, cfg.peft)
+
+    run_dir = tmp_path / "loss-sidecar-run"
+    trainer = Trainer(wrapper, ds_train, ds_val, NoopTracker(), cfg)
+    trainer.fit(run_dir=run_dir)
+
+    loss_path = run_dir / "loss_bundle.json"
+    assert loss_path.exists(), list(tmp_path.rglob("*"))
+    d = json.loads(loss_path.read_text())
+    assert set(d.keys()) == {
+        "preset",
+        "class_imbalance",
+        "resolved",
+        "term_classes",
+        "library_version",
+    }
+    assert len(d["resolved"]) == 13
+    assert set(d["term_classes"].keys()) == {"mask", "box", "obj", "presence"}

@@ -4,9 +4,13 @@ This module is the source of truth for every default and constraint. The
 loader merges YAML + CLI overrides into a plain dict, then validates once
 against TrainConfig.
 
-Internal sub-configs (MatcherWeights, LossConfig, WandbConfig, ExportConfig)
+Internal sub-configs (MatcherWeights, WandbConfig, ExportConfig)
 have been moved to config._internal per audit Section G. They are re-exported
-here for backward compatibility during this PR; Task 7.1 will update consumers.
+here for backward compatibility. New code should import from
+config._internal directly.
+
+LossConfig is now defined here (Pydantic model) as part of the #112 schema
+break; the former dataclass LossConfig in _internal.py has been deleted.
 """
 
 from __future__ import annotations
@@ -14,11 +18,18 @@ from __future__ import annotations
 import os
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, PositiveFloat, PositiveInt, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    PositiveFloat,
+    PositiveInt,
+    field_validator,
+    model_validator,
+)
 
 from custom_sam_peft.config._internal import (
     ExportConfig,
-    LossConfig,
     MatcherWeights,
     WandbConfig,
 )
@@ -28,12 +39,15 @@ __all__ = [  # noqa: RUF022
     "AugmentationOverrides",
     "AugmentationsConfig",
     "BoxHintSchedule",
+    "ClassImbalance",
     "DataConfig",
     "DataSplit",
     "EvalConfig",
     "HFDatasetConfig",
     "HFFieldMap",
     "LimitConfig",
+    "LossConfig",
+    "LossOverrides",
     "ModelConfig",
     "MultiplexConfig",
     "NormalizeConfig",
@@ -46,14 +60,18 @@ __all__ = [  # noqa: RUF022
     "TrainHyperparams",
     "ValSplitConfig",
     # Type aliases
+    "BoxFamily",
     "DataFormat",
     "Dtype",
     "EvalMode",
     "Intensity",
     "LoraScope",
     "LRSchedule",
+    "MaskFamily",
+    "ObjFamily",
     "Optimizer",
     "PEFTMethod",
+    "PresenceFamily",
     "Preset",
     "PromptMode",
     "QuantType",
@@ -64,7 +82,6 @@ __all__ = [  # noqa: RUF022
     # These are dataclasses, not Pydantic models. Import from config._internal
     # directly in new code.
     "ExportConfig",
-    "LossConfig",
     "MatcherWeights",
     "WandbConfig",
 ]
@@ -114,6 +131,66 @@ class DataSplit(_Strict):
 
 Preset = Literal["natural", "medical", "satellite", "microscopy", "none", "custom"]
 Intensity = Literal["safe", "medium", "aggressive"]
+
+ClassImbalance = Literal["balanced", "moderate", "severe"]
+MaskFamily = Literal[
+    "bce", "dice", "dice_bce", "focal_bce", "focal_dice", "focal_tversky", "boundary"
+]
+BoxFamily = Literal["l1_giou", "giou_only", "ciou"]
+ObjFamily = Literal["focal_bce", "bce"]
+PresenceFamily = Literal["bce", "focal_bce"]
+
+
+class LossOverrides(_Strict):
+    """Per-knob overrides. All None → inherit from (preset, class_imbalance).
+
+    Setting any field to a non-None value replaces just that field in the
+    resolved table. Extra keys are rejected (extra="forbid"); typos surface
+    at config-load time.
+    """
+
+    # Term selection (4 axes)
+    mask_family: MaskFamily | None = None
+    box_family: BoxFamily | None = None
+    obj_family: ObjFamily | None = None
+    presence_family: PresenceFamily | None = None
+
+    # Weights (4)
+    w_mask: PositiveFloat | None = None
+    w_box: float | None = Field(default=None, ge=0.0)
+    w_obj: PositiveFloat | None = None
+    w_presence: PositiveFloat | None = None
+
+    # Focal params (2)
+    focal_gamma: PositiveFloat | None = None
+    focal_alpha: float | None = Field(default=None, ge=0.0, le=1.0)
+
+    # Tversky params (2)
+    tversky_alpha: float | None = Field(default=None, ge=0.0, le=1.0)
+    tversky_gamma: PositiveFloat | None = None
+
+    # Boundary blend coefficient (1)
+    boundary_weight: float | None = Field(default=None, ge=0.0, le=1.0)
+
+    # Matcher contract (internal sub-model; accepts dict or MatcherWeights instance)
+    matcher_weights: MatcherWeights | None = None
+
+    @field_validator("matcher_weights", mode="before")
+    @classmethod
+    def _coerce_matcher_weights(cls, v: object) -> MatcherWeights | None:
+        if v is None or isinstance(v, MatcherWeights):
+            return v
+        if isinstance(v, dict):
+            return MatcherWeights(**v)
+        raise TypeError(f"matcher_weights must be a dict or MatcherWeights, got {type(v).__name__}")
+
+
+class LossConfig(_Strict):
+    preset: Preset = "natural"
+    class_imbalance: ClassImbalance = "balanced"
+    overrides: LossOverrides = Field(default_factory=LossOverrides)
+
+    model_config = ConfigDict(extra="forbid", arbitrary_types_allowed=True)
 
 
 class AugmentationOverrides(_Strict):

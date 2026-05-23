@@ -120,6 +120,66 @@ def test_fit_end_to_end_on_tiny_coco(backend: str, tmp_path: Path, tiny_coco_dir
         assert events, "tensorboard backend should write at least one event file"
 
 
+def test_end_to_end_writes_loss_bundle_json(tmp_path: Path, tiny_coco_dir: Path) -> None:
+    """Spec §9: after a training run, loss_bundle.json sits beside augmentation_pipeline.json."""
+    ds_train = _ds(tiny_coco_dir, "train")
+    ds_val = _ds(tiny_coco_dir, "eval")
+    wrapper = make_stub_wrapper(dim=8, working=True)
+
+    cfg = TrainConfig(
+        run=RunConfig(name="e2e-loss-sidecar", output_dir=str(tmp_path), seed=0),
+        data=DataConfig(
+            format="coco",
+            train=DataSplit(
+                annotations=str(tiny_coco_dir / "annotations.json"),
+                images=str(tiny_coco_dir / "images"),
+            ),
+            val=DataSplit(
+                annotations=str(tiny_coco_dir / "annotations.json"),
+                images=str(tiny_coco_dir / "images"),
+            ),
+            prompt_mode="text",
+            image_size=32,
+            augmentations=AugmentationsConfig(preset="none"),
+        ),
+        peft=PEFTConfig(
+            method="lora",
+            scope="vision",
+            target_modules=FIXTURE_SCOPE_PATTERNS["vision"],
+        ),
+        train=TrainHyperparams(
+            epochs=1,
+            batch_size=1,
+            grad_accum_steps=1,
+            save_every=2,
+            log_every=1,
+            warmup_steps=0,
+            num_workers=0,
+        ),
+        tracking=TrackingConfig(backend="none"),  # tensorboard not in dev deps
+    )
+    apply_lora(wrapper, cfg.peft)
+    run_dir = tmp_path / f"{cfg.run.name}-test"
+    tracker = build_tracker(cfg)
+    trainer = Trainer(wrapper, ds_train, ds_val, tracker, cfg)
+    result = trainer.fit(run_dir=run_dir)
+
+    loss_path = result.run_dir / "loss_bundle.json"
+    assert loss_path.exists(), list(result.run_dir.iterdir())
+    d = json.loads(loss_path.read_text())
+    assert d["preset"] in {"natural", "medical", "satellite", "microscopy", "none", "custom"}
+    assert d["library_version"]
+    assert set(d.keys()) == {
+        "preset",
+        "class_imbalance",
+        "resolved",
+        "term_classes",
+        "library_version",
+    }
+    assert len(d["resolved"]) == 13
+    assert set(d["term_classes"].keys()) == {"mask", "box", "obj", "presence"}
+
+
 def _bad_data_cfg(
     tmp_path: Path,
     annotations: Path,
