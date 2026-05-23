@@ -4,7 +4,7 @@ Release-tier (-m gpu); collect-and-skip on CPU. Run on Colab T4:
     pytest -m gpu tests/gpu/test_grad_checkpointing.py -v
 
 Verifies (spec §4 acceptance): no CheckpointError on LoRA AND QLoRA smokes
-(forward+backward complete); step-0 loss parity vs checkpointing-off (recompute
+(forward+backward complete); first-step loss parity vs checkpointing-off (recompute
 is numerically exact); peak VRAM measurably LOWER with checkpointing ON than OFF.
 The absolute 14/10 GB ceilings live in the existing smoke tests and are unchanged.
 
@@ -48,7 +48,7 @@ def _run(
     monkeypatch: pytest.MonkeyPatch,
     grad_ckpt: bool,
 ) -> tuple[float, float]:
-    """Run training with checkpointing on/off; return (step-0 loss, peak VRAM GB).
+    """Run training with checkpointing on/off; return (first-step loss, peak VRAM GB).
 
     Forces ``train.log_every=1`` so the very first step is always logged —
     the gpu_smoke_*.yaml configs ship with ``log_every=10``, which would
@@ -88,11 +88,11 @@ def test_lora_no_checkpoint_error_and_vram_lower(
     tiny_coco_dir: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """LoRA: checkpointing completes without error, step-0 loss matches, VRAM lower."""
+    """LoRA: checkpointing completes without error, first-step loss matches, VRAM lower."""
     off_loss0, off_peak = _run(_LORA, tmp_path / "off", tiny_coco_dir, monkeypatch, grad_ckpt=False)
     on_loss0, on_peak = _run(_LORA, tmp_path / "on", tiny_coco_dir, monkeypatch, grad_ckpt=True)
     assert abs(on_loss0 - off_loss0) <= 1e-2 * max(1.0, abs(off_loss0)), (
-        f"step-0 loss parity failed: on={on_loss0} off={off_loss0}"
+        f"first-step loss parity failed: on={on_loss0} off={off_loss0}"
     )
     assert on_peak <= off_peak - VRAM_MARGIN_GB, (
         f"checkpointing did not lower peak VRAM: "
@@ -111,13 +111,13 @@ def test_qlora_no_checkpoint_error_and_vram_lower(
     tiny_coco_dir: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """QLoRA: checkpointing completes without error, step-0 loss matches, VRAM lower."""
+    """QLoRA: checkpointing completes without error, first-step loss matches, VRAM lower."""
     off_loss0, off_peak = _run(
         _QLORA, tmp_path / "off", tiny_coco_dir, monkeypatch, grad_ckpt=False
     )
     on_loss0, on_peak = _run(_QLORA, tmp_path / "on", tiny_coco_dir, monkeypatch, grad_ckpt=True)
     assert abs(on_loss0 - off_loss0) <= 1e-2 * max(1.0, abs(off_loss0)), (
-        f"QLoRA step-0 loss parity failed: on={on_loss0} off={off_loss0}"
+        f"QLoRA first-step loss parity failed: on={on_loss0} off={off_loss0}"
     )
     assert on_peak <= off_peak - VRAM_MARGIN_GB, (
         f"QLoRA checkpointing did not lower peak VRAM: "
