@@ -620,9 +620,11 @@ def _construct_raw_model(cfg: ModelConfig) -> nn.Module:
         else:
             # sam3 has no set_grad_checkpointing on this revision; enable
             # activation checkpointing on its per-ViT-Det-block flags via the
-            # config-gated vit_act_checkpoint patch (flips use_act_checkpoint +
-            # deterministic-autocast wrap so non-reentrant recompute is
-            # metadata-consistent). Fixes the dead static entry point (#89).
+            # config-gated vit_act_checkpoint patch. NOTE: this currently flips
+            # use_act_checkpoint only; the deterministic-autocast wrap that makes
+            # non-reentrant recompute metadata-consistent is added by the Phase-1
+            # GPU-gated task after the T4 diagnostic (#89). Fixes the dead static
+            # entry point.
             _patch_enable_vit_act_checkpoint(raw_model)
 
     assert isinstance(raw_model, nn.Module)  # noqa: S101

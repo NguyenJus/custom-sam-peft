@@ -195,8 +195,8 @@ Three short paragraphs:
 > **Note (2026-05-23, #89):** the "gradient checkpointing knobs" named here as a
 > T4-ceiling remediation are now FUNCTIONAL (a dead reference before #89's fix).
 > The "ceilings must not be raised" policy is unchanged and reaffirmed — the fix
-> reduces usage under the existing 14/10 GB ceilings, verified on T4 per the
-> PR's acceptance criteria.
+> is intended to reduce usage under the existing 14/10 GB ceilings, **to be
+> verified on T4 before merge** per the PR's acceptance criteria.
 
 ### 5.5 Section 5: "Data-size policy"
 
