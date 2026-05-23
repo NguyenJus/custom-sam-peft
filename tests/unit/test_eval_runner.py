@@ -240,3 +240,100 @@ def test_run_eval_auto_split_threads_resolved_image_ids_to_builder(
     assert isinstance(cfg_dict, dict)
     assert "_resolved_image_ids" in cfg_dict
     assert cfg_dict["_resolved_image_ids"] == {"eval": ["3", "4"]}
+
+
+# ---------------------------------------------------------------------------
+# EvalConfig.batch_size auto-resolution in run_eval (T10)
+# ---------------------------------------------------------------------------
+
+
+def test_run_eval_resolves_auto_via_decide_eval_batch_size(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """run_eval calls presets.decide_eval_batch_size when cfg.eval.batch_size == 'auto'."""
+    called: dict[str, object] = {}
+
+    def _fake_decide(image_size: int, classes_per_forward: int = 16) -> tuple[int, int, str]:
+        called["image_size"] = image_size
+        called["k"] = classes_per_forward
+        return (3, 1, "analytic")
+
+    # Patch at the import site inside runner.py
+    monkeypatch.setattr(
+        "custom_sam_peft.eval.runner.decide_eval_batch_size",
+        _fake_decide,
+        raising=False,
+    )
+    # Also patch the presets module in case runner imports it lazily
+    monkeypatch.setattr("custom_sam_peft.presets.decide_eval_batch_size", _fake_decide)
+
+    cfg = _make_cfg(format_="coco", peft_method="lora")
+    cfg.data.image_size = 1008
+
+    from custom_sam_peft.config.schema import EvalConfig
+
+    cfg.eval = EvalConfig(batch_size="auto")
+
+    evaluator_init_cfg: list[object] = []
+
+    def _fake_evaluator(eval_cfg: object) -> object:
+        evaluator_init_cfg.append(eval_cfg)
+        ev = MagicMock()
+        ev.evaluate_and_save = MagicMock(return_value=MagicMock())
+        return ev
+
+    monkeypatch.setattr(
+        "custom_sam_peft.eval.runner.lookup",
+        lambda *_a, **_kw: lambda *a, **kw: MagicMock(__len__=lambda self: 0, class_names=[]),
+    )
+    monkeypatch.setattr("custom_sam_peft.eval.runner.load_sam31", lambda _m: MagicMock())
+    monkeypatch.setattr("custom_sam_peft.eval.runner.load_lora", lambda *_a, **_kw: None)
+    monkeypatch.setattr("custom_sam_peft.eval.runner.Evaluator", _fake_evaluator)
+
+    run_eval(cfg, checkpoint=tmp_path, split="val", output_dir=tmp_path)
+
+    assert called.get("image_size") == 1008, f"decide not called with image_size=1008; got {called}"
+    assert called.get("k") == 16, f"decide not called with k=16; got {called}"
+    # The resolved batch_size must be 3 (what _fake_decide returned).
+    assert len(evaluator_init_cfg) == 1
+    resolved = evaluator_init_cfg[0]
+    assert resolved.batch_size == 3, f"Evaluator got batch_size={resolved.batch_size!r}, want 3"
+
+
+def test_run_eval_cpu_fallback_logs_info(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """On CPU, decide_eval_batch_size returns 1; presets logs 'eval.batch_size=auto on CPU'."""
+    import logging
+
+    caplog.set_level(logging.INFO)
+
+    # Force CUDA unavailable
+    import torch
+
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
+
+    cfg = _make_cfg(format_="coco", peft_method="lora")
+    cfg.data.image_size = 1008
+
+    from custom_sam_peft.config.schema import EvalConfig
+
+    cfg.eval = EvalConfig(batch_size="auto")
+
+    monkeypatch.setattr(
+        "custom_sam_peft.eval.runner.lookup",
+        lambda *_a, **_kw: lambda *a, **kw: MagicMock(__len__=lambda self: 0, class_names=[]),
+    )
+    monkeypatch.setattr("custom_sam_peft.eval.runner.load_sam31", lambda _m: MagicMock())
+    monkeypatch.setattr("custom_sam_peft.eval.runner.load_lora", lambda *_a, **_kw: None)
+    monkeypatch.setattr(
+        "custom_sam_peft.eval.runner.Evaluator",
+        lambda _cfg: MagicMock(evaluate_and_save=MagicMock(return_value=MagicMock())),
+    )
+
+    run_eval(cfg, checkpoint=tmp_path, split="val", output_dir=tmp_path)
+
+    log_messages = " ".join(r.message for r in caplog.records)
+    assert "eval.batch_size=auto on CPU" in log_messages, (
+        f"Expected 'eval.batch_size=auto on CPU' in logs; got: {log_messages!r}"
+    )

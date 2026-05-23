@@ -25,13 +25,30 @@ from custom_sam_peft.cli._progress import progress as P
 from custom_sam_peft.config.schema import BoxHintSchedule, TrainConfig
 from custom_sam_peft.data.base import Instance, TextPrompts
 from custom_sam_peft.models.losses import total_loss
-from custom_sam_peft.models.sam3 import Sam3Wrapper
+from custom_sam_peft.models.sam3 import MULTIPLEX_CAP, Sam3Wrapper
 from custom_sam_peft.peft_adapters import PEFTMethod, make_peft_method
 from custom_sam_peft.runtime import Runtime, to_device
 from custom_sam_peft.tracking.base import Tracker
 from custom_sam_peft.train.types import OomEvent
 
 _LOG = logging.getLogger(__name__)
+
+# Module-level flag: logs the auto-chunk INFO message only once per process run.
+# Reset via _reset_auto_chunk_log() in tests.
+_AUTO_CHUNK_LOGGED: bool = False
+
+
+def _reset_auto_chunk_log() -> None:
+    """Test helper: reset the _AUTO_CHUNK_LOGGED flag between test cases."""
+    global _AUTO_CHUNK_LOGGED
+    _AUTO_CHUNK_LOGGED = False
+
+
+def _chunked(seq: list[str], n: int) -> list[list[str]]:
+    """Split seq into consecutive chunks of size ≤ n. Preserves order."""
+    if n <= 0:
+        raise ValueError(f"_chunked: n must be positive; got {n}")
+    return [seq[i : i + n] for i in range(0, len(seq), n)]
 
 
 @dataclass
@@ -200,27 +217,51 @@ def train_step(
         _LOG.warning("train_step: batch has no class prompts; skipping (data condition)")
         return StepResult.empty(p_t=p_t, nan_streak=nan_streak)
 
+    # Build per-group chunks.  effective_K is capped at MULTIPLEX_CAP so the
+    # wrapper's validation never fires (it rejects K > MULTIPLEX_CAP).
+    effective_K = min(cfg.train.multiplex.classes_per_forward, MULTIPLEX_CAP)
+    groups = _chunked(classes_in_batch, effective_K)
+    G = len(groups)
+
+    global _AUTO_CHUNK_LOGGED
+    if len(classes_in_batch) > MULTIPLEX_CAP and not _AUTO_CHUNK_LOGGED:
+        _LOG.info(
+            "multiplex auto-chunk: classes_in_batch=%d > MULTIPLEX_CAP=%d -> %d groups",
+            len(classes_in_batch),
+            MULTIPLEX_CAP,
+            G,
+        )
+        _AUTO_CHUNK_LOGGED = True
+
     accum: dict[str, float] = {"mask": 0.0, "box": 0.0, "obj": 0.0, "presence": 0.0, "total": 0.0}
-    finite_class_count = 0
+    finite_group_count = 0
     n_hint_applied = 0
 
     if oom_state is not None:
         oom_state.step = global_step
 
-    for c in classes_in_batch:
-        prompts_c = [TextPrompts(classes=[c]) for _ in range(B)]
-        c_dense = class_names.index(c)
-        targets_c = [[inst for inst in targets[i] if inst.class_id == c_dense] for i in range(B)]
-        hints_c: list[Tensor | None] = []
-        for i in range(B):
-            if targets_c[i] and random.random() < p_t:  # noqa: S311 — training sampling probability, not security-sensitive
-                hints_c.append(to_device(torch.stack([inst.box for inst in targets_c[i]]), runtime))
-                n_hint_applied += 1
-            else:
-                hints_c.append(None)
+    for group in groups:
+        # Build per-group prompts (all B images share the same class list).
+        prompts_g = [TextPrompts(classes=list(group)) for _ in range(B)]
 
-        class_losses: dict[str, Tensor] | None = None
-        class_scaled: Tensor | None = None
+        # Build image-major / class-minor hints and targets.
+        # hints_g[i*K_g + j] covers image i, class group[j].
+        hints_g: list[Tensor | None] = []
+        targets_g: list[list[Instance]] = []
+        for i in range(B):
+            for c in group:
+                c_dense = class_names.index(c)
+                row_targets = [inst for inst in targets[i] if inst.class_id == c_dense]
+                targets_g.append(row_targets)
+                if row_targets and random.random() < p_t:  # noqa: S311 — training sampling probability, not security-sensitive
+                    box_tensor = torch.stack([inst.box for inst in row_targets])
+                    hints_g.append(to_device(box_tensor, runtime))
+                    n_hint_applied += 1
+                else:
+                    hints_g.append(None)
+
+        group_losses: dict[str, Tensor] | None = None
+        group_scaled: Tensor | None = None
         is_finite = False
         try:
             if oom_state is not None:
@@ -228,74 +269,84 @@ def train_step(
                 # sequence so the ladder can halve B on OOM. The forward_call
                 # receives a list of image indices (one microbatch slice at a time)
                 # and returns the per-microbatch loss divided only by
-                # (n_classes * grad_accum_steps). The helper applies / n_micro via
+                # (G * grad_accum_steps). The helper applies / n_micro via
                 # `(loss / n_micro).backward()`, so the closure must NOT include
                 # n_micro in its denominator — doing so would double-scale gradients
                 # whenever n_micro > 1 (i.e., after any OOM halving).
                 #
-                # We also capture the per-key loss dict for logging by storing it on
-                # a mutable container visible to the closure.
-                _last_class_losses: list[dict[str, Tensor]] = []
+                # The flat hint/target lists are image-major / class-minor with
+                # K_g slots per image. When the ladder halves B from mb to mb//2,
+                # we pass micro_indices [0..mb//2-1] and the closure slices the
+                # flat hint list as hints_g[i*K_g : (i+1)*K_g] for each micro image.
+                # This keeps the flat-row layout correct across all microbatch sizes.
+                K_g = len(group)
+                _last_group_losses: list[dict[str, Tensor]] = []
 
-                def _forward_class(
+                def _forward_group(
                     _model: Any,
                     micro_indices: list[int],
-                    _prompts_c: list[Any] = prompts_c,
-                    _targets_c: list[list[Instance]] = targets_c,
-                    _hints_c: list[Tensor | None] = hints_c,
-                    _n_classes: int = len(classes_in_batch),
+                    _prompts_g: list[Any] = prompts_g,
+                    _targets_g: list[list[Instance]] = targets_g,
+                    _hints_g: list[Tensor | None] = hints_g,
+                    _K_g: int = K_g,
+                    _G: int = G,
                     _grad_accum: int = cfg.train.grad_accum_steps,
-                    _losses_out: list[dict[str, Tensor]] = _last_class_losses,
+                    _losses_out: list[dict[str, Tensor]] = _last_group_losses,
                     _pm: PEFTMethod = _peft_method,
                 ) -> Tensor:
-                    micro_prompts = [_prompts_c[i] for i in micro_indices]
-                    micro_targets = [_targets_c[i] for i in micro_indices]
-                    micro_hints = [_hints_c[i] for i in micro_indices]
+                    # Slice prompts and flat hint/target rows for this microbatch.
+                    micro_prompts = [_prompts_g[i] for i in micro_indices]
+                    # For each image i in micro_indices, take its K_g consecutive rows.
+                    micro_targets = [
+                        _targets_g[i * _K_g + j] for i in micro_indices for j in range(_K_g)
+                    ]
+                    micro_hints = [
+                        _hints_g[i * _K_g + j] for i in micro_indices for j in range(_K_g)
+                    ]
                     micro_imgs = images[micro_indices]
                     with _autocast_ctx(cfg, _pm):
                         micro_out = _model(micro_imgs, micro_prompts, box_hints=micro_hints)
-                        micro_cls_losses = total_loss(micro_out, micro_targets, cfg.train.loss)
+                        micro_grp_losses = total_loss(micro_out, micro_targets, cfg.train.loss)
                     _losses_out.clear()
-                    _losses_out.append(micro_cls_losses)
-                    # Divide only by n_classes and grad_accum — NOT by n_micro.
+                    _losses_out.append(micro_grp_losses)
+                    # Divide only by G and grad_accum — NOT by n_micro.
                     # The ladder helper applies / n_micro in (loss / n_micro).backward().
-                    return micro_cls_losses["total"] / (_n_classes * _grad_accum)
+                    return micro_grp_losses["total"] / (_G * _grad_accum)
 
                 image_indices = list(range(B))
                 _train_step_with_oom_ladder(
-                    model, image_indices, oom_state, forward_call=_forward_class
+                    model, image_indices, oom_state, forward_call=_forward_group
                 )
                 # Use the last microbatch's losses for scalar logging.
-                class_losses = _last_class_losses[0] if _last_class_losses else None
-                if class_losses is not None:
-                    class_scaled_val = class_losses["total"] / (
-                        len(classes_in_batch) * cfg.train.grad_accum_steps
-                    )
-                    is_finite = bool(torch.isfinite(class_scaled_val))
+                group_losses = _last_group_losses[0] if _last_group_losses else None
+                if group_losses is not None:
+                    group_scaled_val = group_losses["total"] / (G * cfg.train.grad_accum_steps)
+                    is_finite = bool(torch.isfinite(group_scaled_val))
             else:
                 with _autocast_ctx(cfg, _peft_method):
-                    out = model(images, prompts_c, box_hints=hints_c)
-                    class_losses = total_loss(out, targets_c, cfg.train.loss)
-                class_scaled = class_losses["total"] / (
-                    len(classes_in_batch) * cfg.train.grad_accum_steps
-                )
-                is_finite = bool(torch.isfinite(class_scaled))
+                    out = model(images, prompts_g, box_hints=hints_g)
+                    group_losses = total_loss(out, targets_g, cfg.train.loss)
+                group_scaled = group_losses["total"] / (G * cfg.train.grad_accum_steps)
+                is_finite = bool(torch.isfinite(group_scaled))
         except ValueError as exc:
             # Hungarian matcher raises ValueError on non-finite cost matrices;
-            # treat as a NaN-class skip. Other exceptions (RuntimeError for OOM,
+            # treat as a NaN-group skip. Other exceptions (RuntimeError for OOM,
             # shape mismatches, dtype errors, device mismatches) must propagate.
-            _LOG.warning("train_step: class %r raised %s; treating as non-finite.", c, exc)
+            _LOG.warning(
+                "train_step: group %r raised %s; treating as non-finite.", list(group), exc
+            )
             is_finite = False
 
-        if is_finite and class_losses is not None:
-            if oom_state is None and class_scaled is not None:
-                class_scaled.backward()  # type: ignore[no-untyped-call]
+        if is_finite and group_losses is not None:
+            if oom_state is None and group_scaled is not None:
+                group_scaled.backward()  # type: ignore[no-untyped-call]
             # (when oom_state is not None, backward already happened in the ladder)
-            finite_class_count += 1
+            finite_group_count += 1
             for k in ("mask", "box", "obj", "presence", "total"):
-                accum[k] += float(class_losses[k].detach())
+                accum[k] += float(group_losses[k].detach())
 
-    skipped = finite_class_count == 0
+    # Step is skipped only when EVERY group is non-finite.
+    skipped = finite_group_count == 0
     new_streak = nan_streak + 1 if skipped else 0
     if new_streak >= cfg.train.nan_abort_after:
         raise RuntimeError(f"Training aborted: {new_streak} consecutive non-finite micro-steps.")
@@ -313,10 +364,10 @@ def train_step(
         optimizer.zero_grad(set_to_none=True)
 
     return StepResult(
-        losses={k: v / max(finite_class_count, 1) for k, v in accum.items()},
+        losses={k: v / max(finite_group_count, 1) for k, v in accum.items()},
         p_t=p_t,
         n_hint_applied=n_hint_applied,
-        n_classes=len(classes_in_batch),
+        n_classes=len(classes_in_batch),  # K_total: contract unchanged
         grad_norm=grad_norm,
         skipped=skipped,
         nan_streak=new_streak,

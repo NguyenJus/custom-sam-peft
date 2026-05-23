@@ -73,16 +73,29 @@ class TinySam3LoraStub(nn.Module):
         if not self._working:
             raise NotImplementedError("TinySam3LoraStub.forward is intentionally not implemented")
         b = images.shape[0]  # type: ignore[union-attr]
+        # Multiplex: if prompts are TextPrompts with K classes each, the real SAM 3.1
+        # model expands the batch to B*K (one row per image-class slot) for ALL output
+        # heads including presence_logit_dec.  Replicate that contract here so that
+        # total_loss receives consistent (B*K, ...) shapes and _image_has_target (which
+        # is also length B*K) does not trigger a BCE shape mismatch.
+        k = 1
+        from custom_sam_peft.data.base import (
+            TextPrompts as _TextPrompts,
+        )  # local import to avoid circulars
+
+        if isinstance(prompts, list) and prompts and isinstance(prompts[0], _TextPrompts):
+            k = len(prompts[0].classes)
+        bk = b * k
         q, m = self._num_queries, self._mask_size
         flat = images.reshape(b, 3, -1).mean(dim=-1)  # type: ignore[union-attr]  # (B, 3)
         feat = torch.nn.functional.pad(flat, (0, self._dim - 3))  # (B, dim)
         feat = self.vision_trunk.blocks[0].attn.qkv(feat)  # type: ignore[operator,index]  # (B, dim*3)
         scalar = feat.mean()
         return {
-            "pred_logits": torch.zeros(b, q, 1) + scalar,
-            "pred_boxes": torch.zeros(b, q, 4) + scalar,
-            "pred_masks": torch.zeros(b, q, m, m) + scalar,
-            "presence_logit_dec": torch.zeros(b, 1) + scalar,
+            "pred_logits": torch.zeros(bk, q, 1) + scalar,
+            "pred_boxes": torch.zeros(bk, q, 4) + scalar,
+            "pred_masks": torch.zeros(bk, q, m, m) + scalar,
+            "presence_logit_dec": torch.zeros(bk, 1) + scalar,
         }
 
 

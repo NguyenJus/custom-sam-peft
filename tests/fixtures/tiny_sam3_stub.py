@@ -12,13 +12,19 @@ from typing import Any
 import torch
 from torch import nn
 
+from custom_sam_peft.data.base import TextPrompts
+
 
 class TinySam3Stub(nn.Module):
     """Returns Meta-shaped output dict given image + prompts.
 
     Q = number of decoder queries (default 4 for fast tests).
-    The stub is per-class (one prompt at a time), matching Sam3Wrapper's
-    single-prompt forward contract.
+
+    In multiplex mode (K > 1 classes per TextPrompts), the real SAM 3.1 model
+    returns (B*K, Q, ...) shaped outputs (one row per image-class pair).  This
+    stub replicates that contract: when prompts is a list of TextPrompts with
+    K classes each, the output batch dimension is B*K.  For K=1 (legacy) or
+    BoxPrompts / ignored-prompt modes the output batch dimension is B.
     """
 
     def __init__(self, num_queries: int = 4, mask_size: int = 16) -> None:
@@ -34,12 +40,18 @@ class TinySam3Stub(nn.Module):
         prompts: Any,
         box_hints: Any = None,
     ) -> dict[str, torch.Tensor]:
-        del prompts, box_hints  # ignored by the stub
+        del box_hints  # ignored by the stub
         b = image.shape[0] if image.ndim == 4 else 1
+        # Multiplex: if prompts are TextPrompts with K classes each,
+        # the real model expands the batch to B*K (one row per image-class slot).
+        k = 1
+        if isinstance(prompts, list) and prompts and isinstance(prompts[0], TextPrompts):
+            k = len(prompts[0].classes)
+        bk = b * k
         q, m = self.num_queries, self.mask_size
         return {
-            "pred_logits": torch.zeros(b, q, 1) + self.dummy,
-            "pred_boxes": torch.zeros(b, q, 4) + self.dummy,
-            "pred_masks": torch.zeros(b, q, m, m) + self.dummy,
-            "presence_logit_dec": torch.zeros(b, 1) + self.dummy,
+            "pred_logits": torch.zeros(bk, q, 1) + self.dummy,
+            "pred_boxes": torch.zeros(bk, q, 4) + self.dummy,
+            "pred_masks": torch.zeros(bk, q, m, m) + self.dummy,
+            "presence_logit_dec": torch.zeros(bk, 1) + self.dummy,
         }

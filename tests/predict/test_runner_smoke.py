@@ -36,7 +36,11 @@ LOW_SCORE = -10.0  # logit that maps to near-zero score
 
 
 class _StubSamModule(torch.nn.Module):
-    """Minimal stub whose forward returns tensors matching queries_to_coco_results."""
+    """Minimal stub whose forward returns tensors matching the multiplex contract.
+
+    For a batch of B images with K_g classes each, the output batch dim is B * K_g
+    (matching the real SAM 3.1 multiplex forward shape expected by _row_outputs).
+    """
 
     def __init__(
         self,
@@ -57,12 +61,17 @@ class _StubSamModule(torch.nn.Module):
         box_hints: list[Any] | None = None,
     ) -> dict[str, torch.Tensor]:
         self.forward_call_count += 1
-        b = images.shape[0]  # should always be 1 in postprocess path
+        b = images.shape[0]
+        # For multiplex TextPrompts, K_g is the number of classes; output dim = B * K_g.
+        from custom_sam_peft.data.base import TextPrompts as _TP
+
+        k_g = len(prompts[0].classes) if prompts and isinstance(prompts[0], _TP) else 1
+        total = b * k_g
         return {
-            "pred_logits": torch.full((b, self.n_queries, 1), self.score_logit),
-            "pred_boxes": torch.full((b, self.n_queries, 4), 0.5),
-            "pred_masks": torch.zeros(b, self.n_queries, H_LOW, W_LOW),
-            "presence_logit_dec": torch.full((b, 1), self.presence_logit),
+            "pred_logits": torch.full((total, self.n_queries, 1), self.score_logit),
+            "pred_boxes": torch.full((total, self.n_queries, 4), 0.5),
+            "pred_masks": torch.zeros(total, self.n_queries, H_LOW, W_LOW),
+            "presence_logit_dec": torch.full((total, 1), self.presence_logit),
         }
 
 
@@ -90,7 +99,7 @@ def _make_opts(
     save_masks: str = "rle",
     visualize: bool = False,
     merge_adapter: bool = True,
-    batch_size: int = 1,
+    batch_size: int | str = 1,
     seed: int = 42,
     dry_run: bool = False,
     verbose: bool = False,
@@ -111,7 +120,7 @@ def _make_opts(
         visualize=visualize,
         device="cpu",
         dtype="float32",
-        batch_size=batch_size,
+        batch_size=batch_size,  # type: ignore[arg-type]
         seed=seed,
         dry_run=dry_run,
         verbose=verbose,
@@ -403,3 +412,127 @@ def test_run_predict_every_image_fails_exits_1(tmp_path: Path) -> None:
 
     with _patch_load(stub), pytest.raises(RuntimeError, match="all images failed"):
         run_predict(opts)
+
+
+# ---------------------------------------------------------------------------
+# 13. test_predict_options_batch_size_default_auto
+# ---------------------------------------------------------------------------
+
+
+def test_predict_options_batch_size_default_auto() -> None:
+    """PredictOptions.batch_size dataclass default is 'auto'."""
+    import dataclasses
+
+    fields = {f.name: f for f in dataclasses.fields(PredictOptions)}
+    assert fields["batch_size"].default == "auto", (
+        f"Expected PredictOptions.batch_size default == 'auto'; "
+        f"got {fields['batch_size'].default!r}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# 14. test_run_predict_resolves_auto
+# ---------------------------------------------------------------------------
+
+
+def test_run_predict_resolves_auto(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """run_predict resolves 'auto' once at entry via decide_eval_batch_size."""
+    call_args: list[tuple] = []
+
+    def _fake_decide(image_size: int, classes_per_forward: int = 16):
+        call_args.append((image_size, classes_per_forward))
+        return 1, 0, "analytic"  # (batch_size, predicted_bytes, provenance)
+
+    monkeypatch.setattr(
+        "custom_sam_peft.presets.decide_eval_batch_size",
+        _fake_decide,
+    )
+
+    stub = _StubSamModule()
+    opts = _make_opts(tmp_path, batch_size="auto", prompts="cat")
+
+    with _patch_load(stub):
+        run_predict(opts)
+
+    assert len(call_args) == 1, (
+        f"Expected decide_eval_batch_size to be called exactly once; called {len(call_args)} times"
+    )
+
+
+# ---------------------------------------------------------------------------
+# 15. test_run_predict_flat_loop_iterates_image_chunks_x_groups
+# ---------------------------------------------------------------------------
+
+
+class _MultiplexStubSamModule(torch.nn.Module):
+    """Stub whose forward returns tensors shaped (B * K_g, Q, ...) for multiplex.
+
+    When each TextPrompts carries K_g classes, the output batch dim is B * K_g.
+    """
+
+    def __init__(
+        self,
+        n_queries: int = Q,
+        score_logit: float = HIGH_SCORE,
+        presence_logit: float = HIGH_SCORE,
+    ) -> None:
+        super().__init__()
+        self.n_queries = n_queries
+        self.score_logit = score_logit
+        self.presence_logit = presence_logit
+        self.call_count = 0
+        self.prompts_per_call: list[Any] = []
+
+    def forward(
+        self,
+        images: torch.Tensor,
+        prompts: list[Any],
+        box_hints: list[Any] | None = None,
+    ) -> dict[str, torch.Tensor]:
+        self.call_count += 1
+        self.prompts_per_call.append(prompts)
+        b = images.shape[0]
+        # For TextPrompts, K_g is the number of classes in the shared prompt.
+        from custom_sam_peft.data.base import TextPrompts as _TP
+
+        k_g = len(prompts[0].classes) if prompts and isinstance(prompts[0], _TP) else 1
+        total = b * k_g
+        return {
+            "pred_logits": torch.full((total, self.n_queries, 1), self.score_logit),
+            "pred_boxes": torch.full((total, self.n_queries, 4), 0.5),
+            "pred_masks": torch.zeros(total, self.n_queries, H_LOW, W_LOW),
+            "presence_logit_dec": torch.full((total, 1), self.presence_logit),
+        }
+
+
+def test_run_predict_flat_loop_iterates_image_chunks_x_groups(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Flat (image_chunk, group) iteration; warmup is still single-image / single-class."""
+    # 4 images, 3 prompts, batch_size=2 -> ceil(4/2)=2 chunks x 1 group = 2 inference calls.
+    # Total = 1 (warmup) + 2 (inference) = 3.
+    stub = _MultiplexStubSamModule()
+    opts = _make_opts(
+        tmp_path,
+        batch_size=2,
+        prompts="cat,dog,bird",
+        score_threshold=0.0,
+        n_images=4,
+    )
+
+    with _patch_load(stub):
+        report = run_predict(opts)
+
+    # warmup=1 + 2 inference chunks = 3 total calls
+    assert stub.call_count == 3, (
+        f"Expected 3 forward calls (1 warmup + 2 batch); got {stub.call_count}"
+    )
+
+    # Each inference call (calls 2 and 3) should have prompts with 3 classes each
+    inference_calls = stub.prompts_per_call[1:]  # skip warmup
+    for call_prompts in inference_calls:
+        assert len(call_prompts[0].classes) == 3, (
+            f"Expected each inference call to pass 3 classes; got {len(call_prompts[0].classes)}"
+        )
+
+    assert report.n_images == 4

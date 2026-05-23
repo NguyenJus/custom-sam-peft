@@ -33,6 +33,18 @@ def _validate_positive_int(value: int) -> int:
     return value
 
 
+def _validate_batch_size(value: str) -> int | str:
+    if value == "auto":
+        return "auto"
+    try:
+        n = int(value)
+    except ValueError as exc:
+        raise typer.BadParameter("--batch-size must be 'auto' or a positive int") from exc
+    if n < 1:
+        raise typer.BadParameter(f"must be >= 1, got {n}")
+    return n
+
+
 def _validate_checkpoint(value: Path | None) -> Path | None:
     if value is None:
         return None
@@ -93,11 +105,11 @@ def predict(
         click_type=click.Choice(["auto", "bfloat16", "float32"]),
         help="Model dtype: auto | bfloat16 | float32.",
     ),
-    batch_size: int = typer.Option(
-        1,
+    batch_size: str = typer.Option(
+        "auto",
         "--batch-size",
-        callback=_validate_positive_int,
-        help="Images per forward pass.",
+        callback=_validate_batch_size,
+        help="Images per forward pass: 'auto' or a positive int.",
     ),
     seed: int = typer.Option(0, "--seed", help="Random seed for reproducibility."),
     dry_run: bool = typer.Option(
@@ -126,7 +138,7 @@ def predict(
         visualize=visualize,
         device=cast(Literal["auto", "cuda", "cpu"], device),
         dtype=cast(Literal["auto", "bfloat16", "float32"], dtype),
-        batch_size=batch_size,
+        batch_size=cast("int | Literal['auto']", batch_size),
         seed=seed,
         dry_run=dry_run,
         verbose=verbose,

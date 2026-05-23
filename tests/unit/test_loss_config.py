@@ -71,3 +71,11 @@ def test_train_config_includes_loss() -> None:
         train=TrainHyperparams(epochs=1),
     )
     assert isinstance(tc.train.loss, LossConfig)
+
+
+def test_loss_config_docstring_drops_legacy_claim() -> None:
+    from custom_sam_peft.config._internal import LossConfig
+
+    doc = LossConfig.__doc__ or ""
+    assert "one forward pass per class prompt" not in doc
+    assert "multiplex" in doc.lower()

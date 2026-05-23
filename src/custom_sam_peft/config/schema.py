@@ -35,6 +35,7 @@ __all__ = [  # noqa: RUF022
     "HFFieldMap",
     "LimitConfig",
     "ModelConfig",
+    "MultiplexConfig",
     "NormalizeConfig",
     "PEFTConfig",
     "QLoRAConfig",
@@ -386,6 +387,17 @@ class BoxHintSchedule(_Strict):
         return self
 
 
+class MultiplexConfig(_Strict):
+    """Multiplex forward knobs.
+
+    classes_per_forward: number of class prompts per multiplex forward pass.
+    Capped at SAM 3.1's MULTIPLEX_CAP=16 (in src/custom_sam_peft/models/sam3.py).
+    Setting 1 reduces to the legacy per-class regime within the same code path.
+    """
+
+    classes_per_forward: int = Field(default=16, ge=1, le=16)
+
+
 class TrainHyperparams(_Strict):
     epochs: PositiveInt
     batch_size: PositiveInt = 1
@@ -407,6 +419,7 @@ class TrainHyperparams(_Strict):
         ge=0,
         description="DataLoader workers. 0 disables multiprocessing.",
     )
+    multiplex: MultiplexConfig = Field(default_factory=MultiplexConfig)
 
 
 class EvalConfig(_Strict):
@@ -418,6 +431,7 @@ class EvalConfig(_Strict):
     lite_max_images: PositiveInt = 64
     mask_threshold: float = 0.0
     save_predictions: bool = False
+    batch_size: PositiveInt | Literal["auto"] = "auto"
 
 
 # WandbConfig, ExportConfig moved to config._internal (audit Section G).

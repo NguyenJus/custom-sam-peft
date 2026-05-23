@@ -131,3 +131,31 @@ def test_include_per_class_false_returns_empty_per_class(tiny_coco_dir: Path) ->
     )
     assert report.per_class == {}
     assert "mAP" in report.overall
+
+
+# ---------------------------------------------------------------------------
+# EvalConfig.batch_size knob (T10)
+# ---------------------------------------------------------------------------
+
+
+def test_eval_config_batch_size_default_auto() -> None:
+    from custom_sam_peft.config.schema import EvalConfig
+
+    cfg = EvalConfig()
+    assert cfg.batch_size == "auto"
+
+
+def test_eval_config_batch_size_accepts_positive_int() -> None:
+    from custom_sam_peft.config.schema import EvalConfig
+
+    assert EvalConfig(batch_size=4).batch_size == 4
+
+
+def test_eval_config_batch_size_rejects_zero() -> None:
+    import pytest
+    from pydantic import ValidationError
+
+    from custom_sam_peft.config.schema import EvalConfig
+
+    with pytest.raises(ValidationError):
+        EvalConfig(batch_size=0)

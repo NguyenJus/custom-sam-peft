@@ -43,3 +43,26 @@ def test_load_sam31_forward_to_canonical() -> None:
     assert canonical.pred_boxes.shape[-1] == 4
     assert canonical.pred_masks.shape[-1] == 288
     assert canonical.img_presence.dim() == 1  # (B,)
+
+
+def test_load_sam31_multiplex_K8_forward() -> None:
+    """Real K=8 multiplex forward emits pred_logits.shape[0] == B*8 and finite outputs.
+
+    Per spec §13 AC 16. Confirms (B*K, ...) row layout end-to-end on real weights.
+    """
+    cfg = ModelConfig(device="cuda", gradient_checkpointing=False, dtype="bfloat16")
+    wrapper = load_sam31(cfg)
+    wrapper.eval()
+    b = 2
+    k = 8
+    image = torch.zeros(b, 3, 1008, 1008, dtype=torch.bfloat16, device="cuda")
+    classes = [f"class_{i}" for i in range(k)]
+    prompts = [TextPrompts(classes=classes) for _ in range(b)]
+    with torch.no_grad():
+        outputs = wrapper(image, prompts)
+    assert outputs["pred_logits"].shape[0] == b * k
+    assert outputs["presence_logit_dec"].shape[0] == b * k
+    assert outputs["pred_masks"].shape[0] == b * k
+    assert outputs["pred_boxes"].shape[0] == b * k
+    assert torch.isfinite(outputs["pred_logits"]).all()
+    assert torch.isfinite(outputs["pred_boxes"]).all()

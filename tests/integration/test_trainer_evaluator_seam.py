@@ -138,7 +138,7 @@ def test_evaluator_consumes_only_eval_artifacts(tmp_path: Path) -> None:
     assert isinstance(artifacts, EvalArtifacts)
     # Stand up a fresh Evaluator (as the eval runner would) and confirm
     # it can run using only what EvalArtifacts carries.
-    eval_cfg = EvalConfig(mode="lite", iou_thresholds=[0.5], lite_max_images=2)
+    eval_cfg = EvalConfig(mode="lite", iou_thresholds=[0.5], lite_max_images=2, batch_size=1)
     evaluator = Evaluator(eval_cfg)
     # Re-use the trained wrapper (in practice, eval runner would load from
     # artifacts.checkpoint_path; here we pass the live wrapper to avoid

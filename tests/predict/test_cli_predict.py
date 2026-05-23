@@ -437,3 +437,50 @@ def test_summary_line_on_success(tmp_path: Path) -> None:
     out = result.output
     assert "3" in out  # n_images
     assert "7" in out  # n_predictions
+
+
+# ---------------------------------------------------------------------------
+# 18. --batch-size auto accepted
+# ---------------------------------------------------------------------------
+
+
+def test_cli_predict_accepts_auto_batch_size(tmp_path: Path) -> None:
+    """``csp predict --batch-size auto`` is accepted; dry-run completes with exit 0."""
+    images_dir = tmp_path / "imgs"
+    images_dir.mkdir()
+    from PIL import Image as PILImage
+
+    PILImage.new("RGB", (64, 64)).save(images_dir / "img.png")
+    output_dir = tmp_path / "out"
+
+    captured: list[PredictOptions] = []
+
+    def fake_run_predict(opts: PredictOptions) -> PredictReport:
+        captured.append(opts)
+        return PredictReport(n_images=0, n_predictions=0, elapsed_sec=0.0)
+
+    with patch("custom_sam_peft.cli.predict_cmd.run_predict", side_effect=fake_run_predict):
+        result = runner.invoke(
+            app,
+            [
+                "predict",
+                "--images",
+                str(images_dir),
+                "--prompts",
+                "cat",
+                "--output",
+                str(output_dir),
+                "--batch-size",
+                "auto",
+            ],
+            catch_exceptions=False,
+        )
+
+    assert result.exit_code == 0, (
+        f"Expected exit 0 with --batch-size auto; got {result.exit_code}. Output: {result.output}"
+    )
+    # The option must have been forwarded correctly as "auto"
+    assert len(captured) == 1
+    assert captured[0].batch_size == "auto", (
+        f"Expected opts.batch_size == 'auto'; got {captured[0].batch_size!r}"
+    )

@@ -174,3 +174,44 @@ def test_total_loss_applies_focal_constants() -> None:
     _args, kwargs = spy.call_args
     assert kwargs["gamma"] == 2.0, f"expected gamma=2.0, got {kwargs.get('gamma')!r}"
     assert kwargs["alpha"] == 0.25, f"expected alpha=0.25, got {kwargs.get('alpha')!r}"
+
+
+def test_total_loss_multiplex_k2_finite() -> None:
+    """Regression: total_loss must not raise when outputs have B*K rows (K_g=2, B=1).
+
+    The multiplex forward expands the batch to B*K rows for ALL output heads
+    (pred_logits, pred_boxes, pred_masks, AND presence_logit_dec).  This test
+    guards against the shape mismatch that occurred when presence_logit_dec was
+    mistakenly returned at shape (B, 1) instead of (B*K, 1), causing a
+    ValueError in BCE when targets_g has B*K entries.
+
+    Simulates train_step calling total_loss(out, targets_g, cfg) after a
+    multiplexed forward with K_g=2 classes and B=1 image:
+      - out has batch dim B*K = 2
+      - targets_g has length B*K = 2 (one row per image-class pair)
+    """
+    from custom_sam_peft.config.schema import LossConfig
+    from custom_sam_peft.data.base import Instance
+    from custom_sam_peft.models.losses import total_loss
+
+    B, K_g, Q, H = 1, 2, 4, 16
+    bk = B * K_g  # 2
+    raw = {
+        "pred_logits": torch.zeros(bk, Q, 1),
+        "pred_boxes": torch.zeros(bk, Q, 4),
+        "pred_masks": torch.zeros(bk, Q, H, H),
+        "presence_logit_dec": torch.zeros(bk, 1),  # must be (B*K, 1), not (B, 1)
+    }
+    # targets_g is length B*K: [instances for image0/class0, instances for image0/class1]
+    inst = Instance(
+        mask=torch.zeros(32, 32),
+        class_id=0,
+        box=torch.tensor([0.5, 0.5, 0.2, 0.2]),
+    )
+    targets_g = [[inst], []]  # image0/class0 has one instance; image0/class1 has none
+
+    losses = total_loss(raw, targets_g, LossConfig())
+    assert set(losses.keys()) == {"total", "mask", "box", "obj", "presence"}
+    assert all(torch.isfinite(v) for v in losses.values()), (
+        f"total_loss returned non-finite values under multiplex K_g=2: {losses}"
+    )

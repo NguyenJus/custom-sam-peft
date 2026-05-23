@@ -18,7 +18,7 @@ from custom_sam_peft.data.val_source import resolve_val_source
 from custom_sam_peft.eval._artifacts import EvalArtifacts
 from custom_sam_peft.eval.evaluator import Evaluator
 from custom_sam_peft.eval.metrics import MetricsReport
-from custom_sam_peft.models.sam3 import load_sam31
+from custom_sam_peft.models.sam3 import MULTIPLEX_CAP, load_sam31
 from custom_sam_peft.peft_adapters import make_peft_method
 from custom_sam_peft.peft_adapters.lora import load_lora
 
@@ -135,6 +135,12 @@ def run_eval(
     eval_cfg = cfg.eval
     if save_predictions is not None:
         eval_cfg = eval_cfg.model_copy(update={"save_predictions": save_predictions})
+
+    if eval_cfg.batch_size == "auto":
+        from custom_sam_peft.presets import decide_eval_batch_size
+
+        bs, _, _ = decide_eval_batch_size(cfg.data.image_size, classes_per_forward=MULTIPLEX_CAP)
+        eval_cfg = eval_cfg.model_copy(update={"batch_size": bs})
 
     evaluator = Evaluator(eval_cfg)
     # Output dir: prefer explicit, then artifacts.run_dir, then checkpoint parent.

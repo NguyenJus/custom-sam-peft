@@ -21,7 +21,7 @@ from custom_sam_peft.data.collate import collate_batch
 from custom_sam_peft.eval._artifacts import EvalArtifacts
 from custom_sam_peft.eval.evaluator import Evaluator
 from custom_sam_peft.eval.metrics import MetricsReport
-from custom_sam_peft.models.sam3 import Sam3Wrapper
+from custom_sam_peft.models.sam3 import MULTIPLEX_CAP, Sam3Wrapper
 from custom_sam_peft.peft_adapters import PEFTMethod, make_peft_method
 from custom_sam_peft.runtime import Runtime
 from custom_sam_peft.tracking.base import Tracker
@@ -252,7 +252,15 @@ class Trainer:
             return
         try:
             cfg = self.cfg
-            lite_cfg = cfg.eval.model_copy(update={"mode": "lite", "save_predictions": False})
+            update: dict[str, object] = {"mode": "lite", "save_predictions": False}
+            if cfg.eval.batch_size == "auto":
+                from custom_sam_peft.presets import decide_eval_batch_size
+
+                bs, _, _ = decide_eval_batch_size(
+                    cfg.data.image_size, classes_per_forward=MULTIPLEX_CAP
+                )
+                update["batch_size"] = bs
+            lite_cfg = cfg.eval.model_copy(update=update)
             report = Evaluator(lite_cfg).evaluate(self.model, self.val_ds)
             self.tracker.log_scalars(step, report.overall)
         except Exception:
@@ -389,7 +397,15 @@ class Trainer:
                 save_merged(self.model, merged_path)
 
             if self.val_ds is not None:
-                full_report = Evaluator(cfg.eval).evaluate(self.model, self.val_ds)
+                full_eval_cfg = cfg.eval
+                if full_eval_cfg.batch_size == "auto":
+                    from custom_sam_peft.presets import decide_eval_batch_size
+
+                    bs, _, _ = decide_eval_batch_size(
+                        cfg.data.image_size, classes_per_forward=MULTIPLEX_CAP
+                    )
+                    full_eval_cfg = full_eval_cfg.model_copy(update={"batch_size": bs})
+                full_report = Evaluator(full_eval_cfg).evaluate(self.model, self.val_ds)
             if full_report is not None:
                 (run_dir / "metrics.json").write_text(
                     json.dumps(

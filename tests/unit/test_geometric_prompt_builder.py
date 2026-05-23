@@ -8,20 +8,25 @@ Layout contract (docs/superpowers/plans/2026-05-17-training-loop-notes.md):
 
 from __future__ import annotations
 
+import pytest
 import torch
 
 from custom_sam_peft.models.sam3 import _build_geometric_prompt
 
 
 def test_all_none_returns_none() -> None:
-    out = _build_geometric_prompt([None, None, None], image_size=1008, device=torch.device("cpu"))
+    out = _build_geometric_prompt(
+        [None, None, None], n_cols=3, image_size=1008, device=torch.device("cpu")
+    )
     assert out is None
 
 
 def test_single_image_with_hints_returns_prompt() -> None:
     # batch of 3: images 0 and 2 have no hints, image 1 has 1 box
     boxes = torch.tensor([[10.0, 20.0, 50.0, 80.0]])  # (1, 4) xyxy pixel
-    out = _build_geometric_prompt([None, boxes, None], image_size=1008, device=torch.device("cpu"))
+    out = _build_geometric_prompt(
+        [None, boxes, None], n_cols=3, image_size=1008, device=torch.device("cpu")
+    )
     assert out is not None
 
     # box_embeddings: (N_boxes=1, B=3, 4)
@@ -46,7 +51,9 @@ def test_single_image_with_hints_returns_prompt() -> None:
 
 def test_padding_slots_have_zero_embeddings() -> None:
     boxes = torch.tensor([[10.0, 20.0, 50.0, 80.0]])
-    out = _build_geometric_prompt([None, boxes, None], image_size=1008, device=torch.device("cpu"))
+    out = _build_geometric_prompt(
+        [None, boxes, None], n_cols=3, image_size=1008, device=torch.device("cpu")
+    )
     assert out is not None
     # padded images (0 and 2) get zero-filled embeddings
     assert torch.allclose(out.box_embeddings[0, 0, :], torch.zeros(4))
@@ -56,7 +63,9 @@ def test_padding_slots_have_zero_embeddings() -> None:
 def test_multiple_boxes_per_image() -> None:
     boxes_a = torch.tensor([[0.0, 0.0, 100.0, 100.0], [200.0, 200.0, 400.0, 400.0]])  # 2 boxes
     boxes_b = torch.tensor([[50.0, 50.0, 150.0, 150.0]])  # 1 box
-    out = _build_geometric_prompt([boxes_a, boxes_b], image_size=1008, device=torch.device("cpu"))
+    out = _build_geometric_prompt(
+        [boxes_a, boxes_b], n_cols=2, image_size=1008, device=torch.device("cpu")
+    )
     assert out is not None
 
     # N_max = 2, B = 2
@@ -71,6 +80,22 @@ def test_multiple_boxes_per_image() -> None:
     assert out.box_mask[1, 1].item() is True
 
 
+def test_build_geometric_prompt_n_cols_must_match_len_box_hints() -> None:
+    hints = [None, None, None]
+    with pytest.raises(ValueError, match="n_cols"):
+        _build_geometric_prompt(hints, n_cols=4, image_size=1008, device=torch.device("cpu"))
+
+
+def test_build_geometric_prompt_produces_n_cols_columns() -> None:
+    # 2 images x 3 classes = 6 columns (B*K layout).
+    hints = [torch.tensor([[0.0, 0.0, 10.0, 10.0]]) for _ in range(6)]
+    out = _build_geometric_prompt(hints, n_cols=6, image_size=1008, device=torch.device("cpu"))
+    assert out is not None
+    # box_embeddings: (N_max, n_cols, 4); box_mask: (n_cols, N_max).
+    assert out.box_embeddings.shape == (1, 6, 4)
+    assert out.box_mask.shape == (6, 1)
+
+
 def test_device_placement() -> None:
     import pytest
 
@@ -83,7 +108,7 @@ def test_device_placement() -> None:
     except Exception:
         pytest.skip("CUDA device not compatible with current PyTorch build")
     boxes = torch.tensor([[1.0, 2.0, 3.0, 4.0]])
-    out = _build_geometric_prompt([boxes], image_size=1008, device=torch.device("cuda"))
+    out = _build_geometric_prompt([boxes], n_cols=1, image_size=1008, device=torch.device("cuda"))
     assert out is not None
     assert out.box_embeddings.device.type == "cuda"
     assert out.box_mask.device.type == "cuda"

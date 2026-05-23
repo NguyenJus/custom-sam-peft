@@ -10,7 +10,7 @@ import json
 import logging
 from collections.abc import Sequence
 from pathlib import Path
-from typing import Any, Literal, overload
+from typing import Any, Literal, cast, overload
 
 import numpy as np
 import pycocotools.mask as mask_utils
@@ -22,10 +22,53 @@ from custom_sam_peft.config.schema import EvalConfig
 from custom_sam_peft.data.base import Dataset, Example, TextPrompts
 from custom_sam_peft.eval.metrics import MetricsReport, compute_coco_map
 from custom_sam_peft.eval.postprocess import queries_to_coco_results
+from custom_sam_peft.models.sam3 import MULTIPLEX_CAP
 from custom_sam_peft.paths import predictions_path
 from custom_sam_peft.runtime import Runtime, to_device
 
 _LOG = logging.getLogger(__name__)
+
+
+def _chunked[T](seq: Sequence[T], n: int) -> list[list[T]]:
+    """Tiny local helper; mirrors train/loop.py:_chunked."""
+    if n <= 0:
+        raise ValueError(f"_chunked: n must be positive; got {n}")
+    return [list(seq[i : i + n]) for i in range(0, len(seq), n)]
+
+
+def _row_outputs(outputs: dict[str, torch.Tensor], r: int) -> dict[str, torch.Tensor]:
+    """Slice multiplex outputs at row r, preserving the batch dim (size 1)."""
+    return {k: v[r : r + 1] for k, v in outputs.items()}
+
+
+def _eval_forward_with_oom_ladder(
+    model: Any,
+    images: torch.Tensor,
+    prompts: list[Any],
+    *,
+    state: dict[str, Any],  # mutable: {"batch_size": int, "warned": bool}
+) -> dict[str, torch.Tensor]:
+    """One multiplex forward with sticky-B-halving on OOM.
+
+    No grad-checkpoint rung (eval is under no_grad). On OOM with state["batch_size"]>1,
+    halves state["batch_size"], emits at most one _LOG.warning("eval OOM ..."), and
+    RAISES (the outer chunking loop re-issues at the smaller size).
+    On OOM at state["batch_size"]==1, raises RuntimeError("eval OOM at batch_size=1; ...").
+    """
+    try:
+        return cast("dict[str, torch.Tensor]", model(images, prompts, box_hints=None))
+    except torch.cuda.OutOfMemoryError as oom_err:
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+        if state["batch_size"] > 1:
+            state["batch_size"] //= 2
+            if not state["warned"]:
+                _LOG.warning("eval OOM — halving batch_size to %d", state["batch_size"])
+                state["warned"] = True
+            raise
+        raise RuntimeError(
+            "eval OOM at batch_size=1; use a larger GPU or smaller image_size."
+        ) from oom_err
 
 
 def _int_image_id(image_id: str) -> int:
@@ -111,8 +154,17 @@ class Evaluator:
         """Run the forward loop and return raw COCO-format prediction entries.
 
         Puts the model into eval mode for the duration of the loop and restores
-        its training state on exit. Moves dataset images to the model's device
-        before each forward.
+        its training state on exit. Iterates flat over (image_chunk, class_group)
+        pairs, using MULTIPLEX_CAP classes per group. Moves dataset images to the
+        model's device before each forward via runtime.to_device (§3 seam discipline).
+        The dataset yields CPU tensors; passing them straight to a CUDA-resident
+        model raises `Input type (CPUBFloat16Type) and weight type (CUDABFloat16Type)
+        should be the same` inside the first Conv2d. Falls back to CPU for
+        parameterless / non-nn.Module test stubs.
+
+        cfg.batch_size is already resolved to an int by run_eval (T10 wires the
+        "auto" resolution). The OOM ladder halves state["batch_size"] stickily on
+        torch.cuda.OutOfMemoryError and re-raises so the outer while-loop re-chunks.
         """
         cfg = self.cfg
 
@@ -120,48 +172,77 @@ class Evaluator:
         if hasattr(model, "eval"):
             model.eval()
 
-        # Resolve the model's device once and move dataset images onto it
-        # before each forward via runtime.to_device (§3 seam discipline).
-        # The dataset yields CPU tensors; passing them straight to a
-        # CUDA-resident model raises
-        # `Input type (CPUBFloat16Type) and weight type (CUDABFloat16Type)
-        #  should be the same` inside the first Conv2d. Falls back to CPU
-        # for parameterless / non-nn.Module test stubs.
         try:
             param_device = next(model.parameters()).device
         except (StopIteration, AttributeError):
             param_device = torch.device("cpu")
         eval_runtime = Runtime(device=param_device, dtype=torch.float32)
 
-        log_every_n = max(1, len(examples) // 50)
+        # cfg.batch_size is already resolved by run_eval (T10) — int here.
+        state: dict[str, Any] = {"batch_size": int(cfg.batch_size), "warned": False}
+
         predictions: list[dict[str, object]] = []
+        log_every_n = max(1, len(examples) // 50)
         P.reset_inner(total=len(examples))
+        img_idx_global = 0
         try:
             with torch.no_grad():
-                for img_idx, ex in enumerate(examples):
-                    original_hw = (int(ex.image.shape[-2]), int(ex.image.shape[-1]))
-                    int_id = _int_image_id(ex.image_id)
-                    # Note: mode="lite" bounds only the image dimension; the
-                    # class dimension is intentionally unbounded (per spec's
-                    # documented compute cost O(images * classes)).
-                    for cat_idx, class_name in enumerate(dataset.class_names):
-                        cat_id = cat_idx + 1
-                        outputs = model(
-                            to_device(ex.image.unsqueeze(0), eval_runtime),
-                            [TextPrompts(classes=[class_name])],
-                            box_hints=None,
-                        )
-                        entries = queries_to_coco_results(
-                            outputs,
-                            int_id,
-                            cat_id,
-                            original_hw,
-                            cfg.mask_threshold,
-                        )
-                        predictions.extend(entries)
-                    P.advance_inner()
-                    if (img_idx + 1) % log_every_n == 0:
-                        P.update_postfix(it_s=float(img_idx + 1))
+                i = 0
+                while i < len(examples):
+                    # Re-chunk based on the (possibly halved) state["batch_size"].
+                    bs = state["batch_size"]
+                    image_chunk = list(examples[i : i + bs])
+                    images_t = to_device(
+                        torch.stack([ex.image for ex in image_chunk]), eval_runtime
+                    )
+                    # Collect this chunk's predictions into a local buffer so that
+                    # a mid-chunk OOM (which breaks out of the group loop) discards
+                    # the partial results rather than committing them.  Without this,
+                    # groups already processed before the OOM would be extended into
+                    # `predictions` and then re-emitted when the outer while-loop
+                    # re-runs the same image_chunk at the halved batch size.
+                    chunk_buf: list[dict[str, object]] = []
+                    advanced_i = False
+                    for group in _chunked(dataset.class_names, MULTIPLEX_CAP):
+                        K_g = len(group)
+                        prompts_g = [TextPrompts(classes=list(group)) for _ in image_chunk]
+                        try:
+                            outputs = _eval_forward_with_oom_ladder(
+                                model, images_t, prompts_g, state=state
+                            )
+                        except torch.cuda.OutOfMemoryError:
+                            # state["batch_size"] was halved; discard chunk_buf and
+                            # re-chunk from i at the new (smaller) batch size.
+                            break
+                        for r in range(len(image_chunk) * K_g):
+                            ii, kk = divmod(r, K_g)
+                            ex = image_chunk[ii]
+                            original_hw = (
+                                int(ex.image.shape[-2]),
+                                int(ex.image.shape[-1]),
+                            )
+                            int_id = _int_image_id(ex.image_id)
+                            cat_idx = dataset.class_names.index(group[kk])
+                            entries = queries_to_coco_results(
+                                _row_outputs(outputs, r),
+                                int_id,
+                                cat_idx + 1,
+                                original_hw,
+                                cfg.mask_threshold,
+                            )
+                            chunk_buf.extend(entries)
+                    else:
+                        # No break: completed all groups for this image_chunk.
+                        # Only now commit the buffer — avoids duplicates on OOM retry.
+                        predictions.extend(chunk_buf)
+                        advanced_i = True
+                    if advanced_i:
+                        i += len(image_chunk)
+                        img_idx_global += len(image_chunk)
+                        for _ in range(len(image_chunk)):
+                            P.advance_inner()
+                        if img_idx_global % log_every_n == 0:
+                            P.update_postfix(it_s=float(img_idx_global))
         finally:
             if was_training and hasattr(model, "train"):
                 model.train()

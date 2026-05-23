@@ -17,7 +17,8 @@ def _wrapper() -> Sam3Wrapper:
 def test_forward_accepts_none_box_hints() -> None:
     w = _wrapper()
     images = torch.zeros(2, 3, 8, 8)
-    prompts = [TextPrompts(classes=["cat"]), TextPrompts(classes=["dog"])]
+    # Both prompts must share the same class list (shared K-prompt vocabulary).
+    prompts = [TextPrompts(classes=["cat"]), TextPrompts(classes=["cat"])]
     out = w(images, prompts, box_hints=None)
     assert set(out) >= {"pred_logits", "pred_boxes", "pred_masks", "presence_logit_dec"}
 
@@ -25,7 +26,9 @@ def test_forward_accepts_none_box_hints() -> None:
 def test_forward_accepts_per_image_box_hints() -> None:
     w = _wrapper()
     images = torch.zeros(2, 3, 8, 8)
-    prompts = [TextPrompts(classes=["cat"]), TextPrompts(classes=["dog"])]
+    # Both prompts must share the same class list (shared K-prompt vocabulary).
+    prompts = [TextPrompts(classes=["cat"]), TextPrompts(classes=["cat"])]
+    # K=1, so box_hints length == B*K == 2 (image-major / class-minor ordering).
     box_hints = [torch.tensor([[1.0, 2.0, 3.0, 4.0]]), None]
     out = w(images, prompts, box_hints=box_hints)
     assert "pred_masks" in out
@@ -34,7 +37,9 @@ def test_forward_accepts_per_image_box_hints() -> None:
 def test_forward_rejects_mismatched_box_hints_length() -> None:
     w = _wrapper()
     images = torch.zeros(2, 3, 8, 8)
-    prompts = [TextPrompts(classes=["cat"]), TextPrompts(classes=["dog"])]
+    # Both prompts must share the same class list (shared K-prompt vocabulary).
+    prompts = [TextPrompts(classes=["cat"]), TextPrompts(classes=["cat"])]
+    # K=1, so expected box_hints length is B*K=2; passing length 1 should fail.
     with pytest.raises(ValueError, match=r"len.box_hints"):
         w(images, prompts, box_hints=[None])
 

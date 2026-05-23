@@ -41,8 +41,9 @@ class LossConfig:
     hyperparameters were demoted to module-level constants in
     models/losses.py (#93).
 
-    No `w_cls`: discrimination across classes comes from running one forward
-    pass per class prompt. `w_presence` weights the image-level
+    No `w_cls`: SAM 3.1's multiplex forward provides open-vocabulary
+    discrimination directly via per-text-embedding queries; per-class
+    `w_cls` is unneeded. `w_presence` weights the image-level
     "any-instance-of-this-class-present?" supervision.
     """
 

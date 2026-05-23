@@ -13,6 +13,7 @@ from custom_sam_peft.config.schema import (
     BoxHintSchedule,
     DataConfig,
     DataSplit,
+    MultiplexConfig,
     PEFTConfig,
     RunConfig,
     TrainConfig,
@@ -24,7 +25,7 @@ from custom_sam_peft.train.loop import _box_hint_p, train_step
 from tests.fixtures.tiny_sam3_stub import TinySam3Stub
 
 
-def _make_cfg(**train_overrides: Any) -> TrainConfig:
+def _make_cfg(*, classes_per_forward: int = 16, **train_overrides: Any) -> TrainConfig:
     train_kwargs: dict[str, Any] = {"epochs": 1, "grad_accum_steps": 1}
     train_kwargs.update(train_overrides)
     return TrainConfig(
@@ -36,7 +37,10 @@ def _make_cfg(**train_overrides: Any) -> TrainConfig:
             prompt_mode="text",
         ),
         peft=PEFTConfig(method="lora", scope="vision"),
-        train=TrainHyperparams(**train_kwargs),
+        train=TrainHyperparams(
+            multiplex=MultiplexConfig(classes_per_forward=classes_per_forward),
+            **train_kwargs,
+        ),
     )
 
 
@@ -75,8 +79,9 @@ def test_box_hint_p_midpoint() -> None:
 
 def test_train_step_class_loop_visits_union(monkeypatch: pytest.MonkeyPatch) -> None:
     """For a 2-image batch with classes {A,B} and {A}, the wrapper is called once
-    per class in the union (alphabetical sort: A then B)."""
-    cfg = _make_cfg()
+    with the full union sorted alphabetically as a single multiplex group
+    (default classes_per_forward=16 => G=1)."""
+    cfg = _make_cfg()  # default classes_per_forward=16
     wrapper = _make_wrapper()
 
     nn.init.normal_(wrapper.model.dummy)  # type: ignore[arg-type]
@@ -84,7 +89,8 @@ def test_train_step_class_loop_visits_union(monkeypatch: pytest.MonkeyPatch) -> 
     real_forward = wrapper.forward
 
     def spy(images: torch.Tensor, prompts: list[Any], box_hints: Any = None) -> Any:
-        calls.append([p.classes[0] for p in prompts])
+        # Record the sorted class list from the first prompt (all prompts share the same list).
+        calls.append(list(prompts[0].classes))
         return real_forward(images, prompts, box_hints=box_hints)
 
     monkeypatch.setattr(wrapper, "forward", spy)
@@ -106,9 +112,10 @@ def test_train_step_class_loop_visits_union(monkeypatch: pytest.MonkeyPatch) -> 
         global_step=0,
         nan_streak=0,
     )
-    assert [c[0] for c in calls] == ["A", "A", "B"] or [c[0] for c in calls] == ["A", "B"]
-    for call_classes in calls:
-        assert len(set(call_classes)) == 1
+    # With classes_per_forward=16, both A and B fit in one group => one forward call.
+    assert len(calls) == 1
+    # That single call should contain all classes from the union (sorted).
+    assert sorted(calls[0]) == ["A", "B"]
     assert not result.skipped
 
 
@@ -145,7 +152,10 @@ def test_train_step_box_hint_sampling(monkeypatch: pytest.MonkeyPatch) -> None:
 def test_train_step_nan_in_one_class_does_not_count_as_skip(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    cfg = _make_cfg()
+    """At classes_per_forward=1, NaN in the first group (class A) does not skip
+    the step because class B's group is finite.  This exercises the per-group NaN
+    policy: skip only when EVERY group is non-finite."""
+    cfg = _make_cfg(classes_per_forward=1)  # K=1 per group → one group per class
     wrapper = _make_wrapper()
 
     class_call = {"count": 0}

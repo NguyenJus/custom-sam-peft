@@ -51,6 +51,11 @@ CKPT_FACTOR = (
 )
 BASE_ACTIVATION_AT_1024 = int(1.5 * _GB)  # seed; superseded by calibration cache
 
+# Forward-only memory is roughly 1/4 of the train-step probe (train captures
+# forward + backward + retained graph; eval captures only forward, no graph).
+# Spec §8.
+forward_only_factor: float = 0.25
+
 # === CALIBRATION CACHE =====================================================
 
 CACHE_FILENAME = ".custom_sam_peft_calibration.json"
@@ -172,14 +177,19 @@ def _predicted_bytes(
     ckpt: bool,
     image_size: int,
     cache: dict[str, Any] | None,
+    mode: Literal["train", "eval"] = "train",
 ) -> int:
-    return (
-        _model_bytes(method)
-        + _adapter_bytes(r)
-        + _optimizer_bytes(r)
-        + _activation_bytes(image_size, batch, ckpt, cache)
-        + WORKSPACE_BYTES
-    )
+    if mode == "train":
+        return (
+            _model_bytes(method)
+            + _adapter_bytes(r)
+            + _optimizer_bytes(r)
+            + _activation_bytes(image_size, batch, ckpt, cache)
+            + WORKSPACE_BYTES
+        )
+    # mode == "eval": no optimizer, no adapter bytes; activations x forward_only_factor.
+    activations = int(_activation_bytes(image_size, batch, ckpt, cache) * forward_only_factor)
+    return _model_bytes(method) + activations + WORKSPACE_BYTES
 
 
 # === Calibration cache I/O =================================================
@@ -332,3 +342,59 @@ def decide_preset(image_size: int) -> PresetDecision:
         cache_path=cache_path,
         calibrated_at=calibrated_at,
     )
+
+
+def decide_eval_batch_size(
+    image_size: int,
+    classes_per_forward: int = 16,
+) -> tuple[int, int, Literal["calibrated", "analytic"]]:
+    """Pick the largest forward-only batch size that fits within the eval VRAM budget.
+
+    Returns (batch_size, predicted_bytes, provenance).
+
+    On CPU: returns (1, 0, "analytic") and logs once.
+    Spec: design §8.
+
+    Note: ``classes_per_forward`` is accepted for API stability but does **not**
+    currently affect the returned batch size.  K (classes per forward) is folded
+    into ``forward_only_factor`` empirically (spec §8) rather than computed from
+    this parameter.  It is reserved for a future K-aware tuning pass (spec §12
+    follow-up).  Pass ``MULTIPLEX_CAP`` from ``custom_sam_peft.models.sam3`` so
+    that callsites remain correct when K-awareness is wired in.
+    """
+    if not isinstance(image_size, int) or image_size <= 0:
+        raise ValueError("image_size must be a positive integer")
+    # Guard against mis-use: classes_per_forward must be in [1, MULTIPLEX_CAP].
+    # Import lazily to avoid a circular dependency at module load time.
+    from custom_sam_peft.models.sam3 import MULTIPLEX_CAP as _CAP
+
+    if not (1 <= classes_per_forward <= _CAP):
+        raise ValueError(f"classes_per_forward must be in [1, {_CAP}]; got {classes_per_forward}")
+    if not torch.cuda.is_available():
+        _LOG.info("eval.batch_size=auto on CPU -> falling back to 1")
+        return 1, 0, "analytic"
+
+    props = torch.cuda.get_device_properties(0)
+    total = int(props.total_memory)
+    gpu_name = torch.cuda.get_device_name(0)
+
+    headroom = _headroom_bytes()
+    budget = total - headroom
+
+    cache, _ = _load_cache(image_size, gpu_name)
+    provenance: Literal["calibrated", "analytic"] = (
+        "calibrated" if cache is not None else "analytic"
+    )
+
+    best_bs = 1
+    best_predicted = _predicted_bytes(
+        "lora", r=4, batch=1, ckpt=False, image_size=image_size, cache=cache, mode="eval"
+    )
+    for batch in range(1, 65):  # B in [1, 64]
+        pb = _predicted_bytes(
+            "lora", r=4, batch=batch, ckpt=False, image_size=image_size, cache=cache, mode="eval"
+        )
+        if pb <= budget:
+            best_bs = batch
+            best_predicted = pb
+    return best_bs, best_predicted, provenance

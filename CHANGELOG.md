@@ -7,6 +7,33 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ---
 
+## [0.12.0] — 2026-05-23
+
+### Added — SAM 3.1 multiplex forward (issue #22)
+
+- **feat**: one forward per ≤16-class group in train, eval, and predict. New
+  `train.multiplex.classes_per_forward` (1..16, default 16). New
+  `eval.batch_size: int | "auto"` (default `"auto"`). New `--batch-size auto`
+  (default) for `csp predict`.
+
+### Performance
+
+- **perf**: Multi-class training/eval workloads (COCO ≥80 classes, LVIS) see
+  significantly higher throughput; see PR description for
+  `scripts/bench_multiplex_throughput.py` numbers.
+
+### Breaking (numeric)
+
+- Per-step loss magnitudes shift vs prior versions. The `LossConfig` defaults
+  (`w_mask=w_obj=w_presence=1`) are unchanged; re-validate manual tunings.
+- Per-step RNG draw order shifts at K>1; runs are not seed-bit-equivalent to
+  <0.12.0 for K>1. Bit-equivalence holds at `train.multiplex.classes_per_forward=1`.
+
+### Escape hatch
+
+- Set `train.multiplex.classes_per_forward: 1` to recover the per-class
+  iteration order within the same code path.
+
 ## [0.11.0] — 2026-05-23
 
 ### Breaking — v0.x debt paydown ("hardening pass", issue #26)

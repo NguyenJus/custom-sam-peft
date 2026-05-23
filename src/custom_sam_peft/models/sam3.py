@@ -1,8 +1,8 @@
 """SAM 3.1 loader + forward wrapper. See docs/superpowers/specs/2026-05-16-model-loading-design.md.
 
 Revised by docs/superpowers/plans/2026-05-16-model-loading-revised.md to match
-Meta's open-vocab head: one prompt class per forward call. Trainer loops over
-the fixed class vocabulary externally.
+Meta's open-vocab head: supports 1..MULTIPLEX_CAP class prompts per forward call.
+All prompts in a batch must share the same class list in the same order.
 """
 
 from __future__ import annotations
@@ -107,6 +107,7 @@ def _classify_missing_keys(
 
 def _build_geometric_prompt(
     box_hints: list[Tensor | None],
+    n_cols: int,
     image_size: int,
     device: torch.device,
 ) -> Prompt | None:
@@ -126,10 +127,13 @@ def _build_geometric_prompt(
     substitutes Meta's zero-length-seq dummy (``Prompt(box_embeddings=zeros(0,
     B, 4), box_mask=zeros(B, 0))``) in that case.
     """
+    if len(box_hints) != n_cols:
+        raise ValueError(f"len(box_hints)={len(box_hints)} must equal n_cols={n_cols}")
+
     if all(h is None for h in box_hints):
         return None
 
-    b = len(box_hints)
+    b = n_cols
     n_max = max((h.shape[0] for h in box_hints if h is not None), default=0)
     if n_max == 0:
         # All tensors present but empty (edge case — treat as all-None dummy).
@@ -162,21 +166,31 @@ def _build_geometric_prompt(
     return Prompt(box_embeddings=box_embeddings, box_mask=box_mask, box_labels=None)
 
 
+# SAM 3.1's multiplex forward is trained at K ≤ 16 class prompts per call.
+# This is a model property, not a tunable. Trainer/evaluator/predict cite
+# this constant for chunking; see docs/superpowers/specs/2026-05-23-multiplex-forward-design.md §4.
+MULTIPLEX_CAP: int = 16
+
+
 class Sam3Wrapper(nn.Module):
     """Thin wrapper around Meta's SAM 3.1 model.
 
     Contract:
       - ``forward(images, prompts, box_hints=None)`` accepts a batch of B images
         and a list of B ``Prompts`` objects, one per image.
-      - ``box_hints``: optional list of length B.  Each element is either ``None``
-        (no geometric hint for that image) or a ``(M_i, 4)`` float tensor of
-        absolute pixel xyxy boxes.  ``box_hints`` must not be combined with
-        ``BoxPrompts`` (they carry conflicting localization signals).
+      - ``box_hints``: optional flat list of length ``B·K``, ordered image-major /
+        class-minor (i.e. all K class slots for image 0, then all K class slots for
+        image 1, …).  Each element is either ``None`` (no geometric hint for that
+        slot) or a ``(M_i, 4)`` float tensor of absolute pixel xyxy boxes.
+        ``box_hints`` must not be combined with ``BoxPrompts`` (they carry
+        conflicting localization signals).  For the common K=1 case the list
+        length equals B and the ordering is trivially image-major.
       - All prompts in a batch MUST be the same variant (TextPrompts XOR
         BoxPrompts); the wrapper raises on mixed batches.
-      - For TextPrompts, each image's prompt MUST contain exactly one class
-        name; the trainer is responsible for looping over the fixed class
-        vocabulary and accumulating losses across classes.
+      - For TextPrompts, each image's prompt may contain 1..MULTIPLEX_CAP
+        class names; all prompts in a batch must share the same class list
+        in the same order (multiplex forward assumes a shared K-prompt
+        vocabulary).
       - Returns Meta's native output dict unchanged.
       - ``forward`` supports both training (``model.train()``) and inference
         (``model.eval()``) modes.  The internal ``_Sam3ImageAdapter``
@@ -226,12 +240,23 @@ class Sam3Wrapper(nn.Module):
                     "All prompts in a batch must be the same prompt variant "
                     "(TextPrompts or BoxPrompts), not mixed."
                 )
-            if isinstance(p, TextPrompts) and len(p.classes) != 1:
+            if isinstance(p, TextPrompts) and not (1 <= len(p.classes) <= MULTIPLEX_CAP):
                 raise ValueError(
-                    f"TextPrompts must contain exactly one class per forward "
-                    f"call (got {len(p.classes)}). Loop over the class vocabulary "
-                    f"externally."
+                    f"TextPrompts must contain 1..MULTIPLEX_CAP (={MULTIPLEX_CAP}) classes per "
+                    f"call (got {len(p.classes)}). Configure "
+                    f"train.multiplex.classes_per_forward to bound K."
                 )
+
+        # After the per-prompt loop, enforce shared class list for TextPrompts.
+        if first is TextPrompts:
+            ref = tuple(cast(TextPrompts, prompts[0]).classes)
+            for p in prompts[1:]:
+                if tuple(cast(TextPrompts, p).classes) != ref:
+                    raise ValueError(
+                        "All TextPrompts in a batch must carry the same class "
+                        "list in the same order (multiplex forward assumes a "
+                        "shared K-prompt vocabulary)."
+                    )
 
         if box_hints is not None:
             if first is BoxPrompts:
@@ -239,8 +264,18 @@ class Sam3Wrapper(nn.Module):
                     "box_hints must not be combined with BoxPrompts prompts. "
                     "BoxPrompts already carry localization information."
                 )
-            if len(box_hints) != b:
-                raise ValueError(f"len(box_hints)={len(box_hints)} must equal batch size {b}")
+            # For TextPrompts, box_hints must be length B*K (image-major / class-minor).
+            # For other prompt types (currently only BoxPrompts, guarded above), length B.
+            if first is TextPrompts and prompts:
+                k = len(cast(TextPrompts, prompts[0]).classes)
+                expected_len = b * k
+            else:
+                expected_len = b
+            if len(box_hints) != expected_len:
+                raise ValueError(
+                    f"len(box_hints)={len(box_hints)} must equal batch size x classes "
+                    f"({b}x{expected_len // b if b else 1}={expected_len})"
+                )
             for i, h in enumerate(box_hints):
                 if h is None:
                     continue
@@ -315,24 +350,26 @@ class _Sam3ImageAdapter(nn.Module):
         if not all(isinstance(p, TextPrompts) for p in prompts):
             raise ValueError("_Sam3ImageAdapter only supports TextPrompts in v0")
         text_prompts = cast(list[TextPrompts], prompts)
-        class_names = [p.classes[0] for p in text_prompts]
-        if len(set(class_names)) > 1:
-            raise ValueError(
-                "All prompts in a batch must share the same class name "
-                "(SAM 3.1 forward_grounding runs one text prompt per call); "
-                f"got {class_names}"
-            )
+        # Sam3Wrapper._validate_inputs guarantees a shared class list across the batch.
+        classes = list(text_prompts[0].classes)
+        k = len(classes)
         device = images.device
         b = images.shape[0]
         model_dtype = next(self.model.parameters()).dtype
+
         backbone_out = self.model.backbone.forward_image(images)  # type: ignore[union-attr, operator]
         text_outputs = self.model.backbone.forward_text(  # type: ignore[union-attr, operator]
-            [class_names[0]], device=device
+            classes, device=device
         )
         backbone_out.update(text_outputs)
+
+        # Multiplex assembly: B images x K classes -> B*K rows, image-major / class-minor.
+        # img_ids  = [0,0,...,0, 1,1,...,1, ..., B-1,B-1,...,B-1]  (each repeated K times)
+        # text_ids = [0,1,...,K-1, 0,1,...,K-1, ..., 0,1,...,K-1]  (repeated B times)
+        n_cols = b * k
         find_input = FindStage(
-            img_ids=torch.arange(b, device=device, dtype=torch.long),
-            text_ids=torch.zeros(b, device=device, dtype=torch.long),
+            img_ids=torch.arange(b, device=device, dtype=torch.long).repeat_interleave(k),
+            text_ids=torch.arange(k, device=device, dtype=torch.long).repeat(b),
             input_boxes=None,
             input_boxes_mask=None,
             input_boxes_label=None,
@@ -340,16 +377,17 @@ class _Sam3ImageAdapter(nn.Module):
             input_points_mask=None,
         )
         gp = _build_geometric_prompt(
-            box_hints if box_hints is not None else [None] * b,
-            self.image_size,
-            device,
+            box_hints if box_hints is not None else [None] * n_cols,
+            n_cols=n_cols,
+            image_size=self.image_size,
+            device=device,
         )
         if gp is None:
             gp = Prompt(
-                box_embeddings=torch.zeros(0, b, 4, device=device, dtype=model_dtype),
-                box_mask=torch.zeros(b, 0, device=device, dtype=torch.bool),
-                point_embeddings=torch.zeros(0, b, 2, device=device, dtype=model_dtype),
-                point_mask=torch.zeros(b, 0, device=device, dtype=torch.bool),
+                box_embeddings=torch.zeros(0, n_cols, 4, device=device, dtype=model_dtype),
+                box_mask=torch.zeros(n_cols, 0, device=device, dtype=torch.bool),
+                point_embeddings=torch.zeros(0, n_cols, 2, device=device, dtype=model_dtype),
+                point_mask=torch.zeros(n_cols, 0, device=device, dtype=torch.bool),
             )
         outputs: dict[str, Tensor] = self.model.forward_grounding(  # type: ignore[operator]
             backbone_out=backbone_out,

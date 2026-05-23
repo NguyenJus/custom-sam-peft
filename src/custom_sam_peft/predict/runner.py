@@ -48,8 +48,13 @@ _BUILTIN_DEFAULT_IMAGE_SIZE = 1024  # SAM 3.1 native resolution
 class PredictOptions:
     """All options passed from the CLI shell to run_predict.
 
-    NO field defaults — defaults live in the Phase 6 CLI layer so that tests
-    must construct PredictOptions explicitly.
+    Most fields carry NO field-level default — defaults live in the Phase 6
+    CLI layer so that tests must construct PredictOptions explicitly.
+
+    Exception: ``batch_size`` carries a field-level default of ``"auto"``
+    for API-surface reasons (spec §13 AC 13).  Because Python dataclasses
+    require fields-with-defaults to come after fields-without-defaults,
+    ``batch_size`` is placed last.
     """
 
     images: Path
@@ -64,10 +69,10 @@ class PredictOptions:
     visualize: bool
     device: Literal["auto", "cuda", "cpu"]
     dtype: Literal["auto", "bfloat16", "float32"]
-    batch_size: int
     seed: int
     dry_run: bool
     verbose: bool
+    batch_size: int | Literal["auto"] = "auto"
 
 
 @dataclass(frozen=True)
@@ -309,9 +314,20 @@ def run_predict(opts: PredictOptions) -> PredictReport:
     )
 
     # ---------------------------------------------------------------------------
+    # Step 6b: resolve batch_size (spec §13 AC 13)
+    # ---------------------------------------------------------------------------
+    if opts.batch_size == "auto":
+        from custom_sam_peft.models.sam3 import MULTIPLEX_CAP
+        from custom_sam_peft.presets import decide_eval_batch_size
+
+        bs, _, _ = decide_eval_batch_size(rcfg.image_size, classes_per_forward=MULTIPLEX_CAP)
+    else:
+        bs = int(opts.batch_size)
+
+    # ---------------------------------------------------------------------------
     # Step 7: VRAM hint (spec §6, §12)
     # ---------------------------------------------------------------------------
-    if rcfg.device == "cuda" and opts.batch_size == 1:
+    if rcfg.device == "cuda" and bs == 1:
         try:
             free_bytes, _ = torch.cuda.mem_get_info()
             if free_bytes > 12 * 1024**3:
@@ -333,9 +349,14 @@ def run_predict(opts: PredictOptions) -> PredictReport:
             model(_warmup_input, _dummy_prompt, box_hints=None)
 
     # ---------------------------------------------------------------------------
-    # Step 9: forward loop
+    # Step 9: forward loop — flat (image_chunk, class_group) iteration
     # ---------------------------------------------------------------------------
+    from custom_sam_peft.eval.evaluator import _row_outputs
     from custom_sam_peft.eval.postprocess import queries_to_coco_results
+    from custom_sam_peft.models.sam3 import MULTIPLEX_CAP
+
+    def _chunked(seq: list[Any], n: int) -> list[list[Any]]:
+        return [seq[i : i + n] for i in range(0, len(seq), n)]
 
     all_predictions: list[dict[str, object]] = []
     id_to_path: dict[int, Path] = {}
@@ -347,41 +368,49 @@ def run_predict(opts: PredictOptions) -> PredictReport:
     # Initialise progress inner bar to the real image count (no-op outside a session).
     P.reset_inner(total=len(image_paths))
     log_every_n = max(1, len(image_paths) // 50)
+    images_processed = 0
 
-    # We process images one at a time (spec §12 — postprocess hard-asserts batch==1)
-    for i, img_path in enumerate(image_paths):
-        img_t0 = time.perf_counter()
+    for chunk_paths in _chunked(list(image_paths), bs):
+        chunk_t0 = time.perf_counter()
 
-        # --- open image ---
-        try:
-            from PIL import Image as _PILImage
+        # --- open + transform each image in the chunk ---
+        imgs: list[torch.Tensor] = []
+        metas: list[tuple[int, int, int]] = []  # (image_id, orig_h, orig_w)
+        chunk_paths_ok: list[Path] = []  # parallel to metas; used for verbose logging
 
-            pil_img = _PILImage.open(img_path).convert("RGB")
-        except Exception as exc:
-            logger.warning("Skipping unreadable image %s: %s", img_path, exc)
+        for img_path in chunk_paths:
+            try:
+                from PIL import Image as _PILImage
+
+                pil_img = _PILImage.open(img_path).convert("RGB")
+            except Exception as exc:
+                logger.warning("Skipping unreadable image %s: %s", img_path, exc)
+                continue
+
+            orig_h, orig_w = pil_img.height, pil_img.width
+            image_id = _int_image_id(img_path)
+            id_to_path[image_id] = img_path.resolve()
+            id_to_stem[image_id] = img_path.stem
+            originals[image_id] = (orig_h, orig_w)
+
+            img_np = np.array(pil_img)
+            transformed = transforms(image=img_np, bboxes=[], class_labels=[])
+            imgs.append(transformed["image"].to(rcfg.device, dtype=rcfg.dtype))
+            metas.append((image_id, orig_h, orig_w))
+            chunk_paths_ok.append(img_path)
+
+        if not imgs:
             continue
 
-        orig_h, orig_w = pil_img.height, pil_img.width
-        image_id = _int_image_id(img_path)
-        id_to_path[image_id] = img_path.resolve()
-        id_to_stem[image_id] = img_path.stem
-        originals[image_id] = (orig_h, orig_w)
+        img_batch = torch.stack(imgs, dim=0)  # (B, 3, H, W)
 
-        # --- apply transforms ---
-        img_np = np.array(pil_img)
-        transformed = transforms(image=img_np, bboxes=[], class_labels=[])
-        img_tensor: torch.Tensor = transformed["image"]  # (3, H, W)
-        img_batch = img_tensor.unsqueeze(0).to(rcfg.device, dtype=rcfg.dtype)  # (1, 3, H, W)
-
-        # --- per-class forward (spec §9, inner loop) ---
-        for class_idx, class_name in enumerate(prompts, start=1):
+        # --- flat inner loop over class groups ---
+        for group in _chunked(prompts, MULTIPLEX_CAP):
+            K_g = len(group)
+            prompts_g = [TextPrompts(classes=list(group)) for _ in metas]
             try:
                 with torch.no_grad():
-                    outputs_b = model(
-                        img_batch,
-                        [TextPrompts(classes=[class_name])],
-                        box_hints=None,
-                    )
+                    outputs = model(img_batch, prompts_g, box_hints=None)
             except RuntimeError as exc:
                 if "out of memory" in str(exc).lower():
                     logger.error(
@@ -389,43 +418,48 @@ def run_predict(opts: PredictOptions) -> PredictReport:
                     )
                 raise
 
-            # postprocess (always per-image; queries_to_coco_results asserts batch==1)
-            # Pass original_hw=(orig_h, orig_w) per spec §9 step 9 so that
-            # boxes are in original-image coords and masks are bilinear-upsampled
-            # to original resolution — no manual inversion needed.
-            entries = queries_to_coco_results(
-                outputs_b,
-                image_id=image_id,
-                category_id=class_idx,
-                original_hw=(orig_h, orig_w),
-                mask_threshold=0.0,
-            )
+            # postprocess each (image, class) row from the multiplexed output
+            for r in range(len(metas) * K_g):
+                ii, kk = divmod(r, K_g)
+                image_id, orig_h, orig_w = metas[ii]
+                class_idx_one_based = prompts.index(group[kk]) + 1
+                entries = queries_to_coco_results(
+                    _row_outputs(outputs, r),
+                    image_id=image_id,
+                    category_id=class_idx_one_based,
+                    original_hw=(orig_h, orig_w),
+                    mask_threshold=0.0,
+                )
+                entries = [e for e in entries if cast(float, e["score"]) >= opts.score_threshold]
+                entries.sort(key=lambda e: cast(float, e["score"]), reverse=True)
+                entries = entries[: opts.top_k]
+                all_predictions.extend(entries)
 
-            # Apply score filter + top-K (per spec §9, inline)
-            entries = [e for e in entries if cast(float, e["score"]) >= opts.score_threshold]
-            entries.sort(key=lambda e: cast(float, e["score"]), reverse=True)
-            entries = entries[: opts.top_k]
+        n_successful += len(metas)
+        images_processed += len(metas)
 
-            all_predictions.extend(entries)
-
-        n_successful += 1
-        img_latency_ms = (time.perf_counter() - img_t0) * 1000.0
+        # Verbose: emit one INFO line per image in the chunk.
         if opts.verbose:
-            logger.info(
-                "image %d/%d %s (%.1f ms)",
-                i + 1,
-                len(image_paths),
-                img_path.name,
-                img_latency_ms,
-            )
+            chunk_latency_ms = (time.perf_counter() - chunk_t0) * 1000.0
+            per_image_ms = chunk_latency_ms / max(len(metas), 1)
+            for img_path in chunk_paths_ok:
+                logger.info(
+                    "image %d/%d %s (%.1f ms)",
+                    images_processed - len(metas) + chunk_paths_ok.index(img_path) + 1,
+                    len(image_paths),
+                    img_path.name,
+                    per_image_ms,
+                )
 
-        # Progress tick: per-image inner advance; postfix update at cadence.
-        P.advance_inner()
-        if (i + 1) % log_every_n == 0:
+        # Progress ticks: one advance per image in this chunk.
+        for _ in metas:
+            P.advance_inner()
+
+        if images_processed % log_every_n == 0 or images_processed == len(image_paths):
             elapsed_so_far = max(time.perf_counter() - t_start, 1e-9)
             P.update_postfix(
-                done=f"{i + 1}/{len(image_paths)}",
-                it_s=(i + 1) / elapsed_so_far,
+                done=f"{images_processed}/{len(image_paths)}",
+                it_s=images_processed / elapsed_so_far,
             )
 
     elapsed_sec = time.perf_counter() - t_start
