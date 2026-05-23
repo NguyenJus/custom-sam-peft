@@ -107,6 +107,7 @@ def _classify_missing_keys(
 
 def _build_geometric_prompt(
     box_hints: list[Tensor | None],
+    n_cols: int,
     image_size: int,
     device: torch.device,
 ) -> Prompt | None:
@@ -126,10 +127,13 @@ def _build_geometric_prompt(
     substitutes Meta's zero-length-seq dummy (``Prompt(box_embeddings=zeros(0,
     B, 4), box_mask=zeros(B, 0))``) in that case.
     """
+    if len(box_hints) != n_cols:
+        raise ValueError(f"len(box_hints)={len(box_hints)} must equal n_cols={n_cols}")
+
     if all(h is None for h in box_hints):
         return None
 
-    b = len(box_hints)
+    b = n_cols
     n_max = max((h.shape[0] for h in box_hints if h is not None), default=0)
     if n_max == 0:
         # All tensors present but empty (edge case — treat as all-None dummy).
@@ -360,8 +364,9 @@ class _Sam3ImageAdapter(nn.Module):
         )
         gp = _build_geometric_prompt(
             box_hints if box_hints is not None else [None] * b,
-            self.image_size,
-            device,
+            n_cols=b,
+            image_size=self.image_size,
+            device=device,
         )
         if gp is None:
             gp = Prompt(
