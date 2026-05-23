@@ -5,8 +5,10 @@ PEFT adapters through the ``PEFTMethod`` protocol below. They must not
 branch on ``cfg.peft.method`` strings.
 
 Registered factories:
-  ``lookup("peft", "lora")``  → ``apply_lora``
-  ``lookup("peft", "qlora")`` → ``apply_qlora``
+  ``lookup("peft", "lora")``         → ``apply_lora``         (wrapper, cfg) → Sam3Wrapper
+  ``lookup("peft", "qlora")``        → ``apply_qlora``        (wrapper, cfg) → Sam3Wrapper
+  ``lookup("peft_method", "lora")``  → ``LoraAdapter``        () → PEFTMethod
+  ``lookup("peft_method", "qlora")`` → ``QloraAdapter``       () → PEFTMethod
 
 For method-dispatch decisions (optimizer, autocast, checkpoint detection)
 call the appropriate ``LoraAdapter`` or ``QloraAdapter`` instance methods
@@ -16,8 +18,9 @@ instead of testing ``cfg.peft.method``.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Protocol, runtime_checkable
+from typing import Protocol, cast, runtime_checkable
 
+from custom_sam_peft._registry import RegistryError, lookup, register
 from custom_sam_peft.errors import CheckpointError
 
 _QLORA_META_FILENAME = "custom_sam_peft_qlora.json"
@@ -67,6 +70,7 @@ class PEFTMethod(Protocol):
         ...
 
 
+@register("peft_method", "lora")
 class LoraAdapter:
     """PEFTMethod implementation for LoRA (plain full-precision fine-tuning)."""
 
@@ -89,6 +93,7 @@ class LoraAdapter:
         return True
 
 
+@register("peft_method", "qlora")
 class QloraAdapter:
     """PEFTMethod implementation for QLoRA (4-bit base + LoRA)."""
 
@@ -133,14 +138,16 @@ def make_peft_method(method: str) -> PEFTMethod:
     a protocol instance. Call it once during run setup (e.g. in Trainer.__init__
     or run_eval) and pass the instance through rather than passing cfg.peft.method.
 
+    Resolves via the @register("peft_method", ...) registry — adding a new
+    adapter requires only a @register decorator on the new class, no edits here.
+
     Raises ValueError for unknown method strings.
     """
-    if method == "lora":
-        return LoraAdapter()
-    if method == "qlora":
-        return QloraAdapter()
-    raise ValueError(
-        f"Unknown peft.method {method!r}; expected 'lora' or 'qlora'. "
-        "Register additional adapters via @register('peft', '<name>') and "
-        "add a branch here."
-    )
+    try:
+        adapter_cls = lookup("peft_method", method)
+    except RegistryError as exc:
+        raise ValueError(
+            f"Unknown peft.method {method!r}; expected 'lora' or 'qlora'. "
+            "Register additional adapters via @register('peft_method', '<name>')."
+        ) from exc
+    return cast(PEFTMethod, adapter_cls())

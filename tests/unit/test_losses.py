@@ -142,3 +142,35 @@ def test_total_loss_handles_empty_targets() -> None:
     assert losses["box"].item() == 0.0
     assert torch.isfinite(losses["obj"])
     assert torch.isfinite(losses["presence"])
+
+
+def test_total_loss_applies_focal_constants() -> None:
+    """Regression-guard: focal_gamma/alpha were demoted from LossConfig to module
+    constants. Verify the call site still passes gamma=2.0, alpha=0.25 to
+    objectness_loss after the demotion (audit Section E, #93).
+    """
+    from unittest.mock import patch
+
+    import torch
+
+    from custom_sam_peft.config.schema import LossConfig
+    from custom_sam_peft.models.losses import total_loss
+
+    raw = {
+        "pred_logits": torch.zeros(1, 4, 1),
+        "pred_boxes": torch.zeros(1, 4, 4),
+        "pred_masks": torch.zeros(1, 4, 8, 8),
+        "presence_logit_dec": torch.zeros(1, 1),
+    }
+    targets: list[list[object]] = [[]]
+
+    with patch(
+        "custom_sam_peft.models.losses.objectness_loss",
+        wraps=lambda obj_logits, matched_mask, gamma=2.0, alpha=0.25: torch.zeros(()),
+    ) as spy:
+        total_loss(raw, targets, LossConfig())
+
+    assert spy.call_count == 1
+    _args, kwargs = spy.call_args
+    assert kwargs["gamma"] == 2.0, f"expected gamma=2.0, got {kwargs.get('gamma')!r}"
+    assert kwargs["alpha"] == 0.25, f"expected alpha=0.25, got {kwargs.get('alpha')!r}"

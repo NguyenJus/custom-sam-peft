@@ -60,9 +60,12 @@ def test_loss_config_default_w_box_is_zero() -> None:
     assert LossConfig().w_box == 0.0
 
 
-def test_matcher_weights_default_box_terms_are_zero() -> None:
-    """v0 matcher is mask-only by default."""
+def test_matcher_weights_default_is_mask_only() -> None:
+    """v0 matcher is mask-only by default.
+
+    lambda_l1/giou demoted to inline 0.0 in losses.py (#92).
+    """
     w = MatcherWeights()
-    assert w.lambda_l1 == 0.0
-    assert w.lambda_giou == 0.0
-    assert w.lambda_mask == 5.0  # unchanged
+    assert w.lambda_mask == 5.0
+    assert not hasattr(w, "lambda_l1")
+    assert not hasattr(w, "lambda_giou")

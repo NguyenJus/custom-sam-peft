@@ -14,6 +14,13 @@ from custom_sam_peft.models.matching import (
     meta_to_canonical,
 )
 
+# Demoted from LossConfig to module-level constants per audit Section E (#93).
+# These are not user-tunable: the values were the same across every config
+# example. If you need to tune focal weights, re-promote with a YAML schema
+# change and a tracked-feature issue.
+_FOCAL_GAMMA = 2.0
+_FOCAL_ALPHA = 0.25
+
 
 def _dice_loss(pred_logits: Tensor, target: Tensor) -> Tensor:
     p = pred_logits.sigmoid().flatten(1)
@@ -167,8 +174,8 @@ def total_loss(
     """
     canonical = meta_to_canonical(outputs)
     matcher = HungarianMatcher(
-        lambda_l1=cfg.matcher_weights.lambda_l1,
-        lambda_giou=cfg.matcher_weights.lambda_giou,
+        lambda_l1=0.0,
+        lambda_giou=0.0,
         lambda_mask=cfg.matcher_weights.lambda_mask,
     )
     indices = matcher(canonical, targets)
@@ -186,8 +193,8 @@ def total_loss(
         "obj": objectness_loss(
             canonical.obj_logits,
             matched_mask,
-            gamma=cfg.focal_gamma,
-            alpha=cfg.focal_alpha,
+            gamma=_FOCAL_GAMMA,
+            alpha=_FOCAL_ALPHA,
         ),
         "presence": presence_loss(canonical.img_presence, has_target),
     }

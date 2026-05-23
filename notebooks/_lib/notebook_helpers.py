@@ -2,6 +2,14 @@
 local-checkpoint short-circuit, and HF-token resolution.
 
 CLI never imports this module. Tests and the notebook do.
+
+Note: ``utils/huggingface.py::resolve_hf_token`` is the silent best-effort
+resolver used by ``download_model`` — it returns the token or ``None`` and
+never raises. ``notebook_helpers.py::resolve_hf_token_for_notebook`` (below)
+is an env-aware resolver for notebook contexts: it short-circuits when a
+local checkpoint is present and raises ``RuntimeError`` with Colab- or
+RunPod-specific instructions when the token is missing. The two are
+deliberately not merged; their failure semantics differ.
 """
 
 from __future__ import annotations
@@ -51,7 +59,7 @@ def _resolve_colab_token() -> str | None:
     return result
 
 
-def resolve_hf_token(env: Env, local_present: bool) -> str | None:
+def resolve_hf_token_for_notebook(env: Env, local_present: bool) -> str | None:
     """Resolve the HF token according to environment and local-checkpoint state.
 
     - If `local_present` is True: log 'local checkpoint detected — skipping HF

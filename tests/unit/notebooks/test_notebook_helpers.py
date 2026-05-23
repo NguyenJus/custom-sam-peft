@@ -1,4 +1,4 @@
-"""Tests for src/custom_sam_peft/notebook_helpers.py."""
+"""Tests for notebooks/_lib/notebook_helpers.py."""
 
 from __future__ import annotations
 
@@ -9,10 +9,16 @@ from typing import Any
 
 import pytest
 
-from custom_sam_peft.notebook_helpers import (
+# The notebook_helpers module is co-located with the notebook under
+# notebooks/_lib/ (#99). Prepend the repo's notebooks/ dir to sys.path
+# so this test can import it the same way the notebook does.
+_REPO_ROOT = Path(__file__).resolve().parents[3]
+sys.path.insert(0, str(_REPO_ROOT / "notebooks"))
+
+from _lib.notebook_helpers import (  # noqa: E402
     check_local_checkpoint,
     detect_env,
-    resolve_hf_token,
+    resolve_hf_token_for_notebook,
 )
 
 # ---- detect_env ----------------------------------------------------------
@@ -66,36 +72,36 @@ def test_check_local_checkpoint_dir_not_file(tmp_path: Path) -> None:
 def test_resolve_hf_token_local_short_circuits(env: str, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("HF_TOKEN", raising=False)
     # The function MUST NOT read env or import google.colab when local_present.
-    assert resolve_hf_token(env, local_present=True) is None
+    assert resolve_hf_token_for_notebook(env, local_present=True) is None
 
 
 def test_resolve_hf_token_missing_colab(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delitem(sys.modules, "google.colab", raising=False)
     monkeypatch.delitem(sys.modules, "google", raising=False)
     with pytest.raises(RuntimeError, match="Colab Secrets"):
-        resolve_hf_token("colab", local_present=False)
+        resolve_hf_token_for_notebook("colab", local_present=False)
 
 
 def test_resolve_hf_token_missing_runpod(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("HF_TOKEN", raising=False)
     with pytest.raises(RuntimeError, match="Environment Variables"):
-        resolve_hf_token("runpod", local_present=False)
+        resolve_hf_token_for_notebook("runpod", local_present=False)
 
 
 def test_resolve_hf_token_missing_unknown(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("HF_TOKEN", raising=False)
     with pytest.raises(RuntimeError, match="shell environment"):
-        resolve_hf_token("unknown", local_present=False)
+        resolve_hf_token_for_notebook("unknown", local_present=False)
 
 
 def test_resolve_hf_token_runpod_returns_token(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("HF_TOKEN", "hf_runpod_xyz")
-    assert resolve_hf_token("runpod", local_present=False) == "hf_runpod_xyz"
+    assert resolve_hf_token_for_notebook("runpod", local_present=False) == "hf_runpod_xyz"
 
 
 def test_resolve_hf_token_unknown_returns_token(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("HF_TOKEN", "hf_shell_xyz")
-    assert resolve_hf_token("unknown", local_present=False) == "hf_shell_xyz"
+    assert resolve_hf_token_for_notebook("unknown", local_present=False) == "hf_shell_xyz"
 
 
 def test_resolve_hf_token_colab_userdata_path(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -104,7 +110,7 @@ def test_resolve_hf_token_colab_userdata_path(monkeypatch: pytest.MonkeyPatch) -
     fake_colab = SimpleNamespace(userdata=fake_userdata)
     monkeypatch.setitem(sys.modules, "google", SimpleNamespace(colab=fake_colab))
     monkeypatch.setitem(sys.modules, "google.colab", fake_colab)
-    assert resolve_hf_token("colab", local_present=False) == "hf_colab_abc"
+    assert resolve_hf_token_for_notebook("colab", local_present=False) == "hf_colab_abc"
 
 
 def test_resolve_hf_token_colab_userdata_returns_none(
@@ -119,4 +125,4 @@ def test_resolve_hf_token_colab_userdata_returns_none(
     monkeypatch.setitem(sys.modules, "google", SimpleNamespace(colab=fake_colab))
     monkeypatch.setitem(sys.modules, "google.colab", fake_colab)
     with pytest.raises(RuntimeError, match="Colab Secrets"):
-        resolve_hf_token("colab", local_present=False)
+        resolve_hf_token_for_notebook("colab", local_present=False)
