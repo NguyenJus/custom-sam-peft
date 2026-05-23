@@ -29,7 +29,7 @@ Both `uv pip install --dry-run` commands were run against Python 3.12 / Linux x8
 
 **cu118 index:**
 
-```
+```text
 $ uv pip install --dry-run --index-url https://download.pytorch.org/whl/cu118 'torch>=2.4' --python python3.12 --system
 Using Python 3.12.13 environment at: /usr
 Resolved 22 packages in 1.15s
@@ -61,7 +61,7 @@ Would install 22 packages
 
 **cu124 index:**
 
-```
+```text
 $ uv pip install --dry-run --index-url https://download.pytorch.org/whl/cu124 'torch>=2.4' --python python3.12 --system
 Using Python 3.12.13 environment at: /usr
 Resolved 24 packages in 647ms
@@ -119,7 +119,7 @@ Source: NVIDIA CUDA Toolkit Release Notes, "Table 3. CUDA Toolkit and Compatible
 Versions" (<https://docs.nvidia.com/cuda/cuda-toolkit-release-notes/index.html>).
 
 | CUDA toolkit | Minimum driver (Linux) |
-|---|---|
+| --- | --- |
 | 11.8 GA | >= 520.61.05 |
 | 12.0 GA | >= 525.60.13 |
 | 12.1 GA | >= 530.30.02 |
@@ -156,7 +156,7 @@ is therefore **CC 6.0**.
 The official bitsandbytes installation guide documents the following feature-level CC requirements:
 
 | Feature | CC Required | Example Hardware |
-|---|---|---|
+| --- | --- | --- |
 | LLM.int8() | 7.5+ | Turing (RTX 20xx, T4) or newer |
 | 8-bit optimizers/quantization | 6.0+ | Pascal (GTX 10X0, P100) or newer |
 | NF4/FP4 quantization (QLoRA) | 6.0+ | Pascal (GTX 10X0, P100) or newer |
@@ -207,7 +207,7 @@ The default training dtype is `bfloat16` (`config/schema.py:103`, `dtype: Dtype 
 `torch.autocast(device_type="cuda", dtype=torch.bfloat16)` when `cfg.model.dtype == "bfloat16"`.
 Native bf16 requires CC ≥ 8.0 (Ampere). On older hardware:
 
-- **T4 (CC 7.5)**: bf16 is _emulated_ in software. Training completes but throughput is reduced
+- **T4 (CC 7.5)**: bf16 is *emulated* in software. Training completes but throughput is reduced
   and numerics may differ compared to Ampere hardware.
 - **V100 (CC 7.0)**: no native bf16 support. `torch.autocast` falls back to fp32 for ops lacking
   bf16 kernels; results may be silently degraded.
@@ -220,10 +220,10 @@ degradation. fp16 is natively supported from CC 6.0 (Pascal) onwards.
 
 ## Compatibility Matrix
 
-| Path | Python | torch | min CUDA toolkit | min driver (Linux) | min CC | status |
-|------|--------|-------|------------------|--------------------|--------|--------|
-| LoRA-only | 3.12 | 2.7.1+cu118 | 11.8 | 520.61.05 | 6.0 (sm_60) | partial [^1] |
-| QLoRA | 3.12 | 2.7.1+cu118 | 11.8 | 520.61.05 | 6.0 (sm_60) | partial [^1] |
+| Path       | Python | torch       | min CUDA toolkit | min driver (Linux) | min CC      | status       |
+| ---------- | ------ | ----------- | ---------------- | ------------------ | ----------- | ------------ |
+| LoRA-only  | 3.12   | 2.7.1+cu118 | 11.8             | 520.61.05          | 6.0 (sm_60) | partial [^1] |
+| QLoRA      | 3.12   | 2.7.1+cu118 | 11.8             | 520.61.05          | 6.0 (sm_60) | partial [^1] |
 
 [^1]: *partial*: LoRA and QLoRA training both run on CUDA 11.8 / CC 6.0+ hardware with no code
 changes, but the default `bfloat16` dtype is emulated below CC 8.0 (Ampere). Set
