@@ -1,8 +1,8 @@
 """SAM 3.1 loader + forward wrapper. See docs/superpowers/specs/2026-05-16-model-loading-design.md.
 
 Revised by docs/superpowers/plans/2026-05-16-model-loading-revised.md to match
-Meta's open-vocab head: one prompt class per forward call. Trainer loops over
-the fixed class vocabulary externally.
+Meta's open-vocab head: supports 1..MULTIPLEX_CAP class prompts per forward call.
+All prompts in a batch must share the same class list in the same order.
 """
 
 from __future__ import annotations
@@ -180,9 +180,10 @@ class Sam3Wrapper(nn.Module):
         ``BoxPrompts`` (they carry conflicting localization signals).
       - All prompts in a batch MUST be the same variant (TextPrompts XOR
         BoxPrompts); the wrapper raises on mixed batches.
-      - For TextPrompts, each image's prompt MUST contain exactly one class
-        name; the trainer is responsible for looping over the fixed class
-        vocabulary and accumulating losses across classes.
+      - For TextPrompts, each image's prompt may contain 1..MULTIPLEX_CAP
+        class names; all prompts in a batch must share the same class list
+        in the same order (multiplex forward assumes a shared K-prompt
+        vocabulary).
       - Returns Meta's native output dict unchanged.
       - ``forward`` supports both training (``model.train()``) and inference
         (``model.eval()``) modes.  The internal ``_Sam3ImageAdapter``
@@ -232,12 +233,24 @@ class Sam3Wrapper(nn.Module):
                     "All prompts in a batch must be the same prompt variant "
                     "(TextPrompts or BoxPrompts), not mixed."
                 )
-            if isinstance(p, TextPrompts) and len(p.classes) != 1:
-                raise ValueError(
-                    f"TextPrompts must contain exactly one class per forward "
-                    f"call (got {len(p.classes)}). Loop over the class vocabulary "
-                    f"externally."
-                )
+            if isinstance(p, TextPrompts):
+                if not (1 <= len(p.classes) <= MULTIPLEX_CAP):
+                    raise ValueError(
+                        f"TextPrompts must contain 1..MULTIPLEX_CAP (={MULTIPLEX_CAP}) classes per "
+                        f"call (got {len(p.classes)}). Configure "
+                        f"train.multiplex.classes_per_forward to bound K."
+                    )
+
+        # After the per-prompt loop, enforce shared class list for TextPrompts.
+        if first is TextPrompts:
+            ref = tuple(cast(TextPrompts, prompts[0]).classes)
+            for p in prompts[1:]:
+                if tuple(cast(TextPrompts, p).classes) != ref:
+                    raise ValueError(
+                        "All TextPrompts in a batch must carry the same class "
+                        "list in the same order (multiplex forward assumes a "
+                        "shared K-prompt vocabulary)."
+                    )
 
         if box_hints is not None:
             if first is BoxPrompts:
