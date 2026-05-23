@@ -300,7 +300,7 @@ class ResolvedLosses:
 
 
 def _override_triggers_warn(
-    field_name: str, value: object, preset: str, class_imbalance: str
+    field_name: str, value: object, preset: Preset, class_imbalance: ClassImbalance
 ) -> bool:
     """Spec §6.2: warn only when the override changes the locked-off knob away
     from the table's seed value."""
@@ -311,7 +311,7 @@ def _override_triggers_warn(
     if value is None:
         return False
     seed = PRESET_TABLE[(preset, class_imbalance)][field_name]
-    return value != seed
+    return bool(value != seed)
 
 
 def resolve(cfg: LossConfig) -> ResolvedLosses:

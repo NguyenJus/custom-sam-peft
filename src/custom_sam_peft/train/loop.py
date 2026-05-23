@@ -16,7 +16,7 @@ import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import torch
 from torch import Tensor
@@ -259,7 +259,7 @@ def train_step(
                     _losses_out.append(micro_cls_losses)
                     # Divide only by n_classes and grad_accum — NOT by n_micro.
                     # The ladder helper applies / n_micro in (loss / n_micro).backward().
-                    return micro_cls_losses["total"] / (_n_classes * _grad_accum)
+                    return cast(Tensor, micro_cls_losses["total"]) / (_n_classes * _grad_accum)
 
                 image_indices = list(range(B))
                 _train_step_with_oom_ladder(

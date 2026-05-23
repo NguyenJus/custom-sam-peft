@@ -178,7 +178,7 @@ class LossOverrides(_Strict):
     @classmethod
     def _coerce_matcher_weights(cls, v: object) -> MatcherWeights | None:
         if v is None or isinstance(v, MatcherWeights):
-            return v  # type: ignore[return-value]
+            return v
         if isinstance(v, dict):
             return MatcherWeights(**v)
         raise TypeError(f"matcher_weights must be a dict or MatcherWeights, got {type(v).__name__}")

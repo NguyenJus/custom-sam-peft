@@ -12,6 +12,7 @@ silently ignores irrelevant ones. This keeps build_loss_bundle uniform.
 from __future__ import annotations
 
 import numpy as np
+import numpy.typing as npt
 import torch
 from scipy.ndimage import distance_transform_edt
 from torch import Tensor, nn
@@ -135,7 +136,9 @@ class FocalTverskyLoss(_MaskTermBase):
         return ((1.0 - ti).pow(self.tversky_gamma)).mean()
 
 
-def _signed_distance_transform(target_np: np.ndarray) -> np.ndarray:
+def _signed_distance_transform(
+    target_np: npt.NDArray[np.float32],
+) -> npt.NDArray[np.float32]:
     """Signed distance transform for one (H, W) uint8/bool mask.
 
     Positive inside the object, negative outside. Computed via scipy
@@ -146,12 +149,12 @@ def _signed_distance_transform(target_np: np.ndarray) -> np.ndarray:
         # All-zero target: distance is + everywhere outside (i.e. positive everywhere
         # outside the object, which doesn't exist); use the EDT of the complement and
         # negate so the SDT is non-positive (pushing predictions away costs nothing).
-        return -distance_transform_edt(~mask).astype(np.float32)
+        return np.asarray(-distance_transform_edt(~mask), dtype=np.float32)
     if mask.all():
-        return distance_transform_edt(mask).astype(np.float32)
-    pos = distance_transform_edt(mask).astype(np.float32)
-    neg = distance_transform_edt(~mask).astype(np.float32)
-    return pos - neg
+        return np.asarray(distance_transform_edt(mask), dtype=np.float32)
+    pos = distance_transform_edt(mask)
+    neg = distance_transform_edt(~mask)
+    return np.asarray(pos - neg, dtype=np.float32)
 
 
 def _kervadec_boundary(pred_sigmoid: Tensor, target: Tensor) -> Tensor:
