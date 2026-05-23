@@ -33,7 +33,10 @@ import logging
 from dataclasses import dataclass, field
 from typing import Any
 
-from custom_sam_peft import __version__ as _LIB_VERSION
+try:
+    from custom_sam_peft._version import __version__ as _LIB_VERSION
+except ImportError:
+    _LIB_VERSION = "unknown"
 from custom_sam_peft.config._internal import MatcherWeights
 from custom_sam_peft.config.schema import (
     BoxFamily,
@@ -62,7 +65,6 @@ _TERM_CLASS_NAMES: dict[str, dict[str, str]] = {
         "dice_bce":      "DiceBCELoss",
         "focal_bce":     "FocalBCELoss",
         "focal_dice":    "FocalDiceLoss",
-        "tversky":       "TverskyLoss",
         "focal_tversky": "FocalTverskyLoss",
         "boundary":      "BoundaryLoss",
     },
