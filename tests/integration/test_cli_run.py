@@ -101,6 +101,13 @@ def _patch_phases(
     )
     run_dir.mkdir(parents=True, exist_ok=True)
     (run_dir / "adapter").mkdir(exist_ok=True)
+    # cli/run_cmd.py reads <run_dir>/val_source.json post-train to pick the val mode.
+    (run_dir / "val_source.json").write_text(
+        '{"mode": "explicit", "fraction_requested": null, "seed_used": null, '
+        '"realized_fraction": null, "n_train": null, "n_val": null, '
+        '"per_class_counts": null, "missing_in_val": null, '
+        '"train_ids": null, "val_ids": null}'
+    )
 
     # Stub _load_preset_or_fallback so tests that don't write a sidecar don't hit CUDA.
     fake_preset = _make_preset_decision()
@@ -157,7 +164,7 @@ def _patch_phases(
     # Build a stub val_dataset.
     fake_ds = MagicMock(__len__=lambda self: 3, class_names=["a"])
 
-    def _build_val(_cfg: object) -> object:
+    def _build_val(_cfg: object, _vs: object) -> object:
         captured["order"].append("build_val")  # type: ignore[union-attr]
         return fake_ds
 

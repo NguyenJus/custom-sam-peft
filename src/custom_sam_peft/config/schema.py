@@ -151,6 +151,22 @@ class HFDatasetConfig(_Strict):
     field_map: HFFieldMap = Field(default_factory=HFFieldMap)
 
 
+class ValSplitConfig(_Strict):
+    """Auto-split parameters. Used when DataConfig.val_split is set.
+
+    Carves data.train into train+val deterministically. In v0:
+      - stratification is always-on Sechidis multi-label iterative;
+        not configurable.
+      - split unit is always 'image'; not configurable. Splitting by
+        annotation can leak the same image into both sides.
+
+    Spec: docs/superpowers/specs/2026-05-22-data-no-val-auto-split-design.md §3.1.
+    """
+
+    fraction: float = Field(default=0.1, gt=0.0, le=0.5)
+    seed: int | None = None  # None → inherit run.seed at resolve time
+
+
 SubsetStrategy = Literal["random", "stratified", "first_n"]
 
 
@@ -193,7 +209,8 @@ class LimitConfig(_Strict):
 class DataConfig(_Strict):
     format: DataFormat
     train: DataSplit
-    val: DataSplit
+    val: DataSplit | None = None
+    val_split: ValSplitConfig | None = None
     test: DataSplit | None = None
     hf: HFDatasetConfig | None = None
     prompt_mode: PromptMode
@@ -207,6 +224,30 @@ class DataConfig(_Strict):
     def _check_format_specific(self) -> DataConfig:
         if self.format == "hf" and self.hf is None:
             raise ValueError("data.hf is required when data.format == 'hf'")
+        return self
+
+    @model_validator(mode="after")
+    def _check_val_modes(self) -> DataConfig:
+        if self.val is not None and self.val_split is not None:
+            raise ValueError(
+                "data.val and data.val_split are mutually exclusive. "
+                "Set one to provide a validation set, neither for no-val mode."
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _check_hf_split_val_compat(self) -> DataConfig:
+        if (
+            self.format == "hf"
+            and self.val_split is not None
+            and self.hf is not None
+            and self.hf.split_val != "validation"
+        ):
+            raise ValueError(
+                "data.hf.split_val cannot be customized when data.val_split is set; "
+                "auto-split carves the val set from data.hf.split_train. "
+                "Remove split_val or remove val_split."
+            )
         return self
 
 

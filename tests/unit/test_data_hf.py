@@ -467,3 +467,78 @@ def test_build_hf_train_pipeline(monkeypatch: pytest.MonkeyPatch) -> None:
     with _patch_imagenet_ctx():
         hfds = builder(cfg, model_name="facebook/sam3.1", pipeline="train")
     assert len(hfds) > 0
+
+
+# ---------------------------------------------------------------------------
+# spec/data-no-val-auto-split (#71): row_indices subset parameter
+# ---------------------------------------------------------------------------
+
+
+def _make_min_ds_with_class_label(n: int) -> hf_datasets.Dataset:
+    """Adapter shim: wraps the existing `_build_hf_dataset(n=...)` helper."""
+    return _build_hf_dataset(n=n, use_class_label=True)
+
+
+def test_hfdataset_row_indices_filters_to_subset(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Spec §6.2: row_indices restricts the dataset to the requested rows."""
+    ds_underlying = _make_min_ds_with_class_label(n=5)
+    _patch_load_dataset(monkeypatch, ds_underlying)
+    with _patch_imagenet_ctx():
+        ds = HFDataset(
+            name="x",
+            split="train",
+            prompt_mode="text",
+            transforms=_build_eval(),
+            text_prompt=TextPromptConfig(),
+            field_map=HFFieldMap(),
+            row_indices=[0, 2],
+        )
+    assert len(ds) == 2
+
+
+def test_hfdataset_row_indices_out_of_range_raises(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Spec §6.2: out-of-range row_indices raise ValueError."""
+    ds_underlying = _make_min_ds_with_class_label(n=3)
+    _patch_load_dataset(monkeypatch, ds_underlying)
+    with _patch_imagenet_ctx(), pytest.raises(ValueError, match="out of range"):
+        HFDataset(
+            name="x",
+            split="train",
+            prompt_mode="text",
+            transforms=_build_eval(),
+            text_prompt=TextPromptConfig(),
+            field_map=HFFieldMap(),
+            row_indices=[-1],
+        )
+    with _patch_imagenet_ctx(), pytest.raises(ValueError, match="out of range"):
+        HFDataset(
+            name="x",
+            split="train",
+            prompt_mode="text",
+            transforms=_build_eval(),
+            text_prompt=TextPromptConfig(),
+            field_map=HFFieldMap(),
+            row_indices=[100],
+        )
+
+
+def test_hfdataset_image_id_uses_underlying_row_index(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Spec §6.2 last paragraph: image_id in the returned Example uses the
+    underlying dataset row index (not the post-subset position)."""
+    ds_underlying = _make_min_ds_with_class_label(n=5)
+    _patch_load_dataset(monkeypatch, ds_underlying)
+    with _patch_imagenet_ctx():
+        ds = HFDataset(
+            name="x",
+            split="train",
+            prompt_mode="text",
+            transforms=_build_eval(),
+            text_prompt=TextPromptConfig(),
+            field_map=HFFieldMap(),
+            row_indices=[2, 4],
+        )
+    ex0 = ds[0]
+    # Subset position 0 → underlying row 2 → image_id == "2".
+    assert ex0.image_id == "2"
+    ex1 = ds[1]
+    assert ex1.image_id == "4"

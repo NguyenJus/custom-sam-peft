@@ -8,6 +8,7 @@ feature, or fall back to a `ClassLabel` inside the per-box category field.
 from __future__ import annotations
 
 import logging
+from collections.abc import Iterable
 from typing import Any, Literal
 
 import numpy as np
@@ -135,6 +136,7 @@ class HFDataset:
         text_prompt: TextPromptConfig,
         field_map: HFFieldMap,
         seed: int = 0,
+        row_indices: Iterable[int] | None = None,
     ) -> None:
         if prompt_mode not in ("text", "bbox"):
             raise ValueError(f"prompt_mode must be 'text' or 'bbox'; got {prompt_mode!r}")
@@ -153,9 +155,19 @@ class HFDataset:
         self._ds = hf_load_dataset(name, split=split)
         _validate_required_fields(self._ds, field_map)
         self._class_names = _resolve_class_names(self._ds, field_map)
+        if row_indices is not None:
+            self._index_map: list[int] | None = [int(i) for i in row_indices]
+            invalid = [i for i in self._index_map if i < 0 or i >= len(self._ds)]
+            if invalid:
+                raise ValueError(
+                    f"HFDataset: {len(invalid)} row_indices out of range "
+                    f"[0, {len(self._ds)}): first few = {invalid[:10]}"
+                )
+        else:
+            self._index_map = None
 
     def __len__(self) -> int:
-        return len(self._ds)
+        return len(self._index_map) if self._index_map is not None else len(self._ds)
 
     @property
     def image_class_labels(self) -> list[frozenset[int]]:
@@ -188,7 +200,8 @@ class HFDataset:
         from custom_sam_peft.data.base import BoxPrompts, Instance, TextPrompts
         from custom_sam_peft.data.coco import _build_text_prompts
 
-        row = self._ds[i]
+        row_i = self._index_map[i] if self._index_map is not None else i
+        row = self._ds[row_i]
         img_obj = _resolve_field(row, self._field_map.image)
         if isinstance(img_obj, PILImage.Image):
             np_img = np.asarray(img_obj.convert("RGB"))
@@ -252,16 +265,16 @@ class HFDataset:
                 )
             )
 
-        image_id = str(i)
+        image_id = str(row_i)
         if self._prompt_mode == "text":
             present = sorted(set(out_classes))
-            rng = _random.Random(f"{self._seed}:{i}")  # noqa: S311 — deterministic seeded RNG for prompt sampling, not security
+            rng = _random.Random(f"{self._seed}:{row_i}")  # noqa: S311 — deterministic seeded RNG for prompt sampling, not security
             prompts_list = _build_text_prompts(
                 present_dense_ids=present,
                 class_names=self._class_names,
                 cfg=self._text_prompt_cfg,
                 rng=rng,
-                image_id=i,
+                image_id=row_i,
             )
             if len(prompts_list) > self._multiplex_cap:
                 if not self._warned_truncation:
@@ -333,7 +346,11 @@ def build_hf(
     if pipeline not in ("train", "eval"):
         raise ValueError(f"pipeline must be 'train' or 'eval'; got {pipeline!r}")
     hf_cfg = cfg["hf"]
-    split = hf_cfg["split_train"] if pipeline == "train" else hf_cfg["split_val"]
+    resolved = (cfg.get("_resolved_image_ids") or {}).get(pipeline)
+    if pipeline == "eval" and cfg.get("val") is None and resolved is not None:
+        split = hf_cfg["split_train"]
+    else:
+        split = hf_cfg["split_train"] if pipeline == "train" else hf_cfg["split_val"]
     image_size = int(cfg["image_size"])
     normalize = NormalizeConfig.model_validate(cfg.get("normalize", {}))
     text_prompt = TextPromptConfig.model_validate(cfg.get("text_prompt", {}))
@@ -352,4 +369,5 @@ def build_hf(
         transforms=transforms,
         text_prompt=text_prompt,
         field_map=field_map,
+        row_indices=[int(s) for s in resolved] if resolved is not None else None,
     )

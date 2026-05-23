@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import logging
 import random
+from collections.abc import Iterable
 from pathlib import Path
 from typing import Any, Literal
 
@@ -128,6 +129,7 @@ class COCODataset:
         transforms: Any,
         text_prompt: TextPromptConfig,
         seed: int = 0,
+        image_ids: Iterable[int] | None = None,
     ) -> None:
         if prompt_mode not in ("text", "bbox"):
             raise ValueError(f"prompt_mode must be 'text' or 'bbox'; got {prompt_mode!r}")
@@ -147,7 +149,20 @@ class COCODataset:
         self._class_names = class_names
 
         kept, ann_index, dropped = _drop_crowd_only_images(self._coco)
-        self._image_ids = kept
+        if image_ids is not None:
+            requested = {int(x) for x in image_ids}
+            kept_set = set(kept)
+            missing = requested - kept_set
+            if missing:
+                first_few = sorted(missing)[:10]
+                raise ValueError(
+                    f"COCODataset: {len(missing)} image_ids requested but not present "
+                    f"(or dropped as iscrowd-only): {first_few}"
+                    f"{'…' if len(missing) > 10 else ''}"
+                )
+            self._image_ids = [i for i in kept if i in requested]
+        else:
+            self._image_ids = kept
         self._ann_index = ann_index
         if dropped:
             _LOG.info(
@@ -306,8 +321,12 @@ def build_coco(
 
     if pipeline not in ("train", "eval"):
         raise ValueError(f"pipeline must be 'train' or 'eval'; got {pipeline!r}")
-    split_key = "train" if pipeline == "train" else "val"
-    split = cfg[split_key]
+    resolved = (cfg.get("_resolved_image_ids") or {}).get(pipeline)
+    if pipeline == "eval" and cfg.get("val") is None and resolved is not None:
+        split = cfg["train"]
+    else:
+        split_key = "train" if pipeline == "train" else "val"
+        split = cfg[split_key]
     image_size = int(cfg["image_size"])
     normalize = NormalizeConfig.model_validate(cfg.get("normalize", {}))
     text_prompt = TextPromptConfig.model_validate(cfg.get("text_prompt", {}))
@@ -324,4 +343,5 @@ def build_coco(
         prompt_mode=cfg["prompt_mode"],
         transforms=transforms,
         text_prompt=text_prompt,
+        image_ids=[int(s) for s in resolved] if resolved is not None else None,
     )

@@ -29,6 +29,15 @@ data:
   val:
     annotations: data/val.json
     images: data/val/
+  # Alternatives — uncomment ONE to swap modes:
+  #
+  # No-val mode (remove the `val:` block entirely):
+  # (just delete the val block above)
+  #
+  # Auto-split mode (carve data.train into train+val):
+  # val_split:
+  #   fraction: 0.1
+  #   seed: null   # null → inherit run.seed at resolve time
   prompt_mode: text
   image_size: 1008
   augmentations:

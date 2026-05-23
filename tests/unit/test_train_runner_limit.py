@@ -36,6 +36,11 @@ def _make_cfg(tmp_path: Path, train_limit=None, val_limit=None, strategy="random
     cfg.data.limit.val = val_limit
     cfg.data.limit.seed = 42
     cfg.data.limit.strategy = strategy
+    # spec/data-no-val-auto-split (#71): the runner consults the val source resolver
+    # before building datasets. Force the "explicit" mode (cfg.data.val present,
+    # val_split absent) so MagicMock auto-attrs don't trip the auto-split path.
+    cfg.data.val = MagicMock()
+    cfg.data.val_split = None
     return cfg
 
 

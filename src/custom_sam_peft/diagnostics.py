@@ -41,6 +41,21 @@ class HuggingFaceAuthInfo:
 
 
 @dataclass(frozen=True)
+class DataReport:
+    """Validation source plan for the given config (no dataset materialization).
+
+    Populated only when `run_doctor(config_path=...)` is called.
+
+    Spec: docs/superpowers/specs/2026-05-22-data-no-val-auto-split-design.md §7.7.
+    """
+
+    val_mode: Literal["explicit", "auto_split", "none"]
+    val_path: str | None
+    val_split_fraction: float | None
+    val_split_seed: int | None
+
+
+@dataclass(frozen=True)
 class DatasetResolution:
     format: str
     train_total: int
@@ -67,6 +82,7 @@ class DoctorReport:
     hf_auth: HuggingFaceAuthInfo
     dataset: DatasetResolution | None = None
     issues: list[str] = field(default_factory=list)
+    data: DataReport | None = None
 
 
 _OPTIONAL = ("bitsandbytes", "wandb", "tensorboard")
@@ -178,7 +194,8 @@ def run_doctor(
     """Cheap-to-run environment audit.
 
     config_path is optional and heavy: loads the YAML, validates the config,
-    builds train and val datasets (may trigger pycocotools or datasets.load_dataset).
+    builds train and val datasets (may trigger pycocotools or datasets.load_dataset),
+    and also extracts the resolved val-source plan (mode, fraction, seed).
     The existing no-config path remains cheap and network-free.
     """
     import torch
@@ -211,8 +228,40 @@ def run_doctor(
             "will not download (set HF_TOKEN or run `huggingface-cli login`)"
         )
 
+    data: DataReport | None = None
     dataset_resolution: DatasetResolution | None = None
     if config_path is not None:
+        from custom_sam_peft.config.loader import load_config
+
+        try:
+            cfg = load_config(config_path)
+        except Exception:
+            cfg = None
+        if cfg is not None:
+            if cfg.data.val_split is not None:
+                seed = (
+                    cfg.data.val_split.seed if cfg.data.val_split.seed is not None else cfg.run.seed
+                )
+                data = DataReport(
+                    val_mode="auto_split",
+                    val_path=None,
+                    val_split_fraction=cfg.data.val_split.fraction,
+                    val_split_seed=seed,
+                )
+            elif cfg.data.val is not None:
+                data = DataReport(
+                    val_mode="explicit",
+                    val_path=cfg.data.val.annotations,
+                    val_split_fraction=None,
+                    val_split_seed=None,
+                )
+            else:
+                data = DataReport(
+                    val_mode="none",
+                    val_path=None,
+                    val_split_fraction=None,
+                    val_split_seed=None,
+                )
         dataset_resolution = _build_dataset_for_doctor(config_path, issues)
 
     return DoctorReport(
@@ -228,4 +277,5 @@ def run_doctor(
         hf_auth=hf_auth,
         dataset=dataset_resolution,
         issues=issues,
+        data=data,
     )

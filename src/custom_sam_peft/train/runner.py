@@ -12,6 +12,11 @@ from custom_sam_peft._registry import lookup
 from custom_sam_peft.config.schema import TrainConfig
 from custom_sam_peft.data.base import Dataset
 from custom_sam_peft.data.subset import SubsetDataset, resolve_subset_indices
+from custom_sam_peft.data.val_source import (
+    _log_val_source,
+    resolve_val_source,
+    save_val_source,
+)
 from custom_sam_peft.models.sam3 import load_sam31
 from custom_sam_peft.tracking import build_tracker
 from custom_sam_peft.train.trainer import RunResult, Trainer
@@ -27,12 +32,8 @@ def make_run_dir(cfg: TrainConfig) -> Path:
     return run_dir
 
 
-def _build_dataset(cfg: TrainConfig, pipeline: str) -> Dataset:
-    builder = lookup("dataset", cfg.data.format)
-    inner = cast(
-        Dataset, builder(cfg.data.model_dump(), model_name=cfg.model.name, pipeline=pipeline)
-    )
-
+def _apply_limit(inner: Dataset, cfg: TrainConfig, pipeline: str) -> Dataset:
+    """Wrap `inner` in a `SubsetDataset` per `cfg.data.limit`, or return as-is."""
     lim_cfg = cfg.data.limit
     limit_val = lim_cfg.train if pipeline == "train" else lim_cfg.val
     if limit_val is None:
@@ -60,19 +61,53 @@ def _build_dataset(cfg: TrainConfig, pipeline: str) -> Dataset:
     return SubsetDataset(inner, indices)
 
 
+def _build_dataset_from_dict(
+    data_cfg_dict: dict[str, Any], cfg: TrainConfig, pipeline: str
+) -> Dataset:
+    builder = lookup("dataset", cfg.data.format)
+    inner = cast(Dataset, builder(data_cfg_dict, model_name=cfg.model.name, pipeline=pipeline))
+    return _apply_limit(inner, cfg, pipeline)
+
+
+def _build_dataset(cfg: TrainConfig, pipeline: str) -> Dataset:
+    """Build a dataset without any auto-split injection — used by doctor."""
+    return _build_dataset_from_dict(cfg.data.model_dump(), cfg, pipeline)
+
+
 def run_training(
     cfg: TrainConfig,
     *,
     resume_from: Path | None = None,
 ) -> RunResult:
-    """Build datasets, load model + PEFT, build tracker, run Trainer.fit."""
+    """Build datasets, load model + PEFT, build tracker, run Trainer.fit.
+
+    Spec: docs/superpowers/specs/2026-05-22-data-no-val-auto-split-design.md §6.4.
+    """
     run_dir = make_run_dir(cfg)
-    train_ds = _build_dataset(cfg, "train")
-    val_ds = _build_dataset(cfg, "eval")
+
+    # On resume, look for val_source.json in the run dir that owns the
+    # checkpoint (checkpoints live at <run_dir>/checkpoints/step_N/).
+    resume_run_dir = resume_from.parent.parent if resume_from is not None else None
+    vs = resolve_val_source(cfg, run_dir=resume_run_dir)
+    save_val_source(vs, run_dir)
+    _log_val_source(vs)
+
+    data_cfg_dict = cfg.data.model_dump()
+    if vs.mode == "auto_split":
+        assert vs.train_ids is not None and vs.val_ids is not None  # noqa: S101
+        data_cfg_dict["_resolved_image_ids"] = {
+            "train": list(vs.train_ids),
+            "eval": list(vs.val_ids),
+        }
+
+    train_ds = _build_dataset_from_dict(data_cfg_dict, cfg, "train")
+    val_ds: Dataset | None = (
+        None if vs.mode == "none" else _build_dataset_from_dict(data_cfg_dict, cfg, "eval")
+    )
 
     # Write subset.json when at least one side has a limit applied
     lim_cfg = cfg.data.limit
-    if lim_cfg.train is not None or lim_cfg.val is not None:
+    if (lim_cfg.train is not None or lim_cfg.val is not None) and val_ds is not None:
         _write_subset_manifest(run_dir, train_ds, val_ds, cfg)
 
     wrapper: Any = load_sam31(cfg.model)

@@ -293,25 +293,94 @@ def _oom_edge_note(events: tuple[OomEvent, ...]) -> str | None:
     return base
 
 
+def _write_summary_no_val(ctx: BundleContext) -> None:
+    """Spec §7.5: write summary.md only; no samples directory.
+
+    Headline is `# <run-name> — no-val` instead of `# <run-name> — <mAP>`.
+    """
+    gpu_name, vram_gb = _hardware_lines()
+    vram_line = f"- VRAM: {vram_gb:.1f} GB" if vram_gb is not None else "- VRAM: (n/a)"
+
+    adapter_path = (ctx.run_dir / "adapter").resolve()
+    try:
+        adapter_rel = adapter_path.relative_to(ctx.run_dir.resolve())
+    except ValueError:
+        adapter_rel = adapter_path
+
+    if ctx.merged_export_error is not None:
+        merged_line = f"- Merged:  FAILED — {ctx.merged_export_error} — see logs"
+    elif ctx.merged_dir is None:
+        merged_line = "- Merged:  skipped (cfg.export.merge=false)"
+    else:
+        try:
+            merged_rel = ctx.merged_dir.resolve().relative_to(ctx.run_dir.resolve())
+            merged_line = f"- Merged:  {merged_rel}"
+        except ValueError:
+            merged_line = f"- Merged:  {ctx.merged_dir}"
+
+    config_rel = ctx.config_path.name
+
+    headline = f"# {ctx.config_path.parent.name} — no-val"
+    body = (
+        f"{headline}\n\n"
+        f"## Run\n"
+        f"- Start:  {ctx.start_ts.isoformat()}\n"
+        f"- End:    {ctx.end_ts.isoformat()}\n"
+        f"- Duration: {_format_duration(ctx.start_ts, ctx.end_ts)}\n\n"
+        f"## Hardware\n"
+        f"- GPU:  {gpu_name}\n"
+        f"{vram_line}\n\n"
+        f"## Preset\n"
+        f"{_preset_block(ctx.preset)}\n\n"
+        f"## Outputs\n"
+        f"- Adapter: {adapter_rel}\n"
+        f"{merged_line}\n"
+        f"- Config:  {config_rel}\n\n"
+        f"## Validation\n"
+        f"No validation set; this run did not produce mAP or per-example IoU.\n"
+        f"Tracker scalars and training-loss curve are at the configured TB run dir.\n"
+    )
+    edge_lines: list[str] = []
+    if ctx.merged_export_error is not None:
+        edge_lines.append(f"- export-merge failed: {ctx.merged_export_error}")
+    oom_line = _oom_edge_note(ctx.oom_events)
+    if oom_line is not None:
+        edge_lines.append(f"- {oom_line}")
+    if edge_lines:
+        body += "\n## Edge cases\n" + "\n".join(edge_lines) + "\n"
+
+    ctx.run_dir.mkdir(parents=True, exist_ok=True)
+    (ctx.run_dir / "summary.md").write_text(body)
+
+
 def write_bundle(
     ctx: BundleContext,
-    metrics_report: MetricsReport,
-    val_dataset: Dataset,
+    metrics_report: MetricsReport | None,
+    val_dataset: Dataset | None,
     model_wrapper: Any,
 ) -> None:
     """Write `ctx.run_dir/summary.md` and `ctx.run_dir/samples/*.png`.
+
+    No-val mode: when val_dataset is None, writes summary.md only with the
+    "no-val" headline and skips the samples/ directory.
 
     Idempotent: re-runs overwrite. Failure modes:
       - Per-sample inference raises → that PNG is skipped; WARNING logged;
         "skipped samples" note in summary.md. Bundle does not abort.
       - All other errors propagate.
+
+    Spec: docs/superpowers/specs/2026-05-22-data-no-val-auto-split-design.md §7.5.
     """
+    if val_dataset is None:
+        _write_summary_no_val(ctx)
+        return
     samples_dir = ctx.run_dir / "samples"
     samples_dir.mkdir(parents=True, exist_ok=True)
     # Clear any stale samples from prior runs.
     for stale in samples_dir.glob("*.png"):
         stale.unlink()
 
+    assert metrics_report is not None  # noqa: S101 — val_dataset present implies report present
     mAP = float(metrics_report.overall.get("mAP", float("nan")))
     n_val = len(val_dataset)
     indices = pick_samples(ctx.per_example_iou, mAP, n_val)

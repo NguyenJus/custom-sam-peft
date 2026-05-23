@@ -225,3 +225,89 @@ def test_data_config_test_accepts_data_split(minimal_data_config_dict: dict) -> 
     cfg = DataConfig(**minimal_data_config_dict)
     assert cfg.test is not None
     assert cfg.test.annotations == "a.json"
+
+
+# ---------------------------------------------------------------------------
+# spec/data-no-val-auto-split (#71): optional val + val_split + validators
+# ---------------------------------------------------------------------------
+
+
+def test_val_null_validates() -> None:
+    """data.val: null resolves to no-val mode; must not raise."""
+    d = _minimal_dict()
+    d["data"]["val"] = None  # type: ignore[index]
+    cfg = TrainConfig.model_validate(d)
+    assert cfg.data.val is None
+    assert cfg.data.val_split is None
+
+
+def test_val_omitted_validates() -> None:
+    """Omitting data.val entirely also resolves to no-val mode."""
+    d = _minimal_dict()
+    del d["data"]["val"]  # type: ignore[index]
+    cfg = TrainConfig.model_validate(d)
+    assert cfg.data.val is None
+    assert cfg.data.val_split is None
+
+
+def test_val_and_val_split_mutually_exclusive() -> None:
+    d = _minimal_dict()
+    d["data"]["val_split"] = {"fraction": 0.1}  # type: ignore[index]
+    # val is still present from _minimal_dict.
+    with pytest.raises(ValidationError, match="mutually exclusive"):
+        TrainConfig.model_validate(d)
+
+
+def test_val_split_fraction_above_half_rejected() -> None:
+    d = _minimal_dict()
+    d["data"]["val"] = None  # type: ignore[index]
+    d["data"]["val_split"] = {"fraction": 0.6}  # type: ignore[index]
+    with pytest.raises(ValidationError):
+        TrainConfig.model_validate(d)
+
+
+def test_val_split_fraction_zero_or_negative_rejected() -> None:
+    d = _minimal_dict()
+    d["data"]["val"] = None  # type: ignore[index]
+    d["data"]["val_split"] = {"fraction": 0.0}  # type: ignore[index]
+    with pytest.raises(ValidationError):
+        TrainConfig.model_validate(d)
+    d["data"]["val_split"] = {"fraction": -0.1}  # type: ignore[index]
+    with pytest.raises(ValidationError):
+        TrainConfig.model_validate(d)
+
+
+def test_hf_split_val_custom_with_val_split_rejected() -> None:
+    d = _minimal_dict()
+    d["data"]["format"] = "hf"  # type: ignore[index]
+    d["data"]["hf"] = {  # type: ignore[index]
+        "name": "tiny/dataset",
+        "split_train": "train",
+        "split_val": "custom_val",
+    }
+    d["data"]["val"] = None  # type: ignore[index]
+    d["data"]["val_split"] = {"fraction": 0.1}  # type: ignore[index]
+    with pytest.raises(ValidationError, match="split_val cannot be customized"):
+        TrainConfig.model_validate(d)
+
+
+def test_hf_split_val_default_with_val_split_validates() -> None:
+    d = _minimal_dict()
+    d["data"]["format"] = "hf"  # type: ignore[index]
+    d["data"]["hf"] = {"name": "tiny/dataset"}  # default split_val="validation"
+    d["data"]["val"] = None  # type: ignore[index]
+    d["data"]["val_split"] = {"fraction": 0.1, "seed": 7}  # type: ignore[index]
+    cfg = TrainConfig.model_validate(d)
+    assert cfg.data.val_split is not None
+    assert cfg.data.val_split.fraction == 0.1
+    assert cfg.data.val_split.seed == 7
+
+
+def test_neither_val_nor_val_split_validates() -> None:
+    """Spec §3.3: neither set → resolves to no-val mode (WARN at resolve, not validation)."""
+    d = _minimal_dict()
+    d["data"]["val"] = None  # type: ignore[index]
+    # val_split is not present in _minimal_dict.
+    cfg = TrainConfig.model_validate(d)
+    assert cfg.data.val is None
+    assert cfg.data.val_split is None

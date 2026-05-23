@@ -13,6 +13,7 @@ from typing import Any, Literal, cast, overload
 from custom_sam_peft._registry import lookup
 from custom_sam_peft.config.schema import TrainConfig
 from custom_sam_peft.data.base import Dataset
+from custom_sam_peft.data.val_source import resolve_val_source
 from custom_sam_peft.eval.evaluator import Evaluator
 from custom_sam_peft.eval.metrics import MetricsReport
 from custom_sam_peft.models.sam3 import load_sam31
@@ -80,6 +81,8 @@ def run_eval(
             f"checkpoint loading currently supports only LoRA adapters; "
             f"got peft.method={cfg.peft.method!r}"
         )
+    if split == "val" and cfg.data.val is None and cfg.data.val_split is None:
+        raise ValueError("--split val requires data.val or data.val_split in config; got neither.")
     if split == "test" and cfg.data.test is None:
         raise ValueError("--split test requires data.test in config; got None for data.test")
 
@@ -87,6 +90,10 @@ def run_eval(
         cfg_dict = cfg.data.model_dump()
         if split == "test":
             cfg_dict["val"] = cfg_dict["test"]
+        elif split == "val" and cfg.data.val_split is not None:
+            vs = resolve_val_source(cfg, run_dir=None)
+            assert vs.val_ids is not None  # noqa: S101 — auto_split mode invariant
+            cfg_dict["_resolved_image_ids"] = {"eval": list(vs.val_ids)}
         builder = lookup("dataset", cfg.data.format)
         dataset = cast(Dataset, builder(cfg_dict, model_name=cfg.model.name, pipeline="eval"))
     else:

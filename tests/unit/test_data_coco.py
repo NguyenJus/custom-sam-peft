@@ -758,3 +758,114 @@ def test_deterministic_text_sampling_under_fixed_seed(tmp_path: Path) -> None:
     assert isinstance(a.prompts, TextPrompts)
     assert isinstance(b.prompts, TextPrompts)
     assert a.prompts.classes == b.prompts.classes
+
+
+# ---------------------------------------------------------------------------
+# spec/data-no-val-auto-split (#71): image_ids subset parameter
+# ---------------------------------------------------------------------------
+
+
+def test_cocodataset_image_ids_filters_to_subset(tiny_coco_dir: Path) -> None:
+    """Spec §6.1: image_ids restricts the dataset to the requested subset."""
+    with _patch_imagenet_ctx():
+        full = COCODataset(
+            annotations=str(tiny_coco_dir / "annotations.json"),
+            images=str(tiny_coco_dir / "images"),
+            prompt_mode="text",
+            transforms=_build_eval(),
+            text_prompt=TextPromptConfig(),
+        )
+    all_ids = list(full._image_ids)
+    assert len(all_ids) >= 2
+    subset = all_ids[:1]
+    with _patch_imagenet_ctx():
+        ds = COCODataset(
+            annotations=str(tiny_coco_dir / "annotations.json"),
+            images=str(tiny_coco_dir / "images"),
+            prompt_mode="text",
+            transforms=_build_eval(),
+            text_prompt=TextPromptConfig(),
+            image_ids=subset,
+        )
+    assert len(ds) == 1
+    ex = ds[0]
+    assert int(ex.image_id) == subset[0]
+
+
+def test_cocodataset_image_ids_missing_raises_value_error(tiny_coco_dir: Path) -> None:
+    """Spec §6.1: requesting an image_id not present (or crowd-only) raises ValueError."""
+    with _patch_imagenet_ctx(), pytest.raises(ValueError, match="not present"):
+        COCODataset(
+            annotations=str(tiny_coco_dir / "annotations.json"),
+            images=str(tiny_coco_dir / "images"),
+            prompt_mode="text",
+            transforms=_build_eval(),
+            text_prompt=TextPromptConfig(),
+            image_ids=[999999],
+        )
+
+
+def test_cocodataset_image_ids_none_preserves_existing_behavior(tiny_coco_dir: Path) -> None:
+    """When image_ids is None, the dataset behaves exactly as before."""
+    with _patch_imagenet_ctx():
+        ds_a = COCODataset(
+            annotations=str(tiny_coco_dir / "annotations.json"),
+            images=str(tiny_coco_dir / "images"),
+            prompt_mode="text",
+            transforms=_build_eval(),
+            text_prompt=TextPromptConfig(),
+        )
+        ds_b = COCODataset(
+            annotations=str(tiny_coco_dir / "annotations.json"),
+            images=str(tiny_coco_dir / "images"),
+            prompt_mode="text",
+            transforms=_build_eval(),
+            text_prompt=TextPromptConfig(),
+            image_ids=None,
+        )
+    assert len(ds_a) == len(ds_b)
+
+
+def test_cocodataset_image_ids_sorted_order_preserved(tiny_coco_dir: Path) -> None:
+    """Internal _image_ids list must be in ascending order regardless of caller-supplied order."""
+    with _patch_imagenet_ctx():
+        full = COCODataset(
+            annotations=str(tiny_coco_dir / "annotations.json"),
+            images=str(tiny_coco_dir / "images"),
+            prompt_mode="text",
+            transforms=_build_eval(),
+            text_prompt=TextPromptConfig(),
+        )
+    ids_sorted_desc = sorted(full._image_ids, reverse=True)
+    with _patch_imagenet_ctx():
+        ds = COCODataset(
+            annotations=str(tiny_coco_dir / "annotations.json"),
+            images=str(tiny_coco_dir / "images"),
+            prompt_mode="text",
+            transforms=_build_eval(),
+            text_prompt=TextPromptConfig(),
+            image_ids=ids_sorted_desc,
+        )
+    assert ds._image_ids == sorted(ds._image_ids)
+
+
+def test_image_level_leak_invariant_on_tiny_coco(tiny_coco_dir: Path) -> None:
+    """Spec §9.4.5: stratified_split on tiny_coco items yields disjoint train/val ids."""
+    from custom_sam_peft.config.schema import DataConfig, DataSplit
+    from custom_sam_peft.data.splitter import stratified_split
+    from custom_sam_peft.data.val_source import _enumerate_coco_items
+
+    data_cfg = DataConfig(
+        format="coco",
+        train=DataSplit(
+            annotations=str(tiny_coco_dir / "annotations.json"),
+            images=str(tiny_coco_dir / "images"),
+        ),
+        prompt_mode="text",
+        image_size=32,
+    )
+    items = _enumerate_coco_items(data_cfg)
+    if len(items) < 2:
+        pytest.skip("tiny_coco has < 2 keep-after-crowd-filter images; cannot test split")
+    res = stratified_split(items, fraction=0.5, seed=0)
+    assert set(res.train_ids).isdisjoint(set(res.val_ids))

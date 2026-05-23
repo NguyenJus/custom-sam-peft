@@ -282,6 +282,42 @@ def test_write_bundle_skipped_sample_logged_and_summary_notes_it(
     )
 
 
+# ---------------------------------------------------------------------------
+# spec/data-no-val-auto-split (#71): no-val bundle path
+# ---------------------------------------------------------------------------
+
+
+def test_write_bundle_no_val_writes_summary_only(tmp_path: Path) -> None:
+    """Spec §7.5: write_bundle(val_dataset=None, metrics_report=None) writes summary.md only."""
+    ctx = _make_ctx(tmp_path, per_example_iou=[])
+    write_bundle(ctx, metrics_report=None, val_dataset=None, model_wrapper=MagicMock())
+    summary_path = ctx.run_dir / "summary.md"
+    assert summary_path.is_file()
+    summary = summary_path.read_text()
+    assert "no-val" in summary.lower() or "no validation" in summary.lower()
+    # No samples directory should be created in no-val mode.
+    samples_dir = ctx.run_dir / "samples"
+    assert not samples_dir.exists() or not any(samples_dir.glob("*.png"))
+
+
+def test_write_bundle_no_val_headline_says_no_val(tmp_path: Path) -> None:
+    """Spec §7.5: headline reads '... — no-val' (no mAP number)."""
+    ctx = _make_ctx(tmp_path, per_example_iou=[])
+    write_bundle(ctx, metrics_report=None, val_dataset=None, model_wrapper=MagicMock())
+    summary = (ctx.run_dir / "summary.md").read_text()
+    first_line = summary.splitlines()[0]
+    assert first_line.startswith("# ")
+    assert "no-val" in first_line.lower()
+
+
+def test_write_bundle_no_val_contains_no_validation_set_line(tmp_path: Path) -> None:
+    """Spec §7.5: summary body contains 'No validation set'."""
+    ctx = _make_ctx(tmp_path, per_example_iou=[])
+    write_bundle(ctx, metrics_report=None, val_dataset=None, model_wrapper=MagicMock())
+    summary = (ctx.run_dir / "summary.md").read_text()
+    assert "No validation set" in summary
+
+
 def _fake_reinfer(*_a: object, **_k: object) -> tuple[Image.Image, np.ndarray, np.ndarray]:
     return (
         Image.new("RGB", (8, 8)),

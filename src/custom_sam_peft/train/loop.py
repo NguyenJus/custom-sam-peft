@@ -387,7 +387,6 @@ def run_epoch(
     global_step: int,
     nan_streak: int,
     class_names: list[str],
-    val_ds: Any,
     on_checkpoint: Callable[[int, int, float, int], None],
     on_eval: Callable[[int], None],
     oom_state: OomState | None = None,

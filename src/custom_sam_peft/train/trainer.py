@@ -132,7 +132,7 @@ class Trainer:
         self,
         model: Sam3Wrapper,
         train_ds: Dataset,
-        val_ds: Dataset,
+        val_ds: Dataset | None,
         tracker: Tracker,
         cfg: TrainConfig,
     ) -> None:
@@ -154,6 +154,11 @@ class Trainer:
                 self._optimizer_name,
                 cfg.peft.method,
             )
+        if val_ds is None:
+            _LOG.info(
+                "training without validation set; eval_every is a no-op, "
+                "end-of-run eval and bundle samples are skipped."
+            )
 
     def fit(self, *, run_dir: Path | None = None, resume_from: Path | None = None) -> RunResult:
         cfg = self.cfg
@@ -167,7 +172,18 @@ class Trainer:
 
         (run_dir / "checkpoints").mkdir(parents=True, exist_ok=True)
         (run_dir / "config.yaml").write_text(yaml.safe_dump(cfg.model_dump(mode="json")))
-        self.tracker.start_run(run_dir, cfg.model_dump(mode="json"), resume_from)
+        cfg_dict = cfg.model_dump(mode="json")
+        vs_path = run_dir / "val_source.json"
+        if vs_path.exists():
+            saved = json.loads(vs_path.read_text())
+            cfg_dict["val_source"] = {
+                "mode": saved["mode"],
+                "fraction_requested": saved.get("fraction_requested"),
+                "realized_fraction": saved.get("realized_fraction"),
+                "n_train": saved.get("n_train"),
+                "n_val": saved.get("n_val"),
+            }
+        self.tracker.start_run(run_dir, cfg_dict, resume_from)
 
         device = next(self.model.parameters()).device
         pin = device.type == "cuda"
@@ -186,7 +202,9 @@ class Trainer:
             persistent_workers=cfg.train.num_workers > 0,
             worker_init_fn=_worker_init_fn(cfg.run.seed) if cfg.train.num_workers > 0 else None,
         )
-        val_examples = [self.val_ds[i] for i in range(min(4, len(self.val_ds)))]
+        val_examples: list[Any] = (
+            [] if self.val_ds is None else [self.val_ds[i] for i in range(min(4, len(self.val_ds)))]
+        )
 
         trainable = [p for p in self.model.parameters() if p.requires_grad]
         optimizer = _build_optimizer(self._optimizer_name, trainable, cfg.train.lr)
@@ -224,6 +242,8 @@ class Trainer:
             self._log_image_panel(val_examples, class_names, step)
 
         def on_eval(step: int) -> None:
+            if self.val_ds is None:
+                return
             try:
                 lite_cfg = cfg.eval.model_copy(update={"mode": "lite", "save_predictions": False})
                 report = Evaluator(lite_cfg).evaluate(self.model, self.val_ds)
@@ -249,7 +269,6 @@ class Trainer:
                     global_step,
                     nan_streak,
                     class_names,
-                    self.val_ds,
                     on_checkpoint,
                     on_eval,
                     oom_state=oom_state,
@@ -262,21 +281,35 @@ class Trainer:
                 merged_path = run_dir / "merged"
                 save_merged(self.model, merged_path)
 
-            full_report = Evaluator(cfg.eval).evaluate(self.model, self.val_ds)
-            (run_dir / "metrics.json").write_text(
-                json.dumps(
-                    {
-                        "overall": full_report.overall,
-                        "per_class": full_report.per_class,
-                        "n_images": full_report.n_images,
-                        "n_predictions": full_report.n_predictions,
-                        "global_step": global_step,
-                        "epoch": cfg.train.epochs - 1,
-                        "box_hint_p_final": _box_hint_p(global_step, cfg.train.box_hint),
-                    },
-                    indent=2,
+            if self.val_ds is not None:
+                full_report = Evaluator(cfg.eval).evaluate(self.model, self.val_ds)
+            if full_report is not None:
+                (run_dir / "metrics.json").write_text(
+                    json.dumps(
+                        {
+                            "overall": full_report.overall,
+                            "per_class": full_report.per_class,
+                            "n_images": full_report.n_images,
+                            "n_predictions": full_report.n_predictions,
+                            "global_step": global_step,
+                            "epoch": cfg.train.epochs - 1,
+                            "box_hint_p_final": _box_hint_p(global_step, cfg.train.box_hint),
+                        },
+                        indent=2,
+                    )
                 )
-            )
+            else:
+                (run_dir / "metrics.json").write_text(
+                    json.dumps(
+                        {
+                            "note": "no validation set provided",
+                            "global_step": global_step,
+                            "epoch": cfg.train.epochs - 1,
+                            "box_hint_p_final": _box_hint_p(global_step, cfg.train.box_hint),
+                        },
+                        indent=2,
+                    )
+                )
         finally:
             self.tracker.close()
 

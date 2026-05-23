@@ -82,20 +82,31 @@ def _render_table(report: DoctorReport) -> None:
             issues.add_row("•", msg)
         console.print(issues)
 
+    if report.data is not None:
+        d = Table(title="Data", show_header=False, box=None)
+        d.add_row("val mode", report.data.val_mode)
+        if report.data.val_path is not None:
+            d.add_row("val path", report.data.val_path)
+        if report.data.val_split_fraction is not None:
+            d.add_row("val_split.fraction", f"{report.data.val_split_fraction:.3f}")
+            d.add_row("val_split.seed", str(report.data.val_split_seed))
+        console.print(d)
+
 
 def doctor(
     weights_path: Path | None = typer.Option(
         None, "--weights-path", help="Override SAM 3.1 weights file path."
     ),
-    json_output: bool = typer.Option(False, "--json", help="Emit JSON instead of a table."),
     config_path: Path | None = typer.Option(
         None,
         "--config",
         help=(
-            "Load + validate a config YAML and report resolved dataset sizes. "
-            "Heavy: may import pycocotools or trigger datasets.load_dataset."
+            "Load + validate a config YAML; enables the Data table and reports "
+            "resolved dataset sizes. Heavy: may import pycocotools or trigger "
+            "datasets.load_dataset."
         ),
     ),
+    json_output: bool = typer.Option(False, "--json", help="Emit JSON instead of a table."),
 ) -> None:
     """Report environment + dependency status."""
     report = run_doctor(weights_path=weights_path, config_path=config_path)

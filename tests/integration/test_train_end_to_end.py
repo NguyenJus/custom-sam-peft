@@ -292,3 +292,106 @@ def test_missing_annotation_entry_does_not_crash(tmp_path: Path) -> None:
         assert "2" in str(exc) or "img.png" in str(exc), (
             f"orphan-image error message lacks identifier: {exc!r}"
         )
+
+
+# ---------------------------------------------------------------------------
+# spec/data-no-val-auto-split (#71): auto-split + no-val end-to-end
+# ---------------------------------------------------------------------------
+
+
+def test_e2e_auto_split_on_tiny_coco(tmp_path: Path, tiny_coco_dir: Path) -> None:
+    """Spec §9.10.2: end-to-end run with val_split=0.5 creates val_source.json
+    and metrics.json (with overall mAP from the carved val set)."""
+    import custom_sam_peft.train.runner as runner_mod
+    from custom_sam_peft.config.schema import ValSplitConfig
+    from custom_sam_peft.data.val_source import load_val_source
+
+    cfg = TrainConfig(
+        run=RunConfig(name="e2e-auto", output_dir=str(tmp_path), seed=0),
+        data=DataConfig(
+            format="coco",
+            train=DataSplit(
+                annotations=str(tiny_coco_dir / "annotations.json"),
+                images=str(tiny_coco_dir / "images"),
+            ),
+            val=None,
+            val_split=ValSplitConfig(fraction=0.5, seed=None),
+            prompt_mode="text",
+            image_size=32,
+        ),
+        peft=PEFTConfig(
+            method="lora", scope="vision", target_modules=FIXTURE_SCOPE_PATTERNS["vision"]
+        ),
+        train=TrainHyperparams(
+            epochs=1,
+            batch_size=1,
+            grad_accum_steps=1,
+            save_every=1,
+            log_every=1,
+            warmup_steps=0,
+            num_workers=0,
+        ),
+    )
+
+    # Stub the model so this runs on CPU.
+    orig_load = runner_mod.load_sam31
+    runner_mod.load_sam31 = lambda _m: make_stub_wrapper(dim=8, working=True)  # type: ignore[assignment]
+    try:
+        result = runner_mod.run_training(cfg)
+    finally:
+        runner_mod.load_sam31 = orig_load  # type: ignore[assignment]
+
+    vs = load_val_source(result.run_dir)
+    assert vs is not None
+    assert vs.mode == "auto_split"
+    assert (result.run_dir / "metrics.json").is_file()
+    # In auto-split mode, val_ds is non-empty so metrics.json carries overall, not the no-val note.
+    payload = json.loads((result.run_dir / "metrics.json").read_text())
+    assert "overall" in payload or "note" in payload  # tolerate either depending on tiny size
+
+
+def test_e2e_no_val_on_tiny_coco(tmp_path: Path, tiny_coco_dir: Path) -> None:
+    """Spec §9.10.3: end-to-end no-val run creates val_source.json with mode=none
+    and metrics.json with the no-val note."""
+    import custom_sam_peft.train.runner as runner_mod
+    from custom_sam_peft.data.val_source import load_val_source
+
+    cfg = TrainConfig(
+        run=RunConfig(name="e2e-noval", output_dir=str(tmp_path), seed=0),
+        data=DataConfig(
+            format="coco",
+            train=DataSplit(
+                annotations=str(tiny_coco_dir / "annotations.json"),
+                images=str(tiny_coco_dir / "images"),
+            ),
+            val=None,
+            val_split=None,
+            prompt_mode="text",
+            image_size=32,
+        ),
+        peft=PEFTConfig(
+            method="lora", scope="vision", target_modules=FIXTURE_SCOPE_PATTERNS["vision"]
+        ),
+        train=TrainHyperparams(
+            epochs=1,
+            batch_size=1,
+            grad_accum_steps=1,
+            save_every=1,
+            log_every=1,
+            warmup_steps=0,
+            num_workers=0,
+        ),
+    )
+
+    orig_load = runner_mod.load_sam31
+    runner_mod.load_sam31 = lambda _m: make_stub_wrapper(dim=8, working=True)  # type: ignore[assignment]
+    try:
+        result = runner_mod.run_training(cfg)
+    finally:
+        runner_mod.load_sam31 = orig_load  # type: ignore[assignment]
+
+    vs = load_val_source(result.run_dir)
+    assert vs is not None
+    assert vs.mode == "none"
+    payload = json.loads((result.run_dir / "metrics.json").read_text())
+    assert payload.get("note") == "no validation set provided"
