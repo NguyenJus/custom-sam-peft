@@ -240,13 +240,12 @@ class Sam3Wrapper(nn.Module):
                     "All prompts in a batch must be the same prompt variant "
                     "(TextPrompts or BoxPrompts), not mixed."
                 )
-            if isinstance(p, TextPrompts):
-                if not (1 <= len(p.classes) <= MULTIPLEX_CAP):
-                    raise ValueError(
-                        f"TextPrompts must contain 1..MULTIPLEX_CAP (={MULTIPLEX_CAP}) classes per "
-                        f"call (got {len(p.classes)}). Configure "
-                        f"train.multiplex.classes_per_forward to bound K."
-                    )
+            if isinstance(p, TextPrompts) and not (1 <= len(p.classes) <= MULTIPLEX_CAP):
+                raise ValueError(
+                    f"TextPrompts must contain 1..MULTIPLEX_CAP (={MULTIPLEX_CAP}) classes per "
+                    f"call (got {len(p.classes)}). Configure "
+                    f"train.multiplex.classes_per_forward to bound K."
+                )
 
         # After the per-prompt loop, enforce shared class list for TextPrompts.
         if first is TextPrompts:
@@ -274,8 +273,8 @@ class Sam3Wrapper(nn.Module):
                 expected_len = b
             if len(box_hints) != expected_len:
                 raise ValueError(
-                    f"len(box_hints)={len(box_hints)} must equal batch size × classes "
-                    f"({b}×{expected_len // b if b else 1}={expected_len})"
+                    f"len(box_hints)={len(box_hints)} must equal batch size x classes "
+                    f"({b}x{expected_len // b if b else 1}={expected_len})"
                 )
             for i, h in enumerate(box_hints):
                 if h is None:
@@ -364,7 +363,7 @@ class _Sam3ImageAdapter(nn.Module):
         )
         backbone_out.update(text_outputs)
 
-        # Multiplex assembly: B images × K classes → B·K rows, image-major / class-minor.
+        # Multiplex assembly: B images x K classes -> B*K rows, image-major / class-minor.
         # img_ids  = [0,0,...,0, 1,1,...,1, ..., B-1,B-1,...,B-1]  (each repeated K times)
         # text_ids = [0,1,...,K-1, 0,1,...,K-1, ..., 0,1,...,K-1]  (repeated B times)
         n_cols = b * k

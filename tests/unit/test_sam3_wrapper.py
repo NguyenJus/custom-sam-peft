@@ -97,7 +97,7 @@ def test_validate_inputs_rejects_K_over_cap() -> None:
 
 def test_validate_inputs_rejects_mismatched_class_lists_across_batch() -> None:
     prompts = [TextPrompts(classes=["cat", "dog"]), TextPrompts(classes=["dog", "cat"])]
-    with pytest.raises(ValueError, match="same.*class"):
+    with pytest.raises(ValueError, match=r"same.*class"):
         Sam3Wrapper._validate_inputs(_imgs(2), prompts, None)
 
 

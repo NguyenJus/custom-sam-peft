@@ -10,7 +10,6 @@ from unittest.mock import MagicMock
 import pytest
 import torch
 
-
 _GB = 1024**3
 
 
@@ -51,36 +50,40 @@ def test_decide_eval_batch_size_cpu_fallback(caplog, monkeypatch) -> None:
     assert len(msgs) == 1
 
 
-def test_decide_eval_batch_size_analytic_no_cache(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_decide_eval_batch_size_analytic_no_cache(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
     """Without a calibration cache, the analytic estimate runs at BASE_ACTIVATION_AT_1024."""
     monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
     _stub_gpu(monkeypatch, int(40 * _GB))
     # Ensure no calibration cache is found by setting cwd to a location without one.
-    monkeypatch.chdir("/tmp")
+    monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(
         "custom_sam_peft.presets._current_sam3_checkpoint_sha",
         lambda: "deadbeef",
     )
     from custom_sam_peft.presets import decide_eval_batch_size
 
-    bs, predicted_bytes, provenance = decide_eval_batch_size(1024)
+    bs, _predicted_bytes, provenance = decide_eval_batch_size(1024)
     assert provenance == "analytic"
     assert bs >= 1
 
 
-def test_decide_eval_batch_size_caps_search_at_64(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_decide_eval_batch_size_caps_search_at_64(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
     """Search space is B in [1, 64]; never returns B > 64 even on huge GPUs."""
     monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
     # Use an enormous GPU (1 TiB) — should still cap at 64.
     _stub_gpu(monkeypatch, int(1024 * _GB))
-    monkeypatch.chdir("/tmp")
+    monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(
         "custom_sam_peft.presets._current_sam3_checkpoint_sha",
         lambda: "deadbeef",
     )
     from custom_sam_peft.presets import decide_eval_batch_size
 
-    bs, predicted_bytes, provenance = decide_eval_batch_size(1024)
+    bs, _predicted_bytes, _provenance = decide_eval_batch_size(1024)
     assert bs <= 64
 
 
@@ -100,7 +103,7 @@ def test_decide_eval_batch_size_uses_calibrated_cache(
     )
     from custom_sam_peft.presets import decide_eval_batch_size
 
-    bs, predicted_bytes, provenance = decide_eval_batch_size(1024)
+    bs, _predicted_bytes, provenance = decide_eval_batch_size(1024)
     assert provenance == "calibrated"
     assert bs >= 1
 

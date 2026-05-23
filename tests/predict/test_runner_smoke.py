@@ -509,7 +509,7 @@ def test_run_predict_flat_loop_iterates_image_chunks_x_groups(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     """Flat (image_chunk, group) iteration; warmup is still single-image / single-class."""
-    # 4 images, 3 prompts, batch_size=2 → ceil(4/2)=2 chunks × 1 group = 2 inference calls.
+    # 4 images, 3 prompts, batch_size=2 -> ceil(4/2)=2 chunks x 1 group = 2 inference calls.
     # Total = 1 (warmup) + 2 (inference) = 3.
     stub = _MultiplexStubSamModule()
     opts = _make_opts(

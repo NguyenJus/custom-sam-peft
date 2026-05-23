@@ -187,7 +187,7 @@ def _predicted_bytes(
             + _activation_bytes(image_size, batch, ckpt, cache)
             + WORKSPACE_BYTES
         )
-    # mode == "eval": no optimizer, no adapter bytes; activations × forward_only_factor.
+    # mode == "eval": no optimizer, no adapter bytes; activations x forward_only_factor.
     activations = int(_activation_bytes(image_size, batch, ckpt, cache) * forward_only_factor)
     return _model_bytes(method) + activations + WORKSPACE_BYTES
 

@@ -77,6 +77,6 @@ def test_adapter_calls_forward_text_once_with_k_names(b: int, k: int) -> None:
 
     # forward_text called exactly once with the K class names.
     assert inner.backbone.forward_text.call_count == 1
-    args, kwargs = inner.backbone.forward_text.call_args
+    args, _kwargs = inner.backbone.forward_text.call_args
     # First positional arg is the list of class names.
     assert args[0] == classes

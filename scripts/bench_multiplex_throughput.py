@@ -71,9 +71,7 @@ def _bench_one(
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(
-        description="Benchmark K=1 vs K=16 multiplex throughput."
-    )
+    parser = argparse.ArgumentParser(description="Benchmark K=1 vs K=16 multiplex throughput.")
     parser.add_argument("--image-size", type=int, default=1008)
     parser.add_argument("--batch", type=int, default=4)
     parser.add_argument("--n-classes", type=int, default=80)
@@ -96,18 +94,12 @@ def main() -> None:
 
     device = torch.device(args.device)
     dtype = getattr(torch, args.dtype)
-    images, class_names = _build_inputs(
-        args.batch, args.n_classes, args.image_size, device, dtype
-    )
+    images, class_names = _build_inputs(args.batch, args.n_classes, args.image_size, device, dtype)
 
-    sec_k1 = _bench_one(
-        wrapper, images, class_names, 1, args.n_steps, TextPrompts
-    )
-    sec_k16 = _bench_one(
-        wrapper, images, class_names, MULTIPLEX_CAP, args.n_steps, TextPrompts
-    )
+    sec_k1 = _bench_one(wrapper, images, class_names, 1, args.n_steps, TextPrompts)
+    sec_k16 = _bench_one(wrapper, images, class_names, MULTIPLEX_CAP, args.n_steps, TextPrompts)
 
-    print(
+    print(  # noqa: T201 — intentional: this script's only output mechanism
         f"K=1:  {sec_k1:.3f} s/step  ({args.batch / sec_k1:.2f} img/s)\n"
         f"K=16: {sec_k16:.3f} s/step ({args.batch / sec_k16:.2f} img/s)\n"
         f"speedup: {sec_k1 / sec_k16:.1f}x"

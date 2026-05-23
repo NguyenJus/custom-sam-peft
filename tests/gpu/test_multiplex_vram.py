@@ -1,7 +1,7 @@
 """GPU regression: real K=16 multiplex forward at decide_eval_batch_size's
-choice for image_size=1008 runs without OOM; peak ≤ 4× predicted_bytes.
+choice for image_size=1008 runs without OOM; peak <= 4x predicted_bytes.
 
-The 4× ceiling is a conservative regression guard, not a tightness check —
+The 4x ceiling is a conservative regression guard, not a tightness check -
 see spec §9 for the calibration-constant note.
 """
 
@@ -24,9 +24,7 @@ pytestmark = [
 
 def test_real_K16_forward_at_chosen_B_within_predicted_envelope() -> None:
     image_size = 1008
-    bs, predicted_bytes, _ = decide_eval_batch_size(
-        image_size, classes_per_forward=MULTIPLEX_CAP
-    )
+    bs, predicted_bytes, _ = decide_eval_batch_size(image_size, classes_per_forward=MULTIPLEX_CAP)
 
     if predicted_bytes == 0:
         pytest.skip("CPU fallback — needs a compatible GPU")

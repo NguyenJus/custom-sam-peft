@@ -55,7 +55,9 @@ def test_evaluate_and_save_full_writes_predictions(stub_model, tiny_text_dataset
 def test_evaluate_and_save_lite_never_writes_predictions(
     stub_model, tiny_text_dataset, tmp_path: Path
 ):
-    cfg = EvalConfig(mode="lite", lite_max_images=1, iou_thresholds=[0.5], save_predictions=True, batch_size=1)
+    cfg = EvalConfig(
+        mode="lite", lite_max_images=1, iou_thresholds=[0.5], save_predictions=True, batch_size=1
+    )
     out = tmp_path / "out"
     Evaluator(cfg).evaluate_and_save(stub_model, tiny_text_dataset, out)
     assert (out / "metrics.json").exists()
@@ -304,14 +306,16 @@ def test_maybe_save_predictions_uses_canonical_path(tmp_path: Path):
 
 def test_maybe_save_predictions_noop_in_lite_mode(tmp_path: Path):
     """_maybe_save_predictions skips disk I/O in lite mode."""
-    cfg = EvalConfig(mode="lite", lite_max_images=1, iou_thresholds=[0.5], save_predictions=True, batch_size=1)
+    cfg = EvalConfig(
+        mode="lite", lite_max_images=1, iou_thresholds=[0.5], save_predictions=True, batch_size=1
+    )
     ev = Evaluator(cfg)
     ev._maybe_save_predictions([{"image_id": 1}], run_dir=tmp_path, split="val")
     assert not predictions_path(tmp_path, split="val").exists()
 
 
 # ---------------------------------------------------------------------------
-# Flat (image_chunk × class_group) iteration — T9
+# Flat (image_chunk x class_group) iteration - T9
 # ---------------------------------------------------------------------------
 
 
@@ -321,14 +325,12 @@ def test_iter_predictions_iterates_image_chunks_x_groups(monkeypatch) -> None:
     batch_size=2 (resolved), 4 images, 3 classes, MULTIPLEX_CAP=16 -> 1 group per chunk.
     Expect ceil(4/2) * 1 = 2 model calls.
     """
-    from unittest.mock import MagicMock, call
+    from unittest.mock import MagicMock
 
     from custom_sam_peft.data.base import Example, Instance, TextPrompts
 
     # Patch MULTIPLEX_CAP to 16 (the default); 3 classes < 16 so 1 group per chunk.
-    monkeypatch.setattr(
-        "custom_sam_peft.eval.evaluator.MULTIPLEX_CAP", 16, raising=False
-    )
+    monkeypatch.setattr("custom_sam_peft.eval.evaluator.MULTIPLEX_CAP", 16, raising=False)
 
     # Build a 4-image, 3-class in-memory dataset.
     class_names = ["cat", "dog", "bird"]
@@ -351,7 +353,7 @@ def test_iter_predictions_iterates_image_chunks_x_groups(monkeypatch) -> None:
         )
 
     class _DS4:
-        class_names = ["cat", "dog", "bird"]
+        class_names: ClassVar[list[str]] = ["cat", "dog", "bird"]
 
         def __len__(self) -> int:
             return 4
@@ -384,7 +386,7 @@ def test_iter_predictions_iterates_image_chunks_x_groups(monkeypatch) -> None:
 
     cfg = EvalConfig(mode="full", iou_thresholds=[0.5], batch_size=2)
     ev = Evaluator(cfg)
-    preds = ev._iter_predictions(model, examples, dataset)
+    ev._iter_predictions(model, examples, dataset)
 
     # 4 images / batch_size=2 = 2 chunks, 1 group each -> 2 calls.
     assert model.call_count == 2
