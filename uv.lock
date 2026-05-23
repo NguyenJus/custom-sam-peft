@@ -729,7 +729,6 @@ nvtx = [
 
 [[package]]
 name = "custom-sam-peft"
-version = "0.9.0"
 source = { editable = "." }
 dependencies = [
     { name = "albumentations" },
@@ -803,7 +802,7 @@ requires-dist = [
     { name = "types-pyyaml", marker = "extra == 'dev'", specifier = ">=6" },
     { name = "wandb", marker = "extra == 'wandb'", specifier = ">=0.18" },
 ]
-provides-extras = ["wandb", "qlora", "tensorboard", "jupyter", "dev"]
+provides-extras = ["dev", "jupyter", "qlora", "tensorboard", "wandb"]
 
 [[package]]
 name = "datasets"

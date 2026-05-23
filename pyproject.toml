@@ -1,6 +1,6 @@
 [project]
 name = "custom-sam-peft"
-version = "0.9.0"
+dynamic = ["version"]
 description = "Closed-vocab finetuning of SAM-family models with LoRA / QLoRA on a single consumer GPU"
 readme = "README.md"
 license = { text = "Apache-2.0" }
@@ -45,7 +45,7 @@ custom-sam-peft = "custom_sam_peft.cli.main:app"
 csp = "custom_sam_peft.cli.main:app"
 
 [build-system]
-requires = ["hatchling"]
+requires = ["hatchling", "hatch-vcs"]
 build-backend = "hatchling.build"
 
 [tool.hatch.metadata]
@@ -53,6 +53,15 @@ allow-direct-references = true
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/custom_sam_peft"]
+
+[tool.hatch.version]
+source = "vcs"
+
+[tool.hatch.version.raw-options]
+fallback_version = "0.0.0+unknown"
+
+[tool.hatch.build.hooks.vcs]
+version-file = "src/custom_sam_peft/_version.py"
 
 [tool.ruff]
 line-length = 100
