@@ -51,7 +51,7 @@ def apply(model: nn.Module, runtime: Runtime) -> None:
             continue
         if getattr(submodule, _SENTINEL_ATTR, False):
             continue
-        submodule.use_act_checkpoint = True  # type: ignore[assignment]
+        setattr(submodule, _ACT_CHECKPOINT_ATTR, True)
         setattr(submodule, _SENTINEL_ATTR, True)
         patched_count += 1
 

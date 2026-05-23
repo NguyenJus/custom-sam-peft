@@ -73,7 +73,15 @@ def test_idempotent_double_apply() -> None:
     vit_act_checkpoint.apply(model, _CPU_RUNTIME)
     for blk in model.blocks:
         assert blk.use_act_checkpoint is True
-        assert getattr(blk, "_custom_sam_peft_act_checkpoint_patched", False) is True
+        assert getattr(blk, vit_act_checkpoint._SENTINEL_ATTR, False) is True
+
+
+def test_warns_when_no_exposing_modules(caplog: pytest.LogCaptureFixture) -> None:
+    model = nn.Linear(2, 2)  # no use_act_checkpoint anywhere in the tree
+    _logger = "custom_sam_peft.models._patches.vit_act_checkpoint"
+    with caplog.at_level(logging.WARNING, logger=_logger):
+        vit_act_checkpoint.apply(model, _CPU_RUNTIME)
+    assert any("ZERO" in rec.message for rec in caplog.records), [r.message for r in caplog.records]
 
 
 def test_logs_positive_count(caplog: pytest.LogCaptureFixture) -> None:

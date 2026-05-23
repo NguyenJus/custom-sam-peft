@@ -521,6 +521,10 @@ def _patch_enable_vit_act_checkpoint(model: nn.Module) -> None:
     from custom_sam_peft.models._patches import vit_act_checkpoint as _m
     from custom_sam_peft.runtime._runtime import Runtime
 
+    # Unlike the dtype-patch shims (which hardcode cpu/float32 because runtime
+    # is unused there), derive the live model's real device/dtype: the Phase-1
+    # deterministic-autocast wrap (#89) needs the true device type (cuda on T4)
+    # and dtype. Safe CPU/float32 fallback for a param-less synthetic model.
     params = list(model.parameters())
     device = params[0].device if params else torch.device("cpu")
     dtype = params[0].dtype if params else torch.float32
