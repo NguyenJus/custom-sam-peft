@@ -352,7 +352,7 @@ This section is the seam consumed by `superpowers:writing-plans`.
 
 **Step 1.** Inline `MatcherWeights.lambda_l1/giou` and `LossConfig.focal_*` per §2.2 and §2.3. Add the `_FOCAL_*` module constants in `models/losses.py`. Drop four fields from `config/_internal.py`. Add the gamma-applied regression assertion to the losses test per §4. Commit message per §3 row 1.
 
-**Step 2.** Replace `make_peft_method` if/elif with `lookup("peft", method)` per §2.9. Import `lookup` and `cast`; preserve the `KeyError → ValueError` error contract. Run `test_peft_method_protocol.py::test_make_peft_method_*`. Commit message per §3 row 2.
+**Step 2.** Replace `make_peft_method` if/elif with `lookup("peft_method", method)` per §2.9. Decorate `LoraAdapter` and `QloraAdapter` with `@register("peft_method", ...)`. Import `lookup`, `register`, `RegistryError`, and `cast`; preserve the `RegistryError → ValueError` error contract. Run `test_peft_method_protocol.py::test_make_peft_method_*`. Commit message per §3 row 2.
 
 **Step 3.** Delete `flatten_metrics_report` and its test per §2.5. Confirm no orphan references via `rg`. Commit message per §3 row 3.
 
