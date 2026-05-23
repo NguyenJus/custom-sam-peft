@@ -5,22 +5,20 @@ from __future__ import annotations
 from unittest.mock import MagicMock
 
 import pytest
-import torch
 
 from custom_sam_peft.config.schema import LossConfig
 from custom_sam_peft.models.losses import (
-    LossBundle, build_loss_bundle, resolve,
+    LossBundle,
+    build_loss_bundle,
+    resolve,
 )
 from custom_sam_peft.models.losses.compose import (
-    _MASK_TERMS, _BOX_TERMS, _OBJ_TERMS, _PRESENCE_TERMS,
+    _BOX_TERMS,
+    _MASK_TERMS,
+    _OBJ_TERMS,
+    _PRESENCE_TERMS,
 )
 from custom_sam_peft.models.losses.presets import _TERM_CLASS_NAMES
-from custom_sam_peft.models.losses.terms import (
-    box as box_terms,
-    mask as mask_terms,
-    obj as obj_terms,
-    presence as presence_terms,
-)
 
 
 def test_term_class_names_match_compose_registry() -> None:
@@ -56,6 +54,7 @@ def test_build_loss_bundle_default_preset() -> None:
 def test_build_loss_bundle_for_each_mask_family() -> None:
     """Every mask family must instantiate without error."""
     from custom_sam_peft.config.schema import LossOverrides
+
     for family in _MASK_TERMS:
         cfg = LossConfig(preset="custom", overrides=LossOverrides(mask_family=family))
         bundle = build_loss_bundle(resolve(cfg))
@@ -64,6 +63,7 @@ def test_build_loss_bundle_for_each_mask_family() -> None:
 
 def test_build_loss_bundle_for_each_box_family() -> None:
     from custom_sam_peft.config.schema import LossOverrides
+
     for family in _BOX_TERMS:
         cfg = LossConfig(preset="custom", overrides=LossOverrides(box_family=family))
         bundle = build_loss_bundle(resolve(cfg))
@@ -88,8 +88,9 @@ def test_loss_bundle_weights_field() -> None:
 
 
 def test_loss_bundle_matcher_weights_field() -> None:
-    from custom_sam_peft.config.schema import LossOverrides
     from custom_sam_peft.config._internal import MatcherWeights
+    from custom_sam_peft.config.schema import LossOverrides
+
     cfg = LossConfig(overrides=LossOverrides(matcher_weights=MatcherWeights(lambda_mask=7.0)))
     bundle = build_loss_bundle(resolve(cfg))
     # HungarianMatcher exposes its lambdas as attributes (verify via grep on models/matching.py

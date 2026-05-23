@@ -20,7 +20,6 @@ from custom_sam_peft.models.matching import (
     meta_to_canonical,
 )
 
-
 # ---------------------------------------------------------------------------
 # Term registries — keyed by the family literal strings from schema.py.
 # Missing keys raise KeyError, which is unreachable because pydantic validates
@@ -28,28 +27,28 @@ from custom_sam_peft.models.matching import (
 # ---------------------------------------------------------------------------
 
 _MASK_TERMS: dict[str, type] = {
-    "bce":           mask_terms.BCELoss,
-    "dice":          mask_terms.DiceLoss,
-    "dice_bce":      mask_terms.DiceBCELoss,
-    "focal_bce":     mask_terms.FocalBCELoss,
-    "focal_dice":    mask_terms.FocalDiceLoss,
+    "bce": mask_terms.BCELoss,
+    "dice": mask_terms.DiceLoss,
+    "dice_bce": mask_terms.DiceBCELoss,
+    "focal_bce": mask_terms.FocalBCELoss,
+    "focal_dice": mask_terms.FocalDiceLoss,
     "focal_tversky": mask_terms.FocalTverskyLoss,
-    "boundary":      mask_terms.BoundaryLoss,
+    "boundary": mask_terms.BoundaryLoss,
 }
 
 _BOX_TERMS: dict[str, type] = {
-    "l1_giou":   box_terms.L1GIoULoss,
+    "l1_giou": box_terms.L1GIoULoss,
     "giou_only": box_terms.GIoUOnlyLoss,
-    "ciou":      box_terms.CIoULoss,
+    "ciou": box_terms.CIoULoss,
 }
 
 _OBJ_TERMS: dict[str, type] = {
-    "bce":       obj_terms.BCELoss,
+    "bce": obj_terms.BCELoss,
     "focal_bce": obj_terms.FocalBCELoss,
 }
 
 _PRESENCE_TERMS: dict[str, type] = {
-    "bce":       presence_terms.BCELoss,
+    "bce": presence_terms.BCELoss,
     "focal_bce": presence_terms.FocalBCELoss,
 }
 
@@ -57,6 +56,7 @@ _PRESENCE_TERMS: dict[str, type] = {
 # ---------------------------------------------------------------------------
 # Helpers — moved verbatim from the pre-#112 monolith losses.py
 # ---------------------------------------------------------------------------
+
 
 def _gather_matched_boxes_masks(
     canonical: CanonicalOutputs,
@@ -111,6 +111,7 @@ def _image_has_target(targets: list[list[Instance]], device: torch.device) -> Te
 # LossBundle + builder
 # ---------------------------------------------------------------------------
 
+
 class LossBundle:
     """Pre-instantiated four-term loss bundle. Built once per trainer init."""
 
@@ -142,24 +143,24 @@ class LossBundle:
     ) -> dict[str, Tensor]:
         canonical = meta_to_canonical(outputs)
         indices = self.matcher(canonical, targets)
-        pred_boxes_m, tgt_boxes_m, pred_masks_m, tgt_masks_m = (
-            _gather_matched_boxes_masks(canonical, targets, indices)
+        pred_boxes_m, tgt_boxes_m, pred_masks_m, tgt_masks_m = _gather_matched_boxes_masks(
+            canonical, targets, indices
         )
         matched_mask = _matched_query_mask(canonical, indices)
         has_target = _image_has_target(targets, canonical.img_presence.device)
         zero = canonical.obj_logits.new_zeros(())
         losses: dict[str, Tensor] = {
-            "mask":     (self.mask_term(pred_masks_m, tgt_masks_m)
-                         if pred_masks_m.numel() > 0 else zero),
-            "box":      (self.box_term(pred_boxes_m, tgt_boxes_m)
-                         if pred_boxes_m.numel() > 0 else zero),
-            "obj":      self.obj_term(canonical.obj_logits, matched_mask),
+            "mask": (
+                self.mask_term(pred_masks_m, tgt_masks_m) if pred_masks_m.numel() > 0 else zero
+            ),
+            "box": (self.box_term(pred_boxes_m, tgt_boxes_m) if pred_boxes_m.numel() > 0 else zero),
+            "obj": self.obj_term(canonical.obj_logits, matched_mask),
             "presence": self.presence_term(canonical.img_presence, has_target),
         }
         losses["total"] = (
-            self.w_mask     * losses["mask"]
-            + self.w_box    * losses["box"]
-            + self.w_obj    * losses["obj"]
+            self.w_mask * losses["mask"]
+            + self.w_box * losses["box"]
+            + self.w_obj * losses["obj"]
             + self.w_presence * losses["presence"]
         )
         return losses
@@ -174,12 +175,16 @@ def build_loss_bundle(resolved: ResolvedLosses) -> LossBundle:
         tversky_gamma=resolved.tversky_gamma,
         boundary_weight=resolved.boundary_weight,
     )
-    mask_term     = _MASK_TERMS[resolved.mask_family](**hp)
-    box_term      = _BOX_TERMS[resolved.box_family](**hp)
-    obj_term      = _OBJ_TERMS[resolved.obj_family](**hp)
+    mask_term = _MASK_TERMS[resolved.mask_family](**hp)
+    box_term = _BOX_TERMS[resolved.box_family](**hp)
+    obj_term = _OBJ_TERMS[resolved.obj_family](**hp)
     presence_term = _PRESENCE_TERMS[resolved.presence_family](**hp)
     weights = (resolved.w_mask, resolved.w_box, resolved.w_obj, resolved.w_presence)
     return LossBundle(
-        mask_term, box_term, obj_term, presence_term,
-        weights=weights, matcher_weights=resolved.matcher_weights,
+        mask_term,
+        box_term,
+        obj_term,
+        presence_term,
+        weights=weights,
+        matcher_weights=resolved.matcher_weights,
     )

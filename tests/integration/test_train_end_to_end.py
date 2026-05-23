@@ -121,7 +121,7 @@ def test_fit_end_to_end_on_tiny_coco(backend: str, tmp_path: Path, tiny_coco_dir
 
 
 def test_end_to_end_writes_loss_bundle_json(tmp_path: Path, tiny_coco_dir: Path) -> None:
-    """Spec §9: after a complete training run, loss_bundle.json is present alongside augmentation_pipeline.json."""
+    """Spec §9: after a training run, loss_bundle.json sits beside augmentation_pipeline.json."""
     ds_train = _ds(tiny_coco_dir, "train")
     ds_val = _ds(tiny_coco_dir, "eval")
     wrapper = make_stub_wrapper(dim=8, working=True)
@@ -169,7 +169,13 @@ def test_end_to_end_writes_loss_bundle_json(tmp_path: Path, tiny_coco_dir: Path)
     d = json.loads(loss_path.read_text())
     assert d["preset"] in {"natural", "medical", "satellite", "microscopy", "none", "custom"}
     assert d["library_version"]
-    assert set(d.keys()) == {"preset", "class_imbalance", "resolved", "term_classes", "library_version"}
+    assert set(d.keys()) == {
+        "preset",
+        "class_imbalance",
+        "resolved",
+        "term_classes",
+        "library_version",
+    }
     assert len(d["resolved"]) == 13
     assert set(d["term_classes"].keys()) == {"mask", "box", "obj", "presence"}
 

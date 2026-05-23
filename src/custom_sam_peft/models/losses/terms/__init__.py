@@ -12,32 +12,42 @@ from custom_sam_peft.models.losses.terms import obj as _obj
 from custom_sam_peft.models.losses.terms import presence as _presence
 
 # Mask axis (8)
-MaskBCELoss          = _mask.BCELoss
-MaskDiceLoss         = _mask.DiceLoss
-MaskDiceBCELoss      = _mask.DiceBCELoss
-MaskFocalBCELoss     = _mask.FocalBCELoss
-MaskFocalDiceLoss    = _mask.FocalDiceLoss
-MaskTverskyLoss      = _mask.TverskyLoss
+MaskBCELoss = _mask.BCELoss
+MaskDiceLoss = _mask.DiceLoss
+MaskDiceBCELoss = _mask.DiceBCELoss
+MaskFocalBCELoss = _mask.FocalBCELoss
+MaskFocalDiceLoss = _mask.FocalDiceLoss
+MaskTverskyLoss = _mask.TverskyLoss
 MaskFocalTverskyLoss = _mask.FocalTverskyLoss
-MaskBoundaryLoss     = _mask.BoundaryLoss
+MaskBoundaryLoss = _mask.BoundaryLoss
 
 # Box axis (3)
-BoxL1GIoULoss   = _box.L1GIoULoss
+BoxL1GIoULoss = _box.L1GIoULoss
 BoxGIoUOnlyLoss = _box.GIoUOnlyLoss
-BoxCIoULoss     = _box.CIoULoss
+BoxCIoULoss = _box.CIoULoss
 
 # Obj axis (2)
-ObjBCELoss      = _obj.BCELoss
+ObjBCELoss = _obj.BCELoss
 ObjFocalBCELoss = _obj.FocalBCELoss
 
 # Presence axis (2)
-PresenceBCELoss      = _presence.BCELoss
+PresenceBCELoss = _presence.BCELoss
 PresenceFocalBCELoss = _presence.FocalBCELoss
 
 __all__ = [
-    "MaskBCELoss", "MaskDiceLoss", "MaskDiceBCELoss", "MaskFocalBCELoss",
-    "MaskFocalDiceLoss", "MaskTverskyLoss", "MaskFocalTverskyLoss", "MaskBoundaryLoss",
-    "BoxL1GIoULoss", "BoxGIoUOnlyLoss", "BoxCIoULoss",
-    "ObjBCELoss", "ObjFocalBCELoss",
-    "PresenceBCELoss", "PresenceFocalBCELoss",
+    "BoxCIoULoss",
+    "BoxGIoUOnlyLoss",
+    "BoxL1GIoULoss",
+    "MaskBCELoss",
+    "MaskBoundaryLoss",
+    "MaskDiceBCELoss",
+    "MaskDiceLoss",
+    "MaskFocalBCELoss",
+    "MaskFocalDiceLoss",
+    "MaskFocalTverskyLoss",
+    "MaskTverskyLoss",
+    "ObjBCELoss",
+    "ObjFocalBCELoss",
+    "PresenceBCELoss",
+    "PresenceFocalBCELoss",
 ]

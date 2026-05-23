@@ -65,7 +65,7 @@ def test_mask_focal_tversky_equiv_tversky_at_gamma_one(mask_batch) -> None:
 def test_mask_focal_bce_equiv_bce_at_gamma_zero(mask_batch) -> None:
     pred, tgt = mask_batch
     bce = mask_terms.BCELoss()(pred, tgt)
-    # focal_alpha=0.5 makes the alpha_t weighting flat (0.5 for both classes); γ=0 kills the focal weight
+    # focal_alpha=0.5 → flat alpha_t weighting (0.5 for both classes); γ=0 kills focal weight
     focal = mask_terms.FocalBCELoss(focal_gamma=0.0, focal_alpha=0.5)(pred, tgt)
     # The alpha_t=0.5 scaling halves the per-pixel CE; multiply by 2 to compare.
     assert torch.allclose(bce, 2.0 * focal, atol=1e-5)
@@ -90,7 +90,8 @@ def test_mask_boundary_finite_under_extreme_imbalance() -> None:
 
 def test_mask_upsample_when_shapes_differ() -> None:
     pred = torch.randn(2, 8, 8, requires_grad=True)
-    tgt = torch.zeros(2, 16, 16); tgt[:, 4:12, 4:12] = 1
+    tgt = torch.zeros(2, 16, 16)
+    tgt[:, 4:12, 4:12] = 1
     val = mask_terms.DiceBCELoss()(pred, tgt)  # auto-upsamples pred to 16x16
     assert torch.isfinite(val).item()
     val.backward()
@@ -138,6 +139,7 @@ def test_box_giou_only_disjoint_boxes_finite() -> None:
 # Obj axis
 # ---------------------------------------------------------------------------
 
+
 @pytest.fixture
 def obj_batch() -> tuple[torch.Tensor, torch.Tensor]:
     ol = torch.randn(2, 8, requires_grad=True)
@@ -157,6 +159,7 @@ def test_obj_forward_finite_and_backprops(cls: type, obj_batch) -> None:
 # ---------------------------------------------------------------------------
 # Presence axis
 # ---------------------------------------------------------------------------
+
 
 @pytest.fixture
 def presence_batch() -> tuple[torch.Tensor, torch.Tensor]:

@@ -6,7 +6,6 @@ image_has_target is (B,) bool.
 
 from __future__ import annotations
 
-import torch
 from torch import Tensor, nn
 from torch.nn.functional import binary_cross_entropy_with_logits
 

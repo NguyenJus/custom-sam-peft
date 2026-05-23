@@ -15,9 +15,6 @@ from typing import Any
 from custom_sam_peft.models.losses.compose import (
     LossBundle,
     build_loss_bundle,
-    _gather_matched_boxes_masks,
-    _image_has_target,
-    _matched_query_mask,
 )
 from custom_sam_peft.models.losses.presets import (
     LOCKED_OFF,
@@ -39,9 +36,12 @@ def total_loss(outputs: dict[str, Any], targets: Any, cfg: Any) -> dict[str, Any
 
 
 __all__ = [
-    "LossBundle", "build_loss_bundle",
-    "ResolvedLosses", "resolve",
-    "PRESET_TABLE", "LOCKED_OFF",
+    "LOCKED_OFF",
+    "PRESET_TABLE",
+    "LossBundle",
+    "ResolvedLosses",
+    "build_loss_bundle",
     "dump_loss_bundle",
+    "resolve",
     "total_loss",
 ]

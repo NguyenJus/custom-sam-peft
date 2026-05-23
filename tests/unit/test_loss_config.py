@@ -1,4 +1,7 @@
-"""Smoke test for the new Pydantic LossConfig (full coverage in test_loss_presets/test_config_schema)."""
+"""Smoke test for the new Pydantic LossConfig.
+
+Full coverage in test_loss_presets and test_config_schema.
+"""
 
 from __future__ import annotations
 
@@ -13,6 +16,7 @@ def test_loss_config_smoke() -> None:
 
 
 def test_loss_config_overrides_smoke() -> None:
-    cfg = LossConfig(preset="medical", class_imbalance="moderate",
-                     overrides=LossOverrides(focal_gamma=3.5))
+    cfg = LossConfig(
+        preset="medical", class_imbalance="moderate", overrides=LossOverrides(focal_gamma=3.5)
+    )
     assert cfg.overrides.focal_gamma == 3.5

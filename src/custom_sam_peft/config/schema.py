@@ -18,7 +18,15 @@ from __future__ import annotations
 import os
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, PositiveFloat, PositiveInt, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    PositiveFloat,
+    PositiveInt,
+    field_validator,
+    model_validator,
+)
 
 from custom_sam_peft.config._internal import (
     ExportConfig,
@@ -124,11 +132,11 @@ Preset = Literal["natural", "medical", "satellite", "microscopy", "none", "custo
 Intensity = Literal["safe", "medium", "aggressive"]
 
 ClassImbalance = Literal["balanced", "moderate", "severe"]
-MaskFamily     = Literal["bce", "dice", "dice_bce",
-                         "focal_bce", "focal_dice",
-                         "focal_tversky", "boundary"]
-BoxFamily      = Literal["l1_giou", "giou_only", "ciou"]
-ObjFamily      = Literal["focal_bce", "bce"]
+MaskFamily = Literal[
+    "bce", "dice", "dice_bce", "focal_bce", "focal_dice", "focal_tversky", "boundary"
+]
+BoxFamily = Literal["l1_giou", "giou_only", "ciou"]
+ObjFamily = Literal["focal_bce", "bce"]
 PresenceFamily = Literal["bce", "focal_bce"]
 
 
@@ -141,27 +149,27 @@ class LossOverrides(_Strict):
     """
 
     # Term selection (4 axes)
-    mask_family:     MaskFamily     | None = None
-    box_family:      BoxFamily      | None = None
-    obj_family:      ObjFamily      | None = None
+    mask_family: MaskFamily | None = None
+    box_family: BoxFamily | None = None
+    obj_family: ObjFamily | None = None
     presence_family: PresenceFamily | None = None
 
     # Weights (4)
-    w_mask:          PositiveFloat  | None = None
-    w_box:           float          | None = Field(default=None, ge=0.0)
-    w_obj:           PositiveFloat  | None = None
-    w_presence:      PositiveFloat  | None = None
+    w_mask: PositiveFloat | None = None
+    w_box: float | None = Field(default=None, ge=0.0)
+    w_obj: PositiveFloat | None = None
+    w_presence: PositiveFloat | None = None
 
     # Focal params (2)
-    focal_gamma:     PositiveFloat  | None = None
-    focal_alpha:     float          | None = Field(default=None, ge=0.0, le=1.0)
+    focal_gamma: PositiveFloat | None = None
+    focal_alpha: float | None = Field(default=None, ge=0.0, le=1.0)
 
     # Tversky params (2)
-    tversky_alpha:   float          | None = Field(default=None, ge=0.0, le=1.0)
-    tversky_gamma:   PositiveFloat  | None = None
+    tversky_alpha: float | None = Field(default=None, ge=0.0, le=1.0)
+    tversky_gamma: PositiveFloat | None = None
 
     # Boundary blend coefficient (1)
-    boundary_weight: float          | None = Field(default=None, ge=0.0, le=1.0)
+    boundary_weight: float | None = Field(default=None, ge=0.0, le=1.0)
 
     # Matcher contract (internal sub-model; accepts dict or MatcherWeights instance)
     matcher_weights: MatcherWeights | None = None
@@ -177,9 +185,9 @@ class LossOverrides(_Strict):
 
 
 class LossConfig(_Strict):
-    preset:          Preset         = "natural"
+    preset: Preset = "natural"
     class_imbalance: ClassImbalance = "balanced"
-    overrides:       LossOverrides  = Field(default_factory=LossOverrides)
+    overrides: LossOverrides = Field(default_factory=LossOverrides)
 
     model_config = ConfigDict(extra="forbid", arbitrary_types_allowed=True)
 

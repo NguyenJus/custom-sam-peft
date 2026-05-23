@@ -417,9 +417,7 @@ def test_run_dir_writes_augmentation_pipeline_json(
     assert isinstance(blob["library_version"], str) and blob["library_version"]
 
 
-def test_run_dir_writes_loss_bundle_json(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_run_dir_writes_loss_bundle_json(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """Spec §9: trainer writes loss_bundle.json alongside augmentation_pipeline.json."""
     from custom_sam_peft.config.schema import (
         AugmentationsConfig,
@@ -503,6 +501,12 @@ def test_run_dir_writes_loss_bundle_json(
     loss_path = run_dir / "loss_bundle.json"
     assert loss_path.exists(), list(tmp_path.rglob("*"))
     d = json.loads(loss_path.read_text())
-    assert set(d.keys()) == {"preset", "class_imbalance", "resolved", "term_classes", "library_version"}
+    assert set(d.keys()) == {
+        "preset",
+        "class_imbalance",
+        "resolved",
+        "term_classes",
+        "library_version",
+    }
     assert len(d["resolved"]) == 13
     assert set(d["term_classes"].keys()) == {"mask", "box", "obj", "presence"}

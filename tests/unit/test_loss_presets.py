@@ -16,11 +16,8 @@ from custom_sam_peft.config.schema import (
     Preset,
 )
 from custom_sam_peft.models.losses.presets import (
-    LOCKED_OFF,
-    PRESET_TABLE,
-    ResolvedLosses,
     _LEGACY_DEFAULTS,
-    _TERM_CLASS_NAMES,
+    PRESET_TABLE,
     dump_loss_bundle,
     resolve,
 )
@@ -30,6 +27,7 @@ _TIERS: list[ClassImbalance] = ["balanced", "moderate", "severe"]
 
 
 # -- Table exact values (spec §5) ----------------------------------------------
+
 
 @pytest.mark.parametrize("preset", _REAL_PRESETS)
 @pytest.mark.parametrize("tier", _TIERS)
@@ -42,6 +40,7 @@ def test_resolve_table_exact_values(preset: Preset, tier: ClassImbalance) -> Non
 
 
 # -- Short-circuit presets ------------------------------------------------------
+
 
 @pytest.mark.parametrize("tier", _TIERS)
 def test_resolve_none_uses_legacy_defaults(tier: ClassImbalance) -> None:
@@ -61,9 +60,11 @@ def test_resolve_custom_seeds_with_natural_balanced() -> None:
 
 # -- Override layering ----------------------------------------------------------
 
+
 def test_resolve_override_wins_over_table() -> None:
     cfg = LossConfig(
-        preset="natural", class_imbalance="balanced",
+        preset="natural",
+        class_imbalance="balanced",
         overrides=LossOverrides(focal_gamma=5.0),
     )
     r = resolve(cfg)
@@ -74,7 +75,8 @@ def test_resolve_override_wins_over_table() -> None:
 
 def test_resolve_override_zero_is_valid() -> None:
     cfg = LossConfig(
-        preset="natural", class_imbalance="balanced",
+        preset="natural",
+        class_imbalance="balanced",
         overrides=LossOverrides(w_obj=0.5),  # 0 rejected by PositiveFloat; use 0.5
     )
     r = resolve(cfg)
@@ -98,10 +100,12 @@ def test_resolve_matcher_weights_dict_coerced() -> None:
 
 # -- LOCKED_OFF warns -----------------------------------------------------------
 
+
 def test_resolve_locked_off_warns_medical_mask_family(caplog: pytest.LogCaptureFixture) -> None:
     caplog.set_level(logging.WARNING, logger="custom_sam_peft.models.losses.presets")
     cfg = LossConfig(
-        preset="medical", class_imbalance="moderate",
+        preset="medical",
+        class_imbalance="moderate",
         overrides=LossOverrides(mask_family="dice_bce"),
     )
     r = resolve(cfg)
@@ -113,7 +117,8 @@ def test_resolve_locked_off_warns_medical_mask_family(caplog: pytest.LogCaptureF
 def test_resolve_locked_off_warns_natural_mask_family(caplog: pytest.LogCaptureFixture) -> None:
     caplog.set_level(logging.WARNING, logger="custom_sam_peft.models.losses.presets")
     cfg = LossConfig(
-        preset="natural", class_imbalance="balanced",
+        preset="natural",
+        class_imbalance="balanced",
         overrides=LossOverrides(mask_family="focal_tversky"),
     )
     resolve(cfg)
@@ -128,7 +133,8 @@ def test_resolve_locked_off_no_warn_when_override_matches_seed(
     caplog.set_level(logging.WARNING, logger="custom_sam_peft.models.losses.presets")
     seed = PRESET_TABLE[("medical", "balanced")]["mask_family"]
     cfg = LossConfig(
-        preset="medical", class_imbalance="balanced",
+        preset="medical",
+        class_imbalance="balanced",
         overrides=LossOverrides(mask_family=seed),
     )
     resolve(cfg)
@@ -151,6 +157,7 @@ def test_resolve_custom_skips_locked_off(caplog: pytest.LogCaptureFixture) -> No
 
 # -- ResolvedLosses immutability ------------------------------------------------
 
+
 def test_resolved_losses_frozen() -> None:
     r = resolve(LossConfig())
     with pytest.raises(dataclasses.FrozenInstanceError):
@@ -162,21 +169,39 @@ def test_resolved_losses_frozen() -> None:
 
 # -- Sidecar helper -------------------------------------------------------------
 
+
 def test_dump_loss_bundle_shape() -> None:
     cfg = LossConfig(preset="medical", class_imbalance="moderate")
     d = dump_loss_bundle(cfg)
-    assert set(d.keys()) == {"preset", "class_imbalance", "resolved", "term_classes", "library_version"}
+    assert set(d.keys()) == {
+        "preset",
+        "class_imbalance",
+        "resolved",
+        "term_classes",
+        "library_version",
+    }
     assert d["preset"] == "medical"
     assert d["class_imbalance"] == "moderate"
     assert set(d["resolved"].keys()) == {
-        "mask_family", "box_family", "obj_family", "presence_family",
-        "w_mask", "w_box", "w_obj", "w_presence",
-        "focal_gamma", "focal_alpha",
-        "tversky_alpha", "tversky_gamma", "boundary_weight",
+        "mask_family",
+        "box_family",
+        "obj_family",
+        "presence_family",
+        "w_mask",
+        "w_box",
+        "w_obj",
+        "w_presence",
+        "focal_gamma",
+        "focal_alpha",
+        "tversky_alpha",
+        "tversky_gamma",
+        "boundary_weight",
     }
     assert d["term_classes"] == {
-        "mask": "FocalTverskyLoss", "box": "L1GIoULoss",
-        "obj": "FocalBCELoss",      "presence": "BCELoss",
+        "mask": "FocalTverskyLoss",
+        "box": "L1GIoULoss",
+        "obj": "FocalBCELoss",
+        "presence": "BCELoss",
     }
     assert isinstance(d["library_version"], str) and d["library_version"]
     # round-trip through JSON
@@ -190,6 +215,7 @@ def test_dump_loss_bundle_for_none_preset() -> None:
 
 
 # -- Microscopy alias contract --------------------------------------------------
+
 
 @pytest.mark.parametrize("tier", _TIERS)
 def test_microscopy_equals_medical(tier: ClassImbalance) -> None:

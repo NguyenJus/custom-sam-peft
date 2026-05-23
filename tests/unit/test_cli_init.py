@@ -320,9 +320,18 @@ _TIERS = ["balanced", "moderate", "severe"]
 def test_init_renders_class_imbalance(preset: str, tier: str, tmp_path: Path) -> None:
     _make_data_paths(tmp_path)
     out = tmp_path / "cfg.yaml"
-    res = runner.invoke(app, [
-        "init", "--preset", preset, "--class-imbalance", tier, "--output", str(out),
-    ])
+    res = runner.invoke(
+        app,
+        [
+            "init",
+            "--preset",
+            preset,
+            "--class-imbalance",
+            tier,
+            "--output",
+            str(out),
+        ],
+    )
     assert res.exit_code == 0, res.output
     cfg = load_config(out)
     assert cfg.train.loss.preset == preset
@@ -332,9 +341,16 @@ def test_init_renders_class_imbalance(preset: str, tier: str, tmp_path: Path) ->
 def test_init_custom_preset_renders_loss_overrides_scaffold(tmp_path: Path) -> None:
     _make_data_paths(tmp_path)
     out = tmp_path / "cfg.yaml"
-    res = runner.invoke(app, [
-        "init", "--preset", "custom", "--output", str(out),
-    ])
+    res = runner.invoke(
+        app,
+        [
+            "init",
+            "--preset",
+            "custom",
+            "--output",
+            str(out),
+        ],
+    )
     assert res.exit_code == 0, res.output
     body = out.read_text()
     # The custom branch writes uncommented `overrides: {}` with the inline knob comment
@@ -347,9 +363,16 @@ def test_init_custom_preset_renders_loss_overrides_scaffold(tmp_path: Path) -> N
 def test_init_invalid_class_imbalance_rejected(tmp_path: Path) -> None:
     _make_data_paths(tmp_path)
     out = tmp_path / "cfg.yaml"
-    res = runner.invoke(app, [
-        "init", "--class-imbalance", "extreme", "--output", str(out),
-    ])
+    res = runner.invoke(
+        app,
+        [
+            "init",
+            "--class-imbalance",
+            "extreme",
+            "--output",
+            str(out),
+        ],
+    )
     assert res.exit_code != 0
     assert "class-imbalance" in (res.output + (res.stderr or ""))
 
@@ -357,9 +380,18 @@ def test_init_invalid_class_imbalance_rejected(tmp_path: Path) -> None:
 def test_init_non_custom_preset_renders_commented_scaffold(tmp_path: Path) -> None:
     _make_data_paths(tmp_path)
     out = tmp_path / "cfg.yaml"
-    res = runner.invoke(app, [
-        "init", "--preset", "medical", "--class-imbalance", "moderate", "--output", str(out),
-    ])
+    res = runner.invoke(
+        app,
+        [
+            "init",
+            "--preset",
+            "medical",
+            "--class-imbalance",
+            "moderate",
+            "--output",
+            str(out),
+        ],
+    )
     assert res.exit_code == 0
     body = out.read_text()
     # Commented scaffold lives under train.loss:

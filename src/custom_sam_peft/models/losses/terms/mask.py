@@ -24,7 +24,10 @@ def _align(pred: Tensor, target: Tensor) -> Tensor:
     if pred.shape[-2:] == target.shape[-2:]:
         return pred
     return interpolate(
-        pred[:, None], size=target.shape[-2:], mode="bilinear", align_corners=False,
+        pred[:, None],
+        size=target.shape[-2:],
+        mode="bilinear",
+        align_corners=False,
     )[:, 0]
 
 

@@ -80,7 +80,7 @@ class CIoULoss(_BoxTermBase):
         # Aspect-ratio penalty v and α
         w1, h1 = pred_cxcywh[:, 2].clamp(min=1e-7), pred_cxcywh[:, 3].clamp(min=1e-7)
         w2, h2 = target_cxcywh[:, 2].clamp(min=1e-7), target_cxcywh[:, 3].clamp(min=1e-7)
-        v = (4.0 / (math.pi ** 2)) * (torch.atan(w2 / h2) - torch.atan(w1 / h1)).pow(2)
+        v = (4.0 / (math.pi**2)) * (torch.atan(w2 / h2) - torch.atan(w1 / h1)).pow(2)
         alpha = v / (1.0 - iou + v).clamp(min=1e-7)
         ciou = iou - rho2 / c2 - alpha * v
         return (1.0 - ciou).mean()
