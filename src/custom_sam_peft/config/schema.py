@@ -431,6 +431,7 @@ class EvalConfig(_Strict):
     lite_max_images: PositiveInt = 64
     mask_threshold: float = 0.0
     save_predictions: bool = False
+    batch_size: PositiveInt = 1  # T10 will expand to PositiveInt | Literal["auto"] = "auto"
 
 
 # WandbConfig, ExportConfig moved to config._internal (audit Section G).

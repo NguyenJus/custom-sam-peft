@@ -77,20 +77,26 @@ def test_evaluate_disables_grad(tiny_text_dataset):
     grad_enabled_during_forward: list[bool] = []
 
     class GradSpyModel:
-        """Minimal model that records torch.is_grad_enabled() on each forward."""
+        """Minimal model that records torch.is_grad_enabled() on each forward.
+
+        Returns multiplex-shaped output (B*K_g, Q, ...) as required by the
+        flat (image_chunk, class_group) loop in _iter_predictions.
+        """
 
         training = False
 
         def __call__(self, image: Any, prompts: Any, box_hints: Any) -> dict:
             grad_enabled_during_forward.append(torch.is_grad_enabled())
             b = image.shape[0]
+            k_g = len(prompts[0].classes) if prompts else 1
+            rows = b * k_g
             q = 1
             h, w = image.shape[-2], image.shape[-1]
             return {
-                "pred_logits": torch.zeros(b, q, 1),
-                "pred_boxes": torch.zeros(b, q, 4),
-                "pred_masks": torch.zeros(b, q, h, w),
-                "presence_logit_dec": torch.zeros(b, 1),
+                "pred_logits": torch.zeros(rows, q, 1),
+                "pred_boxes": torch.zeros(rows, q, 4),
+                "pred_masks": torch.zeros(rows, q, h, w),
+                "presence_logit_dec": torch.zeros(rows, 1),
             }
 
     cfg = EvalConfig(mode="lite", lite_max_images=1, iou_thresholds=[0.5])
@@ -176,7 +182,11 @@ def test_evaluate_default_unchanged_returns_report_only(stub_model, tiny_text_da
 
 
 class _DeviceRecordingStub(torch.nn.Module):
-    """Records image.device per forward; param lives on a sentinel device."""
+    """Records image.device per forward; param lives on a sentinel device.
+
+    Returns multiplex-shaped output (B*K_g, Q, ...) as required by the
+    flat (image_chunk, class_group) loop in _iter_predictions.
+    """
 
     def __init__(self, param_device: str = "meta") -> None:
         super().__init__()
@@ -186,16 +196,17 @@ class _DeviceRecordingStub(torch.nn.Module):
     def forward(
         self, image: torch.Tensor, prompts: Any, box_hints: Any = None
     ) -> dict[str, torch.Tensor]:
-        del prompts, box_hints
         self.received_image_devices.append(image.device)
         b = image.shape[0]
+        k_g = len(prompts[0].classes) if prompts else 1
+        rows = b * k_g
         # Outputs are CPU and independent of the meta param so downstream
         # postprocess.queries_to_coco_results works without GPU.
         return {
-            "pred_logits": torch.zeros(b, 4, 1),
-            "pred_boxes": torch.zeros(b, 4, 4),
-            "pred_masks": torch.zeros(b, 4, 16, 16),
-            "presence_logit_dec": torch.zeros(b, 1),
+            "pred_logits": torch.zeros(rows, 4, 1),
+            "pred_boxes": torch.zeros(rows, 4, 4),
+            "pred_masks": torch.zeros(rows, 4, 16, 16),
+            "presence_logit_dec": torch.zeros(rows, 1),
         }
 
 
@@ -220,14 +231,15 @@ def test_evaluate_falls_back_to_cpu_for_parameterless_model(tiny_text_dataset) -
             self.seen: list[torch.device] = []
 
         def forward(self, image: torch.Tensor, prompts: Any, box_hints: Any = None):
-            del prompts, box_hints
             self.seen.append(image.device)
             b = image.shape[0]
+            k_g = len(prompts[0].classes) if prompts else 1
+            rows = b * k_g
             return {
-                "pred_logits": torch.zeros(b, 4, 1),
-                "pred_boxes": torch.zeros(b, 4, 4),
-                "pred_masks": torch.zeros(b, 4, 16, 16),
-                "presence_logit_dec": torch.zeros(b, 1),
+                "pred_logits": torch.zeros(rows, 4, 1),
+                "pred_boxes": torch.zeros(rows, 4, 4),
+                "pred_masks": torch.zeros(rows, 4, 16, 16),
+                "presence_logit_dec": torch.zeros(rows, 1),
             }
 
     stub = _Parameterless()
@@ -296,3 +308,105 @@ def test_maybe_save_predictions_noop_in_lite_mode(tmp_path: Path):
     ev = Evaluator(cfg)
     ev._maybe_save_predictions([{"image_id": 1}], run_dir=tmp_path, split="val")
     assert not predictions_path(tmp_path, split="val").exists()
+
+
+# ---------------------------------------------------------------------------
+# Flat (image_chunk × class_group) iteration — T9
+# ---------------------------------------------------------------------------
+
+
+def test_iter_predictions_iterates_image_chunks_x_groups(monkeypatch) -> None:
+    """Evaluator iterates (image_chunk, class_group) flat; one model call per pair.
+
+    batch_size=2 (resolved), 4 images, 3 classes, MULTIPLEX_CAP=16 -> 1 group per chunk.
+    Expect ceil(4/2) * 1 = 2 model calls.
+    """
+    from unittest.mock import MagicMock, call
+
+    from custom_sam_peft.data.base import Example, Instance, TextPrompts
+
+    # Patch MULTIPLEX_CAP to 16 (the default); 3 classes < 16 so 1 group per chunk.
+    monkeypatch.setattr(
+        "custom_sam_peft.eval.evaluator.MULTIPLEX_CAP", 16, raising=False
+    )
+
+    # Build a 4-image, 3-class in-memory dataset.
+    class_names = ["cat", "dog", "bird"]
+
+    def _make_ex(idx: int) -> Example:
+        h = w = 8
+        image = torch.zeros(3, h, w)
+        mask = torch.zeros(h, w, dtype=torch.bool)
+        return Example(
+            image=image,
+            image_id=f"img_{idx}",
+            prompts=TextPrompts(classes=class_names),
+            instances=[
+                Instance(
+                    mask=mask,
+                    class_id=0,
+                    box=torch.tensor([0.0, 0.0, 4.0, 4.0]),
+                )
+            ],
+        )
+
+    class _DS4:
+        class_names = ["cat", "dog", "bird"]
+
+        def __len__(self) -> int:
+            return 4
+
+        def __getitem__(self, i: int) -> Example:
+            return _make_ex(i)
+
+    dataset = _DS4()
+    examples = [dataset[i] for i in range(4)]
+
+    # Mock model: returns (B*K_g, Q, ...) shaped outputs.
+    K_g = 3  # 3 classes, 1 group
+    Q = 2
+
+    def _mock_forward(images, prompts, box_hints=None):
+        B = images.shape[0]
+        h, w = images.shape[-2], images.shape[-1]
+        rows = B * K_g
+        return {
+            "pred_logits": torch.zeros(rows, Q, 1),
+            "pred_boxes": torch.zeros(rows, Q, 4),
+            "pred_masks": torch.zeros(rows, Q, h, w),
+            "presence_logit_dec": torch.zeros(rows, 1),
+        }
+
+    model = MagicMock(side_effect=_mock_forward)
+    model.training = False
+    # No parameters — will default to CPU
+    del model.parameters
+
+    cfg = EvalConfig(mode="full", iou_thresholds=[0.5], batch_size=2)
+    ev = Evaluator(cfg)
+    preds = ev._iter_predictions(model, examples, dataset)
+
+    # 4 images / batch_size=2 = 2 chunks, 1 group each -> 2 calls.
+    assert model.call_count == 2
+
+    # Each call should carry 3 class names in every prompt.
+    for args, _ in model.call_args_list:
+        prompts_arg = args[1]
+        assert all(len(p.classes) == 3 for p in prompts_arg)
+
+
+def test_row_outputs_returns_single_row_dict() -> None:
+    """_row_outputs(outputs, r) returns a per-row dict shaped (1, ...) for postprocess."""
+    from custom_sam_peft.eval.evaluator import _row_outputs
+
+    outputs = {
+        "pred_logits": torch.zeros(6, 2, 1),
+        "pred_boxes": torch.zeros(6, 2, 4),
+        "pred_masks": torch.zeros(6, 2, 4, 4),
+        "presence_logit_dec": torch.zeros(6, 1),
+    }
+    row = _row_outputs(outputs, r=3)
+    assert row["pred_logits"].shape == (1, 2, 1)
+    assert row["pred_boxes"].shape == (1, 2, 4)
+    assert row["pred_masks"].shape == (1, 2, 4, 4)
+    assert row["presence_logit_dec"].shape == (1, 1)
