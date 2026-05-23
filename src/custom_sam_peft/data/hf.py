@@ -16,6 +16,7 @@ import numpy as np
 from custom_sam_peft._registry import register
 from custom_sam_peft.config.schema import HFFieldMap, TextPromptConfig
 from custom_sam_peft.data.base import Dataset, Example
+from custom_sam_peft.data.io import _coerce_to_channels
 
 _LOG = logging.getLogger(__name__)
 
@@ -137,11 +138,13 @@ class HFDataset:
         field_map: HFFieldMap,
         seed: int = 0,
         row_indices: Iterable[int] | None = None,
+        channels: int = 3,
     ) -> None:
         if prompt_mode not in ("text", "bbox"):
             raise ValueError(f"prompt_mode must be 'text' or 'bbox'; got {prompt_mode!r}")
         self._name = name
         self._split = split
+        self._channels = channels
         self._prompt_mode: Literal["text", "bbox"] = prompt_mode
         self._transforms = transforms
         self._text_prompt_cfg = text_prompt
@@ -205,16 +208,9 @@ class HFDataset:
         return self._ds[row_i]  # type: ignore[no-any-return]
 
     def _decode_image(self, raw: dict[str, Any]) -> np.ndarray[Any, Any]:
-        """Decode a raw HF row's image field to an (H, W, 3) uint8 ndarray."""
-        from PIL import Image as PILImage
-
+        """Decode a raw HF row's image field to an (H, W, C) ndarray."""
         img_obj = _resolve_field(raw, self._field_map.image)
-        if isinstance(img_obj, PILImage.Image):
-            return np.asarray(img_obj.convert("RGB"))
-        np_img = np.asarray(img_obj)
-        if np_img.ndim == 2:
-            np_img = np.stack([np_img] * 3, axis=-1)
-        return np_img
+        return _coerce_to_channels(img_obj, self._channels)
 
     def _decode_targets(
         self, raw: dict[str, Any], np_img: np.ndarray[Any, Any]
@@ -435,4 +431,5 @@ def build_hf(
         text_prompt=text_prompt,
         field_map=field_map,
         row_indices=[int(s) for s in resolved] if resolved is not None else None,
+        channels=int(cfg.get("channels", 3)),
     )

@@ -542,3 +542,22 @@ def test_hfdataset_image_id_uses_underlying_row_index(monkeypatch: pytest.Monkey
     assert ex0.image_id == "2"
     ex1 = ds[1]
     assert ex1.image_id == "4"
+
+
+# ---------------------------------------------------------------------------
+# Task 7+8: channel-aware _decode_image in HFDataset
+# ---------------------------------------------------------------------------
+
+
+def test_hf_decode_image_array_branch_channel_aware():
+    """HFDataset._decode_image coerces an array row to self._channels."""
+    import numpy as np
+    from custom_sam_peft.data import hf as hf_mod
+
+    obj = hf_mod.HFDataset.__new__(hf_mod.HFDataset)
+    obj._channels = 1
+    obj._field_map = type("FM", (), {"image": "image"})()
+
+    raw = {"image": np.zeros((4, 6), np.uint8)}
+    out = hf_mod.HFDataset._decode_image(obj, raw)
+    assert out.shape == (4, 6, 1)

@@ -869,3 +869,29 @@ def test_image_level_leak_invariant_on_tiny_coco(tiny_coco_dir: Path) -> None:
         pytest.skip("tiny_coco has < 2 keep-after-crowd-filter images; cannot test split")
     res = stratified_split(items, fraction=0.5, seed=0)
     assert set(res.train_ids).isdisjoint(set(res.val_ids))
+
+
+# ---------------------------------------------------------------------------
+# Task 7+8: channel-aware _decode_image in COCODataset
+# ---------------------------------------------------------------------------
+
+
+def test_coco_decode_image_uses_channels(tmp_path, monkeypatch):
+    """COCODataset._decode_image routes through read_image with self._channels."""
+    import numpy as np
+    from custom_sam_peft.data import coco as coco_mod
+
+    captured = {}
+
+    def fake_read_image(path, channels):
+        captured["channels"] = channels
+        return np.zeros((4, 5, channels), np.uint8)
+
+    monkeypatch.setattr(coco_mod, "read_image", fake_read_image, raising=False)
+    obj = coco_mod.COCODataset.__new__(coco_mod.COCODataset)
+    obj._image_root = tmp_path
+    obj._channels = 5
+    raw = (1, {"file_name": "a.png"}, [])
+    out = coco_mod.COCODataset._decode_image(obj, raw)
+    assert out.shape == (4, 5, 5)
+    assert captured["channels"] == 5
