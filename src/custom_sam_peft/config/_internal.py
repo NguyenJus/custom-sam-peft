@@ -18,15 +18,13 @@ from dataclasses import dataclass, field
 class MatcherWeights:
     """Internal config — not user-set.
 
-    Per-term cost weights for the Hungarian matcher.
+    Per-term cost weight for the Hungarian matcher.
 
-    v0 defaults are mask-only (box terms = 0) because v0 trains text-only
-    with no box supervision. lambda_l1 and lambda_giou are demoted internal
-    constants (audit Section E: YAGNI demote — no config sets them; always 0.0).
+    v0 defaults are mask-only; the box-cost coefficients were demoted to inline
+    literal 0.0 at the construction site in losses.py (audit Section E,
+    #92, YAGNI demote — no config sets them).
     """
 
-    lambda_l1: float = 0.0
-    lambda_giou: float = 0.0
     lambda_mask: float = 5.0
 
 
@@ -34,12 +32,14 @@ class MatcherWeights:
 class LossConfig:
     """Internal config — not user-set.
 
-    Loss-mix weights and focal CE params for SAM 3.1 training.
+    Loss-mix weights for SAM 3.1 training.
 
     Most fields are demoted internal constants per audit Section E. Only
     w_mask, w_obj, w_presence, and matcher_weights survive as advanced
     settings read by the training loop, but none are exposed to the YAML
-    user schema — they are hardcoded defaults here.
+    user schema — they are hardcoded defaults here. The focal-loss
+    hyperparameters were demoted to module-level constants in
+    models/losses.py (#93).
 
     No `w_cls`: discrimination across classes comes from running one forward
     pass per class prompt. `w_presence` weights the image-level
@@ -52,9 +52,6 @@ class LossConfig:
     # w_box is demoted: always 0.0 in all examples; no box supervision in v0.
     w_box: float = 0.0
     matcher_weights: MatcherWeights = field(default_factory=MatcherWeights)
-    # focal_gamma and focal_alpha are demoted internal constants.
-    focal_gamma: float = 2.0
-    focal_alpha: float = 0.25
 
 
 @dataclass

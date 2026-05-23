@@ -15,11 +15,12 @@ from custom_sam_peft.config.schema import LossConfig, MatcherWeights, TrainConfi
 
 def test_matcher_weights_defaults() -> None:
     w = MatcherWeights()
-    assert w.lambda_l1 == 0.0
-    assert w.lambda_giou == 0.0
     assert w.lambda_mask == 5.0
     # No lambda_cls — open-vocab head has no per-class classification.
     assert not hasattr(w, "lambda_cls")
+    # lambda_l1 / lambda_giou were demoted to inline literals in losses.py (#92).
+    assert not hasattr(w, "lambda_l1")
+    assert not hasattr(w, "lambda_giou")
 
 
 def test_matcher_weights_rejects_extra_fields() -> None:
@@ -31,13 +32,14 @@ def test_matcher_weights_rejects_extra_fields() -> None:
 def test_loss_config_defaults() -> None:
     cfg = LossConfig()
     assert cfg.w_mask == 1.0
-    # w_box, focal_gamma, focal_alpha are demoted internal constants (audit Section E).
+    # w_box was demoted earlier (audit Section E).
     assert cfg.w_box == 0.0
     assert cfg.w_obj == 1.0
     assert cfg.w_presence == 1.0
-    assert cfg.focal_gamma == 2.0
-    assert cfg.focal_alpha == 0.25
     assert isinstance(cfg.matcher_weights, MatcherWeights)
+    # focal_gamma / focal_alpha demoted to module-level constants in losses.py (#93).
+    assert not hasattr(cfg, "focal_gamma")
+    assert not hasattr(cfg, "focal_alpha")
     # No w_cls — open-vocab head has no per-class classification.
     assert not hasattr(cfg, "w_cls")
 
