@@ -31,7 +31,7 @@ dependencies = [
 wandb = ["wandb>=0.18"]
 qlora = ["bitsandbytes>=0.43"]
 cu130 = ["torch"]
-gpu-pascal = ["torch", "bitsandbytes>=0.43"]
+gpu-pascal = ["torch", "torchvision", "bitsandbytes>=0.43"]
 tensorboard = ["tensorboard>=2.18"]
 jupyter = ["jupyterlab>=4"]
 dev = [
@@ -163,9 +163,12 @@ url = "https://download.pytorch.org/whl/cu118"
 explicit = true
 
 [tool.uv.sources]
-# Route torch to cu118 ONLY under the gpu-pascal extra. Outside it, torch
-# resolves from PyPI (cu130) as today.
+# Route torch + torchvision to cu118 ONLY under the gpu-pascal extra. Outside it
+# they resolve from PyPI (cu130) as today. torchvision MUST be pinned to the same
+# cu118 build as torch — the generic PyPI wheel links against a different CUDA
+# runtime and fails at import with "operator torchvision::nms does not exist".
 torch = [{ index = "pytorch-cu118", extra = "gpu-pascal" }]
+torchvision = [{ index = "pytorch-cu118", extra = "gpu-pascal" }]
 
 [tool.uv]
 # gpu-pascal (cu118) and cu130 (PyPI default) use different torch builds and
