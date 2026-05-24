@@ -42,7 +42,6 @@ wandb/
 data/*
 models/*
 .claude/*
-CLAUDE.md
 .mcp.json
 .serena/
 
