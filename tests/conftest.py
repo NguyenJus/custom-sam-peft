@@ -22,8 +22,9 @@ def pytest_configure(config: pytest.Config) -> None:
     )
     config.addinivalue_line(
         "markers",
-        "requires_compatible_gpu: skip unless a CUDA device with compute capability "
-        ">= 7.5 is available",
+        "requires_compatible_gpu: skip unless a CUDA device with compute "
+        "capability >= 6.0 is available (NF4 QLoRA + LoRA work from CC 6.0 / "
+        "Pascal; only LLM.int8() needs CC 7.5 and is unused here)",
     )
     config.addinivalue_line(
         "markers",
@@ -36,6 +37,22 @@ def pytest_configure(config: pytest.Config) -> None:
     )
 
 
+def _torch_can_launch_kernel() -> bool:
+    """Whether the *installed* torch build can run a kernel on the current CUDA device.
+
+    CC >= 6.0 is necessary but not sufficient: the default cu130 wheel ships no
+    sm_61 cubin/PTX, so on a GTX 1080 a kernel launch raises "no kernel image is
+    available". The opt-in gpu-pascal (cu118) build JITs compute_60 -> sm_61 and
+    runs. Probing an actual launch is the only reliable signal. Separated out so
+    unit tests can monkeypatch it without a real GPU.
+    """
+    try:
+        torch.zeros(8, device="cuda").add_(1.0).cpu()
+        return True
+    except Exception:
+        return False
+
+
 def _has_compatible_gpu() -> bool:
     if not torch.cuda.is_available():
         return False
@@ -43,13 +60,18 @@ def _has_compatible_gpu() -> bool:
         major, minor = torch.cuda.get_device_capability()
     except RuntimeError:
         return False
-    return (major, minor) >= (7, 5)
+    if (major, minor) < (6, 0):
+        return False
+    return _torch_can_launch_kernel()
 
 
 def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item]) -> None:
     ckpt = pathlib.Path("models/sam3.1/sam3.1_multiplex.pt")
     skip_no_ckpt = pytest.mark.skip(reason="real SAM 3.1 checkpoint not present locally")
-    skip_no_gpu = pytest.mark.skip(reason="real SAM 3.1 forward requires a CUDA GPU with CC >= 7.5")
+    skip_no_gpu = pytest.mark.skip(
+        reason="requires a CUDA GPU with CC >= 6.0 (NF4 QLoRA + LoRA; "
+        "LLM.int8() would need CC 7.5 but is unused here)"
+    )
     have_gpu = _has_compatible_gpu()
     for item in items:
         if "requires_checkpoint" in item.keywords and not ckpt.exists():
