@@ -1,6 +1,15 @@
-"""Patch: cast query/key/value of every MHA module to the MHA's weight dtype.
+"""Patch: cast query/key/value/attn_mask of every MHA module to the MHA's weight dtype.
 
 See src/custom_sam_peft/models/sam3.py::_patch_mha_input_dtype for full rationale.
+
+The hook also casts a FLOAT additive ``attn_mask`` to the module's weight dtype.
+Under float16 (e.g. GTX 1080, CC 6.1), SAM3's decoder cross-attention
+(``sam3/model/decoder.py:166``) passes a float32 additive ``attn_mask`` while the
+query/key/value are fp16; ``F.scaled_dot_product_attention``
+(``sam3/model/model_misc.py:397``) then raises
+``RuntimeError: invalid dtype for bias - should match query's dtype``. The
+``is_floating_point()`` guard casts the float additive bias but leaves BOOLEAN
+masks untouched (bool masks are a valid SDPA input).
 """
 
 from __future__ import annotations
@@ -43,7 +52,7 @@ def apply(model: nn.Module, runtime: Runtime) -> None:
             if isinstance(t, torch.Tensor) and t.is_floating_point() and t.dtype != target_dtype:
                 new_args[i] = t.to(dtype=target_dtype)
         new_kwargs = dict(kwargs)
-        for name in ("query", "key", "value"):
+        for name in ("query", "key", "value", "attn_mask"):
             t = new_kwargs.get(name)
             if isinstance(t, torch.Tensor) and t.is_floating_point() and t.dtype != target_dtype:
                 new_kwargs[name] = t.to(dtype=target_dtype)
@@ -60,6 +69,6 @@ def apply(model: nn.Module, runtime: Runtime) -> None:
         patched_count += 1
 
     logger.info(
-        "Patched %d MultiheadAttention modules with query/key/value input-dtype hook.",
+        "Patched %d MultiheadAttention modules with query/key/value/attn_mask input-dtype hook.",
         patched_count,
     )

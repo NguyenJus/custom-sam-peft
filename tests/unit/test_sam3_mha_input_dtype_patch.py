@@ -123,6 +123,56 @@ def test_masks_and_scalars_left_untouched() -> None:
     assert captured["need_weights"] is False
 
 
+def test_float_attn_mask_kwarg_cast_to_module_dtype() -> None:
+    """A float additive attn_mask in a different dtype is cast to the MHA's dtype.
+
+    Regression for the float16 cross-attention gap: under fp16 the float
+    additive attn_mask stays fp32 while q/k/v are fp16, and SDPA raises
+    'invalid dtype for bias - should match query's dtype'. The hook must cast
+    the float mask to the module's weight dtype.
+    """
+    mha = _make_bf16_mha()
+    _patch_mha_input_dtype(mha)
+    captured: dict[str, Any] = {}
+
+    original_forward = mha.forward
+
+    def _capturing_forward(query, key, value, *args, **kwargs):  # type: ignore[no-untyped-def]
+        captured["attn_mask_dtype"] = kwargs["attn_mask"].dtype
+        return original_forward(query, key, value, *args, **kwargs)
+
+    mha.forward = _capturing_forward  # type: ignore[assignment]
+
+    q = torch.zeros(1, 4, 8, dtype=torch.float32)
+    float_mask = torch.zeros(4, 4, dtype=torch.float32)  # additive bias, fp32
+    mha(query=q, key=q, value=q, attn_mask=float_mask)
+
+    assert captured["attn_mask_dtype"] == torch.bfloat16, (
+        "float additive attn_mask must be cast to the module's weight dtype"
+    )
+
+
+def test_bool_attn_mask_kwarg_left_unchanged() -> None:
+    """A boolean attn_mask is NOT cast (bool masks are valid SDPA inputs)."""
+    mha = _make_bf16_mha()
+    _patch_mha_input_dtype(mha)
+    captured: dict[str, Any] = {}
+
+    original_forward = mha.forward
+
+    def _capturing_forward(query, key, value, *args, **kwargs):  # type: ignore[no-untyped-def]
+        captured["attn_mask_dtype"] = kwargs["attn_mask"].dtype
+        return original_forward(query, key, value, *args, **kwargs)
+
+    mha.forward = _capturing_forward  # type: ignore[assignment]
+
+    q = torch.zeros(1, 4, 8, dtype=torch.float32)
+    bool_mask = torch.zeros(4, 4, dtype=torch.bool)
+    mha(query=q, key=q, value=q, attn_mask=bool_mask)
+
+    assert captured["attn_mask_dtype"] == torch.bool, "bool attn_mask must NOT be cast"
+
+
 def test_idempotency() -> None:
     """Applying the patch twice installs at most one hook per module."""
     mha = _make_bf16_mha()

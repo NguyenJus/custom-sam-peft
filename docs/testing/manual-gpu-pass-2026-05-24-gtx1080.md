@@ -39,7 +39,10 @@ Restore the dev env when done:
 
 ### gpu_local tier (populated by later tasks)
 
-- [ ] *(populated by C-2 / Phase-0 trace tasks)*
+- [x] **C-2 / Phase-0 trace** — Blocker 1 (float16 cross-attn `attn_mask` cast)
+  FIXED; Blocker 2 (#127 grad-ckpt recompute mismatch) **BLOCKED** on
+  Pascal/float16 (sam3-internal save-count divergence; Fix A/B both fail, Fix C
+  ruled out). See the session log below.
 
 ## Session log
 
@@ -129,13 +132,152 @@ B/C and D's `gpu_local` calibration may proceed.
 
 ---
 
-### Phase-0 trace + fix classification
+### Phase-0 trace + fix classification — 2026-05-24 (C-2)
 
-<!-- filled by C-2 -->
+Hardware: GTX 1080 (sm_61), cu118 torch 2.7.1, float16 (bf16 emulated → coerced).
+Repro: QLoRA fast-smoke (`configs/examples/gpu_smoke_qlora.yaml`,
+`model.dtype=float16`, `peft.qlora.compute_dtype=float16`,
+`gradient_checkpointing=true`) under
+`torch.utils.checkpoint.set_checkpoint_debug_enabled(True)` with
+`PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True`.
 
-*(Populated when task C-2 runs the full gpu_local tier with pytest verbose output
-and classifies any failures: genuine sm_61 issues vs. dtype/env issues vs.
-test-fixture gaps.)*
+#### Blocker 1 (PREREQUISITE — FIXED) — float16 cross-attention attn_mask gap
+
+Before this work, the float16 QLoRA forward crashed inside SAM3's decoder
+cross-attention (`sam3/model/decoder.py:166` → `model_misc.py:397`) with:
+
+```
+RuntimeError: invalid dtype for bias - should match query's dtype
+```
+
+The MHA input-dtype hook
+(`src/custom_sam_peft/models/_patches/mha_input_dtype.py::_mha_input_dtype_hook`)
+cast `query`/`key`/`value` to the module's weight dtype (fp16) but left the
+float additive `attn_mask` as fp32, so `F.scaled_dot_product_attention` rejected
+the mismatched bias.
+
+**Fix (landed):** extend the hook's kwarg-cast loop to also cast `attn_mask`:
+`for name in ("query", "key", "value", "attn_mask")`. The existing
+`is_floating_point()` guard casts the float additive bias and correctly LEAVES
+boolean masks untouched (bool masks are valid SDPA inputs). Two CPU unit tests
+added in `tests/unit/test_sam3_mha_input_dtype_patch.py`
+(`test_float_attn_mask_kwarg_cast_to_module_dtype`,
+`test_bool_attn_mask_kwarg_left_unchanged`) — 10/10 pass under cu118
+(`uv run --no-sync pytest tests/unit/test_sam3_mha_input_dtype_patch.py --no-cov`).
+With this fix the float16 forward completes and training reaches the backward
+pass — exposing Blocker 2.
+
+#### Blocker 2 (#127 target — BLOCKED) — recompute-metadata mismatch
+
+With Blocker 1 fixed, the QLoRA grad-ckpt backward raises the deferred #127
+`CheckpointError`. **Failing checkpoint SITE:** SAM3's
+`model_misc.MultiheadAttention.forward` self-checkpoint at
+`sam3/model/model_misc.py:655` (the `_qkv_same_embed_dim` branch wrapping
+`multi_head_attention_forward`), reached from the decoder cross-attention
+(`decoder.py:166`). The metadata table (flag-flip only, fp16):
+
+```
+position 1: saved [256,512]      fp16   → recomp [256,256]    fp16
+position 2: saved [2,8,5184,34]  fp16   → recomp [256,256]    fp16
+position 3: saved [2,8,34,32]    fp16   → recomp [2,8,5184,34] fp16
+position 4: saved [2,8,5184,32]  fp16   → recomp [2,8,34,32]  fp16
+position 5: saved [2,8,34,32]    fp16   → recomp [2,8,5184,32] fp16
+position 6: saved [2,8,5184]     fp32   → recomp [2,8,34,32]  fp16
+position 7: saved [2,8,5184,32]  fp16   → recomp [2,8,5184]   fp32
+position 8: saved []             int64 CPU → recomp [2,8,5184,32] fp16
+position 10: saved [256,256]     fp16   → recomp []           int64 CPU
+```
+
+Shapes are the cross-attention internals: batch 2, 8 heads, **34 decoder queries
+× 5184 image tokens**, head_dim 32; `[2,8,5184]` fp32 is the softmax stat.
+First divergent op is position 1 (the in-projection / first saved tensor). The
+fingerprint is a **shift-by-one** (recompute slot N carries the forward's slot
+N-1) PLUS an **int64 CPU scalar** that materializes at a SHIFTED slot in the
+recompute (saved pos 8 vs recomputed pos 10) — i.e. the recompute saves a
+DIFFERENT NUMBER of tensors than the forward inside
+`multi_head_attention_forward`.
+
+**Classification attempted: Fix A (autocast-only) → did NOT hold; escalated to
+Fix B → did NOT hold; Fix C ruled out.** Evidence:
+
+1. **Fix A — deterministic per-MHA `torch.autocast(float16)` wrap** (dtype via
+   `coerce_dtype_for_capability` → fp16 on sm_61), scoped to the
+   `model_misc.MultiheadAttention` modules only (wrapping the ViT-Det trunk
+   blocks instead breaks the fp16 `ConvTranspose2d` neck at `necks.py:117` —
+   the trunk emits fp32 under autocast). Result: the **same shift-by-one
+   persists**, only the dtypes shift fp16→fp32. Autocast pinning does NOT
+   resolve the structural save-count divergence.
+2. **Fix A+ — additionally pin `torch.nn.attention.sdpa_kernel([SDPBackend.MATH])`**
+   inside the wrap (math is the only real SDPA backend on sm_61). An isolated
+   repro of the exact failing shapes was metadata-consistent with MATH pinned,
+   but in the FULL model the **same shift-by-one persists**. Backend selection
+   is not the (sole) divergence.
+3. **Fix B — own the checkpoint** (`use_act_checkpoint=False` on the MHA so SAM3
+   does not self-checkpoint; wrap calls
+   `torch.utils.checkpoint.checkpoint(orig_forward, …, use_reentrant=False,
+   context_fn=<pinned autocast pair>)` with the metadata check ON). Result: the
+   **same shift-by-one** (now on a self-attention MHA: `[256,768]` qkv in_proj,
+   2 queries, same recurring int64 CPU scalar). Owning the checkpoint with a
+   pinned autocast context does NOT change the recompute save structure.
+4. **Fix C — `determinism_check="none"`** on the owned checkpoint. The metadata
+   check is bypassed, but the backward then raises
+   `RuntimeError: Expected all tensors to be on the same device, but found at
+   least two devices, cuda:0 and cpu!` (in `wrapper_CUDA_mm`). This PROVES the
+   divergent tensors are NOT benign/non-differentiable — the recompute genuinely
+   produces a CPU int64 scalar at a shifted slot that corrupts the gradient mm.
+   Fix C is therefore disallowed (its precondition — provable non-differentiable
+   divergence — is FALSE).
+
+**Root cause:** a structural, save-count divergence INSIDE SAM3's
+`multi_head_attention_forward` recompute (a CPU int64 scalar materializing at a
+non-deterministic position in the autograd save list). It is reproducible only
+in the full-model backward, not in an isolated MHA checkpoint (an isolated
+`model_misc.MultiheadAttention` checkpoints + back-props cleanly with
+`embed_dim` as a plain int on both passes). Resolving it would require editing
+`sam3/model/model_misc.py` — **FORBIDDEN** (sam3 is external; we only
+monkeypatch via `_patches/`). Autocast (Fix A), SDPA-backend pinning, and
+context_fn-pinned own-checkpoint (Fix B) all leave the mismatch intact; Fix C
+yields a corrupted backward.
+
+**Outcome: BLOCKED on Pascal/float16 per spec §6.8 graceful degradation.** Fix A
+and Fix B were both genuinely attempted on real hardware and neither resolves
+the recompute mismatch without an sam3 source edit. Per §6.8 the recommended
+degradation is for the orchestrator to reclassify the QLoRA training smoke to
+`gpu_t4` and keep `gpu_local` for forward-only / inspection tests — but that is
+the orchestrator's call, not C-2's. Blocker 1 (the attn_mask cast) is an
+independent, verified win and is landed regardless.
+
+`vit_act_checkpoint.py` was left at its flag-flip-only state (the Fix A/B wraps
+were reverted; shipping a wrap that does not resolve the `CheckpointError` would
+be misleading).
+
+#### `tests/gpu/test_grad_checkpointing.py` on the 1080 — both paths FAILED
+
+```
+FAILED tests/gpu/test_grad_checkpointing.py::test_lora_no_checkpoint_error_and_vram_lower
+FAILED tests/gpu/test_grad_checkpointing.py::test_qlora_no_checkpoint_error_and_vram_lower
+================== 2 failed, 4 warnings in 2233.48s (0:37:13) ==================
+```
+
+- **QLoRA path (load-bearing per plan):** fails — this is the #127 merge gate.
+  The on-run (`gradient_checkpointing=true`) raises the
+  `torch.utils.checkpoint.CheckpointError` documented above (verbatim trace
+  captured 3× across the Fix-A / Fix-A+SDPA / flag-flip Phase-1 runs). The merge
+  gate ("no `CheckpointError` on the QLoRA grad-ckpt path on the 1080") is NOT
+  met — the fix could not be landed without editing sam3.
+- **Memory pressure:** the card is tight (~7 GB usable of 8 GB). The test runs
+  the off-reference AND the on-run sequentially in one test; a single-test
+  re-run immediately after the 37-min full suite OOM'd in 64 s
+  (`RuntimeError: CUDA driver error: out of memory`) from residual fragmentation.
+  Per the plan this does NOT independently block (the QLoRA `CheckpointError` is
+  the load-bearing failure), but it reinforces the §6.8 degradation case — the
+  off+on double-run does not comfortably fit the 1080.
+- **LoRA path:** also FAILED (same suite). The LoRA path is not the load-bearing
+  gate per the plan; its failure is consistent with the same recompute mismatch
+  (the cross-attention checkpoint is PEFT-method-independent) and/or the same
+  memory tightness.
+
+Neither PEFT path passes the grad-ckpt GPU test on the 1080.
 
 ---
 
