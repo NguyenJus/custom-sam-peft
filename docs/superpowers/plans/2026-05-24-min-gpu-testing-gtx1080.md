@@ -2,14 +2,16 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Make the dev box's live GTX 1080 (sm_61, ~7 GB effective VRAM) a first-class **GPU-test target** so PR #127's deferred grad-checkpointing fix can be diagnosed/implemented/verified on real hardware, and rationalize the GPU test suite into a three-tier hardware taxonomy — all in one PR.
+> **AMENDED 2026-05-24 — gradient checkpointing abandoned.** The Phase-0 diagnostic on the real GTX 1080 proved the `CheckpointError` is a structural save-count divergence INSIDE sam3's `multi_head_attention_forward` recompute, unfixable without editing forbidden sam3 source (Fix A/A+/B all fail; Fix C corrupts the backward). See `docs/testing/manual-gpu-pass-2026-05-24-gtx1080.md` ("Phase-0 trace + fix classification"). **Consequences for this plan:** Task **C-2** (Phase-0 diagnostic + Phase-1 GC fix) is **abandoned**; Task **C-4** (Phase-3 verification + 8 GB calibration) and Task **C-3**'s deliverables (`gpu_smoke_qlora_8gb.yaml`, `tests/gpu/test_real_train_qlora_8gb.py`) are **deferred to #137**. Task **C-1** (`use_double_quant`) is GC-independent and **kept**. PR #127 closed unmerged; #89/#60 not-planned; `origin/main` already ships GC OFF (nothing to revert); the GC-free rebuild of this branch removes `vit_act_checkpoint.py` and `tests/gpu/test_grad_checkpointing.py`. The corrected GPU-tagged inventory is **12** files (see the File map / D-1). The `gpu_local` **training** tier is **PROVISIONAL pending #137**; its baseline members are forward-only / inspection tests.
 
-**Architecture:** An opt-in `gpu-pascal` uv extra resolves a cu118 torch + bitsandbytes (isolated from the default cu130 install via uv explicit-index + conflicting-extras). A device-aware dtype-coercion helper widens `bfloat16 → float16` on CC<8.0 hardware at two seams (autocast + QLoRA compute dtype). Three mutually-exclusive pytest hardware-tier markers (`gpu_local`, `gpu_t4`, `gpu_xl`) replace the retired cost markers (`gpu`, `gpu_inspection`); a conftest autoskip gates each tier against live hardware. PR #127's flag-flip-only `vit_act_checkpoint` patch is completed with the lowest fix tier a **Phase-0 diagnostic trace on the 1080** justifies (Fix A default), and a calibrated 8 GB QLoRA recipe is added. The #117 audit reclassifies every GPU test into a tier (calibrated on the 1080) and moves CPU-testable cases to CPU; the #116 notebook matrix closes coverage gaps.
+**Goal:** Make the dev box's live GTX 1080 (sm_61, ~7 GB effective VRAM) a first-class **GPU-test target** — provision its sm_61 kernels, enable CC-6.0/float16 code paths — and rationalize the GPU test suite into a three-tier hardware taxonomy — all in one PR. (Gradient checkpointing is abandoned; see the amendment note above.)
+
+**Architecture:** An opt-in `gpu-pascal` uv extra resolves a cu118 torch + bitsandbytes (isolated from the default cu130 install via uv explicit-index + conflicting-extras). A device-aware dtype-coercion helper widens `bfloat16 → float16` on CC<8.0 hardware at two seams (autocast + QLoRA compute dtype). Three mutually-exclusive pytest hardware-tier markers (`gpu_local`, `gpu_t4`, `gpu_xl`) replace the retired cost markers (`gpu`, `gpu_inspection`); a conftest autoskip gates each tier against live hardware. The GC fix originally planned for the flag-flip-only `vit_act_checkpoint` patch is **abandoned** (the Phase-0 diagnostic proved it infeasible without editing forbidden sam3 source); the 8 GB QLoRA *training* recipe is **deferred to #137**. The GC-independent `use_double_quant` field (C-1) lands. The #117 audit reclassifies every surviving GPU test into a tier (calibrated on the 1080) and moves CPU-testable cases to CPU; the #116 notebook matrix closes coverage gaps.
 
 **Tech Stack:** Python 3.12, PyTorch (`torch.utils.checkpoint`, `torch.autocast`, `torch.cuda.*`), bitsandbytes ≥ 0.43 (`Linear4bit` NF4), Meta `sam3` (external, NOT importable on the dev box — never edited), `pytest` (`-m gpu_local|gpu_t4|gpu_xl`), `ruff`, `mypy`, Pydantic (`TrainConfig`), `uv` (cu118 explicit index + conflicting extras).
 
 **Reference spec (source of truth):** `docs/superpowers/specs/2026-05-24-min-gpu-testing-gtx1080-design.md`
-**Fix-taxonomy + Phase-0/3 mechanics:** `docs/superpowers/specs/2026-05-23-gradient-checkpointing-t4-design.md` (§3, §5 Phase 0/1) and its plan `docs/superpowers/plans/2026-05-23-gradient-checkpointing-t4.md`.
+**GC abandonment evidence:** `docs/testing/manual-gpu-pass-2026-05-24-gtx1080.md` ("Phase-0 trace + fix classification"). The GC fix-taxonomy spec (`docs/superpowers/specs/2026-05-23-gradient-checkpointing-t4-design.md`) is now historical context only — the fix it describes was attempted on the 1080 and abandoned.
 
 ---
 
@@ -20,7 +22,7 @@ This plan executes **on the dev box** — the WSL2 machine that holds the live G
 - `nvidia-smi` reports `NVIDIA GeForce GTX 1080, 8192 MiB, driver 582.28, compute_cap 6.1`.
 - The default `uv sync` resolves `torch 2.12.0+cu130` (no sm_61 cubin) — `torch.cuda.is_available()` is `True` but **no kernel runs on the 1080 today**.
 
-**Guiding principle (spec §1):** *any testing runnable on this branch gets run here.* After `uv sync --extra gpu-pascal`, real 1080 runs are in-session. The §4.3 milestone, Phase 0/1/3, the 8 GB calibration, and the `gpu_local` tier classification are **real executable steps with captured output**, not deferred handoffs.
+**Guiding principle (spec §1):** *any testing runnable on this branch gets run here.* After `uv sync --extra gpu-pascal`, real 1080 runs are in-session. The §4.3 milestone and the `gpu_local` tier classification (forward-only / inspection) are **real executable steps with captured output**, not deferred handoffs. (The Phase-0 GC diagnostic was likewise run in-session — it is what established the GC abandonment; the 8 GB *training* calibration is deferred to #137.)
 
 **The worktree root** is `/home/justin/projects/custom-sam-peft/.claude/worktrees/feat+min-gpu-testing`. All paths below are absolute against it; the constant `$WT` is used as shorthand in commands:
 
@@ -35,6 +37,13 @@ WT=/home/justin/projects/custom-sam-peft/.claude/worktrees/feat+min-gpu-testing
 ## Pre-flight checks
 
 Run once before Task 1. STOP and re-derive anchors if any fails.
+
+> **AMENDMENT NOTE:** the GC-specific anchors below describe the original
+> pre-implementation tree and **no longer hold** after the GC abandonment / the
+> GC-free rebuild: `vit_act_checkpoint.py` is removed (it has no anchor); and
+> `use_double_quant` HAS landed (C-1) with `_QLORA_META_VERSION = 2`. The GC
+> assertions are commented out below. Re-derive against the actual rebuilt tree
+> before re-running any task.
 
 ```bash
 WT=/home/justin/projects/custom-sam-peft/.claude/worktrees/feat+min-gpu-testing
@@ -61,8 +70,7 @@ cd "$WT" && uv run python -c "import torch; print(torch.__version__)"   # Expect
 cd "$WT" && uv run python - <<'PY'
 import pathlib
 def line(p, n): return pathlib.Path(p).read_text().splitlines()[n-1]
-assert "use_act_checkpoint" in pathlib.Path("src/custom_sam_peft/models/_patches/vit_act_checkpoint.py").read_text()
-assert "torch.autocast" not in pathlib.Path("src/custom_sam_peft/models/_patches/vit_act_checkpoint.py").read_text(), "Phase-1 wrap unexpectedly already present"
+# GC ABANDONED: vit_act_checkpoint.py is removed by the GC-free rebuild — no anchor.
 conf = pathlib.Path("tests/conftest.py").read_text()
 assert "(7, 5)" in conf and "gpu_inspection" in conf
 loop = pathlib.Path("src/custom_sam_peft/train/loop.py").read_text()
@@ -74,10 +82,10 @@ assert "bf16 —" in pres[119] or "bf16" in pres[119]  # line 120 label token
 schema = pathlib.Path("src/custom_sam_peft/config/schema.py").read_text()
 assert 'Dtype = Literal["bfloat16", "float16"]' in schema   # Dtype already widened
 assert 'Optimizer = Literal["adamw", "adamw8bit", "auto"]' in schema
-assert "class QLoRAConfig" in schema and "use_double_quant" not in schema
+assert "class QLoRAConfig" in schema
+# C-1 LANDED: use_double_quant now present; metadata version bumped to 2.
 ql = pathlib.Path("src/custom_sam_peft/peft_adapters/qlora.py").read_text()
-assert "bnb.nn.Linear4bit(" in ql and "compute_dtype=compute_dtype" in ql
-assert "_QLORA_META_VERSION = 1" in ql
+assert "bnb.nn.Linear4bit(" in ql
 print("anchors OK")
 PY
 # Expected: anchors OK
@@ -91,30 +99,30 @@ PY
 | --- | --- | --- | --- |
 | `pyproject.toml` | Modify — add `gpu-pascal` extra + `[[tool.uv.index]]` (cu118, explicit) + `[tool.uv.sources]` + conflicting-extras; register 3 tier markers; retire `gpu`/`gpu_inspection` markers | A-1, B-4 | A, B |
 | `docs/testing/local-pascal-gpu-testing.md` | Create — how to provision `gpu-pascal`, run `gpu_local`, float16 caveat | A-1, A-2 | A, Docs |
-| `docs/testing/manual-gpu-pass-2026-05-24-gtx1080.md` | Create — §4.3 milestone evidence, Phase-0 trace+classification, Phase-3 calibration | A-2, C-2, C-4 | A/C, Docs |
+| `docs/testing/manual-gpu-pass-2026-05-24-gtx1080.md` | Create — §4.3 milestone evidence (PASS) + the Phase-0 trace+classification that established the **GC abandonment**. (No Phase-3 GC calibration — deferred to #137.) | A-2 | A, Docs |
 | `src/custom_sam_peft/runtime/_runtime.py` | Modify — add device-aware `coerce_dtype_for_capability` helper (or new module — see B-2) | B-2 | B |
 | `src/custom_sam_peft/train/loop.py` | Modify — `_autocast_ctx` routes through the coercion helper (line ~191) | B-2 | B |
-| `src/custom_sam_peft/peft_adapters/qlora.py` | Modify — `_replace_with_bnb_linear4bit` coerces compute dtype on CC<8.0 (line ~142); honor `use_double_quant` in the `Linear4bit` ctor (line ~146); bump metadata version if shape changes | B-2, C-3 | B, C |
+| `src/custom_sam_peft/peft_adapters/qlora.py` | Modify — `_replace_with_bnb_linear4bit` coerces compute dtype on CC<8.0 (line ~142); honor `use_double_quant` in the `Linear4bit` ctor (line ~146); bump metadata version if shape changes | B-2, C-1 | B, C |
 | `src/custom_sam_peft/presets.py` | Modify — widen `PresetDecision.dtype` Literal (line 83); CC-aware dtype in `decide_preset` (lines 295/335); `label()` renders real token (line 120); byte-comment (line 142) | B-3 | B |
 | `tests/conftest.py` | Modify — lower CC floor to (6,0); rewrite skip reasons; register 3 tier markers in `pytest_configure`; per-tier hardware autoskip in `pytest_collection_modifyitems` | B-1, B-4 | B |
 | `scripts/run_gpu_tests.sh` | Modify — accept `{local,t4,xl}`; add `tests/predict/`; fix header counts; preserve `--deselect`/CI guard | B-4 | B, E |
-| `src/custom_sam_peft/config/schema.py` | Modify — add `QLoRAConfig.use_double_quant: bool = False` (line ~488); optional `paged_adamw8bit` Optimizer value (escape hatch, C-3 only if calibration needs it) | C-3 | C |
-| `src/custom_sam_peft/models/_patches/vit_act_checkpoint.py` | Modify — add the Phase-1 fix the Phase-0 trace justifies (Fix A default) | C-2 | C |
-| `src/custom_sam_peft/models/_patches/README.md` | Modify — update the `vit_act_checkpoint.py` row to reflect the landed fix | C-2 | C |
-| `configs/examples/gpu_smoke_qlora_8gb.yaml` | Create — calibrated ~7 GB QLoRA recipe | C-3, C-4 | C |
-| `tests/gpu/test_real_train_qlora_8gb.py` | Create — `gpu_local` 8 GB training smoke (or forward-only if §6.8 degraded) | C-3, C-4 | C |
-| `tests/unit/test_qlora.py` (or sibling) | Modify/Create — CPU test for `use_double_quant` wiring + metadata round-trip | C-3 | C |
+| `src/custom_sam_peft/config/schema.py` | Modify — add `QLoRAConfig.use_double_quant: bool = False` (line ~488) | C-1 | C |
+| ~~`src/custom_sam_peft/models/_patches/vit_act_checkpoint.py`~~ | **GC abandoned (C-2 dropped); removed by the GC-free rebuild** | — | — |
+| ~~`configs/examples/gpu_smoke_qlora_8gb.yaml`~~ | **8 GB training recipe deferred to #137 — not created on this branch** | — | — |
+| ~~`tests/gpu/test_real_train_qlora_8gb.py`~~ | **8 GB training smoke deferred to #137 — not created on this branch** | — | — |
+| ~~`tests/gpu/test_grad_checkpointing.py`~~ | **GC-branch test; removed by the GC-free rebuild** | — | — |
+| `tests/unit/test_qlora.py` (or sibling) | Modify/Create — CPU test for `use_double_quant` wiring + metadata round-trip | C-1 | C |
 | `tests/unit/test_dtype_coercion.py` | Create — CPU TDD for the coercion helper | B-2 | B |
 | `tests/unit/test_marker_autoskip.py` | Create — CPU TDD for tier marker registration + collection autoskip | B-4 | B |
 | `tests/unit/test_run_gpu_tests_script.py` | Create — CPU TDD for runner tier→marker/path parsing | B-4 | B, E |
 | `tests/gpu/*.py`, `tests/integration/test_*_real.py`, `tests/predict/test_gpu_predict.py` | Modify — swap legacy `gpu`/`gpu_inspection` markers for the assigned tier marker | D-2 | D |
 | `docs/testing/gpu-audit-2026-05-24.md` | Create — the #117 per-test tier+decision+rationale audit (or a section in gpu-test-policy.md — D-1 decides) | D-1, D-2 | D |
-| `docs/testing/gpu-test-policy.md` | Modify — CC 6.0 floor; float16-on-Pascal; three-tier taxonomy (cost demoted to guidance); refresh inventory to 13→14 tests; fix "12 tests"/stale counts | D-1, E-1 | D/E, Docs |
-| `notebooks/colab_gpu_tests.ipynb` | Modify — tier cells (`local`/`t4`/`xl`); add cells for the 6 unreferenced tests + the 8 GB test; coverage-matrix markdown | E-1 | E |
+| `docs/testing/gpu-test-policy.md` | Modify — CC 6.0 floor; float16-on-Pascal; three-tier taxonomy (cost demoted to guidance); refresh inventory to the **12** GC-free GPU-tagged tests; fix stale "12 tests"/per-tier counts | D-1, E-1 | D/E, Docs |
+| `notebooks/colab_gpu_tests.ipynb` | Modify — tier cells (`local`/`t4`/`xl`); add cells for the 6 unreferenced tests; **drop the GC Phase-0/Phase-3 cells** (abandoned work); coverage-matrix markdown | E-1 | E |
 
-**CPU-testable (TDD-able without the 1080):** B-1 (CC-floor logic via injected capability), B-2 (dtype-coercion helper), B-3 (preset dtype widening + `label()` token, capability passed as a value), B-4 (marker registration/collection autoskip logic, runner-script tier parsing), C-3 schema (`use_double_quant` field + metadata round-trip). Apply `superpowers:test-driven-development` (failing test first) for all of these.
+**CPU-testable (TDD-able without the 1080):** B-1 (CC-floor logic via injected capability), B-2 (dtype-coercion helper), B-3 (preset dtype widening + `label()` token, capability passed as a value), B-4 (marker registration/collection autoskip logic, runner-script tier parsing), C-1 (`use_double_quant` field + metadata round-trip). Apply `superpowers:test-driven-development` (failing test first) for all of these.
 
-**REQUIRE the live 1080:** A-2 (the §4.3 hard-gate milestone — sm_61 kernel + bnb `Linear4bit` forward), C-2 Phase 0 (capture the `CheckpointError` trace under float16), C-2 Phase 1 verification, C-4 Phase 3 (loss parity, VRAM-lower, 8 GB calibration), and the D-1 tier classification of every `gpu_local` candidate (a test is `gpu_local` only if it actually runs within ~7 GB on the real card).
+**REQUIRE the live 1080:** A-2 (the §4.3 hard-gate milestone — sm_61 kernel + bnb `Linear4bit` forward), and the D-1 tier classification of every `gpu_local` candidate (a test is `gpu_local` only if its forward-only / inspection run fits within ~7 GB on the real card). (C-2/C-4 — the GC diagnostic and 8 GB calibration — are no longer plan tasks: GC abandoned, 8 GB training deferred to #137. The Phase-0 diagnostic that established the abandonment is already recorded in the manual-pass doc.)
 
 **Parallelizable (file-disjoint, no shared state) for an orchestrator:** within D, the CPU-move refactors of disjoint test files can run in parallel once D-1's audit fixes the decisions; E's per-test notebook-cell authoring is disjoint from D's source edits. **Serialize** anything touching `tests/conftest.py`, `scripts/run_gpu_tests.sh`, `docs/testing/gpu-test-policy.md`, or `pyproject.toml` (B-1/B-4/D-2/E-1 all touch one or more of these — run them in workstream order).
 
@@ -302,7 +310,7 @@ Expected: `out (4, 128) torch.float16 finite True` and `BNB LINEAR4BIT OK` — n
 
 - [ ] **Step 3: Record the evidence in the manual-pass record.**
 
-Create `docs/testing/manual-gpu-pass-2026-05-24-gtx1080.md` mirroring `manual-gpu-pass-2026-05-19.md`'s structure (How to run / Test checklist / Session log). Include a "§4.3 milestone" section pasting the captured commands + output from Steps 1-2 and the A-1 resolution log. Add placeholder sections "Phase-0 trace + fix classification" (C-2) and "Phase-3 calibration numbers" (C-4). Also paste the Step 1-2 evidence into the "Milestone evidence" section of `local-pascal-gpu-testing.md`.
+Create `docs/testing/manual-gpu-pass-2026-05-24-gtx1080.md` mirroring `manual-gpu-pass-2026-05-19.md`'s structure (How to run / Test checklist / Session log). Include a "§4.3 milestone" section pasting the captured commands + output from Steps 1-2 and the A-1 resolution log. Also paste the Step 1-2 evidence into the "Milestone evidence" section of `local-pascal-gpu-testing.md`. (The doc also records the Phase-0 GC diagnostic that established the GC abandonment — see the amendment note; there is no Phase-3 GC calibration, that is #137's.)
 
 - [ ] **Step 4 (DECISION GATE — branch):**
 
@@ -313,14 +321,15 @@ Create `docs/testing/manual-gpu-pass-2026-05-24-gtx1080.md` mirroring `manual-gp
   git commit -m "docs(testing): record §4.3 GTX 1080 sm_61 + bnb Linear4bit milestone (PASS)"
   ```
 
+> **Historical outcome:** both proofs **PASSED** on the real 1080 (evidence recorded in the manual-pass doc); the §4.3 fallback below was not invoked.
+
 - **If EITHER proof fails (§4.3 FALLBACK):** STOP the Pascal track. Then:
   1. Record the **negative** result (the exact error) in the manual-pass record and in `gpu-test-policy.md`.
-  2. **Revert PR #127's grad-ckpt work to the T4 plan** — i.e. C-2's Phase 1 fix is diagnosed on Colab T4 per `docs/superpowers/specs/2026-05-23-gradient-checkpointing-t4-design.md` (not on the 1080). The merged flag-flip-only patch stays; the deterministic-autocast wrap becomes a T4-gated follow-up.
-  3. Ship the **`gpu_local` tier empty** (defined + wired in B-4, but with **no member tests** — every GPU test classifies `gpu_t4`/`gpu_xl`).
-  4. Workstreams B (markers/dtype/preset, all CPU-acceptance-testable), D, and E **still complete** on the tiers that have hardware.
-  5. **File the Pascal-blocked follow-ups** (the close-out's follow-up task lists these). The PR remains shippable.
+  2. Ship the **`gpu_local` tier empty** (defined + wired in B-4, but with **no member tests** — every GPU test classifies `gpu_t4`/`gpu_xl`).
+  3. Workstreams B (markers/dtype/preset, all CPU-acceptance-testable), D, and E **still complete** on the tiers that have hardware.
+  4. **File the Pascal-blocked follow-ups** (the close-out's follow-up task lists these). The PR remains shippable.
 
-**Completion criteria:** either both milestone proofs PASS (evidence recorded; proceed to B) **or** the §4.3 fallback is invoked, documented, and the follow-ups are queued. **The orchestrator does not start C-2 Phase 0 on the 1080 unless the milestone passed.**
+**Completion criteria:** either both milestone proofs PASS (evidence recorded; proceed to B) **or** the §4.3 fallback is invoked, documented, and the follow-ups are queued.
 
 ---
 
@@ -1012,9 +1021,9 @@ git commit -m "feat(tests): register gpu_local/t4/xl tier markers + per-tier aut
 
 ---
 
-# Workstream C — Complete #127 + the 8 GB recipe
+# Workstream C — `use_double_quant` (GC abandoned; 8 GB training → #137)
 
-> Spec §6. Depends on A-2 (milestone) and B (CC floor, dtype coercion). **C-2 Phase 0 is a diagnostic-driven branch point: the fix tier (A/B/C) is whatever the captured 1080 trace justifies; Fix A is the default expectation, NOT a pre-committed edit.**
+> Spec §6. Depends on A-2 (milestone) and B (CC floor, dtype coercion). **Reduced scope:** only **C-1** (`use_double_quant`) is in scope and it has landed. **C-2** (Phase-0 diagnostic + Phase-1 GC fix) is **abandoned** — the Phase-0 diagnostic on the 1080 proved the GC `CheckpointError` unfixable without editing forbidden sam3 source (see the amendment note + `docs/testing/manual-gpu-pass-2026-05-24-gtx1080.md`). **C-3** (8 GB recipe config + training smoke) and **C-4** (Phase-3 verification + 8 GB calibration) are **deferred to #137**.
 
 ## Task C-1: Add `use_double_quant` to `QLoRAConfig` + CPU wiring tests (TDD)
 
@@ -1103,306 +1112,33 @@ git commit -m "feat(qlora): add use_double_quant config field wired to Linear4bi
 
 ---
 
-## Task C-2 (GATE → branch): Phase 0 diagnostic on the 1080, then the justified Phase-1 fix
+## Task C-2: GC fix — ABANDONED (not implemented)
 
-**Workstream C. REQUIRES THE LIVE 1080. Phase 0 is the BRANCH POINT.** Spec §6.1, §6.2. Run in-session (the milestone A-2 already passed). The fix tier implemented is whatever the captured trace justifies (Fix A default expectation per §6.1; B/C only on evidence per the T4 spec §5 Phase 1).
+**Workstream C. ABANDONED — no work product.** The original C-2 ran the Phase-0 diagnostic on the real 1080 and was to implement the justified Phase-1 GC fix in `vit_act_checkpoint.py`.
 
-**Difficulty:** Hard (diagnostic + the actual recompute fix). **Subagent:** implementer (sonnet/high for Fix A; opus/xhigh if the trace points to Fix B/C `context_fn`/`determinism_check`).
+**Outcome:** the Phase-0 diagnostic (recorded in `docs/testing/manual-gpu-pass-2026-05-24-gtx1080.md`, "Phase-0 trace + fix classification") proved the `CheckpointError` is a **structural save-count divergence INSIDE sam3's `multi_head_attention_forward` recompute** — a CPU int64 scalar materializing at a non-deterministic autograd-save position. Fix A (deterministic-autocast wrap), Fix A+ (SDPA-MATH pinning), and Fix B (owning the checkpoint with a pinned `context_fn`) were all attempted on real hardware and none resolve it; Fix C (`determinism_check="none"`) yields a corrupted backward (proving the divergence is not benign). The only resolution would edit `sam3/model/model_misc.py`, which is **FORBIDDEN** (sam3 is external; we monkeypatch only via `_patches/`).
 
-**Files:**
-- Modify: `src/custom_sam_peft/models/_patches/vit_act_checkpoint.py` (add the fix the trace justifies)
-- Modify: `src/custom_sam_peft/models/_patches/README.md` (update the patch row to reflect the landed fix)
-- Modify: `docs/testing/manual-gpu-pass-2026-05-24-gtx1080.md` (Phase-0 trace + classification)
+**No fix ships.** PR #127 closed unmerged; #89/#60 closed not-planned; `origin/main` already ships GC OFF (config default `false` + a no-op guard, templates `false`) — nothing to revert. The GC-free rebuild of this branch **removes** `vit_act_checkpoint.py` and `tests/gpu/test_grad_checkpointing.py`. The independent fp16 cross-attention `attn_mask` MHA-hook fix (Blocker 1 in the evidence doc) is **not** GC work and **landed** regardless.
 
-**Context (verified):** the merged `vit_act_checkpoint.py` is **flag-flip-only** — it sets `use_act_checkpoint=True` on each block (lines 48-56) and contains NO `torch.autocast` wrap. Its `apply(model, runtime)` already receives `runtime` ("unused by the flag-flip half but is part of the patch contract and is consumed by the deterministic-autocast wrap added in the Phase-1 fix task" — docstring lines 44-46). The seam exists. The fix taxonomy (Fix A/B/C) and Phase-0 protocol are defined in `docs/superpowers/specs/2026-05-23-gradient-checkpointing-t4-design.md` §3 and §5 Phase 0/1, and the Fix-A/B/C code skeletons are in that spec's plan (`2026-05-23-gradient-checkpointing-t4.md` Task 8). The static + dynamic entry points and the YAML/default flips are ALREADY merged (PR #127). The existing GPU verification test is `tests/gpu/test_grad_checkpointing.py` (loss-parity + VRAM-lower assertions, currently `@pytest.mark.gpu`).
-
-- [ ] **Step 1 (RUN ON THE 1080): Capture the recompute trace under float16.**
-
-The grad-ckpt config (`configs/examples/gpu_smoke_qlora.yaml`) already ships `gradient_checkpointing: true`. Run the QLoRA smoke with the checkpoint debugger on, in float16, on the 1080, and capture the `CheckpointError` (or its absence):
-
-```bash
-cd "$WT" && uv sync --extra gpu-pascal
-uv run python - <<'PY' 2>&1 | tee /tmp/phase0_1080_trace.txt
-import torch, torch.utils.checkpoint as ckpt
-ckpt.set_checkpoint_debug_enabled(True)
-from custom_sam_peft.config.loader import load_config
-from custom_sam_peft.train.runner import run_training
-cfg = load_config(
-    "configs/examples/gpu_smoke_qlora.yaml",
-    overrides=[
-        "data.train.annotations=tests/fixtures/tiny_coco/annotations.json",
-        "data.train.images=tests/fixtures/tiny_coco/images",
-        "data.val.annotations=tests/fixtures/tiny_coco/annotations.json",
-        "data.val.images=tests/fixtures/tiny_coco/images",
-        "model.dtype=float16",
-        "peft.qlora.compute_dtype=float16",
-        "train.epochs=1", "train.log_every=1",
-    ],
-)
-run_training(cfg)
-print("NO CHECKPOINT ERROR")
-PY
-```
-
-> Requires the real `models/sam3.1/sam3.1_multiplex.pt` checkpoint present (the `requires_checkpoint` gate). If the checkpoint is absent on the dev box, this is the one place the milestone may need the user to supply it; record that in the manual-pass doc. The `tiny_coco` fixture is the data-size policy default.
-
-- [ ] **Step 2 (RUN ON THE 1080): Classify the divergence (the branch).**
-
-From the per-op metadata table in the trace, find the first slot where forward and recompute disagree and classify into exactly one of (per the T4 spec §5 Phase 0):
-- **autocast-only** → **Fix A** (deterministic-autocast wrap) — the default expectation.
-- **needs RNG/full-context control** → **Fix B** (`context_fn` pinning autocast + RNG).
-- **benign non-differentiable divergence** → **Fix C** (`determinism_check="none"` + a GPU gradient-parity gate).
-- **No error at all on the 1080** → record this; the float16 single-dtype regime may already be metadata-consistent. If so, the "fix" is confirming no wrap is needed (or a minimal Fix A as insurance). Record the rationale.
-
-Record the divergent op, its forward-vs-recompute metadata, the classification, and the chosen fix tier in `docs/testing/manual-gpu-pass-2026-05-24-gtx1080.md`.
-
-- [ ] **Step 3: Implement the lowest fix tier the trace justifies.**
-
-Default (Fix A): add the deterministic-autocast wrap to `vit_act_checkpoint.apply`, wrapping each exposing block's `forward` so it runs under an explicit `torch.autocast(device_type=runtime.device.type, dtype=<runtime dtype, coerced via B-2 helper>, enabled=runtime.device.type == "cuda")`, guarded by the existing sentinel (idempotent, wrap exactly once). Keep `determinism_check="default"`. Use the Fix-A skeleton from `docs/superpowers/plans/2026-05-23-gradient-checkpointing-t4.md` Task 8 Step A1 (`_wrap_forward_with_autocast`), but with the dtype routed through `coerce_dtype_for_capability` so it is `float16` on the 1080.
-
-If the trace mandates **Fix B/C**, implement the corresponding skeleton from that plan's Task 8 Tier B/C, and (Fix C only) add the gradient-parity GPU assertion to `tests/gpu/test_grad_checkpointing.py`.
-
-Update the `vit_act_checkpoint.py` module docstring (lines 7-13) to state the wrap is now present, and the `models/_patches/README.md` row to match.
-
-- [ ] **Step 4: CPU regression — the wrap must be transparent on CPU.**
-
-```bash
-cd "$WT" && uv run pytest tests/unit/test_sam3_act_checkpoint_patch.py -v --no-cov
-```
-
-Expected: the existing flag-flip CPU tests still pass (on CPU `enabled=False`, so the wrap is a passthrough). Add a CPU transparency test if not present (forward output unchanged after `apply`).
-
-- [ ] **Step 5 (RUN ON THE 1080): Verify the fix holds (Phase-1 acceptance, feeds Phase 3).**
-
-```bash
-cd "$WT" && uv run pytest -m gpu_local tests/gpu/test_grad_checkpointing.py -v --no-cov 2>&1 | tee -a /tmp/phase1_1080.txt
-```
-
-> NOTE: `test_grad_checkpointing.py` currently runs BOTH LoRA and QLoRA smokes and asserts loss-parity + VRAM-lower. On the 1080, the LoRA path may not fit ~7 GB even with checkpointing; if so, the QLoRA path (the one #127 originally failed) is the load-bearing one. Capture which paths pass. If LoRA OOMs on the 1080, note it — it does not block the fix (LoRA on the 1080 is a separate VRAM question; the §4.3/§6.8 fallbacks govern training-fit). The merge gate is: **no `CheckpointError` on the QLoRA path on the 1080**.
-
-- [ ] **Step 6: Lint gate + commit.**
-
-```bash
-cd "$WT" && uv run ruff check . && uv run ruff format --check . && uv run mypy src && uv run pytest -q
-git add src/custom_sam_peft/models/_patches/vit_act_checkpoint.py src/custom_sam_peft/models/_patches/README.md docs/testing/manual-gpu-pass-2026-05-24-gtx1080.md tests/unit/test_sam3_act_checkpoint_patch.py
-[ -n "$(git diff --cached tests/gpu/test_grad_checkpointing.py)" ] && git add tests/gpu/test_grad_checkpointing.py
-git commit -m "fix(sam3): complete #127 grad-checkpointing fix on GTX 1080 (Phase-0-justified tier)"
-```
-
-**Completion criteria:** Phase-0 trace captured + classified in the manual-pass record; the justified fix lands; CPU flag-flip tests still green; on the 1080 the QLoRA grad-ckpt path raises no `CheckpointError`; lint gate green.
+There is **no implementer task here** — the diagnostic already ran (its evidence is the load-bearing justification for the abandonment) and the fix was found infeasible.
 
 ---
 
-## Task C-3: The 8 GB QLoRA recipe config + the `gpu_local` training smoke test
+## Task C-3: 8 GB QLoRA recipe + training smoke — DEFERRED to #137
 
-**Workstream C. Config + test authored on CPU; calibration in C-4 on the 1080.** Spec §6.3, §6.x.
+**Workstream C. DEFERRED — no work product on this branch.** The original C-3 created a calibrated ~7 GB QLoRA *training* recipe (`configs/examples/gpu_smoke_qlora_8gb.yaml`) and a `gpu_local`-tagged training smoke (`tests/gpu/test_real_train_qlora_8gb.py`).
 
-**Difficulty:** Medium. **Subagent:** implementer (sonnet/high).
+**Why deferred:** the recipe was **contingent on gradient checkpointing being the dominant activation-memory lever** (spec §6.x original). With GC abandoned (C-2), fitting a 1008² QLoRA *training* step (a full backward graph over the ViT-Det activations) within ~7 GB is an **open question**. `data.image_size` is **fixed at 1008** by SAM 3.1 (`sam3.py:749,753`; `schema.py:390`) and is not a lever, so the easy escape hatch is unavailable.
 
-**Files:**
-- Create: `configs/examples/gpu_smoke_qlora_8gb.yaml`
-- Create: `tests/gpu/test_real_train_qlora_8gb.py`
-- (Escape hatch, ONLY if C-4 calibration shows the §6.x levers do not fit) Modify: `src/custom_sam_peft/config/schema.py` Optimizer literal (line 97) + `src/custom_sam_peft/train/trainer.py::_build_optimizer` (line 49-63) to add `paged_adamw8bit`
+**Owner: issue #137** ("Investigate non-checkpointing approaches to fit QLoRA training in an 8 GB VRAM budget", OPEN). #137 owns the config, the training smoke, the calibration, and the GC-independent starting levers (NF4 + `use_double_quant`, `adamw8bit`, low LoRA rank/scope, `PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True`, `batch_size: 1` + grad-accum, the `paged_adamw8bit` escape hatch). **Neither `gpu_smoke_qlora_8gb.yaml` nor `test_real_train_qlora_8gb.py` is created on this branch.**
 
-**Context:** model the new YAML on the existing `configs/examples/gpu_smoke_qlora.yaml` (read at plan time). The VRAM levers (spec §6.x, impact order): grad-ckpt ON (#127, the dominant lever), NF4 + double-quant, `adamw8bit`, low LoRA rank + narrow scope, `PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True` (runner env, not config), `batch_size: 1` + grad-accum. `data.image_size` is **fixed at 1008** (NOT a lever). `adamw8bit` already exists (`Optimizer` literal line 97; `_build_optimizer` line 54-63). The new test reuses the `tiny_coco` fixture and mirrors `tests/gpu/test_real_train_qlora.py`'s assertion style (VRAM ceiling, finite loss).
-
-- [ ] **Step 1: Create the 8 GB recipe config (pre-calibration values; tuned in C-4).**
-
-Create `configs/examples/gpu_smoke_qlora_8gb.yaml`:
-
-```yaml
-run:
-  name: gpu-smoke-qlora-8gb
-  output_dir: ./runs
-  seed: 0
-
-model:
-  name: facebook/sam3.1
-  local_dir: models/sam3.1
-  checkpoint_file: sam3.1_multiplex.pt
-  gradient_checkpointing: true   # load-bearing (#127) — dominant activation-memory lever
-  dtype: float16                 # Pascal: bf16 emulated below CC 8.0
-
-data:
-  format: coco
-  train:
-    annotations: data/placeholder/annotations.json
-    images: data/placeholder/images
-  val:
-    annotations: data/placeholder/annotations.json
-    images: data/placeholder/images
-  prompt_mode: text
-  image_size: 1008               # FIXED by SAM 3.1; NOT a VRAM lever
-  augmentations:
-    preset: natural
-    intensity: medium
-
-peft:
-  method: qlora
-  r: 8                           # low rank (calibrated in C-4: 4 or 8)
-  scope: vision_decoder          # narrow scope (calibrated; may drop to attention-only)
-  qlora:
-    quant_type: nf4
-    compute_dtype: float16
-    use_double_quant: true       # second-level quantization (C-1)
-
-train:
-  epochs: 1
-  batch_size: 1                  # minimal batch
-  grad_accum_steps: 16
-  optimizer: adamw8bit           # 8-bit optimizer state
-  learning_rate: 5.0e-4
-  lr_schedule: constant
-  warmup_steps: 0
-  save_every: 50
-  log_every: 1
-  num_workers: 0
-  box_hint:
-    p_start: 1.0
-    p_end: 0.0
-    decay_steps: 25
-
-tracking:
-  backend: none
-```
-
-- [ ] **Step 2: Verify the config validates against `TrainConfig`.**
-
-```bash
-cd "$WT" && uv run python -c "from custom_sam_peft.config.loader import load_config; c=load_config('configs/examples/gpu_smoke_qlora_8gb.yaml'); print('valid', c.model.dtype, c.peft.qlora.use_double_quant)"
-```
-
-Expected: `valid float16 True`. (If `test_config_examples.py` parametrizes over `configs/examples/*.yaml`, this new file is auto-covered — run it: `uv run pytest tests/unit/test_config_examples.py -q --no-cov`.)
-
-- [ ] **Step 3: Author the `gpu_local` training smoke test (VRAM ceiling filled in C-4).**
-
-Create `tests/gpu/test_real_train_qlora_8gb.py`, tagged `gpu_local`:
-
-```python
-"""8 GB QLoRA training smoke on the GTX 1080 (gpu_local tier).
-
-Test VEHICLE for the real GPU code paths (bnb NF4 + double-quant, the #127
-grad-checkpointing fix, float16 dtype/device handling) — NOT a training/inference
-platform. Asserts: grad-ckpt completes without CheckpointError, first-step loss
-is finite, peak VRAM within the empirically-calibrated ceiling (C-4).
-
-If training cannot fit ~7 GB after every §6.x lever, this test is reclassified
-gpu_t4 (§6.8) and gpu_local retains forward/inspection tests instead.
-"""
-
-from __future__ import annotations
-
-from pathlib import Path
-
-import pytest
-import torch
-
-from custom_sam_peft.config.loader import load_config
-from custom_sam_peft.train.runner import run_training
-from tests.gpu.conftest import _bnb_available, _RecordingTracker
-
-pytestmark = [
-    pytest.mark.gpu_local,
-    pytest.mark.requires_compatible_gpu,
-    pytest.mark.requires_checkpoint,
-    pytest.mark.requires_bnb,
-]
-
-_CFG = Path(__file__).resolve().parents[2] / "configs" / "examples" / "gpu_smoke_qlora_8gb.yaml"
-
-# Empirically calibrated on the GTX 1080 (~7 GB effective). Set in C-4.
-VRAM_CEIL_GB = 7.0  # PLACEHOLDER — C-4 replaces with measured peak + small margin
-
-
-@pytest.mark.skipif(not _bnb_available(), reason="bitsandbytes not installed")
-def test_qlora_8gb_smoke_fits_and_trains(
-    tmp_path: Path, tiny_coco_dir: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    cfg = load_config(
-        _CFG,
-        overrides=[
-            f"data.train.annotations={tiny_coco_dir / 'annotations.json'}",
-            f"data.train.images={tiny_coco_dir / 'images'}",
-            f"data.val.annotations={tiny_coco_dir / 'annotations.json'}",
-            f"data.val.images={tiny_coco_dir / 'images'}",
-            f"run.output_dir={tmp_path}",
-            "train.log_every=1",
-        ],
-    )
-    tracker = _RecordingTracker()
-    monkeypatch.setattr("custom_sam_peft.train.runner.build_tracker", lambda *_a, **_k: tracker)
-    torch.cuda.reset_peak_memory_stats()
-    run_training(cfg)  # must complete without CheckpointError
-    peak_gb = torch.cuda.max_memory_allocated() / 1e9
-    losses = [s["loss/total"] for _, s in tracker.scalars if "loss/total" in s]
-    assert losses, "expected at least one logged loss/total"
-    assert torch.isfinite(torch.tensor(losses[0])), f"first-step loss not finite: {losses[0]}"
-    assert peak_gb <= VRAM_CEIL_GB, f"peak VRAM {peak_gb:.2f}GB exceeded ceiling {VRAM_CEIL_GB}GB"
-```
-
-- [ ] **Step 4: Confirm it collects-and-skips on CPU.**
-
-```bash
-cd "$WT" && uv run pytest tests/gpu/test_real_train_qlora_8gb.py --collect-only -q --no-cov
-```
-
-Expected: 1 test collected (it will skip on a CPU-only shell via `requires_compatible_gpu`; runs on the 1080 in C-4).
-
-- [ ] **Step 5: Lint gate + commit.**
-
-```bash
-cd "$WT" && uv run ruff check . && uv run ruff format --check . && uv run mypy src && uv run pytest -q
-git add configs/examples/gpu_smoke_qlora_8gb.yaml tests/gpu/test_real_train_qlora_8gb.py
-git commit -m "feat(gpu): add 8 GB QLoRA recipe + gpu_local training smoke (pre-calibration)"
-```
-
-**Completion criteria:** config validates; test is `gpu_local` + collects-and-skips on CPU; VRAM ceiling is a clearly-marked placeholder for C-4; lint gate green.
+> The GC-independent QLoRA improvement (`use_double_quant`) is **C-1**, which landed — it is not part of this deferral.
 
 ---
 
-## Task C-4 (RUN ON THE 1080): Phase 3 verification + 8 GB calibration
+## Task C-4: Phase-3 verification + 8 GB calibration — DEFERRED to #137
 
-**Workstream C. REQUIRES THE LIVE 1080.** Spec §6.4, §6.5, §6.8. Calibrate the ceiling on the real card; decide the §6.8 graceful-degradation branch if training does not fit ~7 GB.
-
-**Difficulty:** Hard (calibration + branch decision). **Subagent:** implementer (sonnet/high) — runs in-session, edits the config + ceiling, or invokes §6.8.
-
-**Files:**
-- Modify: `configs/examples/gpu_smoke_qlora_8gb.yaml` (bake calibrated rank/scope)
-- Modify: `tests/gpu/test_real_train_qlora_8gb.py` (set the measured VRAM ceiling; or reclassify `gpu_t4` per §6.8)
-- Modify: `docs/testing/manual-gpu-pass-2026-05-24-gtx1080.md` (Phase-3 calibration numbers)
-
-- [ ] **Step 1 (RUN ON THE 1080): Run the 8 GB smoke with the allocator env set; measure peak VRAM.**
-
-```bash
-cd "$WT" && uv sync --extra gpu-pascal
-PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True \
-  uv run pytest -m gpu_local tests/gpu/test_real_train_qlora_8gb.py -v --no-cov 2>&1 | tee /tmp/phase3_8gb.txt
-```
-
-- [ ] **Step 2 (RUN ON THE 1080): Calibrate.** Find the largest `(rank, scope)` that fits ~7 GB (try r=8/vision_decoder; if it OOMs, drop to r=4, then attention-only scope; last resort, the `paged_adamw8bit` escape hatch — only if every §6.x lever still OOMs). Verify (spec §6.4, §6.5):
-  - grad-ckpt ON → no `CheckpointError`;
-  - first-step loss parity ckpt-on vs ckpt-off (run both; recompute is numerically exact);
-  - peak VRAM lower with ckpt on than off;
-  - no NaN across the run (the loop's `nan_abort_after` does not trip).
-
-  Bake the calibrated `peft.r`/`peft.scope` into `gpu_smoke_qlora_8gb.yaml`; set `VRAM_CEIL_GB` in the test to the measured peak + a small margin (same philosophy as the T4 14/10 GB ceilings). `image_size` stays 1008.
-
-- [ ] **Step 3 (BRANCH — §6.8 graceful degradation):** If, after every §6.x lever including `paged_adamw8bit`, a training step still exceeds ~7 GB OR the fix proves infeasible on Pascal:
-  - Reclassify `test_real_train_qlora_8gb.py` from `gpu_local` → **`gpu_t4`** (change the `pytestmark`).
-  - Keep `gpu_local` **non-empty**: ensure at least one forward-only/inference test and the structural-inspection tests are classified `gpu_local` in D-1 (a single SAM 3.1 forward at 1008 in NF4/float16 carries no backward graph and likely fits ~7 GB).
-  - File the on-1080-training follow-up (deferred to T4). Record the OOM evidence in the manual-pass doc.
-
-- [ ] **Step 4: Record the calibration numbers** (peak VRAM on/off, final rank/scope, NaN-free confirmation, or the §6.8 reclassification) in `docs/testing/manual-gpu-pass-2026-05-24-gtx1080.md`.
-
-- [ ] **Step 5: Lint gate + commit.**
-
-```bash
-cd "$WT" && uv run ruff check . && uv run ruff format --check . && uv run mypy src && uv run pytest -q
-git add configs/examples/gpu_smoke_qlora_8gb.yaml tests/gpu/test_real_train_qlora_8gb.py docs/testing/manual-gpu-pass-2026-05-24-gtx1080.md
-git commit -m "test(gpu): calibrate 8 GB QLoRA ceiling on GTX 1080 (or reclassify gpu_t4 per §6.8)"
-```
-
-**Completion criteria:** the 8 GB recipe trains to completion within the calibrated ceiling on the 1080 with no NaN, loss moving, no `CheckpointError` — OR the §6.8 path is taken (test→`gpu_t4`, `gpu_local` retains forward/inspection tests), documented. Calibration numbers recorded; lint gate green.
+**Workstream C. DEFERRED — no work product on this branch.** The original C-4 ran the 8 GB smoke on the 1080, calibrated the VRAM ceiling, and (per the former spec §6.8) decided a graceful-degradation branch. Both the GC verification it depended on (C-2) and the recipe it calibrated (C-3) are out of scope — GC abandoned, training recipe deferred. **#137 owns the on-hardware calibration** (on a 1080 or, if the step exceeds ~7 GB, a `gpu_t4` runner). The `gpu_local` **training** tier is **PROVISIONAL pending #137**; until then `gpu_local` holds forward-only / inspection tests only (classified in D-1).
 
 ---
 
@@ -1419,17 +1155,18 @@ git commit -m "test(gpu): calibrate 8 GB QLoRA ceiling on GTX 1080 (or reclassif
 **Files:**
 - Create: `docs/testing/gpu-audit-2026-05-24.md` (or a dedicated section of `gpu-test-policy.md` — D-1 decides placement per §7.2)
 
-**Context — the 13 GPU-tagged test files today (verified; the "12 tests" in policy is stale):**
-- `tests/gpu/` (9): `test_calibrate_real.py`, `test_channel_adapter_gpu.py`, `test_grad_checkpointing.py`, `test_multiplex_vram.py`, `test_predict_nchannel_gpu.py`, `test_real_train_overfits.py`, `test_real_train_qlora.py`, `test_real_train_qlora_resume.py`, `test_run_end_to_end_gpu.py`.
+**Context — the 12 GC-free GPU-tagged test files (verified against the tree).** `test_grad_checkpointing.py` is **removed** by the GC-free rebuild and `test_real_train_qlora_8gb.py` was **never created** (deferred to #137), so neither is in the audit:
+- `tests/gpu/` (8): `test_calibrate_real.py`, `test_channel_adapter_gpu.py`, `test_multiplex_vram.py`, `test_predict_nchannel_gpu.py`, `test_real_train_overfits.py`, `test_real_train_qlora.py`, `test_real_train_qlora_resume.py`, `test_run_end_to_end_gpu.py`.
 - `tests/integration/` (3): `test_load_sam31_real.py`, `test_peft_lora_real.py`, `test_peft_qlora_real.py`.
 - `tests/predict/` (1): `test_gpu_predict.py`.
-- Plus the new `tests/gpu/test_real_train_qlora_8gb.py` from C-3 → **14**.
+
+> Verify the count before classifying: `grep -rl "mark\\.gpu" tests/ --include="*.py" | grep -v grad_checkpointing` → expect **12** files (the rebuild must already have dropped `test_grad_checkpointing.py`; if it is still present, the rebuild is incomplete — stop and resolve).
 
 Current markers (verified): `tests/integration/test_{load_sam31,peft_lora,peft_qlora}_real.py` carry `gpu_inspection`; everything in `tests/gpu/` and `tests/predict/test_gpu_predict.py` carry `gpu`.
 
 - [ ] **Step 1: Build the audit table.** For EVERY GPU-gated test (file::test granularity), record: assigned **tier** (`gpu_local`/`gpu_t4`/`gpu_xl`), a **keep-GPU / move-to-CPU / delete** decision + rationale, and (for move-to-CPU) the replacement mechanism (`TinySam3Stub` via the `stub_model` fixture — `tests/fixtures/tiny_sam3_stub.py`; synthetic tensors; or mocks).
 
-  Tier-classification rules (spec §3, §7.2): a test is `gpu_local` **only if it actually runs within ~7 GB on the real 1080** (calibrate, don't estimate). Forward-only / structural-inspection tests (the `tests/integration/*_real.py` inspection trio, channel-adapter/multiplex/predict introspection) are strong `gpu_local` candidates (no backward graph). Heavy training smokes (`test_real_train_overfits` LoRA, `test_real_train_qlora` 50-step) likely `gpu_t4` if they exceed ~7 GB. The 8 GB QLoRA smoke is `gpu_local` unless §6.8 reclassified it.
+  Tier-classification rules (spec §3, §7.2): a test is `gpu_local` **only if it actually runs within ~7 GB on the real 1080** (calibrate, don't estimate). Calibration runs **one test-file per process on the 1080** — the ~7 GB card OOMs when test files batch together. Forward-only / structural-inspection tests (the `tests/integration/*_real.py` inspection trio, channel-adapter/multiplex/predict introspection) are strong `gpu_local` candidates (no backward graph). Heavy training smokes (`test_real_train_overfits` LoRA, `test_real_train_qlora` 50-step) go to `gpu_t4` if they exceed ~7 GB. **The `gpu_local` training tier is PROVISIONAL pending #137** — with GC abandoned, there is no QLoRA training smoke in `gpu_local`; its baseline members are forward-only / inspection tests only.
 
 - [ ] **Step 2 (RUN ON THE 1080): Calibrate the `gpu_local` candidates.** For each candidate tier-`gpu_local` test, run it on the 1080 and confirm it fits ~7 GB:
 
@@ -1451,7 +1188,7 @@ cd "$WT" && uv run ruff format --check docs/ 2>/dev/null; git add docs/testing/g
 git commit -m "docs(testing): #117 GPU test tier-classification audit (calibrated on GTX 1080)"
 ```
 
-**Completion criteria:** all 14 GPU-tagged tests appear with tier + decision + rationale; `gpu_local` assignments calibrated on the 1080; move-to-CPU candidates have a concrete replacement plan.
+**Completion criteria:** all **12** GPU-tagged tests appear with tier + decision + rationale; `gpu_local` assignments calibrated on the 1080 (one file per process); the training tier noted PROVISIONAL pending #137; move-to-CPU candidates have a concrete replacement plan.
 
 ---
 
@@ -1520,14 +1257,14 @@ git commit -m "refactor(tests): #117 tier-marker swap + CPU moves; retire legacy
 **Difficulty:** Medium (notebook JSON + policy doc). **Subagent:** implementer (sonnet/high — notebook JSON warrants care).
 
 **Files:**
-- Modify: `notebooks/colab_gpu_tests.ipynb` (tier cells + cells/exclusions for the unreferenced tests + coverage-matrix markdown)
-- Modify: `docs/testing/gpu-test-policy.md` (three-tier taxonomy; CC 6.0 floor; float16-on-Pascal; refresh inventory 13→14, fix "12 tests" + stale per-tier counts)
+- Modify: `notebooks/colab_gpu_tests.ipynb` (tier cells + cells/exclusions for the unreferenced tests + coverage-matrix markdown; **drop the GC Phase-0/Phase-3 cells**)
+- Modify: `docs/testing/gpu-test-policy.md` (three-tier taxonomy; CC 6.0 floor; float16-on-Pascal; refresh inventory to the **12** GC-free tests, fix stale "12 tests" + per-tier counts)
 
-**Context:** the notebook (cells 9-13) runs tiers via `%%bash scripts/run_gpu_tests.sh` (currently `inspection`/`release`). Tests NOT referenced by any cell (spec §8.1): `test_real_train_qlora_resume.py`, `test_channel_adapter_gpu.py`, `test_multiplex_vram.py`, `test_predict_nchannel_gpu.py`, `test_calibrate_real.py`, `tests/predict/test_gpu_predict.py`. The notebook already has Phase-0/Phase-3 grad-ckpt cells (14-17) from the merged #127. Use the `NotebookEdit` tool (load its schema via ToolSearch) for cell edits, not hand-JSON.
+**Context:** the notebook (cells 9-13) runs tiers via `%%bash scripts/run_gpu_tests.sh` (currently `inspection`/`release`). Tests NOT referenced by any cell (spec §8.1): `test_real_train_qlora_resume.py`, `test_channel_adapter_gpu.py`, `test_multiplex_vram.py`, `test_predict_nchannel_gpu.py`, `test_calibrate_real.py`, `tests/predict/test_gpu_predict.py`. The notebook has Phase-0/Phase-3 grad-ckpt cells (14-17) from the merged #127 — **these reference abandoned GC work and must be DROPPED** (GC is abandoned; `test_grad_checkpointing.py` is removed). Use the `NotebookEdit` tool (load its schema via ToolSearch) for cell edits, not hand-JSON.
 
-- [ ] **Step 1: Update the tier-runner cells.** Change the `%%bash scripts/run_gpu_tests.sh inspection|release|all` invocations to `local|t4|xl`. Local cells are informational on Colab (the 1080 is not the Colab runtime) — annotate which tier each cell targets.
+- [ ] **Step 1: Update the tier-runner cells + drop the GC cells.** Change the `%%bash scripts/run_gpu_tests.sh inspection|release|all` invocations to `local|t4|xl`. Local cells are informational on Colab (the 1080 is not the Colab runtime) — annotate which tier each cell targets. **Delete the GC Phase-0/Phase-3 grad-ckpt cells (14-17)** — they reference the abandoned GC fix and the removed `test_grad_checkpointing.py`.
 
-- [ ] **Step 2: Add a coverage-matrix markdown cell** mapping every GPU test ↔ its notebook cell ↔ its hardware tier (from D-1). For each of the 6 unreferenced tests, EITHER add a cell that runs it under its tier OR document an intentional exclusion (with reason) in the matrix. No gaps: every test (including the new 8 GB test) is cell-referenced or explicitly excluded.
+- [ ] **Step 2: Add a coverage-matrix markdown cell** mapping every GPU test ↔ its notebook cell ↔ its hardware tier (from D-1), over the corrected **12-test** inventory. For each of the 6 unreferenced tests, EITHER add a cell that runs it under its tier OR document an intentional exclusion (with reason) in the matrix. No gaps: every one of the 12 tests is cell-referenced or explicitly excluded.
 
 - [ ] **Step 3: Confirm the notebook still parses.**
 
@@ -1538,7 +1275,7 @@ cd "$WT" && uv run --extra jupyter python -c "import nbformat; nbformat.read('no
 
 Expected: `notebook OK` (or `notebook JSON OK`).
 
-- [ ] **Step 4: Refresh `gpu-test-policy.md`.** State the CC 6.0 floor; float16-on-Pascal; replace/augment the cost tiers with the three-tier hardware taxonomy (cost/cadence demoted to guidance, not a selection mechanism); refresh the inventory to the 13→14 tests and correct the "12 tests" claim (line ~22) and the stale per-tier counts (the §2 tier definitions naming "nine ... in tests/integration/" and "release tier (3 tests)").
+- [ ] **Step 4: Refresh `gpu-test-policy.md`.** State the CC 6.0 floor; float16-on-Pascal; replace/augment the cost tiers with the three-tier hardware taxonomy (cost/cadence demoted to guidance, not a selection mechanism); refresh the inventory to the **12** GC-free tests and correct the stale "12 tests" claim (line ~22) and the stale per-tier counts (the §2 tier definitions naming "nine ... in tests/integration/" and "release tier (3 tests)"). Note that GC is abandoned (the policy must not reference grad-checkpointing GPU tests).
 
 - [ ] **Step 5: Commit.**
 
@@ -1547,7 +1284,7 @@ cd "$WT" && uv run ruff format --check . ; git add notebooks/colab_gpu_tests.ipy
 git commit -m "docs(#116): notebook tier cells + coverage matrix; refresh gpu-test-policy to 3-tier taxonomy"
 ```
 
-**Completion criteria:** coverage matrix covers all 14 GPU tests with no gaps (cell-referenced or excluded-with-reason); notebook selects by `{local,t4,xl}` and parses; `gpu-test-policy.md` states CC 6.0 floor + float16-on-Pascal + three-tier taxonomy + corrected inventory.
+**Completion criteria:** coverage matrix covers all **12** GPU tests with no gaps (cell-referenced or excluded-with-reason); the GC Phase-0/Phase-3 cells are dropped; notebook selects by `{local,t4,xl}` and parses; `gpu-test-policy.md` states CC 6.0 floor + float16-on-Pascal + three-tier taxonomy + the corrected 12-test inventory (no GC references).
 
 ---
 
@@ -1555,7 +1292,7 @@ git commit -m "docs(#116): notebook tier cells + coverage matrix; refresh gpu-te
 
 Documentation is updated **alongside the workstream that produces each fact** (not a separate pass), per spec §13:
 - `docs/testing/local-pascal-gpu-testing.md` — created in A-1, milestone evidence filled in A-2.
-- `docs/testing/manual-gpu-pass-2026-05-24-gtx1080.md` — created in A-2 (§4.3 milestone), extended in C-2 (Phase-0 trace + classification) and C-4 (Phase-3 calibration).
+- `docs/testing/manual-gpu-pass-2026-05-24-gtx1080.md` — §4.3 milestone (PASS) + the Phase-0 GC diagnostic that established the GC abandonment (already recorded). No Phase-3 GC calibration (deferred to #137).
 - `docs/testing/gpu-test-policy.md` — refreshed in E-1 (and the §4.3-fallback negative result, if invoked in A-2).
 - `docs/testing/gpu-audit-2026-05-24.md` — the #117 audit, created in D-1.
 
@@ -1583,7 +1320,7 @@ grep -nE -- '(^|[[:space:]])--deselect([[:space:]]|=)' scripts/run_gpu_tests.sh 
 PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True bash scripts/run_gpu_tests.sh local 2>&1 | tail -25
 ```
 
-Expected: no stray `--deselect`; the `gpu_local` tier runs green on the 1080 (the 8 GB smoke + any forward/inspection tests classified local). If §6.8 was invoked, `gpu_local` runs its forward/inspection members green (the 8 GB training smoke is `gpu_t4` and collect-and-skips on the 1080).
+Expected: no stray `--deselect`; the `gpu_local` tier runs green on the 1080 (its forward-only / inspection members classified local in D-1; one file per process to avoid OOM). There is no QLoRA training smoke in `gpu_local` — the training tier is PROVISIONAL pending #137.
 
 - [ ] **Step 3: Confirm the resolution contract is still intact** (cu130 default untouched):
 
@@ -1595,28 +1332,34 @@ cd "$WT" && uv sync && uv run python -c "import torch; print(torch.__version__)"
 
 ## Task F-2: Open the PR
 
-- [ ] Open a ready PR via `gh pr create --assignee @me --label <existing-or-new>` linking the spec (`docs/superpowers/specs/2026-05-24-min-gpu-testing-gtx1080-design.md`) and this plan. The PR body summarizes: the §4.3 milestone result (PASS/fallback), the Phase-0 fix classification, the Phase-3 calibration numbers (or §6.8 degradation), the #117 coverage before/after, and the three-tier taxonomy.
+- [ ] Open a ready PR via `gh pr create --assignee @me --label <existing-or-new>` linking the spec (`docs/superpowers/specs/2026-05-24-min-gpu-testing-gtx1080-design.md`) and this plan. The PR body summarizes: the §4.3 milestone result (PASS), the **GC abandonment** (Phase-0 diagnostic finding; PR #127 closed, #89/#60 not-planned; 8 GB training deferred to **#137**), the `use_double_quant` landing (C-1), the #117 coverage before/after over the corrected 12-test inventory, and the three-tier taxonomy with the `gpu_local` training tier marked PROVISIONAL pending #137.
 
 ## Task F-3: File the follow-up issues (FILE, do not implement) — spec §12
 
+- [ ] **#137 (already OPEN) — "Investigate non-checkpointing approaches to fit QLoRA training in an 8 GB VRAM budget."** Owns the deferred 8 GB QLoRA *training* recipe (`gpu_smoke_qlora_8gb.yaml`, the training smoke, on-1080 calibration) now that GC is abandoned. The `gpu_local` training tier is PROVISIONAL until #137 resolves. Cross-link it from the PR (no new issue needed — it exists).
 - [ ] **"Operationalize the `gpu_t4` tier on Colab"** — `gh issue create --assignee @me --label <label>`: the 14 GB / 10 GB release-ceiling gate + the **bf16 confirmation** that cannot run on the 8 GB Pascal card (Risk 4's deferred bf16-vs-float16 validation; the T4 ceilings this PR does not touch).
 - [ ] **`gpu_xl` tier population** — a follow-up (or a comment/cross-link) referencing the existing **#124** (cloud auto-provision) as the `gpu_xl` runner. The tier ships near-empty now, populated when #124 lands.
-- [ ] **If the §4.3 milestone FAILED in A-2** — file the Pascal-track-blocked follow-ups named in §4.3: "diagnose #127 grad-ckpt fix on Colab T4" and "`gpu_local` tier ships empty; populate when Pascal/other-local hardware is viable." Plus, if §6.8 was invoked in C-4, the "operationalize 8 GB QLoRA training on T4" follow-up.
+
+> The §4.3 milestone **PASSED**, so the Pascal-track-blocked fallback follow-ups are moot. The #127 GC fix (#89/#60) is **closed not-planned** — no follow-up; the diagnostic proved it unfixable without editing forbidden sam3 source (see the manual-pass evidence doc).
 
 ---
 
 ## Self-Review (run by the planner)
 
-**Spec coverage:**
+**Spec coverage (reduced — GC abandoned, 8 GB training deferred to #137):**
 - §3 / §3.1 (three-tier taxonomy, marker mechanics) → B-4.
-- §4 (Pascal env, §4.2 uv tables, §4.3 hard-gate milestone + fallback, §4.4 acceptance) → A-1, A-2.
+- §4 (Pascal env, §4.2 uv tables, §4.3 hard-gate milestone — PASSED, §4.4 acceptance) → A-1, A-2.
 - §5.1 (CC 6.0 floor + skip reasons) → B-1; §5.2 (dtype coercion, both seams) → B-2; §5.3 (preset fidelity) → B-3; §5.4 (tier wiring, runner, `tests/predict/`) → B-4.
-- §6.1 (Phase 0 diagnostic branch) + §6.2 (Phase 1 fix + `use_double_quant`) → C-2 + C-1; §6.3/§6.x (8 GB recipe + levers) → C-3; §6.4/§6.5 (Phase 3 + float16 stability) + §6.8 (graceful degradation) → C-4.
-- §7 (#117 audit + CPU moves + coverage delta) → D-1, D-2.
-- §8 (#116 notebook coverage matrix) → E-1.
+- §6.2 (`use_double_quant`) → **C-1** (landed). §6.1 (GC fix) → **C-2 ABANDONED** (Phase-0 diagnostic proved it infeasible without editing forbidden sam3 source). §6.3 (8 GB training recipe) → **C-3 DEFERRED to #137**; §6.4 (`gpu_local` training tier PROVISIONAL) + Phase-3 calibration → **C-4 DEFERRED to #137**. §6.5 (float16 stability) → no separate task (no GradScaler; carried by C-1/B-2). There is no longer a §6.x or §6.8 in the spec.
+- §7 (#117 audit + CPU moves + coverage delta, **12-test** inventory) → D-1, D-2.
+- §8 (#116 notebook coverage matrix, 12 tests, GC cells dropped) → E-1.
 - §9 (docs) → folded into A/C/D/E as noted in "Cross-cutting docs."
-- §12 (follow-ups) → F-3. §13 (sequencing A→gate→B→{C,D,E after D}) → workstream order + the A-2 hard gate.
+- §12 (follow-ups: #137, gpu_t4, gpu_xl/#124; GC fix closed not-planned) → F-3. §13 (sequencing A→gate→B→{C(C-1 only),D,E after D}) → workstream order + the A-2 hard gate.
 
-**Verified anchors (all confirmed against the tree at plan time):** GTX 1080 sm_61 live + cu130 torch; `vit_act_checkpoint.py` is flag-flip-only (no wrap merged); `tests/conftest.py` CC floor `(7,5)` + `gpu_inspection`-only registration; `presets.py` lines 83/120/142/295/335; `loop.py:186-192` `_autocast_ctx`; `qlora.py:139-155` direct `Linear4bit` + `_QLORA_META_VERSION=1`; `schema.py` `Dtype` already `["bfloat16","float16"]`, `Optimizer` literal line 97, `QLoRAConfig` line 486-488 (no `use_double_quant`), `image_size` 1008; `pyproject.toml` has NO `[tool.uv]` index/sources today + markers lines 126-132 + 80% gate line 133; `run_gpu_tests.sh` `inspection|release|all` omitting `tests/predict/`; 13 GPU test files (9 gpu/ + 3 integration/ + 1 predict/); `gpu-test-policy.md` "12 tests" stale; manual-pass doc + `tests/gpu/conftest.py` (`_RecordingTracker`/`_bnb_available`) patterns; `test_presets.py` label/round-trip tests do not assert the dtype token (safe to widen).
+**Task disposition after the amendment:** C-1 KEEP (landed); **C-2 ABANDONED** (no work product — the diagnostic that justified abandonment is already recorded in the manual-pass doc); **C-3 / C-4 DEFERRED to #137** (`gpu_smoke_qlora_8gb.yaml` and `test_real_train_qlora_8gb.py` never created). The GC-free rebuild removes `vit_act_checkpoint.py` and `tests/gpu/test_grad_checkpointing.py`.
 
-**Could not verify:** none — every file/symbol cited in the spec was located in the tree. One runtime unknown the plan flags explicitly (not a plan defect): whether the real `models/sam3.1/sam3.1_multiplex.pt` checkpoint is present on the dev box (C-2 Step 1 needs it; the plan notes the user may need to supply it).
+**Corrected GPU-test-file count (verified against the tree):** `grep -rl "mark\\.gpu" tests/ --include="*.py"` reports 13 today including `test_grad_checkpointing.py`; the GC-free rebuild drops `test_grad_checkpointing.py` and the 8 GB test was never added, leaving **12** GPU-tagged files (8 in `tests/gpu/` + 3 in `tests/integration/` + 1 in `tests/predict/`). The File map, D-1 inventory, and E-1 matrix all state 12.
+
+**Verified anchors (confirmed against the tree):** GTX 1080 sm_61 live + cu130 torch; `tests/conftest.py` CC floor `(7,5)` + `gpu_inspection`-only registration; `presets.py` lines 83/120/142/295/335; `loop.py:186-192` `_autocast_ctx`; `qlora.py:139-155` direct `Linear4bit` + `_QLORA_META_VERSION=1`; `schema.py` `Dtype` already `["bfloat16","float16"]`, `Optimizer` literal line 97, `QLoRAConfig` line 486-488; `pyproject.toml` markers + 80% gate; `run_gpu_tests.sh` `inspection|release|all` omitting `tests/predict/`; 12 GC-free GPU test files (8 gpu/ + 3 integration/ + 1 predict/); `test_presets.py` label/round-trip tests do not assert the dtype token (safe to widen).
+
+**Could not verify:** none material to the reduced scope.
