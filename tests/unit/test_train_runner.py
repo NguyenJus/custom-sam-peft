@@ -144,7 +144,8 @@ def test_run_training_writes_val_source_json_on_auto_split(
     )
 
     monkeypatch.setattr(
-        "custom_sam_peft.train.runner.load_sam31", lambda _m, **_kw: make_stub_wrapper(dim=8, working=True)
+        "custom_sam_peft.train.runner.load_sam31",
+        lambda _m, **_kw: make_stub_wrapper(dim=8, working=True),
     )
     from custom_sam_peft import train as _train_pkg  # noqa: F401
 

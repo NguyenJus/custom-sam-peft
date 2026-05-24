@@ -879,6 +879,7 @@ def test_image_level_leak_invariant_on_tiny_coco(tiny_coco_dir: Path) -> None:
 def test_coco_decode_image_uses_channels(tmp_path, monkeypatch):
     """COCODataset._decode_image routes through read_image with self._channels."""
     import numpy as np
+
     from custom_sam_peft.data import coco as coco_mod
 
     captured = {}

@@ -169,8 +169,9 @@ def test_channels_accepts_1_and_16_rejects_0_and_17():
     from pydantic import ValidationError as PydanticValidationError
 
     _make_data(channels=1, channel_semantics="grayscale")
-    _make_data(channels=16, channel_semantics="freeform",
-               normalize={"mean": [0.5] * 16, "std": [0.2] * 16})
+    _make_data(
+        channels=16, channel_semantics="freeform", normalize={"mean": [0.5] * 16, "std": [0.2] * 16}
+    )
     with pytest.raises(PydanticValidationError):
         _make_data(channels=0)
     with pytest.raises(PydanticValidationError):
@@ -216,7 +217,8 @@ def test_freeform_without_explicit_stats_rejected():
 
 def test_freeform_with_explicit_stats_ok():
     d = _make_data(
-        channels=5, channel_semantics="freeform",
+        channels=5,
+        channel_semantics="freeform",
         normalize={"mean": [0.1, 0.2, 0.3, 0.4, 0.5], "std": [0.1] * 5},
     )
     assert len(d.normalize.mean) == 5
@@ -225,12 +227,14 @@ def test_freeform_with_explicit_stats_ok():
 def test_normalize_length_must_match_channels():
     with pytest.raises(ValueError, match=r"normalize\.mean has 3 entries but .*channels=5"):
         _make_data(
-            channels=5, channel_semantics="freeform",
+            channels=5,
+            channel_semantics="freeform",
             normalize={"mean": [0.1, 0.2, 0.3], "std": [0.1, 0.2, 0.3]},
         )
 
 
 def test_explicit_normalize_wrong_length_rejected_for_named_semantic():
     with pytest.raises(ValueError, match=r"data\.normalize\.mean has 4 entries but .*channels=3"):
-        _make_data(channels=3, channel_semantics="rgb",
-                   normalize={"mean": [0.1] * 4, "std": [0.2] * 4})
+        _make_data(
+            channels=3, channel_semantics="rgb", normalize={"mean": [0.1] * 4, "std": [0.2] * 4}
+        )

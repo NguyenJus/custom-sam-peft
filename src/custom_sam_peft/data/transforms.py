@@ -48,6 +48,7 @@ def _warn_freeform_augs_once() -> None:
         )
         _warned_freeform = True
 
+
 # Known-good (mean, std) per HF model name. Used as the offline fallback
 # AND as a divergence sentinel against AutoImageProcessor on path 1.
 #

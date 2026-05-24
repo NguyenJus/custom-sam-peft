@@ -449,10 +449,13 @@ def test_C9_processor_consulted_only_for_rgb(monkeypatch: pytest.MonkeyPatch) ->
         raise AssertionError("AutoImageProcessor must NOT be consulted for non-rgb")
 
     import transformers
-    monkeypatch.setattr(transformers, "AutoImageProcessor",
-                        type("X", (), {"from_pretrained": staticmethod(boom)}))
+
+    monkeypatch.setattr(
+        transformers, "AutoImageProcessor", type("X", (), {"from_pretrained": staticmethod(boom)})
+    )
     mean, _std = resolve_normalization(
-        "facebook/sam3.1", NormalizeConfig(mean=[0.1, 0.2, 0.3, 0.4], std=[0.1] * 4),
+        "facebook/sam3.1",
+        NormalizeConfig(mean=[0.1, 0.2, 0.3, 0.4], std=[0.1] * 4),
         channel_semantics="rgba",
     )
     assert mean == [0.1, 0.2, 0.3, 0.4]
@@ -461,9 +464,14 @@ def test_C9_processor_consulted_only_for_rgb(monkeypatch: pytest.MonkeyPatch) ->
 
 def test_C7_rgb_full_family() -> None:
     aug = AugmentationsConfig.model_validate({"preset": "natural", "intensity": "aggressive"})
-    c = build_train_transforms(aug, 64, model_name="facebook/sam3.1",
-                               normalize=NormalizeConfig(),
-                               channel_semantics="rgb", channels=3)
+    c = build_train_transforms(
+        aug,
+        64,
+        model_name="facebook/sam3.1",
+        normalize=NormalizeConfig(),
+        channel_semantics="rgb",
+        channels=3,
+    )
     names = _names(c)
     assert "ColorJitter" in names
 
@@ -473,9 +481,14 @@ def test_C7_rgba_substitutes_brightness_contrast_no_colorjitter(
 ) -> None:
     aug = AugmentationsConfig.model_validate({"preset": "natural", "intensity": "aggressive"})
     with caplog.at_level(logging.WARNING, logger="custom_sam_peft.data.transforms"):
-        c = build_train_transforms(aug, 64, model_name="facebook/sam3.1",
-                                   normalize=NormalizeConfig(mean=[0.1] * 4, std=[0.1] * 4),
-                                   channel_semantics="rgba", channels=4)
+        c = build_train_transforms(
+            aug,
+            64,
+            model_name="facebook/sam3.1",
+            normalize=NormalizeConfig(mean=[0.1] * 4, std=[0.1] * 4),
+            channel_semantics="rgba",
+            channels=4,
+        )
     names = _names(c)
     # Substitution assertions (spec §8.2).
     assert "RandomBrightnessContrast" in names
@@ -496,12 +509,22 @@ def test_C7_freeform_geometry_only_even_with_knobs(
 ) -> None:
     aug = AugmentationsConfig.model_validate({"preset": "natural", "intensity": "aggressive"})
     with caplog.at_level(logging.WARNING, logger="custom_sam_peft.data.transforms"):
-        c = build_train_transforms(aug, 64, model_name="facebook/sam3.1",
-                                   normalize=NormalizeConfig(mean=[0.1] * 5, std=[0.1] * 5),
-                                   channel_semantics="freeform", channels=5)
+        c = build_train_transforms(
+            aug,
+            64,
+            model_name="facebook/sam3.1",
+            normalize=NormalizeConfig(mean=[0.1] * 5, std=[0.1] * 5),
+            channel_semantics="freeform",
+            channels=5,
+        )
     names = _names(c)
-    for forbidden in ("ColorJitter", "StainJitter", "GaussNoise",
-                      "GaussianBlur", "RandomBrightnessContrast"):
+    for forbidden in (
+        "ColorJitter",
+        "StainJitter",
+        "GaussNoise",
+        "GaussianBlur",
+        "RandomBrightnessContrast",
+    ):
         assert forbidden not in names
     # One-time freeform warning must fire (spec §12 C7 / spec §8.3).
     warn_messages = [r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING]
@@ -518,12 +541,8 @@ def test_max_pixel_value_forwarded_to_normalize() -> None:
     aug = AugmentationsConfig(preset="none")
 
     builders = [
-        lambda: build_eval_transforms(
-            64, model_name="facebook/sam3.1", normalize=norm
-        ),
-        lambda: build_train_transforms(
-            aug, 64, model_name="facebook/sam3.1", normalize=norm
-        ),
+        lambda: build_eval_transforms(64, model_name="facebook/sam3.1", normalize=norm),
+        lambda: build_train_transforms(aug, 64, model_name="facebook/sam3.1", normalize=norm),
     ]
     for build in builders:
         c = build()

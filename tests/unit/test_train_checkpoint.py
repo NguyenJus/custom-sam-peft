@@ -383,8 +383,10 @@ def test_load_channel_adapter_warns_on_orphaned_file(
     # Must warn and NOT raise.
     warning_records = [r for r in caplog.records if r.levelno == logging.WARNING]
     assert warning_records, "Expected a WARNING log when channel_adapter.pt exists but ca is None"
-    assert "channel_adapter.pt" in warning_records[0].getMessage() or \
-           C._CHANNEL_ADAPTER_FILENAME in warning_records[0].getMessage()
+    assert (
+        "channel_adapter.pt" in warning_records[0].getMessage()
+        or C._CHANNEL_ADAPTER_FILENAME in warning_records[0].getMessage()
+    )
 
 
 def test_load_channel_adapter_silent_noop_when_file_absent_and_ca_none(

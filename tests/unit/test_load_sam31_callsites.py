@@ -33,9 +33,7 @@ def _make_cfg(tmp_path: Path) -> MagicMock:
     return cfg
 
 
-def test_train_runner_passes_data_channels(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_train_runner_passes_data_channels(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """run_training threads cfg.data.channels / cfg.data.channel_semantics into load_sam31."""
     import custom_sam_peft.train.runner as R
 

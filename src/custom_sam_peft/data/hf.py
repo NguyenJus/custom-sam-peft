@@ -420,12 +420,18 @@ def build_hf(
     if pipeline == "train":
         aug = AugmentationsConfig.model_validate(cfg.get("augmentations", {}))
         transforms = build_train_transforms(
-            aug, image_size, model_name=model_name, normalize=normalize,
-            channel_semantics=channel_semantics, channels=int(cfg.get("channels", 3)),
+            aug,
+            image_size,
+            model_name=model_name,
+            normalize=normalize,
+            channel_semantics=channel_semantics,
+            channels=int(cfg.get("channels", 3)),
         )
     else:
         transforms = build_eval_transforms(
-            image_size, model_name=model_name, normalize=normalize,
+            image_size,
+            model_name=model_name,
+            normalize=normalize,
             channel_semantics=channel_semantics,
         )
     return HFDataset(

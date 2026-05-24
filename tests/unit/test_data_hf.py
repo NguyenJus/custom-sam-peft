@@ -552,6 +552,7 @@ def test_hfdataset_image_id_uses_underlying_row_index(monkeypatch: pytest.Monkey
 def test_hf_decode_image_array_branch_channel_aware():
     """HFDataset._decode_image coerces an array row to self._channels."""
     import numpy as np
+
     from custom_sam_peft.data import hf as hf_mod
 
     obj = hf_mod.HFDataset.__new__(hf_mod.HFDataset)

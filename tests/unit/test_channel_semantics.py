@@ -60,9 +60,17 @@ def test_profile_is_frozen():
 
 @pytest.mark.parametrize(
     "semantic,channel,ok",
-    [("rgb", 3, True), ("rgb", 4, False), ("rgba", 4, True), ("rgba", 3, False),
-     ("grayscale", 1, True), ("grayscale", 3, False), ("freeform", 1, True),
-     ("freeform", 16, True), ("freeform", 17, False)],
+    [
+        ("rgb", 3, True),
+        ("rgb", 4, False),
+        ("rgba", 4, True),
+        ("rgba", 3, False),
+        ("grayscale", 1, True),
+        ("grayscale", 3, False),
+        ("freeform", 1, True),
+        ("freeform", 16, True),
+        ("freeform", 17, False),
+    ],
 )
 def test_allowed_channels_membership(semantic, channel, ok):
     assert (channel in CHANNEL_SEMANTICS[semantic].allowed_channels) is ok

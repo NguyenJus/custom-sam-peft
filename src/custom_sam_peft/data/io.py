@@ -46,9 +46,7 @@ def _coerce_to_channels(obj: object, channels: int) -> np.ndarray[Any, Any]:
         hwc = np.transpose(arr, (1, 2, 0))
     else:
         found = arr.shape[2] if arr.shape[2] <= arr.shape[0] else arr.shape[0]
-        raise ValueError(
-            f"read_image: array has {found} channels but data.channels={channels}"
-        )
+        raise ValueError(f"read_image: array has {found} channels but data.channels={channels}")
     return np.ascontiguousarray(hwc)
 
 

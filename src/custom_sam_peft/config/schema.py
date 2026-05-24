@@ -434,9 +434,7 @@ class DataConfig(_Strict):
         # (a) semantic <-> channels match
         if self.channels not in profile.allowed_channels:
             allowed = sorted(profile.allowed_channels)
-            allowed_str = (
-                f"{allowed[0]}" if len(allowed) == 1 else f"{allowed[0]}..{allowed[-1]}"
-            )
+            allowed_str = f"{allowed[0]}" if len(allowed) == 1 else f"{allowed[0]}..{allowed[-1]}"
             raise ValueError(
                 f"data.channel_semantics={self.channel_semantics!r} requires "
                 f"data.channels={allowed_str}, but data.channels={self.channels}."
