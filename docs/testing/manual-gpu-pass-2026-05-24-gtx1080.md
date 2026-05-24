@@ -12,23 +12,33 @@ driver 582.28, WSL2.
 
 Provision the Pascal env first (cu118 wheel + bitsandbytes):
 
-    uv sync --extra gpu-pascal
+```bash
+uv sync --extra gpu-pascal
+```
 
 Then run the gpu_local test tier:
 
-    bash scripts/run_gpu_tests.sh local
+```bash
+bash scripts/run_gpu_tests.sh local
+```
 
 Or directly:
 
-    uv run --extra gpu-pascal pytest -m gpu_local tests/gpu/ tests/integration/ tests/predict/
+```bash
+uv run --extra gpu-pascal pytest -m gpu_local tests/gpu/ tests/integration/ tests/predict/
+```
 
 Single proofs (as used in this milestone):
 
-    uv run --extra gpu-pascal python <proof-script.py>
+```bash
+uv run --extra gpu-pascal python <proof-script.py>
+```
 
 Restore the dev env when done:
 
-    uv sync --extra dev
+```bash
+uv sync --extra dev
+```
 
 ## Test checklist
 
@@ -55,7 +65,7 @@ resolves `torch 2.7.1+cu118` + `bitsandbytes 0.49.2`, isolated from the default
 `2.12.0+cu130`. Resolution facts:
 
 | env | torch | bnb |
-|---|---|---|
+| --- | --- | --- |
 | bare `uv sync` / `uv sync --extra dev` | 2.12.0+cu130 (NO sm_61 cubin) | — |
 | `uv sync --extra gpu-pascal` | **2.7.1+cu118** (sm_60..sm_90 + PTX) | **0.49.2** |
 
@@ -85,7 +95,7 @@ PY
 
 Verbatim output:
 
-```
+```text
 torch 2.7.1+cu118
 device NVIDIA GeForce GTX 1080 cc (6, 1)
 matmul max abs err 0.00011444091796875
@@ -116,7 +126,7 @@ PY
 
 Verbatim output:
 
-```
+```text
 bnb 0.49.2
 out (4, 128) torch.float16 finite True
 BNB LINEAR4BIT OK
@@ -146,7 +156,7 @@ Repro: QLoRA fast-smoke (`configs/examples/gpu_smoke_qlora.yaml`,
 Before this work, the float16 QLoRA forward crashed inside SAM3's decoder
 cross-attention (`sam3/model/decoder.py:166` → `model_misc.py:397`) with:
 
-```
+```text
 RuntimeError: invalid dtype for bias - should match query's dtype
 ```
 
@@ -176,7 +186,7 @@ With Blocker 1 fixed, the QLoRA grad-ckpt backward raises the deferred #127
 `multi_head_attention_forward`), reached from the decoder cross-attention
 (`decoder.py:166`). The metadata table (flag-flip only, fp16):
 
-```
+```text
 position 1: saved [256,512]      fp16   → recomp [256,256]    fp16
 position 2: saved [2,8,5184,34]  fp16   → recomp [256,256]    fp16
 position 3: saved [2,8,34,32]    fp16   → recomp [2,8,5184,34] fp16
@@ -253,7 +263,7 @@ be misleading).
 
 #### `tests/gpu/test_grad_checkpointing.py` on the 1080 — both paths FAILED
 
-```
+```text
 FAILED tests/gpu/test_grad_checkpointing.py::test_lora_no_checkpoint_error_and_vram_lower
 FAILED tests/gpu/test_grad_checkpointing.py::test_qlora_no_checkpoint_error_and_vram_lower
 ================== 2 failed, 4 warnings in 2233.48s (0:37:13) ==================

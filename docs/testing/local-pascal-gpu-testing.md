@@ -9,14 +9,18 @@ bitsandbytes 4-bit, the gradient-checkpointing fix, float16 dtype handling).
 
 The default `uv sync` installs cu130 torch (no sm_61 cubin). To reach the 1080:
 
-    uv sync --extra gpu-pascal   # cu118 torch (sm_60..sm_90 + PTX) + bitsandbytes
+```bash
+uv sync --extra gpu-pascal   # cu118 torch (sm_60..sm_90 + PTX) + bitsandbytes
+```
 
 This extra is isolated via a uv explicit index + extra-scoped source routing, so
 the bare `uv sync` and `uv sync --extra dev` paths are unchanged (still cu130).
 
 ## Run the gpu_local tier
 
-    bash scripts/run_gpu_tests.sh local
+```bash
+bash scripts/run_gpu_tests.sh local
+```
 
 Or directly: `uv run pytest -m gpu_local tests/gpu/ tests/integration/ tests/predict/`.
 
@@ -36,13 +40,13 @@ Recorded 2026-05-24 by task A-2. Full session log:
 **Resolution facts (Task A-1, commit eb523ab):**
 
 | env | torch | bitsandbytes |
-|---|---|---|
+| --- | --- | --- |
 | bare `uv sync` / `uv sync --extra dev` | 2.12.0+cu130 (no sm_61 cubin) | — |
 | `uv sync --extra gpu-pascal` | **2.7.1+cu118** (sm_60..sm_90 + PTX) | **0.49.2** |
 
 ### Proof 1 — sm_61 CUDA matmul via PTX JIT (PASS)
 
-```
+```text
 torch 2.7.1+cu118
 device NVIDIA GeForce GTX 1080 cc (6, 1)
 matmul max abs err 0.00011444091796875
@@ -54,7 +58,7 @@ cu118 torch reaches sm_61 via PTX JIT compiled from `compute_60`. No
 
 ### Proof 2 — bnb Linear4bit NF4 forward on sm_61, float16 (PASS)
 
-```
+```text
 bnb 0.49.2
 out (4, 128) torch.float16 finite True
 BNB LINEAR4BIT OK

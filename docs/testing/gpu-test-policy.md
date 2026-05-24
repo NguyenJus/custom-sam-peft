@@ -114,8 +114,7 @@ trigger `ModuleNotFoundError: No module named 'custom_sam_peft'`.
 
 ## 3. Inventory
 
-**12 GPU-tagged test files, 27 GPU-gated tests: 17 gpu_local + 10 gpu_t4
-+ 0 gpu_xl.**
+**12 GPU-tagged test files, 27 GPU-gated tests: 17 gpu_local, 10 gpu_t4, 0 gpu_xl.**
 
 The authoritative per-test breakdown — including per-test evidence from a
 live GTX 1080 run — is in

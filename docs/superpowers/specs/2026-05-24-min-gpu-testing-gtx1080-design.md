@@ -11,7 +11,7 @@
 > and its plan `docs/superpowers/plans/2026-05-23-gradient-checkpointing-t4.md`;
 > `docs/superpowers/specs/2026-05-22-algo-vram-preset-design.md`;
 > `docs/superpowers/specs/2026-05-19-gpu-test-policy-design.md`.
-
+>
 > **Gradient checkpointing is abandoned (scope-defining amendment).** This spec
 > was originally built on "complete PR #127's deferred GC fix on the 1080." The
 > Phase-0 diagnostic on the real GTX 1080 (recorded in
