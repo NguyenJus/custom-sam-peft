@@ -21,6 +21,32 @@ from custom_sam_peft.config.schema import AugmentationsConfig, NormalizeConfig
 
 _LOG = logging.getLogger(__name__)
 
+# One-time warning guards for augmentation regime warnings (spec §8.2, §8.3).
+_warned_non3ch_photometric = False
+_warned_freeform = False
+
+
+def _warn_non3ch_photometric_augs_once() -> None:
+    global _warned_non3ch_photometric
+    if not _warned_non3ch_photometric:
+        _LOG.warning(
+            "Non-3ch photometric semantic: saturation/hue and StainJitter are "
+            "skipped (RGB-3ch-only); brightness/contrast substituted via "
+            "A.RandomBrightnessContrast. (spec §8.2)"
+        )
+        _warned_non3ch_photometric = True
+
+
+def _warn_freeform_augs_once() -> None:
+    global _warned_freeform
+    if not _warned_freeform:
+        _LOG.warning(
+            "freeform (non-photometric) semantic: A.ColorJitter, StainJitter, "
+            "A.GaussNoise, and A.GaussianBlur are disabled (they assume photometric "
+            "continuity); only geometric augmentations apply. (spec §8.3)"
+        )
+        _warned_freeform = True
+
 # Known-good (mean, std) per HF model name. Used as the offline fallback
 # AND as a divergence sentinel against AutoImageProcessor on path 1.
 #
@@ -82,7 +108,7 @@ NormalizationPath = Literal["processor", "table-fallback", "config-fallback"]
 
 
 def resolve_normalization_with_path(
-    model_name: str, fallback: NormalizeConfig
+    model_name: str, fallback: NormalizeConfig, *, channel_semantics: str = "rgb"
 ) -> tuple[list[float], list[float], NormalizationPath]:
     """Three-step resolution of (mean, std) plus the path that fired.
 
@@ -91,10 +117,17 @@ def resolve_normalization_with_path(
       - "table-fallback":  processor unavailable, model in KNOWN_PROCESSOR_STATS
       - "config-fallback": processor unavailable, no table entry, user fallback
 
+    For non-rgb channel semantics, AutoImageProcessor is skipped entirely and
+    the config-provided mean/std are returned directly (spec §7.1).
+
     Logging is unchanged from the legacy ``resolve_normalization``: WARN on
     fallback paths, WARN on table-vs-processor divergence, INFO on the happy
     path.
     """
+    # spec §7.1: processor + table are RGB-specific; skip for non-rgb semantics.
+    if channel_semantics != "rgb":
+        return list(fallback.mean), list(fallback.std), "config-fallback"
+
     import transformers
 
     table_entry = KNOWN_PROCESSOR_STATS.get(model_name)
@@ -145,14 +178,16 @@ def resolve_normalization_with_path(
 
 
 def resolve_normalization(
-    model_name: str, fallback: NormalizeConfig
+    model_name: str, fallback: NormalizeConfig, *, channel_semantics: str = "rgb"
 ) -> tuple[list[float], list[float]]:
     """2-tuple wrapper kept for build_eval_transforms / build_train_transforms.
 
     Equivalent to dropping the path code from
     :func:`resolve_normalization_with_path`.
     """
-    mean, std, _path = resolve_normalization_with_path(model_name, fallback)
+    mean, std, _path = resolve_normalization_with_path(
+        model_name, fallback, channel_semantics=channel_semantics
+    )
     return mean, std
 
 
@@ -161,13 +196,14 @@ def build_eval_transforms(
     *,
     model_name: str,
     normalize: NormalizeConfig,
+    channel_semantics: str = "rgb",
 ) -> A.Compose:
     """Deterministic eval pipeline: longest-edge resize -> top-left pad -> normalize -> ToTensor."""
     import albumentations as A
     import cv2
     from albumentations.pytorch import ToTensorV2
 
-    mean, std = resolve_normalization(model_name, normalize)
+    mean, std = resolve_normalization(model_name, normalize, channel_semantics=channel_semantics)
     return A.Compose(
         [
             A.LongestMaxSize(max_size=image_size, interpolation=cv2.INTER_LINEAR),
@@ -179,7 +215,7 @@ def build_eval_transforms(
                 fill_mask=0,
                 position="top_left",
             ),
-            A.Normalize(mean=mean, std=std, max_pixel_value=255.0),
+            A.Normalize(mean=mean, std=std, max_pixel_value=normalize.max_pixel_value),
             ToTensorV2(),
         ],
         bbox_params=A.BboxParams(
@@ -197,21 +233,37 @@ def build_train_transforms(
     *,
     model_name: str,
     normalize: NormalizeConfig,
+    channel_semantics: str = "rgb",
+    channels: int = 3,
 ) -> A.Compose:
     """Train pipeline: resolved presets → ordered Albumentations step list.
 
     See spec §8 for the canonical step ordering. The Albumentations objects
     appear in the compose iff the corresponding knob is enabled / > 0;
     knob = 0/False omits the step entirely (not p=0).
+
+    Three augmentation regimes (spec §8):
+      - rgb (photometric, 3ch): full family — ColorJitter (sat/hue), StainJitter,
+        GaussNoise, GaussianBlur, geometry.
+      - rgba / grayscale (photometric, non-3ch): brightness/contrast substituted
+        for ColorJitter; GaussNoise + GaussianBlur kept; sat/hue + StainJitter
+        skipped.
+      - freeform (non-photometric): geometry only — all four value-altering augs
+        disabled even when knobs > 0.
     """
     import albumentations as A
     import cv2
     from albumentations.pytorch import ToTensorV2
 
     from custom_sam_peft.data.aug_presets import resolve
+    from custom_sam_peft.data.channel_semantics import CHANNEL_SEMANTICS
+
+    profile = CHANNEL_SEMANTICS[channel_semantics]
+    photometric = profile.photometric
+    rgb_like = photometric and channels == 3
 
     resolved = resolve(aug_cfg)
-    mean, std = resolve_normalization(model_name, normalize)
+    mean, std = resolve_normalization(model_name, normalize, channel_semantics=channel_semantics)
     steps: list[object] = [
         A.LongestMaxSize(max_size=image_size, interpolation=cv2.INTER_LINEAR),
         A.PadIfNeeded(
@@ -223,6 +275,7 @@ def build_train_transforms(
             position="top_left",
         ),
     ]
+    # Geometric steps — identical across all three regimes.
     if resolved.hflip:
         steps.append(A.HorizontalFlip(p=0.5))
     if resolved.vflip:
@@ -239,41 +292,78 @@ def build_train_transforms(
                 fill_mask=0,
             )
         )
-    if resolved.gauss_noise > 0.0:
-        # Albumentations 2.x replaced var_limit (variance, value-space) with std_range
-        # (std as a fraction of max_pixel_value=255 here, since GaussNoise runs pre-Normalize).
-        # We preserve the spec's per-knob scaling intent (magnitude * _GAUSS_NOISE_MAX_VAR) but
-        # the numeric semantics differ: a knob of 1 caps std at ~12.75 pixel units, not the
-        # sub-LSB variance the literal 1.x reading of the spec would produce. This is the
-        # behaviorally meaningful interpretation.
-        steps.append(
-            A.GaussNoise(
-                std_range=(0.0, resolved.gauss_noise * _GAUSS_NOISE_MAX_VAR),
-                p=0.5,
+
+    # Value-altering steps — gated by regime.
+    if not photometric:
+        # freeform: geometry only — hard-disable all value-altering augs.
+        _warn_freeform_augs_once()
+    elif rgb_like:
+        # rgb: full family unchanged.
+        if resolved.gauss_noise > 0.0:
+            # Albumentations 2.x replaced var_limit (variance, value-space) with std_range
+            # (std as a fraction of max_pixel_value=255 here, since GaussNoise runs pre-Normalize).
+            # We preserve the spec's per-knob scaling intent (magnitude * _GAUSS_NOISE_MAX_VAR) but
+            # the numeric semantics differ: a knob of 1 caps std at ~12.75 pixel units, not the
+            # sub-LSB variance the literal 1.x reading of the spec would produce. This is the
+            # behaviorally meaningful interpretation.
+            steps.append(
+                A.GaussNoise(
+                    std_range=(0.0, resolved.gauss_noise * _GAUSS_NOISE_MAX_VAR),
+                    p=0.5,
+                )
             )
-        )
-    if resolved.blur > 0.0:
-        steps.append(
-            A.GaussianBlur(
-                blur_limit=(3, 7),
-                sigma_limit=(0.0, resolved.blur * _GAUSS_BLUR_MAX_SIGMA),
-                p=0.5,
+        if resolved.blur > 0.0:
+            steps.append(
+                A.GaussianBlur(
+                    blur_limit=(3, 7),
+                    sigma_limit=(0.0, resolved.blur * _GAUSS_BLUR_MAX_SIGMA),
+                    p=0.5,
+                )
             )
-        )
-    if resolved.color_jitter > 0.0:
-        v = resolved.color_jitter
-        steps.append(
-            A.ColorJitter(
-                brightness=v,
-                contrast=v,
-                saturation=v,
-                hue=v * 0.5,
-                p=0.5,
+        if resolved.color_jitter > 0.0:
+            v = resolved.color_jitter
+            steps.append(
+                A.ColorJitter(
+                    brightness=v,
+                    contrast=v,
+                    saturation=v,
+                    hue=v * 0.5,
+                    p=0.5,
+                )
             )
-        )
-    if resolved.stain_jitter > 0.0:
-        steps.append(StainJitter(sigma=resolved.stain_jitter, p=0.5))
-    steps.append(A.Normalize(mean=mean, std=std, max_pixel_value=255.0))
+        if resolved.stain_jitter > 0.0:
+            steps.append(StainJitter(sigma=resolved.stain_jitter, p=0.5))
+    else:
+        # rgba / grayscale: substitute ColorJitter → RandomBrightnessContrast;
+        # keep GaussNoise + GaussianBlur; skip sat/hue + StainJitter.
+        _warn_non3ch_photometric_augs_once()
+        if resolved.gauss_noise > 0.0:
+            steps.append(
+                A.GaussNoise(
+                    std_range=(0.0, resolved.gauss_noise * _GAUSS_NOISE_MAX_VAR),
+                    p=0.5,
+                )
+            )
+        if resolved.blur > 0.0:
+            steps.append(
+                A.GaussianBlur(
+                    blur_limit=(3, 7),
+                    sigma_limit=(0.0, resolved.blur * _GAUSS_BLUR_MAX_SIGMA),
+                    p=0.5,
+                )
+            )
+        if resolved.color_jitter > 0.0:
+            v = resolved.color_jitter
+            steps.append(
+                A.RandomBrightnessContrast(
+                    brightness_limit=v,
+                    contrast_limit=v,
+                    brightness_by_max=False,
+                    p=0.5,
+                )
+            )
+
+    steps.append(A.Normalize(mean=mean, std=std, max_pixel_value=normalize.max_pixel_value))
     steps.append(ToTensorV2())
     return A.Compose(
         steps,

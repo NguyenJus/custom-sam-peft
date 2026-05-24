@@ -416,13 +416,18 @@ def build_hf(
     normalize = NormalizeConfig.model_validate(cfg.get("normalize", {}))
     text_prompt = TextPromptConfig.model_validate(cfg.get("text_prompt", {}))
     field_map = HFFieldMap.model_validate(hf_cfg.get("field_map", {}))
+    channel_semantics: str = str(cfg.get("channel_semantics", "rgb"))
     if pipeline == "train":
         aug = AugmentationsConfig.model_validate(cfg.get("augmentations", {}))
         transforms = build_train_transforms(
-            aug, image_size, model_name=model_name, normalize=normalize
+            aug, image_size, model_name=model_name, normalize=normalize,
+            channel_semantics=channel_semantics, channels=int(cfg.get("channels", 3)),
         )
     else:
-        transforms = build_eval_transforms(image_size, model_name=model_name, normalize=normalize)
+        transforms = build_eval_transforms(
+            image_size, model_name=model_name, normalize=normalize,
+            channel_semantics=channel_semantics,
+        )
     return HFDataset(
         name=hf_cfg["name"],
         split=split,

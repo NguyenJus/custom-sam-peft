@@ -416,3 +416,61 @@ def test_pipeline_step_names_match_aug_presets_helper() -> None:
         cfg, image_size=32, model_name="facebook/sam3.1", normalize=NormalizeConfig()
     )
     assert _class_names(compose) == _STEP_NAMES_FOR(resolve(cfg))
+
+
+# ---------------------------------------------------------------------------
+# Task 12: processor-skip (C9) + three augmentation regimes (C7) + max_pixel_value
+# ---------------------------------------------------------------------------
+
+
+def _names(compose: object) -> list[str]:
+    return [type(s).__name__ for s in compose.transforms]  # type: ignore[attr-defined]
+
+
+def test_C9_processor_consulted_only_for_rgb(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls = {"n": 0}
+
+    def boom(*a: object, **k: object) -> None:
+        calls["n"] += 1
+        raise AssertionError("AutoImageProcessor must NOT be consulted for non-rgb")
+
+    import transformers
+    monkeypatch.setattr(transformers, "AutoImageProcessor",
+                        type("X", (), {"from_pretrained": staticmethod(boom)}))
+    mean, std = resolve_normalization(
+        "facebook/sam3.1", NormalizeConfig(mean=[0.1, 0.2, 0.3, 0.4], std=[0.1] * 4),
+        channel_semantics="rgba",
+    )
+    assert mean == [0.1, 0.2, 0.3, 0.4]
+    assert calls["n"] == 0
+
+
+def test_C7_rgb_full_family() -> None:
+    aug = AugmentationsConfig.model_validate({"preset": "natural", "intensity": "aggressive"})
+    c = build_train_transforms(aug, 64, model_name="facebook/sam3.1",
+                               normalize=NormalizeConfig(),
+                               channel_semantics="rgb", channels=3)
+    names = _names(c)
+    assert "ColorJitter" in names
+
+
+def test_C7_rgba_substitutes_brightness_contrast_no_colorjitter() -> None:
+    aug = AugmentationsConfig.model_validate({"preset": "natural", "intensity": "aggressive"})
+    c = build_train_transforms(aug, 64, model_name="facebook/sam3.1",
+                               normalize=NormalizeConfig(mean=[0.1] * 4, std=[0.1] * 4),
+                               channel_semantics="rgba", channels=4)
+    names = _names(c)
+    assert "RandomBrightnessContrast" in names
+    assert "ColorJitter" not in names
+    assert "StainJitter" not in names
+
+
+def test_C7_freeform_geometry_only_even_with_knobs() -> None:
+    aug = AugmentationsConfig.model_validate({"preset": "natural", "intensity": "aggressive"})
+    c = build_train_transforms(aug, 64, model_name="facebook/sam3.1",
+                               normalize=NormalizeConfig(mean=[0.1] * 5, std=[0.1] * 5),
+                               channel_semantics="freeform", channels=5)
+    names = _names(c)
+    for forbidden in ("ColorJitter", "StainJitter", "GaussNoise",
+                      "GaussianBlur", "RandomBrightnessContrast"):
+        assert forbidden not in names

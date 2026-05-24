@@ -383,13 +383,18 @@ def build_coco(
     image_size = int(cfg["image_size"])
     normalize = NormalizeConfig.model_validate(cfg.get("normalize", {}))
     text_prompt = TextPromptConfig.model_validate(cfg.get("text_prompt", {}))
+    channel_semantics: str = str(cfg.get("channel_semantics", "rgb"))
     if pipeline == "train":
         aug = AugmentationsConfig.model_validate(cfg.get("augmentations", {}))
         transforms = build_train_transforms(
-            aug, image_size, model_name=model_name, normalize=normalize
+            aug, image_size, model_name=model_name, normalize=normalize,
+            channel_semantics=channel_semantics, channels=int(cfg.get("channels", 3)),
         )
     else:
-        transforms = build_eval_transforms(image_size, model_name=model_name, normalize=normalize)
+        transforms = build_eval_transforms(
+            image_size, model_name=model_name, normalize=normalize,
+            channel_semantics=channel_semantics,
+        )
     return COCODataset(
         annotations=split["annotations"],
         images=split["images"],
