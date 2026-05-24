@@ -41,12 +41,9 @@ wandb/
 
 data/*
 models/*
-logs/*
-# Added by code-review-graph
-.code-review-graph/
 .claude/*
-CLAUDE.md
 .mcp.json
+.serena/
 
 # Local git worktrees
 .worktrees/
