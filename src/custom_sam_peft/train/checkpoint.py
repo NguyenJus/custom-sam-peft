@@ -33,6 +33,36 @@ _LOG = logging.getLogger(__name__)
 _TRAINING_STATE_FILENAME = "training_state.pt"
 _QLORA_META_FILENAME = "custom_sam_peft_qlora.json"
 _FORMAT_VERSION = 1
+_CHANNEL_ADAPTER_FILENAME = "channel_adapter.pt"
+
+
+def _wrapper_channel_adapter(wrapper: Sam3Wrapper) -> Any:
+    """Return the channel adapter module if present, else None.
+
+    The adapter lives on _Sam3ImageAdapter (== wrapper.model), a sibling of the raw
+    SAM model — outside the PeftModel, so PEFT save/load never touches it (spec §5.1).
+    """
+    return getattr(wrapper.model, "channel_adapter", None)
+
+
+def _save_channel_adapter(wrapper: Sam3Wrapper, adapter_dir: Path) -> None:
+    """Dump the channel adapter's state_dict to channel_adapter.pt. No-op when None (rgb)."""
+    ca = _wrapper_channel_adapter(wrapper)
+    if ca is None:
+        return
+    adapter_dir.mkdir(parents=True, exist_ok=True)
+    torch.save(ca.state_dict(), adapter_dir / _CHANNEL_ADAPTER_FILENAME)
+
+
+def _load_channel_adapter(wrapper: Sam3Wrapper, adapter_dir: Path) -> None:
+    """Restore the channel adapter from channel_adapter.pt. No-op when the file is
+    absent (rgb) or the wrapper has no adapter."""
+    ca = _wrapper_channel_adapter(wrapper)
+    path = adapter_dir / _CHANNEL_ADAPTER_FILENAME
+    if ca is None or not path.exists():
+        return
+    state = torch.load(path, weights_only=True, map_location="cpu")
+    ca.load_state_dict(state)
 
 
 @dataclass(frozen=True)
@@ -71,13 +101,17 @@ def save_adapter(wrapper: Sam3Wrapper, path: Path) -> None:
         save_qlora(wrapper, path)
     else:
         save_lora(wrapper, path)
+    _save_channel_adapter(wrapper, path)
 
 
 def load_adapter(wrapper: Sam3Wrapper, path: Path) -> Sam3Wrapper:
     """LoRA vs QLoRA dispatch by custom_sam_peft_qlora.json presence at `path`."""
     if (path / _QLORA_META_FILENAME).exists():
-        return load_qlora(wrapper, path)
-    return load_lora(wrapper, path)
+        load_qlora(wrapper, path)
+    else:
+        load_lora(wrapper, path)
+    _load_channel_adapter(wrapper, path)
+    return wrapper
 
 
 def save_merged(wrapper: Sam3Wrapper, path: Path) -> None:
@@ -85,12 +119,19 @@ def save_merged(wrapper: Sam3Wrapper, path: Path) -> None:
 
     For QLoRA wrappers, merge_lora dequantizes the 4-bit base to
     compute_dtype during folding; the resulting module is no longer 4-bit.
+
+    The merged state_dict (wrapper.model.state_dict()) already contains
+    channel_adapter.* keys because channel_adapter is a submodule of
+    wrapper.model (_Sam3ImageAdapter). The extra channel_adapter.pt written
+    here is symmetry with the save_adapter path so callers can reload the
+    channel adapter without needing the full merged model file.
     """
     if wrapper.peft_model is None:
         raise RuntimeError("save_merged: wrapper has no PeftModel; call apply_lora/qlora first")
     merge_lora(wrapper)
     path.mkdir(parents=True, exist_ok=True)
     torch.save(wrapper.model.state_dict(), path / "pytorch_model.bin")
+    _save_channel_adapter(wrapper, path)
 
 
 def save_full_state(
