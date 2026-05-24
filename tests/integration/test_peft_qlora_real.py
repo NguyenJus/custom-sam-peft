@@ -110,6 +110,21 @@ def test_save_load_qlora_roundtrip(tmp_path: Path) -> None:
     }
     save_qlora(w1, tmp_path)
 
+    # Forward-output parity setup: capture w1's outputs BEFORE deleting it.
+    # Host RAM (~12 GB) cannot hold w1 and w2 simultaneously, so only the small
+    # CPU output tensors survive the del. Mirrors evaluator.py's call pattern:
+    #   wrapper(images, prompts, box_hints=None) -> dict[str, Tensor]
+    # with keys pred_logits / pred_boxes / pred_masks / presence_logit_dec.
+    from custom_sam_peft.data.base import TextPrompts
+
+    torch.manual_seed(0)
+    w1.eval()
+    _images = torch.zeros(1, 3, 1024, 1024, device="cuda", dtype=torch.float32)
+    _prompts = [TextPrompts(classes=["object"])]
+    with torch.no_grad():
+        _out_w1 = w1(_images, _prompts, box_hints=None)
+    _out_w1_cpu = {k: v.detach().cpu() for k, v in _out_w1.items() if isinstance(v, torch.Tensor)}
+
     # Free w1 before constructing w2 — Colab host RAM (~12 GB) cannot hold
     # two sam31 instances simultaneously, and this test was SIGKILLed (exit
     # 137) before the fix.
@@ -126,6 +141,26 @@ def test_save_load_qlora_roundtrip(tmp_path: Path) -> None:
     assert set(sd1) == set(sd2), f"LoRA param names differ: {set(sd1) ^ set(sd2)}"
     for name, t1 in sd1.items():
         assert torch.allclose(t1.to(sd2[name].device), sd2[name], atol=0.0), f"mismatch on {name}"
+
+    # Forward-output parity: w2 must produce the same outputs as w1 on the same input.
+    # atol=1e-4, rtol=1e-4 accommodates 4-bit dequant rounding after the
+    # quantize→save→reload cycle; verify/adjust on the GTX 1080 (sm_61, float16
+    # compute_dtype) at GPU-tier run.
+    torch.manual_seed(0)
+    w2.eval()
+    _images2 = torch.zeros(1, 3, 1024, 1024, device="cuda", dtype=torch.float32)
+    _prompts2 = [TextPrompts(classes=["object"])]
+    with torch.no_grad():
+        _out_w2 = w2(_images2, _prompts2, box_hints=None)
+    _out_w2_cpu = {k: v.detach().cpu() for k, v in _out_w2.items() if isinstance(v, torch.Tensor)}
+    assert set(_out_w1_cpu) == set(_out_w2_cpu), (
+        f"forward output keys differ: {set(_out_w1_cpu) ^ set(_out_w2_cpu)}"
+    )
+    for _k in _out_w1_cpu:
+        assert torch.allclose(_out_w1_cpu[_k], _out_w2_cpu[_k], atol=1e-4, rtol=1e-4), (
+            f"forward output mismatch on '{_k}' after load_qlora roundtrip; "
+            f"max abs diff={(_out_w1_cpu[_k] - _out_w2_cpu[_k]).abs().max().item():.6f}"
+        )
 
 
 @pytest.mark.skipif(not _bnb_available(), reason="bitsandbytes not installed")

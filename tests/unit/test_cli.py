@@ -189,8 +189,13 @@ train: {epochs: 1}
     assert captured["save_predictions"] is False
 
 
-def test_eval_command_rejects_qlora_method(tmp_path: Path) -> None:
-    """custom_sam_peft eval --checkpoint errors when peft.method is not lora."""
+def test_eval_command_accepts_qlora_method(tmp_path: Path) -> None:
+    """custom_sam_peft eval --checkpoint no longer rejects peft.method=qlora.
+
+    The command will fail for other reasons (no real checkpoint on disk), but the
+    failure must NOT be the old 'only LoRA adapters' guard. QLoRA is now accepted
+    and dispatched via QloraAdapter.load_from_disk.
+    """
     from custom_sam_peft.cli.main import app
 
     cfg_path = tmp_path / "cfg.yaml"
@@ -211,5 +216,6 @@ train: {epochs: 1}
         app,
         ["eval", "--config", str(cfg_path), "--checkpoint", str(tmp_path)],
     )
-    assert result.exit_code != 0
-    assert "qlora" in _plain(result.output).lower() or "only lora" in _plain(result.output).lower()
+    # Must NOT contain the old rejection message.
+    assert "checkpoint loading currently supports only LoRA" not in _plain(result.output)
+    assert "only lora" not in _plain(result.output).lower()

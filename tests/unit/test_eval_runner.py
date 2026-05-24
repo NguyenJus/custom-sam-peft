@@ -32,16 +32,84 @@ def _make_cfg(
     return cfg
 
 
-def test_run_eval_rejects_non_lora_peft(tmp_path: Path) -> None:
+def test_run_eval_dispatches_qlora_from_disk(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """run_eval with peft_method='qlora' and model=None must dispatch via load_from_disk
+    (calling load_qlora) and call _load_channel_adapter, without raising."""
     cfg = _make_cfg(peft_method="qlora")
-    with pytest.raises(ValueError, match="lora"):
-        run_eval(cfg, checkpoint=tmp_path, split="val")
+
+    qlora_loader_calls: list[tuple[object, object]] = []
+    channel_adapter_calls: list[tuple[object, object]] = []
+
+    def fake_load_qlora(wrapper: object, dirpath: object) -> object:
+        qlora_loader_calls.append((wrapper, dirpath))
+        return wrapper
+
+    def fake_load_channel_adapter(wrapper: object, dirpath: object) -> None:
+        channel_adapter_calls.append((wrapper, dirpath))
+
+    monkeypatch.setattr("custom_sam_peft.peft_adapters.qlora.load_qlora", fake_load_qlora)
+    monkeypatch.setattr(
+        "custom_sam_peft.eval.runner._load_channel_adapter", fake_load_channel_adapter
+    )
+    monkeypatch.setattr(
+        "custom_sam_peft.eval.runner.lookup",
+        lambda *_a, **_kw: lambda *a, **kw: MagicMock(__len__=lambda self: 0, class_names=[]),
+    )
+    monkeypatch.setattr("custom_sam_peft.eval.runner.load_sam31", lambda _m, **_kw: MagicMock())
+    fake_report = MagicMock()
+    monkeypatch.setattr(
+        "custom_sam_peft.eval.runner.Evaluator",
+        lambda _cfg: MagicMock(evaluate_and_save=MagicMock(return_value=fake_report)),
+    )
+
+    result = run_eval(cfg, checkpoint=tmp_path, split="val", output_dir=tmp_path)
+
+    assert result is fake_report
+    assert len(qlora_loader_calls) == 1, "load_qlora must be called exactly once"
+    assert len(channel_adapter_calls) == 1, "_load_channel_adapter must be called exactly once"
+    _, dirpath = qlora_loader_calls[0]
+    assert dirpath == tmp_path
 
 
 def test_run_eval_rejects_test_split_when_data_test_none(tmp_path: Path) -> None:
     cfg = _make_cfg(has_test=False)
     with pytest.raises(ValueError, match=r"data\.test"):
         run_eval(cfg, checkpoint=tmp_path, split="test")
+
+
+def test_run_eval_lora_calls_load_channel_adapter(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """run_eval with peft_method='lora' and model=None must call _load_channel_adapter."""
+    cfg = _make_cfg(peft_method="lora")
+    channel_adapter_calls: list[tuple[object, object]] = []
+
+    monkeypatch.setattr(
+        "custom_sam_peft.peft_adapters.lora.load_lora",
+        lambda *_a, **_kw: None,
+    )
+    monkeypatch.setattr(
+        "custom_sam_peft.eval.runner._load_channel_adapter",
+        lambda wrapper, dirpath: channel_adapter_calls.append((wrapper, dirpath)),
+    )
+    monkeypatch.setattr(
+        "custom_sam_peft.eval.runner.lookup",
+        lambda *_a, **_kw: lambda *a, **kw: MagicMock(__len__=lambda self: 0, class_names=[]),
+    )
+    monkeypatch.setattr("custom_sam_peft.eval.runner.load_sam31", lambda _m, **_kw: MagicMock())
+    fake_report = MagicMock()
+    monkeypatch.setattr(
+        "custom_sam_peft.eval.runner.Evaluator",
+        lambda _cfg: MagicMock(evaluate_and_save=MagicMock(return_value=fake_report)),
+    )
+
+    run_eval(cfg, checkpoint=tmp_path, split="val", output_dir=tmp_path)
+
+    assert len(channel_adapter_calls) == 1, "_load_channel_adapter must be called exactly once"
+    _, dirpath = channel_adapter_calls[0]
+    assert dirpath == tmp_path
 
 
 def test_run_eval_dispatches_dataset_via_registry(
@@ -60,7 +128,7 @@ def test_run_eval_dispatches_dataset_via_registry(
 
     monkeypatch.setattr("custom_sam_peft.eval.runner.lookup", fake_lookup)
     monkeypatch.setattr("custom_sam_peft.eval.runner.load_sam31", lambda _m, **_kw: MagicMock())
-    monkeypatch.setattr("custom_sam_peft.eval.runner.load_lora", lambda *_a, **_kw: None)
+    monkeypatch.setattr("custom_sam_peft.peft_adapters.lora.load_lora", lambda *_a, **_kw: None)
 
     fake_report = MagicMock()
     monkeypatch.setattr(
@@ -98,7 +166,7 @@ def test_run_eval_accepts_prebuilt_val_dataset_and_model(
 
     monkeypatch.setattr("custom_sam_peft.eval.runner.lookup", _forbidden_lookup)
     monkeypatch.setattr("custom_sam_peft.eval.runner.load_sam31", _forbidden_load)
-    monkeypatch.setattr("custom_sam_peft.eval.runner.load_lora", lambda *_a, **_kw: None)
+    monkeypatch.setattr("custom_sam_peft.peft_adapters.lora.load_lora", lambda *_a, **_kw: None)
 
     fake_report = MagicMock(overall={"mAP": 0.5}, per_class={}, n_images=3, n_predictions=3)
     captured: dict[str, object] = {}
@@ -156,7 +224,7 @@ def test_run_eval_return_per_example_iou_default_false_unchanged(
         lambda *_a, **_kw: lambda *a, **kw: _empty_ds,
     )
     monkeypatch.setattr("custom_sam_peft.eval.runner.load_sam31", lambda _m, **_kw: MagicMock())
-    monkeypatch.setattr("custom_sam_peft.eval.runner.load_lora", lambda *_a, **_kw: None)
+    monkeypatch.setattr("custom_sam_peft.peft_adapters.lora.load_lora", lambda *_a, **_kw: None)
 
     fake_report = MagicMock(overall={"mAP": 0.0})
     monkeypatch.setattr(
@@ -227,7 +295,7 @@ def test_run_eval_auto_split_threads_resolved_image_ids_to_builder(
         lambda kind, name: fake_builder,
     )
     monkeypatch.setattr("custom_sam_peft.eval.runner.load_sam31", lambda _m, **_kw: MagicMock())
-    monkeypatch.setattr("custom_sam_peft.eval.runner.load_lora", lambda *_a, **_kw: None)
+    monkeypatch.setattr("custom_sam_peft.peft_adapters.lora.load_lora", lambda *_a, **_kw: None)
     fake_report = MagicMock(overall={"mAP": 0.5}, per_class={}, n_images=2, n_predictions=2)
     monkeypatch.setattr(
         "custom_sam_peft.eval.runner.Evaluator",
@@ -287,7 +355,7 @@ def test_run_eval_resolves_auto_via_decide_eval_batch_size(
         lambda *_a, **_kw: lambda *a, **kw: MagicMock(__len__=lambda self: 0, class_names=[]),
     )
     monkeypatch.setattr("custom_sam_peft.eval.runner.load_sam31", lambda _m, **_kw: MagicMock())
-    monkeypatch.setattr("custom_sam_peft.eval.runner.load_lora", lambda *_a, **_kw: None)
+    monkeypatch.setattr("custom_sam_peft.peft_adapters.lora.load_lora", lambda *_a, **_kw: None)
     monkeypatch.setattr("custom_sam_peft.eval.runner.Evaluator", _fake_evaluator)
 
     run_eval(cfg, checkpoint=tmp_path, split="val", output_dir=tmp_path)
@@ -325,7 +393,7 @@ def test_run_eval_cpu_fallback_logs_info(
         lambda *_a, **_kw: lambda *a, **kw: MagicMock(__len__=lambda self: 0, class_names=[]),
     )
     monkeypatch.setattr("custom_sam_peft.eval.runner.load_sam31", lambda _m, **_kw: MagicMock())
-    monkeypatch.setattr("custom_sam_peft.eval.runner.load_lora", lambda *_a, **_kw: None)
+    monkeypatch.setattr("custom_sam_peft.peft_adapters.lora.load_lora", lambda *_a, **_kw: None)
     monkeypatch.setattr(
         "custom_sam_peft.eval.runner.Evaluator",
         lambda _cfg: MagicMock(evaluate_and_save=MagicMock(return_value=MagicMock())),

@@ -50,6 +50,10 @@ def test_peft_method_protocol_declares_supports_checkpoint_load_from_disk() -> N
     assert hasattr(PEFTMethod, "supports_checkpoint_load_from_disk")
 
 
+def test_peft_method_protocol_declares_load_from_disk() -> None:
+    assert hasattr(PEFTMethod, "load_from_disk")
+
+
 # ---------------------------------------------------------------------------
 # 2. LoraAdapter
 # ---------------------------------------------------------------------------
@@ -86,6 +90,24 @@ def test_lora_adapter_detect_method_raises_on_qlora_marker(tmp_path: Path) -> No
         LoraAdapter().detect_method_from_checkpoint(tmp_path)
 
 
+def test_lora_adapter_load_from_disk_delegates_to_load_lora(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """LoraAdapter.load_from_disk must call load_lora with (wrapper, dirpath) and return its result."""  # noqa: E501
+    from unittest.mock import MagicMock
+
+    fake_wrapper = MagicMock()
+    sentinel = MagicMock()
+
+    monkeypatch.setattr(
+        "custom_sam_peft.peft_adapters.lora.load_lora",
+        lambda w, d: sentinel if w is fake_wrapper and d == tmp_path else None,
+    )
+
+    result = LoraAdapter().load_from_disk(fake_wrapper, tmp_path)
+    assert result is sentinel
+
+
 # ---------------------------------------------------------------------------
 # 3. QloraAdapter
 # ---------------------------------------------------------------------------
@@ -103,8 +125,8 @@ def test_qlora_adapter_disables_outer_autocast_true() -> None:
     assert QloraAdapter().disables_outer_autocast() is True
 
 
-def test_qlora_adapter_supports_checkpoint_load_from_disk_false() -> None:
-    assert QloraAdapter().supports_checkpoint_load_from_disk() is False
+def test_qlora_adapter_supports_checkpoint_load_from_disk_true() -> None:
+    assert QloraAdapter().supports_checkpoint_load_from_disk() is True
 
 
 def test_qlora_adapter_detect_method_with_meta_file(tmp_path: Path) -> None:
@@ -120,6 +142,24 @@ def test_qlora_adapter_detect_method_raises_without_meta_file(tmp_path: Path) ->
 
     with pytest.raises(CheckpointError):
         QloraAdapter().detect_method_from_checkpoint(tmp_path)
+
+
+def test_qlora_adapter_load_from_disk_delegates_to_load_qlora(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """QloraAdapter.load_from_disk must call load_qlora with (wrapper, dirpath) and return its result."""  # noqa: E501
+    from unittest.mock import MagicMock
+
+    fake_wrapper = MagicMock()
+    sentinel = MagicMock()
+
+    monkeypatch.setattr(
+        "custom_sam_peft.peft_adapters.qlora.load_qlora",
+        lambda w, d: sentinel if w is fake_wrapper and d == tmp_path else None,
+    )
+
+    result = QloraAdapter().load_from_disk(fake_wrapper, tmp_path)
+    assert result is sentinel
 
 
 # ---------------------------------------------------------------------------
@@ -192,5 +232,5 @@ def test_eval_runner_does_not_branch_on_method_name() -> None:
     src = inspect.getsource(runner)
     assert ".method ==" not in src, (
         "eval/runner.py must not branch on cfg.peft.method; "
-        "use peft_method_instance.supports_checkpoint_load_from_disk() instead."
+        "use peft_method_instance.load_from_disk() instead."
     )

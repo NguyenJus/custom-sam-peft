@@ -39,6 +39,10 @@ class StubPEFTMethod:
         """Return True — stub has no checkpoint state to load."""
         return True
 
+    def load_from_disk(self, wrapper: Sam3Wrapper, dirpath: Path) -> Sam3Wrapper:
+        """Return the wrapper untouched — stub has no checkpoint state to load."""
+        return wrapper
+
 
 # ---------------------------------------------------------------------------
 # Factory function — registered side effect fires on import
