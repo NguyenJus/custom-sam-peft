@@ -25,6 +25,11 @@ activations for the backward; freezing the trunk frees them. The cost is
   memory-efficient kernel) does **not** move the peak (zero delta), so attention-
   matrix materialization is not the binding constraint.
 
+Plain (non-quantized) **LoRA** is even lighter — a fp16-base decoder-only step
+peaks at **3.58 GB** (§9), because on a base this small the 4-bit quantization's
+load and on-the-fly dequant transients cost more than the fp16 weights they
+replace.
+
 This **informs** (does not change here) the `gpu_t4` classification of
 `configs/examples/gpu_smoke_qlora.yaml` (currently `VRAM_CEIL_GB = 10.0`).
 A `gpu_local` test + tier reclassification is a follow-up (see §8).
@@ -253,3 +258,36 @@ This **informs** (does not change here) the `gpu_t4` classification. Follow-ups
 - CPU-offload feasibility (only if a broader scope is wanted and does not fit).
 - Convergence / throughput / loss-curve characterization on Pascal fp16.
 - bf16-faithful validation remains a T4 concern (existing `gpu_t4` ceilings).
+
+---
+
+## §9 — Addendum: plain LoRA (non-quantized) comparison
+
+This measurement is a **post-hoc follow-up**, not part of the pre-registered A–D
+protocol. Question: does a plain (non-quantized, fp16-base) **LoRA** training step
+fit, and how does it compare to QLoRA? Same harness and decoder-only scope as
+Run C (`r=8`, batch 1, 2–3 steps, `adamw8bit`), only `peft.method: lora`.
+
+| Run | Method | Base | Trainable params | Peak VRAM | Status |
+| --- | --- | --- | --- | --- |
+| C | qlora | 4-bit NF4 | 221,184 | 5.018 GB | FIT, finite |
+| E | lora | fp16 | 294,912 | **3.576 GB** | **FIT, finite** |
+
+Plain LoRA peaks **1.44 GB lower** than QLoRA and fits with ~3.4 GB headroom.
+This is expected for a *small* base model: the SAM 3.1 base is only ~1.75 GB in
+fp16 (the 3.5 GB checkpoint is fp32 on disk, halved on load — Run E's resident
+post-load footprint was ~1.88 GB). QLoRA's whole-run peak additionally pays a
+one-time 4-bit quantization transient at load plus on-the-fly dequant transients
+during the forward (each `Linear4bit` dequantizes its weight to fp16 per matmul —
+QLoRA forward-only alone was 4.99 GB, above LoRA's *entire* training peak). For a
+base this small those overheads exceed the resident-weight savings from going
+4-bit; QLoRA's memory advantage only materializes on much larger bases. (LoRA
+adapts ~33% more params here because the MHA `out_proj` is a plain `nn.Linear`
+and thus adaptable, unlike under QLoRA where it is excluded from `Linear4bit`.)
+
+Both PEFT paths fit comfortably, so the local 1080 can debug either training path.
+Loss stayed finite across all logged steps (LoRA: `0.4437, 0.6583, 0.3781,
+0.6332`). This is a *finiteness* result, not a convergence claim. Like the rest of
+this report it concerns the **training step's** VRAM; it does **not** speak to the
+full-scope `gpu_t4` tests (large multiplex forwards, fp32 calibration, or
+bf16-faithful numerics), which remain T4 concerns.
