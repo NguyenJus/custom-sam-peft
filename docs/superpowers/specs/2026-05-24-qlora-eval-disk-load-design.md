@@ -674,37 +674,37 @@ None. The design is locked. If the implementer encounters a contradiction betwee
 This section is the seam consumed by `superpowers:writing-plans`.
 
 **Step 1.** In `src/custom_sam_peft/peft_adapters/__init__.py`:
-  - Add `Any` to the `from typing import ...` import (line 21).
-  - Add `load_from_disk` method to `PEFTMethod` Protocol per §3.1 Change A.
-  - Flip `QloraAdapter.supports_checkpoint_load_from_disk` to return `True` and update Protocol docstring per §3.1 Change B.
-  - Add `LoraAdapter.load_from_disk` per §3.1 Change C.
-  - Add `QloraAdapter.load_from_disk` per §3.1 Change D.
-  - Update module docstring per §3.1 Change E.
+- Add `Any` to the `from typing import ...` import (line 21).
+- Add `load_from_disk` method to `PEFTMethod` Protocol per §3.1 Change A.
+- Flip `QloraAdapter.supports_checkpoint_load_from_disk` to return `True` and update Protocol docstring per §3.1 Change B.
+- Add `LoraAdapter.load_from_disk` per §3.1 Change C.
+- Add `QloraAdapter.load_from_disk` per §3.1 Change D.
+- Update module docstring per §3.1 Change E.
 
 **Step 2.** In `src/custom_sam_peft/eval/runner.py`:
-  - Replace `from custom_sam_peft.peft_adapters.lora import load_lora` with `from custom_sam_peft.train.checkpoint import _load_channel_adapter` per §3.2 Change A.
-  - Delete the `ValueError` guard (lines 106–110) per §3.2 Change B.
-  - Replace `load_lora(wrapper, resolved_checkpoint)` with `_peft_method.load_from_disk(wrapper, resolved_checkpoint)` followed by `_load_channel_adapter(wrapper, resolved_checkpoint)` per §3.2 Change C.
-  - Update `run_eval` docstring per §3.2 Change D.
+- Replace `from custom_sam_peft.peft_adapters.lora import load_lora` with `from custom_sam_peft.train.checkpoint import _load_channel_adapter` per §3.2 Change A.
+- Delete the `ValueError` guard (lines 106–110) per §3.2 Change B.
+- Replace `load_lora(wrapper, resolved_checkpoint)` with `_peft_method.load_from_disk(wrapper, resolved_checkpoint)` followed by `_load_channel_adapter(wrapper, resolved_checkpoint)` per §3.2 Change C.
+- Update `run_eval` docstring per §3.2 Change D.
 
 **Step 3.** Commit message per §7 row 1. Run `uv run pytest tests/unit/ -m "not gpu"` to confirm green before proceeding.
 
 **Step 4.** In `tests/unit/test_peft_method_protocol.py`:
-  - Flip and rename `test_qlora_adapter_supports_checkpoint_load_from_disk_false` per §4.2 Change A.
-  - Add `test_peft_method_protocol_declares_load_from_disk` per §4.2 Change B.
-  - Add `test_lora_adapter_load_from_disk_delegates_to_load_lora` per §4.2 Change C.
-  - Add `test_qlora_adapter_load_from_disk_delegates_to_load_qlora` per §4.2 Change D.
+- Flip and rename `test_qlora_adapter_supports_checkpoint_load_from_disk_false` per §4.2 Change A.
+- Add `test_peft_method_protocol_declares_load_from_disk` per §4.2 Change B.
+- Add `test_lora_adapter_load_from_disk_delegates_to_load_lora` per §4.2 Change C.
+- Add `test_qlora_adapter_load_from_disk_delegates_to_load_qlora` per §4.2 Change D.
 
 **Step 5.** In `tests/unit/test_eval_runner.py`:
-  - Flip and rename `test_run_eval_rejects_non_lora_peft` per §4.3 Change A.
-  - Add `test_run_eval_lora_calls_load_channel_adapter` per §4.3 Change B.
-  - **Required:** repoint all six existing patches of `custom_sam_peft.eval.runner.load_lora` (lines 63, 101, 159, 230, 290, 328) to `custom_sam_peft.peft_adapters.lora.load_lora` — they will otherwise error with `AttributeError` once the import is removed (see §4.3 Change B note).
+- Flip and rename `test_run_eval_rejects_non_lora_peft` per §4.3 Change A.
+- Add `test_run_eval_lora_calls_load_channel_adapter` per §4.3 Change B.
+- **Required:** repoint all six existing patches of `custom_sam_peft.eval.runner.load_lora` (lines 63, 101, 159, 230, 290, 328) to `custom_sam_peft.peft_adapters.lora.load_lora` — they will otherwise error with `AttributeError` once the import is removed (see §4.3 Change B note).
 
 **Step 6.** In `tests/unit/test_cli.py`:
-  - Flip and rename `test_eval_command_rejects_qlora_method` per §4.4 Change A.
+- Flip and rename `test_eval_command_rejects_qlora_method` per §4.4 Change A.
 
 **Step 7.** In `tests/integration/test_peft_qlora_real.py`:
-  - Extend `test_save_load_qlora_roundtrip` with forward-output capture before `del w1` and parity assertion after `load_qlora(w2, ...)` per §4.5. Adapt the dummy input shape to match the actual `Sam3Wrapper` forward signature (inspect before implementing).
+- Extend `test_save_load_qlora_roundtrip` with forward-output capture before `del w1` and parity assertion after `load_qlora(w2, ...)` per §4.5. Adapt the dummy input shape to match the actual `Sam3Wrapper` forward signature (inspect before implementing).
 
 **Step 8.** Commit message per §7 row 2. Run the full manual gate per §5.
 
