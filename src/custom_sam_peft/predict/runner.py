@@ -422,7 +422,7 @@ def run_predict(opts: PredictOptions) -> PredictReport:
             id_to_stem[image_id] = img_path.stem
             originals[image_id] = (orig_h, orig_w)
 
-            transformed = transforms(image=img_np, bboxes=[], class_labels=[])
+            transformed = transforms(image=img_np, bboxes=[], class_labels=[], instance_idx=[])
             imgs.append(transformed["image"].to(rcfg.device, dtype=rcfg.dtype))
             metas.append((image_id, orig_h, orig_w))
             chunk_paths_ok.append(img_path)

@@ -40,7 +40,7 @@ def _eval_path_tensor(image: Image.Image) -> torch.Tensor:
         normalize=normalize_cfg,
     )
     img_np = np.array(image)
-    result = transforms(image=img_np, bboxes=[], class_labels=[])
+    result = transforms(image=img_np, bboxes=[], class_labels=[], instance_idx=[])
     return result["image"]  # type: ignore[return-value]
 
 
@@ -63,7 +63,7 @@ def _predict_path_tensor(image: Image.Image) -> torch.Tensor:
         normalize=normalize_cfg,
     )
     img_np = np.array(image)
-    transformed = transforms(image=img_np, bboxes=[], class_labels=[])
+    transformed = transforms(image=img_np, bboxes=[], class_labels=[], instance_idx=[])
     return transformed["image"]  # type: ignore[return-value]
 
 

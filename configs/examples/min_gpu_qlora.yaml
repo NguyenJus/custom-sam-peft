@@ -1,0 +1,70 @@
+# Pascal-tuned QLoRA config — fits one fwd+bwd+optim step of SAM 3.1 multiplex
+# on a GTX 1080 (sm_61, ~7 GB usable) at ~5.0 GB peak. See the feasibility
+# write-up: docs/research/2026-05-24-issue-137-qlora-8gb-feasibility.md (#137).
+#
+# Reach the GPU only via the gpu-pascal uv extra (torch 2.7.1+cu118, bnb 0.49.2):
+#   uv run --extra gpu-pascal python -m custom_sam_peft.cli train \
+#     --config configs/examples/min_gpu_qlora.yaml
+run:
+  name: min_gpu_qlora
+  output_dir: ./runs
+  seed: 0
+
+model:
+  name: facebook/sam3.1
+  local_dir: models/sam3.1
+  checkpoint_file: sam3.1_multiplex.pt
+  gradient_checkpointing: false  # dead on sm_61 (#60/#89/#127) — do not enable
+  dtype: float16  # Pascal-required: sm_61 has no bf16 hardware (bf16 is coerced anyway)
+
+data:
+  format: coco
+  train:
+    annotations: data/placeholder/annotations.json
+    images: data/placeholder/images
+  val:
+    annotations: data/placeholder/annotations.json
+    images: data/placeholder/images
+  prompt_mode: text
+  image_size: 1008  # fixed by SAM 3.1 (resizes internally) — not a VRAM lever
+  augmentations:
+    preset: natural
+    intensity: medium
+
+peft:
+  method: qlora
+  r: 8  # smaller rank (down from 16) shrinks adapter grad/state
+  scope: vision_decoder  # ignored: target_modules below overrides scope
+  # Decoder-only (narrowest scope) — the decisive lever. Excluding the frozen
+  # ViT trunk stops autograd retaining trunk activations for backward, which is
+  # what OOMs the vision_decoder baseline. Under QLoRA the MHA-wrapped out_proj
+  # stays nn.Linear (not Linear4bit), so the out_proj pattern matches nothing and
+  # only the decoder MLP linear1/linear2 are adapted (~221k trainable params).
+  target_modules:
+    - 'transformer\.decoder\.layers\.\d+\.(self_attn|cross_attn|ca_text)\.out_proj$'
+    - 'transformer\.decoder\.layers\.\d+\.linear[12]$'
+  qlora:
+    quant_type: nf4
+    compute_dtype: float16  # Pascal-required (see model.dtype)
+    use_double_quant: true  # NF4 nested quant of the quant constants
+
+train:
+  epochs: 25
+  batch_size: 1
+  grad_accum_steps: 1  # grad-accum is VRAM-neutral at batch 1
+  # The FIT was measured with bitsandbytes PagedAdamW8bit; adamw8bit is the
+  # schema-supported equivalent and immaterial to peak at ~221k trainable params.
+  optimizer: adamw8bit
+  learning_rate: 5.0e-4
+  lr_schedule: constant
+  warmup_steps: 0
+  save_every: 50
+  log_every: 10
+  num_workers: 0
+  box_hint:
+    p_start: 1.0
+    p_end: 0.0
+    decay_steps: 25
+
+tracking:
+  backend: none

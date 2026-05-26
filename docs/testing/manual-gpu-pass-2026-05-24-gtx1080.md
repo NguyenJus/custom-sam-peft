@@ -293,7 +293,17 @@ Neither PEFT path passes the grad-ckpt GPU test on the 1080.
 
 ### Phase-3 calibration numbers
 
-<!-- filled by C-4 -->
+See the full write-up:
+[QLoRA 8 GB fit investigation (#137)](../research/2026-05-24-issue-137-qlora-8gb-feasibility.md).
 
-*(Populated when task C-4 records peak VRAM, throughput, and loss curves from
-the gpu_local training smoke tests on the GTX 1080.)*
+**Verdict: FIT** — one QLoRA fwd+bwd+optim step of SAM 3.1 multiplex fits on the
+GTX 1080 at **5.018 GB** peak (≤ ~7.0 GB usable), finite loss, using non-offload
+levers only. The decisive lever is decoder-only trainable scope (excluding the
+frozen trunk): the as-is `vision_decoder` smoke OOMs on the first backward
+because trunk LoRA forces autograd to retain trunk activations, whereas freezing
+the trunk frees them. The cost is **activation/weight-bound** — not
+optimizer/grad-bound (training adds ~0.03 GB over the forward-only peak) and not
+attention-kernel-bound (forcing MATH SDPA moves the peak 0.00 GB). The Pascal
+config lives at `configs/examples/min_gpu_qlora.yaml`. This informs (does not
+change here) the `gpu_t4` tier; a `gpu_local` test + reclassification is a
+follow-up.

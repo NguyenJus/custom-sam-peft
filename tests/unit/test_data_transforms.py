@@ -216,7 +216,9 @@ def test_eval_transforms_resizes_to_square() -> None:
         compose = build_eval_transforms(64, model_name="x", normalize=NormalizeConfig())
     img = np.zeros((40, 80, 3), dtype=np.uint8)
     masks = [np.ones((40, 80), dtype=np.uint8)]
-    out = compose(image=img, bboxes=[[0.0, 0.0, 80.0, 40.0]], masks=masks, class_labels=[0])
+    out = compose(
+        image=img, bboxes=[[0.0, 0.0, 80.0, 40.0]], masks=masks, class_labels=[0], instance_idx=[0]
+    )
     assert isinstance(out["image"], torch.Tensor)
     assert out["image"].shape == (3, 64, 64)
     assert out["image"].dtype == torch.float32
@@ -231,7 +233,7 @@ def test_eval_transforms_pad_position_top_left() -> None:
     with _patch_proc_to_imagenet():
         compose = build_eval_transforms(64, model_name="x", normalize=NormalizeConfig())
     img = np.full((32, 64, 3), 255, dtype=np.uint8)
-    out = compose(image=img, bboxes=[], masks=[], class_labels=[])
+    out = compose(image=img, bboxes=[], masks=[], class_labels=[], instance_idx=[])
     top_row = out["image"][0, 0, :]
     bottom_row = out["image"][0, 60, :]
     assert top_row.mean().item() > 0
@@ -256,7 +258,7 @@ def test_train_transforms_deterministic_with_seeded_global_rng() -> None:
             compose = build_train_transforms(aug, 64, model_name="x", normalize=NormalizeConfig())
         compose.set_random_seed(0)
         img = np.arange(40 * 80 * 3, dtype=np.uint8).reshape(40, 80, 3)
-        return compose(image=img, bboxes=[], masks=[], class_labels=[])["image"]
+        return compose(image=img, bboxes=[], masks=[], class_labels=[], instance_idx=[])["image"]
 
     a = run()
     b = run()

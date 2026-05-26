@@ -222,7 +222,7 @@ def build_eval_transforms(
         ],
         bbox_params=A.BboxParams(
             format="pascal_voc",
-            label_fields=["class_labels"],
+            label_fields=["class_labels", "instance_idx"],
             min_visibility=0.0,
             min_area=0.0,
         ),
@@ -377,7 +377,7 @@ def build_train_transforms(
         steps,
         bbox_params=A.BboxParams(
             format="pascal_voc",
-            label_fields=["class_labels"],
+            label_fields=["class_labels", "instance_idx"],
             min_visibility=0.0,
             min_area=0.0,
         ),

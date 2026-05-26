@@ -277,10 +277,15 @@ class HFDataset:
             bboxes=[list(b) for b in bboxes_xyxy],
             masks=masks,
             class_labels=classes,
+            instance_idx=list(range(len(masks))),
         )
         image_tensor: Any = out["image"]
         out_bboxes = list(out["bboxes"])
-        out_masks = list(out["masks"])
+        # Re-select masks by the original indices of the surviving bboxes so that
+        # bboxes, masks, and class_labels stay parallel even when Albumentations
+        # drops an out-of-frame bbox (which it also removes from class_labels but
+        # not from the masks target, which is processed independently).
+        out_masks = [out["masks"][int(idx)] for idx in out["instance_idx"]]
         out_classes = [int(c) for c in out["class_labels"]]
         # Reference torch to satisfy the import; image_tensor is already a Tensor.
         _ = torch.Tensor
