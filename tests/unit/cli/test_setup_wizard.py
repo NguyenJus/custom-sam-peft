@@ -126,7 +126,7 @@ def test_step_fragment_shapes_are_nested_dicts(monkeypatch) -> None:
     _patch_prompts(
         monkeypatch,
         texts=["my-run", "ann.json", "imgs/", "5", ""],
-        choices=["train", "coco", "none", "natural", "medium", "lora"],
+        choices=["train", "coco", "none", "natural", "medium", "balanced", "lora"],
     )
     monkeypatch.setattr(sw, "infer_class_imbalance", lambda *a, **k: "balanced")
     ctx = sw.Ctx(answers={}, cuda_available=False)
@@ -292,7 +292,7 @@ def test_generate_config_happy_path_local_coco_autosplit(tmp_path, monkeypatch) 
     _patch_prompts(
         monkeypatch,
         texts=["my-run", "ann.json", "imgs/", "0.1", "7", ""],
-        choices=["train", "coco", "auto-split", "natural", "medium", "lora"],
+        choices=["train", "coco", "auto-split", "natural", "medium", "balanced", "lora"],
     )
     monkeypatch.setattr(sw, "infer_class_imbalance", lambda *a, **k: "balanced")
     out = tmp_path / "c.yaml"

@@ -14,7 +14,7 @@ from dataclasses import dataclass, field
 from datetime import date
 from importlib.resources import files
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Literal, cast
 
 import typer
 
@@ -319,10 +319,14 @@ def _ask_class_imbalance(ctx: Ctx) -> dict[str, Any]:
             "could not auto-detect class imbalance (non-COCO/no annotations); "
             "defaulting to balanced"
         )
-        tier: ClassImbalance = "balanced"
+        detected: ClassImbalance = "balanced"
     else:
-        tier = infer_class_imbalance(ann)
-        typer.echo(f"detected class imbalance: {tier}")
+        detected = infer_class_imbalance(ann)
+        typer.echo(f"detected class imbalance: {detected}")
+    tier = cast(
+        ClassImbalance,
+        ask_choice("Class imbalance tier?", ["balanced", "moderate", "severe"], default=detected),
+    )
     return {"train": {"loss": {"class_imbalance": tier}}}
 
 
