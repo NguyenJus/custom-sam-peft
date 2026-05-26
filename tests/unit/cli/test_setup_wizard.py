@@ -5,6 +5,9 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+import typer
+
 from custom_sam_peft.cli import setup_wizard as sw
 from custom_sam_peft.config.loader import load_config
 
@@ -278,3 +281,93 @@ def test_emit_validated_bytes_reload(tmp_path) -> None:
     sw.emit(rendered, out, force=False, run_mode="train")
     cfg = load_config(out)
     assert cfg.run.name == "r"
+
+
+# ---------------------------------------------------------------------------
+# Task 15: generate_config orchestration + VRAM-step tests
+# ---------------------------------------------------------------------------
+
+
+def test_generate_config_happy_path_local_coco_autosplit(tmp_path, monkeypatch) -> None:
+    _patch_prompts(
+        monkeypatch,
+        texts=["my-run", "ann.json", "imgs/", "0.1", "7", ""],
+        choices=["train", "coco", "auto-split", "natural", "medium", "lora"],
+    )
+    monkeypatch.setattr(sw, "infer_class_imbalance", lambda *a, **k: "balanced")
+    out = tmp_path / "c.yaml"
+    sw.generate_config(out, force=False, cuda_available=False)
+    cfg = load_config(out)
+    assert cfg.run.name == "my-run"
+    assert cfg.data.val_split is not None
+    assert cfg.train.epochs == 7
+
+
+def test_validate_backstop_exits_nonzero_no_file(tmp_path, monkeypatch, capsys) -> None:
+    monkeypatch.setattr(
+        sw,
+        "run_wizard",
+        lambda ctx: {
+            "run": {"name": "r"},
+            "data": {
+                "format": "coco",
+                "train": {"annotations": "t.json", "images": "t/"},
+                "augmentations": {"preset": "natural", "intensity": "medium"},
+            },
+            "peft": {"method": "lora"},
+            "train": {"epochs": 0, "loss": {"preset": "natural", "class_imbalance": "balanced"}},
+        },
+    )
+    out = tmp_path / "c.yaml"
+    with pytest.raises(typer.Exit):
+        sw.generate_config(out, force=False, cuda_available=False)
+    assert not out.exists()
+
+
+def test_ctrl_c_writes_nothing(tmp_path, monkeypatch) -> None:
+    def _boom(ctx):
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(sw, "run_wizard", _boom)
+    out = tmp_path / "c.yaml"
+    with pytest.raises(KeyboardInterrupt):
+        sw.generate_config(out, force=False, cuda_available=False)
+    assert not out.exists()
+
+
+def test_vram_autosize_applies_config_patch(monkeypatch) -> None:
+    from custom_sam_peft.presets import PresetDecision
+
+    decision = PresetDecision(
+        method="qlora",
+        r=16,
+        batch_size=2,
+        grad_accum_steps=8,
+        dtype="bfloat16",
+        headroom_bytes=0,
+        predicted_bytes=0,
+        budget_bytes=0,
+        image_size=1008,
+        gpu_name="StubGPU",
+        provenance="analytic",
+        cache_path=None,
+        calibrated_at=None,
+    )
+    monkeypatch.setattr("custom_sam_peft.presets.decide_preset", lambda image_size: decision)
+    monkeypatch.setattr(sw, "ask_confirm", lambda *a, **k: True)
+    ctx = sw.Ctx(answers={}, cuda_available=True)
+    frag = sw._ask_peft_sizing(ctx)
+    assert frag == decision.config_patch
+    assert "gradient_checkpointing" not in frag["model"]
+
+
+def test_vram_autosize_runtime_error_falls_back_to_manual(monkeypatch) -> None:
+    def _boom(image_size):
+        raise RuntimeError("nothing fits")
+
+    monkeypatch.setattr("custom_sam_peft.presets.decide_preset", _boom)
+    monkeypatch.setattr(sw, "ask_confirm", lambda *a, **k: True)
+    monkeypatch.setattr(sw, "ask_choice", lambda *a, **k: "qlora")
+    ctx = sw.Ctx(answers={}, cuda_available=True)
+    frag = sw._ask_peft_sizing(ctx)
+    assert frag == {"peft": {"method": "qlora"}}
