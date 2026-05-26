@@ -32,7 +32,6 @@ Layer legend:
 | `model.name` | str | `"facebook/sam3.1"` | common | HuggingFace model ID or local path for the SAM 3.1 base checkpoint. | Audit §E: 4/4 examples + notebook set it; base model identity is fundamental. |
 | `model.local_dir` | str \| null | `"models/sam3.1"` | common | Local directory to cache/load the model from (passed to `snapshot_download`). | Audit §E: 4/4 examples set it; air-gapped or pre-downloaded setups need this. |
 | `model.checkpoint_file` | str | `"sam3.1_multiplex.pt"` | common | Filename of the SAM 3.1 weights file inside `local_dir`. | Audit §E: 4/4 examples set it; checkpoint file name may differ across releases. |
-| `model.gradient_checkpointing` | bool | `true` | common | Enable gradient checkpointing to trade compute for VRAM during training. | Audit §E: 4/4 examples + notebook (via preset) set it; critical for VRAM-constrained GPUs. |
 | `model.dtype` | `"bfloat16"` \| `"float16"` | `"bfloat16"` | common | Floating-point precision for model weights and activations. | Audit §E: 4/4 examples + notebook (via preset) set it; dtype choice depends on GPU capability. |
 | `model.revision` | str \| null | `null` | advanced | HuggingFace revision (branch, tag, or commit SHA) to pin the model download. | Audit §E: 0 non-test hits; useful for reproducibility across checkpoint releases. |
 | `model.device` | str \| null | `null` | advanced | Override the target device (e.g. `"cuda:1"`); `null` auto-selects the first available GPU. | Audit §E: 0 non-test hits; only needed for multi-GPU manual assignment. |
