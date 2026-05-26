@@ -667,21 +667,6 @@ def _construct_raw_model(cfg: ModelConfig) -> nn.Module:
                 )
             _remaining = _remaining[_m.end() :]
 
-    if cfg.gradient_checkpointing:
-        if hasattr(raw_model, "set_grad_checkpointing"):
-            raw_model.set_grad_checkpointing(True)
-        else:
-            # sam3 ships per-ViT-Det-block use_act_checkpoint flags but
-            # flipping them on under non-reentrant torch.utils.checkpoint
-            # produces a recompute-vs-original metadata mismatch
-            # (CheckpointError). Likely interaction with sam3's internal
-            # `with torch.amp.autocast(enabled=False)` regions and the
-            # global no-outer-autocast constraint. Tracked in issue #60.
-            logger.warning(
-                "Meta sam3 model has no `set_grad_checkpointing`; "
-                "gradient_checkpointing=True is a no-op on this revision."
-            )
-
     assert isinstance(raw_model, nn.Module)  # noqa: S101
     return raw_model
 

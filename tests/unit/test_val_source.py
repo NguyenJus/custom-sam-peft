@@ -203,3 +203,41 @@ def test_atomic_save_does_not_leave_tmp_file(tiny_coco_dir: Path, tmp_path: Path
     # No leftover .tmp file from the os.replace flow.
     assert not (tmp_path / "val_source.json.tmp").exists()
     assert (tmp_path / "val_source.json").is_file()
+
+
+# ---------------------------------------------------------------------------
+# HF split_val explicit branch (spec §12.4)
+# ---------------------------------------------------------------------------
+
+
+def _hf_cfg(split_val: str | None) -> TrainConfig:
+    hf: dict[str, object] = {"name": "tiny/ds"}
+    if split_val is not None:
+        hf["split_val"] = split_val
+    return TrainConfig.model_validate(
+        {
+            "run": {"name": "r"},
+            "model": {},
+            "data": {
+                "format": "hf",
+                "train": {"annotations": "unused", "images": "unused"},
+                "val": None,
+                "prompt_mode": "text",
+                "hf": hf,
+            },
+            "peft": {"method": "lora"},
+            "train": {"epochs": 1},
+        }
+    )
+
+
+def test_resolve_hf_split_val_is_explicit() -> None:
+    vs = resolve_val_source(_hf_cfg("myval"), run_dir=None)
+    assert vs.mode == "explicit"
+    assert vs.train_ids is None
+    assert vs.val_ids is None
+
+
+def test_resolve_hf_no_split_val_is_none() -> None:
+    vs = resolve_val_source(_hf_cfg(None), run_dir=None)
+    assert vs.mode == "none"

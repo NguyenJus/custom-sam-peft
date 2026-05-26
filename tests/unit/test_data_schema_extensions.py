@@ -82,7 +82,7 @@ def test_hf_dataset_config_defaults() -> None:
     cfg = HFDatasetConfig(name="my-org/my-ds")
     assert cfg.name == "my-org/my-ds"
     assert cfg.split_train == "train"
-    assert cfg.split_val == "validation"
+    assert cfg.split_val is None
     assert cfg.field_map.bbox == "objects.bbox"
 
 

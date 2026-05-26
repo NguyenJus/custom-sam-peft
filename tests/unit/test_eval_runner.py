@@ -250,7 +250,7 @@ def test_run_eval_rejects_val_split_when_data_val_and_val_split_none(
     cfg.data.val = None  # type: ignore[attr-defined]
     cfg.data.val_split = None  # type: ignore[attr-defined]
     cfg.data.test = None
-    with pytest.raises(ValueError, match=r"--split val requires data\.val or data\.val_split"):
+    with pytest.raises(ValueError, match=r"--split val requires data\.val"):
         run_eval(cfg, checkpoint=tmp_path, split="val")
 
 

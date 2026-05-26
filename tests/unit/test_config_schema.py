@@ -310,13 +310,25 @@ def test_hf_split_val_custom_with_val_split_rejected() -> None:
 def test_hf_split_val_default_with_val_split_validates() -> None:
     d = _minimal_dict()
     d["data"]["format"] = "hf"  # type: ignore[index]
-    d["data"]["hf"] = {"name": "tiny/dataset"}  # default split_val="validation"
+    d["data"]["hf"] = {"name": "tiny/dataset"}  # default split_val=None
     d["data"]["val"] = None  # type: ignore[index]
     d["data"]["val_split"] = {"fraction": 0.1, "seed": 7}  # type: ignore[index]
     cfg = TrainConfig.model_validate(d)
     assert cfg.data.val_split is not None
     assert cfg.data.val_split.fraction == 0.1
     assert cfg.data.val_split.seed == 7
+
+
+def test_hf_split_val_set_without_val_split_validates() -> None:
+    """spec §12.3: HF + named split_val (no val/val_split) is the explicit opt-in."""
+    d = _minimal_dict()
+    d["data"]["format"] = "hf"  # type: ignore[index]
+    d["data"]["hf"] = {"name": "tiny/dataset", "split_val": "myval"}  # type: ignore[index]
+    d["data"]["val"] = None  # type: ignore[index]
+    cfg = TrainConfig.model_validate(d)
+    assert cfg.data.val_split is None
+    assert cfg.data.hf is not None
+    assert cfg.data.hf.split_val == "myval"
 
 
 def test_neither_val_nor_val_split_validates() -> None:

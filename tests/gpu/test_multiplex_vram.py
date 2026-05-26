@@ -29,7 +29,7 @@ def test_real_K16_forward_at_chosen_B_within_predicted_envelope() -> None:
     if predicted_bytes == 0:
         pytest.skip("CPU fallback — needs a compatible GPU")
 
-    cfg = ModelConfig(device="cuda", gradient_checkpointing=False, dtype="bfloat16")
+    cfg = ModelConfig(device="cuda", dtype="bfloat16")
     wrapper = load_sam31(cfg)
     wrapper.eval()
 

@@ -113,11 +113,7 @@ def test_predicted_bytes_eval_mode_excludes_optimizer_and_adapter(monkeypatch) -
     and scales activations by forward_only_factor."""
     from custom_sam_peft.presets import _predicted_bytes
 
-    train_bytes = _predicted_bytes(
-        "lora", r=4, batch=1, ckpt=False, image_size=1024, cache=None, mode="train"
-    )
-    eval_bytes = _predicted_bytes(
-        "lora", r=4, batch=1, ckpt=False, image_size=1024, cache=None, mode="eval"
-    )
+    train_bytes = _predicted_bytes("lora", r=4, batch=1, image_size=1024, cache=None, mode="train")
+    eval_bytes = _predicted_bytes("lora", r=4, batch=1, image_size=1024, cache=None, mode="eval")
     # eval drops optimizer state + adapter weights; activations scaled by 0.25.
     assert eval_bytes < train_bytes

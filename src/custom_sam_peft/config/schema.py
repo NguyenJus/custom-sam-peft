@@ -116,9 +116,6 @@ class ModelConfig(_Strict):
     name: str = "facebook/sam3.1"
     local_dir: str | None = "models/sam3.1"
     checkpoint_file: str = "sam3.1_multiplex.pt"
-    gradient_checkpointing: bool = (
-        False  # TODO(#60): re-enable when sam3 activation-checkpointing recompute mismatch is fixed
-    )
     dtype: Dtype = "bfloat16"
     # --- advanced ---
     revision: str | None = None
@@ -322,7 +319,7 @@ class HFDatasetConfig(_Strict):
 
     name: str = Field(min_length=1)
     split_train: str = "train"
-    split_val: str = "validation"
+    split_val: str | None = None
     field_map: HFFieldMap = Field(default_factory=HFFieldMap)
 
 
@@ -475,7 +472,7 @@ class DataConfig(_Strict):
             self.format == "hf"
             and self.val_split is not None
             and self.hf is not None
-            and self.hf.split_val != "validation"
+            and self.hf.split_val is not None
         ):
             raise ValueError(
                 "data.hf.split_val cannot be customized when data.val_split is set; "

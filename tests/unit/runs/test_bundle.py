@@ -160,7 +160,6 @@ def _make_decision() -> PresetDecision:
         r=32,
         batch_size=2,
         grad_accum_steps=8,
-        gradient_checkpointing=False,
         dtype="bfloat16",
         headroom_bytes=int(1.6 * 1024**3),
         predicted_bytes=int(38.4 * 1024**3),
@@ -344,7 +343,7 @@ def test_write_bundle_preset_block_structured(
     assert "- Method: LoRA r=32" in summary
     assert "batch=2" in summary
     assert "grad_accum=8" in summary
-    assert "gradient_checkpointing=off" in summary
+    assert "gradient_checkpointing" not in summary
     assert "- GPU:    NVIDIA A100-SXM4-40GB" in summary
     assert "38.4 / " in summary  # used/total GiB
     assert "calibrated" in summary.lower()
@@ -365,39 +364,20 @@ def test_write_bundle_preset_block_analytic(
     assert "- Source: analytic estimate" in summary
 
 
-def test_write_bundle_oom_edge_note_with_ckpt(
+def test_write_bundle_oom_edge_note_multiple_halvings(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     events = (
-        OomEvent(
-            step=10,
-            action="microbatch_halved",
-            new_micro_batch_size=4,
-            new_gradient_checkpointing=False,
-        ),
-        OomEvent(
-            step=20,
-            action="microbatch_halved",
-            new_micro_batch_size=2,
-            new_gradient_checkpointing=False,
-        ),
-        OomEvent(
-            step=412,
-            action="grad_ckpt_enabled",
-            new_micro_batch_size=2,
-            new_gradient_checkpointing=True,
-        ),
+        OomEvent(step=10, action="microbatch_halved", new_micro_batch_size=4),
+        OomEvent(step=20, action="microbatch_halved", new_micro_batch_size=2),
     )
     ctx = _make_ctx(tmp_path, per_example_iou=[], oom_events=events)
-    monkeypatch.setattr(
-        "custom_sam_peft.runs.bundle._reinfer_one_example",
-        _fake_reinfer,
-    )
+    monkeypatch.setattr("custom_sam_peft.runs.bundle._reinfer_one_example", _fake_reinfer)
     write_bundle(ctx, _make_metrics(0.5), val_dataset=_make_dataset(0), model_wrapper=MagicMock())
     summary = (ctx.run_dir / "summary.md").read_text()
-    assert "OOM retries: 3" in summary
+    assert "OOM retries: 2" in summary
     assert "final micro_batch=2" in summary
-    assert "gradient_checkpointing enabled at step 412" in summary
+    assert "gradient_checkpointing" not in summary
 
 
 def test_write_bundle_oom_edge_note_no_ckpt(
@@ -408,7 +388,6 @@ def test_write_bundle_oom_edge_note_no_ckpt(
             step=10,
             action="microbatch_halved",
             new_micro_batch_size=4,
-            new_gradient_checkpointing=False,
         ),
     )
     ctx = _make_ctx(tmp_path, per_example_iou=[], oom_events=events)

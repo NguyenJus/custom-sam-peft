@@ -46,9 +46,6 @@ D_IN = 768  # avg input feature dim across LoRA targets
 D_OUT = 768  # avg output feature dim across LoRA targets
 Q_OVERHEAD = 64 * _MIB  # bnb NF4 per-block scale + zero-point overhead
 WORKSPACE_BYTES = 256 * _MIB  # cuDNN workspace + autograd graph + tmp buffers (spec §3)
-CKPT_FACTOR = (
-    0.3  # activation reduction with gradient_checkpointing on (spec §3, ~sqrt(num_layers))
-)
 BASE_ACTIVATION_AT_1024 = int(1.5 * _GB)  # seed; superseded by calibration cache
 
 # Forward-only memory is roughly 1/4 of the train-step probe (train captures
@@ -79,7 +76,6 @@ class PresetDecision:
     r: int
     batch_size: int
     grad_accum_steps: int
-    gradient_checkpointing: bool
     dtype: Literal["bfloat16", "float16"]
     headroom_bytes: int
     predicted_bytes: int
@@ -94,10 +90,7 @@ class PresetDecision:
     def config_patch(self) -> dict[str, dict[str, object]]:
         """The 3-section dict the deep-merge consumer expects."""
         return {
-            "model": {
-                "gradient_checkpointing": self.gradient_checkpointing,
-                "dtype": self.dtype,
-            },
+            "model": {"dtype": self.dtype},
             "peft": {"method": self.method, "r": self.r},
             "train": {
                 "batch_size": self.batch_size,
@@ -106,7 +99,6 @@ class PresetDecision:
         }
 
     def label(self) -> str:
-        ckpt = "on" if self.gradient_checkpointing else "off"
         method = method_pretty_name(self.method)
         used_gib = self.predicted_bytes / _GB
         total_gib = (self.budget_bytes + self.headroom_bytes) / _GB
@@ -118,7 +110,7 @@ class PresetDecision:
         dtype_token = "fp16" if self.dtype == "float16" else "bf16"
         return (
             f"auto: {method} r={self.r} batch={self.batch_size} "
-            f"grad_accum={self.grad_accum_steps} ckpt={ckpt} {dtype_token} — "
+            f"grad_accum={self.grad_accum_steps} {dtype_token} — "
             f"fits in {used_gib:.1f}/{total_gib:.1f} GiB on {self.gpu_name} {suffix}"
         )
 
@@ -165,17 +157,15 @@ def _activation_per_example(image_size: int, cache: dict[str, Any] | None) -> in
     return int(BASE_ACTIVATION_AT_1024 * (image_size / 1024) ** 2)
 
 
-def _activation_bytes(image_size: int, batch: int, ckpt: bool, cache: dict[str, Any] | None) -> int:
+def _activation_bytes(image_size: int, batch: int, cache: dict[str, Any] | None) -> int:
     per = _activation_per_example(image_size, cache)
-    factor = CKPT_FACTOR if ckpt else 1.0
-    return int(per * batch * factor)
+    return int(per * batch)
 
 
 def _predicted_bytes(
     method: str,
     r: int,
     batch: int,
-    ckpt: bool,
     image_size: int,
     cache: dict[str, Any] | None,
     mode: Literal["train", "eval"] = "train",
@@ -185,11 +175,11 @@ def _predicted_bytes(
             _model_bytes(method)
             + _adapter_bytes(r)
             + _optimizer_bytes(r)
-            + _activation_bytes(image_size, batch, ckpt, cache)
+            + _activation_bytes(image_size, batch, cache)
             + WORKSPACE_BYTES
         )
     # mode == "eval": no optimizer, no adapter bytes; activations x forward_only_factor.
-    activations = int(_activation_bytes(image_size, batch, ckpt, cache) * forward_only_factor)
+    activations = int(_activation_bytes(image_size, batch, cache) * forward_only_factor)
     return _model_bytes(method) + activations + WORKSPACE_BYTES
 
 
@@ -258,21 +248,19 @@ def _headroom_bytes() -> int:
 # === Search space =========================================================
 
 
-def _candidates() -> list[tuple[str, int, int, bool]]:
+def _candidates() -> list[tuple[str, int, int]]:
     methods = ("lora", "qlora")
     rs = (8, 16, 24, 32, 48, 64)
     batches = tuple(range(1, 17))
-    ckpts = (False, True)
-    return [(m, r, b, c) for m in methods for r in rs for b in batches for c in ckpts]
+    return [(m, r, b) for m in methods for r in rs for b in batches]
 
 
-def _sort_key(c: tuple[str, int, int, bool]) -> tuple[int, int, int, int]:
-    method, r, batch, ckpt = c
+def _sort_key(c: tuple[str, int, int]) -> tuple[int, int, int]:
+    method, r, batch = c
     return (
         0 if method == "lora" else 1,
         -r,
         -batch,
-        0 if not ckpt else 1,
     )
 
 
@@ -309,24 +297,23 @@ def decide_preset(image_size: int) -> PresetDecision:
     calibrated_at: str | None = str(cache["calibrated_at"]) if cache is not None else None
 
     feasible = []
-    for method, r, batch, ckpt in _candidates():
-        pb = _predicted_bytes(method, r, batch, ckpt, image_size, cache)
+    for method, r, batch in _candidates():
+        pb = _predicted_bytes(method, r, batch, image_size, cache)
         if pb <= budget:
-            feasible.append((method, r, batch, ckpt, pb))
+            feasible.append((method, r, batch, pb))
 
     if not feasible:
         budget_gib = budget / _GB
         headroom_gib = headroom / _GB
-        # Compute minimum-needed at QLoRA r=4 batch=1 ckpt=on for the error msg.
-        min_needed = _predicted_bytes("qlora", 4, 1, True, image_size, cache)
+        min_needed = _predicted_bytes("qlora", 4, 1, image_size, cache)
         raise RuntimeError(
             f"pick_preset(): GPU has {budget_gib:.1f} GiB after {headroom_gib:.1f} GiB "
             f"headroom — SAM 3.1 needs ≈{min_needed / _GB:.1f} GiB even at QLoRA r=4 "
-            f"batch=1 ckpt=on. Use a larger GPU."
+            f"batch=1. Use a larger GPU."
         )
 
-    feasible.sort(key=lambda t: _sort_key(t[:4]))
-    method, r, batch, ckpt, predicted = feasible[0]
+    feasible.sort(key=lambda t: _sort_key(t[:3]))
+    method, r, batch, predicted = feasible[0]
     grad_accum = max(1, 16 // batch)
 
     return PresetDecision(
@@ -334,7 +321,6 @@ def decide_preset(image_size: int) -> PresetDecision:
         r=r,
         batch_size=batch,
         grad_accum_steps=grad_accum,
-        gradient_checkpointing=ckpt,
         dtype=decided_dtype,
         headroom_bytes=headroom,
         predicted_bytes=predicted,
@@ -391,11 +377,11 @@ def decide_eval_batch_size(
 
     best_bs = 1
     best_predicted = _predicted_bytes(
-        "lora", r=4, batch=1, ckpt=False, image_size=image_size, cache=cache, mode="eval"
+        "lora", r=4, batch=1, image_size=image_size, cache=cache, mode="eval"
     )
     for batch in range(1, 65):  # B in [1, 64]
         pb = _predicted_bytes(
-            "lora", r=4, batch=batch, ckpt=False, image_size=image_size, cache=cache, mode="eval"
+            "lora", r=4, batch=batch, image_size=image_size, cache=cache, mode="eval"
         )
         if pb <= budget:
             best_bs = batch

@@ -41,11 +41,12 @@ class ValSource:
 def resolve_val_source(cfg: TrainConfig, *, run_dir: Path | None = None) -> ValSource:
     """Resolve which validation source to use for this run.
 
-    Dispatch (spec §5.2):
+    Dispatch (spec §5.2 + §12.4):
       1. run_dir/val_source.json exists → load_val_source(run_dir) (resume).
-      2. cfg.data.val_split is not None → enumerate + stratify.
-      3. cfg.data.val is not None → mode='explicit'.
-      4. else → mode='none'.
+      2. cfg.data.val_split is not None → enumerate + stratify (auto_split).
+      3. cfg.data.val is not None → mode='explicit' (COCO).
+      4. cfg.data.format=='hf' and cfg.data.hf.split_val is not None → mode='explicit' (HF).
+      5. else → mode='none'.
     """
     if run_dir is not None:
         saved = load_val_source(run_dir)
@@ -69,6 +70,18 @@ def resolve_val_source(cfg: TrainConfig, *, run_dir: Path | None = None) -> ValS
         )
 
     if cfg.data.val is not None:
+        return ValSource(
+            mode="explicit",
+            train_ids=None,
+            val_ids=None,
+            realized_fraction=None,
+            per_class_counts=None,
+            missing_in_val=None,
+            fraction_requested=None,
+            seed_used=None,
+        )
+
+    if cfg.data.format == "hf" and cfg.data.hf is not None and cfg.data.hf.split_val is not None:
         return ValSource(
             mode="explicit",
             train_ids=None,
@@ -147,7 +160,7 @@ def load_val_source(run_dir: Path) -> ValSource | None:
 def _log_val_source(vs: ValSource) -> None:
     """Emit the INFO/WARN log lines documented in spec §4.5 / §5.3."""
     if vs.mode == "explicit":
-        _LOG.info("val source: explicit (cfg.data.val)")
+        _LOG.info("val source: explicit (cfg.data.val or data.hf.split_val)")
         return
     if vs.mode == "auto_split":
         assert vs.train_ids is not None and vs.val_ids is not None  # noqa: S101

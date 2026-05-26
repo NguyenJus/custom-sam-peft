@@ -58,13 +58,12 @@ class OomState:
 
     Held by the Trainer for the lifetime of a `fit()` call. The trainer's
     inner per-class loss block calls `_train_step_with_oom_ladder` once per
-    step; on OOM the helper mutates `micro_batch_size` / `gradient_checkpointing`
-    in place (sticky) and appends to `pending_oom_events`.
+    step; on OOM the helper halves `micro_batch_size` in place (sticky) and
+    appends to `pending_oom_events`.
     """
 
     step: int = 0
     micro_batch_size: int = 1
-    gradient_checkpointing: bool = False
     pending_oom_events: list[OomEvent] = field(default_factory=list)
 
 
@@ -82,7 +81,6 @@ def _train_step_with_oom_ladder(
 
     Spec §6 invariants:
       - microbatch shrink is sticky
-      - gradient_checkpointing toggles at most once per run
       - optimizer.zero_grad never called mid-microbatch (helper does not call it)
       - mid-step OOM replays from i=0 at the smaller size
 
@@ -115,7 +113,6 @@ def _train_step_with_oom_ladder(
                         step=state.step,
                         action="microbatch_halved",
                         new_micro_batch_size=state.micro_batch_size,
-                        new_gradient_checkpointing=state.gradient_checkpointing,
                     )
                 )
                 _LOG.warning(
@@ -124,24 +121,9 @@ def _train_step_with_oom_ladder(
                     state.micro_batch_size,
                 )
                 continue
-            if not state.gradient_checkpointing:
-                state.gradient_checkpointing = True
-                state.pending_oom_events.append(
-                    OomEvent(
-                        step=state.step,
-                        action="grad_ckpt_enabled",
-                        new_micro_batch_size=state.micro_batch_size,
-                        new_gradient_checkpointing=True,
-                    )
-                )
-                _LOG.warning(
-                    "OOM at step %d — enabling gradient_checkpointing",
-                    state.step,
-                )
-                continue
             raise RuntimeError(
-                f"OOM at step {state.step} after micro_batch=1 + "
-                f"gradient_checkpointing=on. Use a larger GPU or smaller image_size."
+                f"OOM at step {state.step} after micro_batch=1. "
+                f"Use a larger GPU or smaller image_size."
             ) from oom_err
 
 

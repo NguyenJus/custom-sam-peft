@@ -47,6 +47,24 @@ def test_init_writes_qlora_template(tmp_path: Path) -> None:
     assert result.exit_code == 0
     cfg = load_config(out)
     assert cfg.peft.method == "qlora"
+    body = out.read_text()
+    assert "quant_type: nf4" in body
+
+
+def test_init_emits_comprehensive_config(tmp_path: Path) -> None:
+    _make_data_paths(tmp_path)
+    out = tmp_path / "config.yaml"
+    result = runner.invoke(app, ["init", "--output", str(out)])
+    assert result.exit_code == 0, result.output
+    body = out.read_text()
+    for section in ("run:", "model:", "data:", "peft:", "train:", "eval:", "tracking:", "export:"):
+        assert section in body
+    assert "prompt_mode: text" in body
+    # Alternative branches present as comments:
+    assert "# val_split:" in body
+    assert "# hf:" in body
+    cfg = load_config(out)
+    assert cfg.run.name == "my-run"
 
 
 def test_init_refuses_clobber(tmp_path: Path) -> None:

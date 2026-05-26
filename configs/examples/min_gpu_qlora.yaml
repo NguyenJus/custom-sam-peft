@@ -14,7 +14,6 @@ model:
   name: facebook/sam3.1
   local_dir: models/sam3.1
   checkpoint_file: sam3.1_multiplex.pt
-  gradient_checkpointing: false  # dead on sm_61 (#60/#89/#127) — do not enable
   dtype: float16  # Pascal-required: sm_61 has no bf16 hardware (bf16 is coerced anyway)
 
 data:

@@ -23,14 +23,14 @@ pytestmark = [
 
 @pytest.mark.gpu_local
 def test_load_sam31_returns_wrapper() -> None:
-    cfg = ModelConfig(device="cuda", gradient_checkpointing=False, dtype="bfloat16")
+    cfg = ModelConfig(device="cuda", dtype="bfloat16")
     wrapper = load_sam31(cfg)
     assert isinstance(wrapper, Sam3Wrapper)
 
 
 @pytest.mark.gpu_local
 def test_load_sam31_forward_to_canonical() -> None:
-    cfg = ModelConfig(device="cuda", gradient_checkpointing=False, dtype="bfloat16")
+    cfg = ModelConfig(device="cuda", dtype="bfloat16")
     wrapper = load_sam31(cfg)
     # This is an inference smoke test, so use eval() + no_grad to disable
     # dropout / training-mode behavior.  (forward also works under train()
@@ -53,7 +53,7 @@ def test_load_sam31_multiplex_K8_forward() -> None:
 
     Per spec §13 AC 16. Confirms (B*K, ...) row layout end-to-end on real weights.
     """
-    cfg = ModelConfig(device="cuda", gradient_checkpointing=False, dtype="bfloat16")
+    cfg = ModelConfig(device="cuda", dtype="bfloat16")
     wrapper = load_sam31(cfg)
     wrapper.eval()
     b = 2

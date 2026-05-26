@@ -1,35 +1,34 @@
+# custom-sam-peft starter config (comprehensive) — text-prompt finetune.
+# Edit any section below, then run the launch command shown by `init`.
 # -----------------------------------------------------------------------------
-# Schema is the source of truth.
-#
-# Keys below without a trailing `# override:` comment are echoes of the
-# pydantic schema defaults at src/custom_sam_peft/config/schema.py — they are
-# included for discoverability. Keys WITH a `# override:` comment are
-# deliberate divergence from the schema default, justified inline.
+# Schema is the source of truth (src/custom_sam_peft/config/schema.py). Keys are
+# echoed for discoverability; commented blocks are alternative branches or
+# advanced overrides — uncomment and edit to use them.
 # -----------------------------------------------------------------------------
 run:
-  name: coco-text-qlora
+  name: $run_name
   output_dir: ./runs
   seed: 42
 
 model:
-  name: facebook/sam3.1
-  local_dir: models/sam3.1
-  checkpoint_file: sam3.1_multiplex.pt
+$model_block
   dtype: bfloat16
+  # --- advanced ---
+  # revision: null
+  # device: null
 
 data:
-  format: coco
-  train:
-    annotations: data/coco/instances_train2017.json
-    images: data/coco/train2017
-  val:
-    annotations: data/coco/instances_val2017.json
-    images: data/coco/val2017
+$dataset_block
+$validation_block
   prompt_mode: text
   image_size: 1008
+  # --- advanced ---
+  # channels: 3
+  # channel_semantics: rgb
   augmentations:
-    preset: natural
-    intensity: medium
+    preset: $aug_preset
+    intensity: $aug_intensity
+    $overrides_block
   text_prompt:
     mode: present_plus_negatives
     negatives_per_image: 4
@@ -40,20 +39,18 @@ data:
     std: [0.229, 0.224, 0.225]
 
 peft:
-  method: qlora
+  method: $peft_method
   r: 16
   alpha: 32
   dropout: 0.05
-  # Knobs (defaults shown — uncomment to override):
-  # scope: vision_decoder          # vision | vision_decoder | all
-  # bias: none                     # none | all | lora_only
-  # target_modules: [...]          # overrides scope when set
-  qlora:
-    quant_type: nf4
-    compute_dtype: bfloat16
+  # --- advanced ---
+  # scope: vision_decoder
+  # target_modules: null
+  # bias: none
+$qlora_block
 
 train:
-  epochs: 10
+  epochs: $epochs
   batch_size: 1
   grad_accum_steps: 8
   optimizer: auto
@@ -70,8 +67,9 @@ train:
     p_end: 0.0
     decay_steps: 5000
   loss:
-    preset: natural
-    class_imbalance: balanced
+    preset: $loss_preset
+    class_imbalance: $class_imbalance
+    $loss_overrides_block
 
 eval:
   iou_thresholds: [0.5, 0.55, 0.6, 0.65, 0.7, 0.75, 0.8, 0.85, 0.9, 0.95]

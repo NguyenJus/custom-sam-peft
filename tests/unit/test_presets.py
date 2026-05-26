@@ -69,7 +69,6 @@ def test_decide_preset_40gib_chooses_lora_high_rank(
     assert d.method == "lora"
     assert d.r >= 32
     assert d.batch_size >= 2
-    assert d.gradient_checkpointing is False
 
 
 def test_decide_preset_80gib_chooses_max_rank_batch(
@@ -210,7 +209,6 @@ def _make_decision(provenance: str = "calibrated") -> PresetDecision:
         r=32,
         batch_size=2,
         grad_accum_steps=8,
-        gradient_checkpointing=False,
         dtype="bfloat16",
         headroom_bytes=int(1.6 * _GB),
         predicted_bytes=int(38.4 * _GB),
@@ -251,7 +249,7 @@ def test_preset_decision_config_patch_3_sections() -> None:
     assert patch["peft"]["r"] == 32
     assert patch["train"]["batch_size"] == 2
     assert patch["train"]["grad_accum_steps"] == 8
-    assert patch["model"]["gradient_checkpointing"] is False
+    assert "gradient_checkpointing" not in patch["model"]
     assert patch["model"]["dtype"] == "bfloat16"
 
 
@@ -270,15 +268,16 @@ def test_decide_preset_requires_cuda(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def test_predicted_bytes_train_mode_unchanged() -> None:
-    """Existing train-mode callers stay byte-identical after the mode param."""
+    """Existing train-mode callers stay correct after the ckpt param removal."""
     from custom_sam_peft.presets import _predicted_bytes
 
-    # Default mode='train' — same value as the pre-change signature.
-    n = _predicted_bytes("lora", r=4, batch=1, ckpt=False, image_size=1024, cache=None)
-    # And the explicit mode='train' matches.
-    assert n == _predicted_bytes(
-        "lora", r=4, batch=1, ckpt=False, image_size=1024, cache=None, mode="train"
-    )
+    n = _predicted_bytes("lora", r=4, batch=1, image_size=1024, cache=None)
+    assert n == _predicted_bytes("lora", r=4, batch=1, image_size=1024, cache=None, mode="train")
+
+
+def test_preset_decision_label_has_no_ckpt_token() -> None:
+    d = _make_decision()
+    assert "ckpt=" not in d.label()
 
 
 # ---- dtype token in label / round-trip -------------------------------------

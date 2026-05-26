@@ -311,7 +311,6 @@ def _hardware_lines() -> tuple[str, float | None]:
 
 
 def _preset_block(preset: PresetDecision) -> str:
-    ckpt_word = "on" if preset.gradient_checkpointing else "off"
     method_pretty = method_pretty_name(preset.method)
     used_gib = preset.predicted_bytes / (1024**3)
     total_gib = (preset.budget_bytes + preset.headroom_bytes) / (1024**3)
@@ -324,7 +323,7 @@ def _preset_block(preset: PresetDecision) -> str:
         source_line = "- Source: analytic estimate"
     return (
         f"- Method: {method_pretty} r={preset.r}, batch={preset.batch_size}, "
-        f"grad_accum={preset.grad_accum_steps}, gradient_checkpointing={ckpt_word}, bf16\n"
+        f"grad_accum={preset.grad_accum_steps}, bf16\n"
         f"- GPU:    {preset.gpu_name} ({total_gib:.1f} GiB)\n"
         f"- Budget: {used_gib:.1f} / {total_gib:.1f} GiB used ({headroom_gib:.1f} GiB headroom)\n"
         f"{source_line}"
@@ -336,11 +335,7 @@ def _oom_edge_note(events: tuple[OomEvent, ...]) -> str | None:
     if not events:
         return None
     final_mb = events[-1].new_micro_batch_size
-    ckpt_event = next((e for e in events if e.action == "grad_ckpt_enabled"), None)
-    base = f"OOM retries: {len(events)} — final micro_batch={final_mb}"
-    if ckpt_event is not None:
-        base += f", gradient_checkpointing enabled at step {ckpt_event.step}"
-    return base
+    return f"OOM retries: {len(events)} — final micro_batch={final_mb}"
 
 
 def _write_summary_no_val(ctx: BundleContext) -> None:

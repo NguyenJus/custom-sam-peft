@@ -101,8 +101,14 @@ def run_eval(
         resolved_run_dir = None
 
     _peft_method = make_peft_method(resolved_peft_method)
-    if split == "val" and cfg.data.val is None and cfg.data.val_split is None:
-        raise ValueError("--split val requires data.val or data.val_split in config; got neither.")
+    _hf_val = (
+        cfg.data.format == "hf" and cfg.data.hf is not None and cfg.data.hf.split_val is not None
+    )
+    if split == "val" and cfg.data.val is None and cfg.data.val_split is None and not _hf_val:
+        raise ValueError(
+            "--split val requires data.val, data.val_split, or data.hf.split_val in config; "
+            "got none."
+        )
     if split == "test" and cfg.data.test is None:
         raise ValueError("--split test requires data.test in config; got None for data.test")
 

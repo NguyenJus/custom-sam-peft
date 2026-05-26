@@ -20,9 +20,11 @@ from custom_sam_peft.config.schema import ClassImbalance, Intensity, Preset
 from custom_sam_peft.utils.huggingface import download_model
 
 TEMPLATES: dict[str, str] = {
-    "coco-text-lora": "coco_text_lora.yaml",
-    "coco-text-qlora": "coco_text_qlora.yaml",
+    "coco-text-lora": "lora",
+    "coco-text-qlora": "qlora",
 }
+
+UNIFIED_TEMPLATE = "config_full.yaml"
 
 
 def _build_loss_overrides_block(preset: str) -> str:
@@ -44,6 +46,52 @@ def _build_loss_overrides_block(preset: str) -> str:
     )
 
 
+def _flag_driven_blocks(peft_method: str) -> dict[str, str]:
+    """The block-placeholder strings the flag-driven path substitutes.
+
+    Wizard-only branches (dataset format, validation mode, model path) get
+    their flag-driven defaults here: local-COCO dataset, explicit-val, default
+    model dir.
+    """
+    model_block = (
+        "  name: facebook/sam3.1\n"
+        "  local_dir: models/sam3.1\n"
+        "  checkpoint_file: sam3.1_multiplex.pt"
+    )
+    dataset_block = (
+        "  format: coco\n"
+        "  train:\n"
+        "    annotations: data/train.json\n"
+        "    images: data/train/\n"
+        "  # HuggingFace alternative — set format: hf and uncomment:\n"
+        "  # hf:\n"
+        "  #   name: org/dataset\n"
+        "  #   split_train: train\n"
+        "  #   split_val: validation"
+    )
+    validation_block = (
+        "  val:\n"
+        "    annotations: data/val.json\n"
+        "    images: data/val/\n"
+        "  # Auto-split alternative (carve data.train into train+val):\n"
+        "  # val_split:\n"
+        "  #   fraction: 0.1\n"
+        "  #   seed: null\n"
+        "  # No-val alternative: omit both val: and val_split:."
+    )
+    qlora_block = (
+        "  qlora:\n    quant_type: nf4\n    compute_dtype: bfloat16"
+        if peft_method == "qlora"
+        else ""
+    )
+    return {
+        "model_block": model_block,
+        "dataset_block": dataset_block,
+        "validation_block": validation_block,
+        "qlora_block": qlora_block,
+    }
+
+
 def run_init(
     template: str,
     output: Path,
@@ -53,7 +101,7 @@ def run_init(
     class_imbalance: str = "balanced",
     force: bool = False,
 ) -> None:
-    """Write a starter config template to *output*.
+    """Write a starter config (unified config_full.yaml) to *output*.
 
     Raises:
         ValueError: unknown template name, preset, intensity, or class_imbalance.
@@ -90,13 +138,21 @@ def run_init(
         )
 
     loss_overrides_block = _build_loss_overrides_block(preset)
-    raw = (files("custom_sam_peft.cli.templates") / TEMPLATES[template]).read_text()
+
+    peft_method = TEMPLATES[template]
+    blocks = _flag_driven_blocks(peft_method)
+    raw = (files("custom_sam_peft.cli.templates") / UNIFIED_TEMPLATE).read_text()
     body = string.Template(raw).substitute(
-        preset=preset,
-        intensity=intensity,
-        overrides_block=overrides_block,
+        run_name="my-run",
+        peft_method=peft_method,
+        epochs=10,
+        aug_preset=preset,
+        loss_preset=preset,
+        aug_intensity=intensity,
         class_imbalance=class_imbalance,
+        overrides_block=overrides_block,
         loss_overrides_block=loss_overrides_block,
+        **blocks,
     )
     output.write_text(body)
 
@@ -146,8 +202,36 @@ def init(
             "--download-weights when --no-download-weights is not passed."
         ),
     ),
+    interactive: bool = typer.Option(
+        False,
+        "--interactive",
+        "-i",
+        help=(
+            "Run the interactive setup wizard. Ignores --template/--preset/"
+            "--intensity/--class-imbalance (collected interactively)."
+        ),
+    ),
 ) -> None:
     """Write a starter config, then optionally download weights."""
+    if interactive:
+        import torch
+
+        from custom_sam_peft.cli import setup_wizard
+
+        if not sys.stdin.isatty():
+            raise typer.BadParameter(
+                "interactive setup needs a TTY; use the flag-driven "
+                "`custom-sam-peft init …` instead"
+            )
+        if output.exists() and not force:
+            raise typer.BadParameter(
+                f"refusing to overwrite existing {output}; pass --force",
+                param_hint="--output",
+            )
+        setup_wizard.generate_config(output, force=force, cuda_available=torch.cuda.is_available())
+        _maybe_download_weights(output, download_weights=download_weights, yes=yes)
+        return
+
     try:
         run_init(
             template,

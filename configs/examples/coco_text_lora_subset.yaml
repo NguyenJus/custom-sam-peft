@@ -9,7 +9,6 @@ model:
   name: facebook/sam3.1
   local_dir: models/sam3.1
   checkpoint_file: sam3.1_multiplex.pt
-  gradient_checkpointing: false
   dtype: bfloat16
 
 data:

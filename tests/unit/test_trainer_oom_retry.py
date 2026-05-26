@@ -46,7 +46,6 @@ from custom_sam_peft.train.loop import _train_step_with_oom_ladder  # noqa: E402
 class _State:
     step: int = 0
     micro_batch_size: int = 8
-    gradient_checkpointing: bool = False
     pending_oom_events: list[OomEvent] = field(default_factory=list)
 
 
@@ -77,18 +76,9 @@ def test_oom_multiple_halvings_until_one() -> None:
     assert all(e.action == "microbatch_halved" for e in state.pending_oom_events)
 
 
-def test_oom_after_microbatch_1_enables_ckpt() -> None:
+def test_oom_after_microbatch_1_raises() -> None:
     state = _State(micro_batch_size=8)
-    model = _OomThenOk(n_oom=4)  # 3 halvings → mb=1, 4th OOM flips ckpt
-    _train_step_with_oom_ladder(model, _make_batch(8), state, forward_call=_fake_forward_call)
-    assert state.micro_batch_size == 1
-    assert state.gradient_checkpointing is True
-    assert state.pending_oom_events[-1].action == "grad_ckpt_enabled"
-
-
-def test_oom_after_ckpt_enabled_raises() -> None:
-    state = _State(micro_batch_size=8)
-    model = _OomThenOk(n_oom=5)  # 3 halvings + 1 ckpt + 1 final OOM → raise
+    model = _OomThenOk(n_oom=4)  # 3 halvings → mb=1, 4th OOM raises
     with pytest.raises(RuntimeError, match="OOM at step"):
         _train_step_with_oom_ladder(model, _make_batch(8), state, forward_call=_fake_forward_call)
 
@@ -105,23 +95,6 @@ def test_oom_microbatch_shrink_is_sticky() -> None:
     _train_step_with_oom_ladder(model2, _make_batch(8), state, forward_call=_fake_forward_call)
     # mb did not reset.
     assert state.micro_batch_size == 4
-
-
-def test_oom_ckpt_toggle_is_once() -> None:
-    """Two separate OOMs that would each enable ckpt produce only one event."""
-    state = _State(micro_batch_size=1, gradient_checkpointing=False)
-    model = _OomThenOk(n_oom=1)
-    _train_step_with_oom_ladder(model, _make_batch(1), state, forward_call=_fake_forward_call)
-    assert state.gradient_checkpointing is True
-    n_after_first = sum(1 for e in state.pending_oom_events if e.action == "grad_ckpt_enabled")
-    assert n_after_first == 1
-    # Subsequent OOM with ckpt already on goes straight to RuntimeError.
-    state.step = 1
-    model2 = _OomThenOk(n_oom=1)
-    with pytest.raises(RuntimeError):
-        _train_step_with_oom_ladder(model2, _make_batch(1), state, forward_call=_fake_forward_call)
-    n_after_second = sum(1 for e in state.pending_oom_events if e.action == "grad_ckpt_enabled")
-    assert n_after_second == 1  # still just the one
 
 
 def test_oom_optimizer_zero_grad_called_once_per_step() -> None:
@@ -208,7 +181,6 @@ def test_oom_events_serialise_into_bundle_edge_cases() -> None:
             r=16,
             batch_size=1,
             grad_accum_steps=16,
-            gradient_checkpointing=False,
             dtype="bfloat16",
             headroom_bytes=0,
             predicted_bytes=0,
@@ -228,14 +200,7 @@ def test_oom_events_serialise_into_bundle_edge_cases() -> None:
             per_example_iou=[],
             merged_dir=None,
             merged_export_error=None,
-            oom_events=(
-                OomEvent(
-                    step=1,
-                    action="microbatch_halved",
-                    new_micro_batch_size=4,
-                    new_gradient_checkpointing=False,
-                ),
-            ),
+            oom_events=(OomEvent(step=1, action="microbatch_halved", new_micro_batch_size=4),),
         )
         report = _MM(overall={"mAP": 0.0})
         val_ds = _MM(__len__=lambda self: 0)

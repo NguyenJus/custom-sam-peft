@@ -17,17 +17,14 @@ from typing import Literal
 class OomEvent:
     """One step where the trainer caught OOM and adapted before retrying.
 
-    `action` distinguishes the two adaptive rungs:
+    `action` records the single adaptive rung:
       - "microbatch_halved": `state.micro_batch_size //= 2`, retry same step.
-      - "grad_ckpt_enabled": `state.gradient_checkpointing = True`, retry same step.
 
-    The fields capture *post*-adaptation state so that downstream rendering
-    ("OOM retries: N — final micro_batch=M, gradient_checkpointing enabled at
-    step S") can reconstruct the run's safety-net history without re-traversing
-    the trainer's mutable state.
+    The fields capture *post*-adaptation state so downstream rendering
+    ("OOM retries: N — final micro_batch=M") can reconstruct the run's
+    safety-net history without re-traversing the trainer's mutable state.
     """
 
     step: int
-    action: Literal["microbatch_halved", "grad_ckpt_enabled"]
+    action: Literal["microbatch_halved"]
     new_micro_batch_size: int
-    new_gradient_checkpointing: bool
