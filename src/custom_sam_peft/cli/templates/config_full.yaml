@@ -1,0 +1,81 @@
+# custom-sam-peft starter config (comprehensive) — text-prompt finetune.
+# Edit any section below, then run the launch command shown by `init`.
+# -----------------------------------------------------------------------------
+# Schema is the source of truth (src/custom_sam_peft/config/schema.py). Keys are
+# echoed for discoverability; commented blocks are alternative branches or
+# advanced overrides — uncomment and edit to use them.
+# -----------------------------------------------------------------------------
+run:
+  name: $run_name
+  output_dir: ./runs
+  seed: 42
+
+model:
+$model_block
+  dtype: bfloat16
+  # --- advanced ---
+  # revision: null
+  # device: null
+
+data:
+$dataset_block
+$validation_block
+  prompt_mode: text
+  image_size: 1008
+  # --- advanced ---
+  # channels: 3
+  # channel_semantics: rgb
+  augmentations:
+    preset: $aug_preset
+    intensity: $aug_intensity
+    $overrides_block
+  text_prompt:
+    mode: present_plus_negatives
+    negatives_per_image: 4
+  # remove the `normalize:` block unless overriding for a non-SAM3 backbone —
+  # SAM3.1's Sam3ImageProcessor returns the ImageNet stats below.
+  normalize:
+    mean: [0.485, 0.456, 0.406]
+    std: [0.229, 0.224, 0.225]
+
+peft:
+  method: $peft_method
+  r: 16
+  alpha: 32
+  dropout: 0.05
+  # --- advanced ---
+  # scope: vision_decoder
+  # target_modules: null
+  # bias: none
+$qlora_block
+
+train:
+  epochs: $epochs
+  batch_size: 1
+  grad_accum_steps: 8
+  optimizer: auto
+  learning_rate: 1.0e-4
+  lr_schedule: cosine
+  warmup_steps: 100
+  max_grad_norm: 1.0
+  eval_every: 500
+  save_every: 1000
+  log_every: 50
+  nan_abort_after: 20
+  box_hint:
+    p_start: 1.0
+    p_end: 0.0
+    decay_steps: 5000
+  loss:
+    preset: $loss_preset
+    class_imbalance: $class_imbalance
+    $loss_overrides_block
+
+eval:
+  iou_thresholds: [0.5, 0.55, 0.6, 0.65, 0.7, 0.75, 0.8, 0.85, 0.9, 0.95]
+
+tracking:
+  backend: tensorboard
+
+export:
+  merge: false
