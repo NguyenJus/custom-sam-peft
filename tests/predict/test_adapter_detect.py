@@ -46,6 +46,13 @@ def test_detect_adapter_kind_missing_adapter_config_raises() -> None:
         detect_adapter_kind(_BAD_DIR)
 
 
+def test_detect_adapter_kind_qlora_only_no_adapter_config(tmp_path: Path) -> None:
+    """A dir with ONLY custom_sam_peft_qlora.json (no adapter_config.json) → "qlora", no raise."""
+    (tmp_path / "custom_sam_peft_qlora.json").write_text("{}", encoding="utf-8")
+    kind: AdapterKind = detect_adapter_kind(tmp_path)
+    assert kind == "qlora"
+
+
 # ---------------------------------------------------------------------------
 # load_adapter dispatch
 # ---------------------------------------------------------------------------
@@ -145,3 +152,23 @@ def test_read_adapter_base_model_name_absent_returns_none(tmp_path: Path) -> Non
 def test_read_adapter_base_model_name_no_file_returns_none(tmp_path: Path) -> None:
     """Returns None when adapter_config.json does not exist at all."""
     assert read_adapter_base_model_name(tmp_path) is None
+
+
+def test_read_base_model_name_delegates() -> None:
+    """The predict delegator and the relocated peft_adapters impl agree."""
+    from custom_sam_peft.peft_adapters import (
+        read_adapter_base_model_name as _impl,
+    )
+
+    assert read_adapter_base_model_name(_LORA_DIR) == _impl(_LORA_DIR)
+
+
+def test_detect_adapter_kind_delegates_and_still_validates() -> None:
+    """detect_adapter_kind agrees with the canonical seam for lora/qlora dirs
+    AND still raises typer.BadParameter on a dir missing adapter_config.json."""
+    from custom_sam_peft.peft_adapters import discover_method_from_checkpoint
+
+    assert detect_adapter_kind(_LORA_DIR) == discover_method_from_checkpoint(_LORA_DIR)
+    assert detect_adapter_kind(_QLORA_DIR) == discover_method_from_checkpoint(_QLORA_DIR)
+    with pytest.raises(typer.BadParameter, match=r"adapter_config\.json"):
+        detect_adapter_kind(_BAD_DIR)

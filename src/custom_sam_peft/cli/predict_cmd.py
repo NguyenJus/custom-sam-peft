@@ -122,9 +122,21 @@ def predict(
         help="Progress display mode: auto|on|off|plain.",
         metavar="MODE",
     ),
+    interactive: bool = typer.Option(
+        False,
+        "--interactive",
+        "-i",
+        help="Build a runnable predict command interactively (prompts for all inputs).",
+    ),
 ) -> None:
     """Run inference on images with optional adapter."""
     configure_logging(verbose)
+    if interactive:
+        from custom_sam_peft.cli import _interactive
+
+        _interactive.require_tty()
+        _interactive.run_predict_interactive(force=False)
+        return
     opts = PredictOptions(
         images=images,
         prompts=prompts,

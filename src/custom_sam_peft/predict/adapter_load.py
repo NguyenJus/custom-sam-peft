@@ -13,10 +13,9 @@ base-model-only hot path never imports peft_adapters (spec §2).
 
 from __future__ import annotations
 
-import json
 import logging
 from pathlib import Path
-from typing import Literal
+from typing import Literal, cast
 
 import typer
 from torch import nn
@@ -32,16 +31,22 @@ _LORA_CONFIG = "adapter_config.json"
 def detect_adapter_kind(checkpoint_dir: Path) -> AdapterKind:
     """Return "qlora" if the QLoRA sentinel file is present, else "lora".
 
-    Raises typer.BadParameter if adapter_config.json is also absent (i.e.
-    the directory does not look like any known adapter checkpoint).
+    Delegates kind discovery to the canonical peft_adapters seam, but still
+    raises typer.BadParameter if adapter_config.json is absent (i.e. the
+    directory does not look like any known adapter checkpoint). The canonical
+    discover_method_from_checkpoint does NOT validate adapter_config.json, so
+    that check stays here.
     """
-    if (checkpoint_dir / _QLORA_SENTINEL).is_file():
-        return "qlora"
-    if (checkpoint_dir / _LORA_CONFIG).is_file():
-        return "lora"
-    raise typer.BadParameter(
-        f"--checkpoint must contain adapter_config.json (checked: {checkpoint_dir})"
-    )
+    if (
+        not (checkpoint_dir / _LORA_CONFIG).is_file()
+        and not (checkpoint_dir / _QLORA_SENTINEL).is_file()
+    ):
+        raise typer.BadParameter(
+            f"--checkpoint must contain adapter_config.json (checked: {checkpoint_dir})"
+        )
+    from custom_sam_peft.peft_adapters import discover_method_from_checkpoint
+
+    return cast(AdapterKind, discover_method_from_checkpoint(checkpoint_dir))
 
 
 def load_adapter(model: nn.Module, checkpoint_dir: Path, kind: AdapterKind) -> nn.Module:
@@ -87,12 +92,11 @@ def maybe_merge_adapter(model: nn.Module, *, merge: bool) -> nn.Module:
 def read_adapter_base_model_name(checkpoint_dir: Path) -> str | None:
     """Read base_model_name_or_path from adapter_config.json, or return None.
 
-    Returns None if the file is absent or the key is missing.
+    Thin delegator to the relocated peft_adapters implementation (spec §7.2).
+    Import stays lazy to match this module's import discipline.
     """
-    config_path = checkpoint_dir / _LORA_CONFIG
-    if not config_path.is_file():
-        return None
-    with config_path.open(encoding="utf-8") as fh:
-        data: dict[str, object] = json.load(fh)
-    value = data.get("base_model_name_or_path")
-    return str(value) if value is not None else None
+    from custom_sam_peft.peft_adapters import (
+        read_adapter_base_model_name as _impl,
+    )
+
+    return _impl(checkpoint_dir)

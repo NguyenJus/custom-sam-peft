@@ -9,6 +9,7 @@ import pytest
 import typer
 from typer.testing import CliRunner
 
+from custom_sam_peft.cli import _interactive as itv
 from custom_sam_peft.cli import setup_wizard as sw
 from custom_sam_peft.cli.main import app
 from custom_sam_peft.config.loader import load_config
@@ -207,13 +208,23 @@ def test_ask_class_imbalance_coco_unmeasurable_no_confirm(tmp_path, monkeypatch)
 
 
 def _patch_prompts(monkeypatch, *, texts=None, choices=None, confirms=None):
-    """Feed scripted answers to the three primitives in call order."""
+    """Feed scripted answers to the three primitives in call order.
+
+    Patches both sw (setup_wizard) and itv (_interactive) so that moved
+    functions in _interactive see the mocks too.
+    """
     t = iter(texts or [])
     c = iter(choices or [])
     cf = iter(confirms or [])
-    monkeypatch.setattr(sw, "ask_text", lambda *a, **k: next(t))
-    monkeypatch.setattr(sw, "ask_choice", lambda *a, **k: next(c))
-    monkeypatch.setattr(sw, "ask_confirm", lambda *a, **k: next(cf))
+    _ask_text = lambda *a, **k: next(t)  # noqa: E731
+    _ask_choice = lambda *a, **k: next(c)  # noqa: E731
+    _ask_confirm = lambda *a, **k: next(cf)  # noqa: E731
+    monkeypatch.setattr(sw, "ask_text", _ask_text)
+    monkeypatch.setattr(sw, "ask_choice", _ask_choice)
+    monkeypatch.setattr(sw, "ask_confirm", _ask_confirm)
+    monkeypatch.setattr(itv, "ask_text", _ask_text)
+    monkeypatch.setattr(itv, "ask_choice", _ask_choice)
+    monkeypatch.setattr(itv, "ask_confirm", _ask_confirm)
 
 
 def test_step_fragment_shapes_are_nested_dicts(monkeypatch) -> None:
@@ -227,7 +238,7 @@ def test_step_fragment_shapes_are_nested_dicts(monkeypatch) -> None:
     # annotations → balanced with no confirm prompt.
     monkeypatch.setattr(sw, "measure_class_imbalance_ratio", lambda *a, **k: None)
     ctx = sw.Ctx(answers={}, cuda_available=False)
-    answers = sw.run_wizard(ctx)
+    answers = sw.run_wizard(ctx, sw.STEPS)
     assert answers["run"]["name"] == "my-run"
     assert answers["data"]["format"] == "coco"
     assert answers["data"]["train"]["annotations"] == "ann.json"
@@ -237,10 +248,31 @@ def test_step_fragment_shapes_are_nested_dicts(monkeypatch) -> None:
     assert ctx.run_mode == "train"
 
 
-def test_when_gating_skips_class_imbalance_in_eval_mode() -> None:
+def test_run_mode_offers_only_train_run(monkeypatch) -> None:
+    captured: dict[str, list[str]] = {}
+
+    def _fake_choice(prompt, choices, *, default=None):
+        captured["choices"] = list(choices)
+        return "train"
+
+    monkeypatch.setattr(sw, "ask_choice", _fake_choice)
+    ctx = sw.Ctx(answers={}, cuda_available=False)
+    sw._ask_run_mode(ctx)
+    assert captured["choices"] == ["train", "run"]
+
+
+def test_epochs_step_always_runs() -> None:
+    step = next(s for s in sw.STEPS if s.id == "epochs")
+    for mode in ("train", "run"):
+        ctx = sw.Ctx(answers={}, cuda_available=False, run_mode=mode)
+        assert step.when(ctx) is True
+
+
+def test_class_imbalance_step_runs_for_train_and_run() -> None:
     step = next(s for s in sw.STEPS if s.id == "class_imbalance")
-    ctx = sw.Ctx(answers={"data": {"format": "coco"}}, cuda_available=False, run_mode="eval")
-    assert step.when(ctx) is False
+    for mode in ("train", "run"):
+        ctx = sw.Ctx(answers={"data": {"format": "coco"}}, cuda_available=False, run_mode=mode)
+        assert step.when(ctx) is True
 
 
 def test_when_gating_skips_vram_autosize_without_cuda(monkeypatch) -> None:
@@ -404,7 +436,7 @@ def test_validate_backstop_exits_nonzero_no_file(tmp_path, monkeypatch, capsys) 
     monkeypatch.setattr(
         sw,
         "run_wizard",
-        lambda ctx: {
+        lambda ctx, steps: {
             "run": {"name": "r"},
             "data": {
                 "format": "coco",
@@ -422,7 +454,7 @@ def test_validate_backstop_exits_nonzero_no_file(tmp_path, monkeypatch, capsys) 
 
 
 def test_ctrl_c_writes_nothing(tmp_path, monkeypatch) -> None:
-    def _boom(ctx):
+    def _boom(ctx, steps):
         raise KeyboardInterrupt
 
     monkeypatch.setattr(sw, "run_wizard", _boom)
@@ -481,7 +513,7 @@ def test_non_tty_hard_errors(tmp_path, monkeypatch) -> None:
     called: list[int] = []
     monkeypatch.setattr(
         "custom_sam_peft.cli.setup_wizard.run_wizard",
-        lambda ctx: called.append(1) or {},
+        lambda ctx, steps: called.append(1) or {},
     )
     out = tmp_path / "c.yaml"
     result = runner.invoke(app, ["init", "--interactive", "--output", str(out)])
@@ -496,7 +528,7 @@ def test_output_exists_without_force_errors_before_prompting(tmp_path, monkeypat
     called: list[int] = []
     monkeypatch.setattr(
         "custom_sam_peft.cli.setup_wizard.run_wizard",
-        lambda ctx: called.append(1) or {},
+        lambda ctx, steps: called.append(1) or {},
     )
     out = tmp_path / "c.yaml"
     out.write_text("existing\n")
@@ -570,6 +602,8 @@ def test_fraction_validator_rejects_non_numeric(monkeypatch) -> None:
 
     monkeypatch.setattr(sw, "ask_choice", lambda *a, **k: "auto-split")
     monkeypatch.setattr(sw, "ask_text", _capture_ask_text)
+    monkeypatch.setattr(itv, "ask_choice", lambda *a, **k: "auto-split")
+    monkeypatch.setattr(itv, "ask_text", _capture_ask_text)
     ctx = sw.Ctx(answers={"data": {"format": "coco"}}, cuda_available=False)
     result = sw._ask_validation(ctx)
     assert result == {"data": {"val_split": {"fraction": 0.1}}}
@@ -811,7 +845,7 @@ def test_step_fragment_shapes_updated_for_limit_step(monkeypatch) -> None:
     )
     monkeypatch.setattr(sw, "infer_class_imbalance", lambda *a, **k: "balanced")
     ctx = sw.Ctx(answers={}, cuda_available=False)
-    answers = sw.run_wizard(ctx)
+    answers = sw.run_wizard(ctx, sw.STEPS)
     assert answers["run"]["name"] == "my-run"
     assert answers["data"]["format"] == "coco"
     assert answers["train"]["epochs"] == 5

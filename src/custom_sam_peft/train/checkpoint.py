@@ -32,7 +32,6 @@ from custom_sam_peft.peft_adapters.qlora import load_qlora, save_qlora
 
 _LOG = logging.getLogger(__name__)
 _TRAINING_STATE_FILENAME = "training_state.pt"
-_QLORA_META_FILENAME = "custom_sam_peft_qlora.json"
 _FORMAT_VERSION = 1
 _CHANNEL_ADAPTER_FILENAME = "channel_adapter.pt"
 
@@ -115,8 +114,10 @@ def save_adapter(wrapper: Sam3Wrapper, path: Path) -> None:
 
 
 def load_adapter(wrapper: Sam3Wrapper, path: Path) -> Sam3Wrapper:
-    """LoRA vs QLoRA dispatch by custom_sam_peft_qlora.json presence at `path`."""
-    if (path / _QLORA_META_FILENAME).exists():
+    """LoRA vs QLoRA dispatch via the canonical peft_adapters discovery seam."""
+    from custom_sam_peft.peft_adapters import discover_method_from_checkpoint
+
+    if discover_method_from_checkpoint(path) == "qlora":
         load_qlora(wrapper, path)
     else:
         load_lora(wrapper, path)

@@ -33,9 +33,13 @@ def _make_cfg(
 def test_run_eval_dispatches_qlora_from_disk(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """run_eval with peft_method='qlora' and model=None must dispatch via load_from_disk
-    (calling load_qlora) and call _load_channel_adapter, without raising."""
+    """run_eval with a qlora sentinel checkpoint must dispatch load_qlora and
+    call _load_channel_adapter (both now happen inside load_adapter)."""
     cfg = _make_cfg(peft_method="qlora")
+
+    # Write the qlora sentinel so discover_method_from_checkpoint returns "qlora".
+    (tmp_path / "custom_sam_peft_qlora.json").write_text("{}")
+    (tmp_path / "adapter_config.json").write_text("{}")
 
     qlora_loader_calls: list[tuple[object, object]] = []
     channel_adapter_calls: list[tuple[object, object]] = []
@@ -47,9 +51,10 @@ def test_run_eval_dispatches_qlora_from_disk(
     def fake_load_channel_adapter(wrapper: object, dirpath: object) -> None:
         channel_adapter_calls.append((wrapper, dirpath))
 
-    monkeypatch.setattr("custom_sam_peft.peft_adapters.qlora.load_qlora", fake_load_qlora)
+    # load_adapter in train/checkpoint.py uses module-level imports; patch there.
+    monkeypatch.setattr("custom_sam_peft.train.checkpoint.load_qlora", fake_load_qlora)
     monkeypatch.setattr(
-        "custom_sam_peft.eval.runner._load_channel_adapter", fake_load_channel_adapter
+        "custom_sam_peft.train.checkpoint._load_channel_adapter", fake_load_channel_adapter
     )
     monkeypatch.setattr(
         "custom_sam_peft.eval.runner.lookup",
@@ -80,16 +85,20 @@ def test_run_eval_rejects_test_split_when_data_test_none(tmp_path: Path) -> None
 def test_run_eval_lora_calls_load_channel_adapter(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """run_eval with peft_method='lora' and model=None must call _load_channel_adapter."""
+    """run_eval with peft_method='lora' and model=None must call _load_channel_adapter
+    (via load_adapter in train/checkpoint.py)."""
     cfg = _make_cfg(peft_method="lora")
+    # No qlora sentinel → discover_method_from_checkpoint returns "lora"
+    (tmp_path / "adapter_config.json").write_text("{}")
     channel_adapter_calls: list[tuple[object, object]] = []
 
+    # load_adapter in train/checkpoint.py uses module-level imports; patch there.
     monkeypatch.setattr(
-        "custom_sam_peft.peft_adapters.lora.load_lora",
+        "custom_sam_peft.train.checkpoint.load_lora",
         lambda *_a, **_kw: None,
     )
     monkeypatch.setattr(
-        "custom_sam_peft.eval.runner._load_channel_adapter",
+        "custom_sam_peft.train.checkpoint._load_channel_adapter",
         lambda wrapper, dirpath: channel_adapter_calls.append((wrapper, dirpath)),
     )
     monkeypatch.setattr(
@@ -126,7 +135,8 @@ def test_run_eval_dispatches_dataset_via_registry(
 
     monkeypatch.setattr("custom_sam_peft.eval.runner.lookup", fake_lookup)
     monkeypatch.setattr("custom_sam_peft.eval.runner.load_sam31", lambda _m, **_kw: MagicMock())
-    monkeypatch.setattr("custom_sam_peft.peft_adapters.lora.load_lora", lambda *_a, **_kw: None)
+    # load_adapter dispatches load_lora via train.checkpoint's module-level import.
+    monkeypatch.setattr("custom_sam_peft.train.checkpoint.load_lora", lambda *_a, **_kw: None)
 
     fake_report = MagicMock()
     monkeypatch.setattr(
@@ -164,7 +174,8 @@ def test_run_eval_accepts_prebuilt_val_dataset_and_model(
 
     monkeypatch.setattr("custom_sam_peft.eval.runner.lookup", _forbidden_lookup)
     monkeypatch.setattr("custom_sam_peft.eval.runner.load_sam31", _forbidden_load)
-    monkeypatch.setattr("custom_sam_peft.peft_adapters.lora.load_lora", lambda *_a, **_kw: None)
+    # load_adapter dispatches load_lora via train.checkpoint's module-level import.
+    monkeypatch.setattr("custom_sam_peft.train.checkpoint.load_lora", lambda *_a, **_kw: None)
 
     fake_report = MagicMock(overall={"mAP": 0.5}, per_class={}, n_images=3, n_predictions=3)
     captured: dict[str, object] = {}
@@ -222,7 +233,8 @@ def test_run_eval_return_per_example_iou_default_false_unchanged(
         lambda *_a, **_kw: lambda *a, **kw: _empty_ds,
     )
     monkeypatch.setattr("custom_sam_peft.eval.runner.load_sam31", lambda _m, **_kw: MagicMock())
-    monkeypatch.setattr("custom_sam_peft.peft_adapters.lora.load_lora", lambda *_a, **_kw: None)
+    # load_adapter dispatches load_lora via train.checkpoint's module-level import.
+    monkeypatch.setattr("custom_sam_peft.train.checkpoint.load_lora", lambda *_a, **_kw: None)
 
     fake_report = MagicMock(overall={"mAP": 0.0})
     monkeypatch.setattr(
@@ -293,7 +305,8 @@ def test_run_eval_auto_split_threads_resolved_image_ids_to_builder(
         lambda kind, name: fake_builder,
     )
     monkeypatch.setattr("custom_sam_peft.eval.runner.load_sam31", lambda _m, **_kw: MagicMock())
-    monkeypatch.setattr("custom_sam_peft.peft_adapters.lora.load_lora", lambda *_a, **_kw: None)
+    # load_adapter dispatches load_lora via train.checkpoint's module-level import.
+    monkeypatch.setattr("custom_sam_peft.train.checkpoint.load_lora", lambda *_a, **_kw: None)
     fake_report = MagicMock(overall={"mAP": 0.5}, per_class={}, n_images=2, n_predictions=2)
     monkeypatch.setattr(
         "custom_sam_peft.eval.runner.Evaluator",
@@ -352,7 +365,8 @@ def test_run_eval_resolves_auto_via_decide_eval_batch_size(
         lambda *_a, **_kw: lambda *a, **kw: MagicMock(__len__=lambda self: 0, class_names=[]),
     )
     monkeypatch.setattr("custom_sam_peft.eval.runner.load_sam31", lambda _m, **_kw: MagicMock())
-    monkeypatch.setattr("custom_sam_peft.peft_adapters.lora.load_lora", lambda *_a, **_kw: None)
+    # load_adapter dispatches load_lora via train.checkpoint's module-level import.
+    monkeypatch.setattr("custom_sam_peft.train.checkpoint.load_lora", lambda *_a, **_kw: None)
     monkeypatch.setattr("custom_sam_peft.eval.runner.Evaluator", _fake_evaluator)
 
     run_eval(cfg, checkpoint=tmp_path, split="val", output_dir=tmp_path)
@@ -389,7 +403,8 @@ def test_run_eval_cpu_fallback_logs_info(
         lambda *_a, **_kw: lambda *a, **kw: MagicMock(__len__=lambda self: 0, class_names=[]),
     )
     monkeypatch.setattr("custom_sam_peft.eval.runner.load_sam31", lambda _m, **_kw: MagicMock())
-    monkeypatch.setattr("custom_sam_peft.peft_adapters.lora.load_lora", lambda *_a, **_kw: None)
+    # load_adapter dispatches load_lora via train.checkpoint's module-level import.
+    monkeypatch.setattr("custom_sam_peft.train.checkpoint.load_lora", lambda *_a, **_kw: None)
     monkeypatch.setattr(
         "custom_sam_peft.eval.runner.Evaluator",
         lambda _cfg: MagicMock(evaluate_and_save=MagicMock(return_value=MagicMock())),
@@ -401,3 +416,139 @@ def test_run_eval_cpu_fallback_logs_info(
     assert "eval.batch_size=auto on CPU" in log_messages, (
         f"Expected 'eval.batch_size=auto on CPU' in logs; got: {log_messages!r}"
     )
+
+
+# ---------------------------------------------------------------------------
+# Phase 4: baseline path, sentinel dispatch, advisory warning, output-dir fix
+# ---------------------------------------------------------------------------
+
+
+def test_peft_inferred_lora_overrides_cfg_method(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A lora checkpoint (no qlora sentinel) dispatches load_lora even when cfg says qlora."""
+    cfg = _make_cfg(peft_method="qlora")
+    # No qlora sentinel → discover_method_from_checkpoint returns "lora"
+    (tmp_path / "adapter_config.json").write_text("{}")
+    calls: list[str] = []
+    # load_adapter in train/checkpoint.py calls module-level load_lora/load_qlora.
+    monkeypatch.setattr(
+        "custom_sam_peft.train.checkpoint.load_lora", lambda *a, **k: calls.append("lora")
+    )
+    monkeypatch.setattr(
+        "custom_sam_peft.train.checkpoint.load_qlora", lambda *a, **k: calls.append("qlora")
+    )
+    monkeypatch.setattr(
+        "custom_sam_peft.train.checkpoint._load_channel_adapter", lambda *a, **k: None
+    )
+    monkeypatch.setattr("custom_sam_peft.eval.runner.load_sam31", lambda _m, **_kw: MagicMock())
+    monkeypatch.setattr(
+        "custom_sam_peft.eval.runner.lookup",
+        lambda kind, name: lambda cfg_dict, **kw: MagicMock(),
+    )
+    ev = MagicMock()
+    ev.evaluate_and_save.return_value = MagicMock(overall={})
+    monkeypatch.setattr("custom_sam_peft.eval.runner.Evaluator", lambda _c: ev)
+    run_eval(cfg, checkpoint=tmp_path, split="val", output_dir=tmp_path)
+    assert calls == ["lora"]
+
+
+def test_peft_inferred_qlora_overrides_cfg_method(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A qlora checkpoint dispatches load_qlora even when cfg says lora."""
+    cfg = _make_cfg(peft_method="lora")
+    (tmp_path / "custom_sam_peft_qlora.json").write_text("{}")
+    (tmp_path / "adapter_config.json").write_text("{}")
+    calls: list[str] = []
+    # load_adapter in train/checkpoint.py calls module-level load_lora/load_qlora.
+    monkeypatch.setattr(
+        "custom_sam_peft.train.checkpoint.load_lora", lambda *a, **k: calls.append("lora")
+    )
+    monkeypatch.setattr(
+        "custom_sam_peft.train.checkpoint.load_qlora", lambda *a, **k: calls.append("qlora")
+    )
+    monkeypatch.setattr(
+        "custom_sam_peft.train.checkpoint._load_channel_adapter", lambda *a, **k: None
+    )
+    monkeypatch.setattr("custom_sam_peft.eval.runner.load_sam31", lambda _m, **_kw: MagicMock())
+    monkeypatch.setattr(
+        "custom_sam_peft.eval.runner.lookup",
+        lambda kind, name: lambda cfg_dict, **kw: MagicMock(),
+    )
+    ev = MagicMock()
+    ev.evaluate_and_save.return_value = MagicMock(overall={})
+    monkeypatch.setattr("custom_sam_peft.eval.runner.Evaluator", lambda _c: ev)
+    run_eval(cfg, checkpoint=tmp_path, split="val", output_dir=tmp_path)
+    assert calls == ["qlora"]
+
+
+def test_peft_mismatch_logs_warning(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """cfg.peft.method='qlora' but checkpoint has no qlora sentinel → WARNING logged."""
+    cfg = _make_cfg(peft_method="qlora")  # config says qlora; dir has no sentinel → lora
+    (tmp_path / "adapter_config.json").write_text("{}")
+    # Monkeypatch load_adapter at the runner's binding so the real dispatch is bypassed.
+    monkeypatch.setattr("custom_sam_peft.eval.runner.load_adapter", lambda *a, **k: None)
+    monkeypatch.setattr("custom_sam_peft.eval.runner.load_sam31", lambda _m, **_kw: MagicMock())
+    monkeypatch.setattr(
+        "custom_sam_peft.eval.runner.lookup",
+        lambda kind, name: lambda cfg_dict, **kw: MagicMock(),
+    )
+    ev = MagicMock()
+    ev.evaluate_and_save.return_value = MagicMock(overall={})
+    monkeypatch.setattr("custom_sam_peft.eval.runner.Evaluator", lambda _c: ev)
+    with caplog.at_level("WARNING"):
+        run_eval(cfg, checkpoint=tmp_path, split="val", output_dir=tmp_path)
+    assert any("checkpoint" in r.message and "lora" in r.message for r in caplog.records)
+
+
+def test_checkpoint_none_skips_adapter_load(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """checkpoint=None (baseline) must skip load_adapter entirely."""
+    cfg = _make_cfg()
+    load_calls: list[str] = []
+    monkeypatch.setattr(
+        "custom_sam_peft.eval.runner.load_adapter",
+        lambda *a, **k: load_calls.append("adapter"),
+    )
+    sam_calls: list[int] = []
+    monkeypatch.setattr(
+        "custom_sam_peft.eval.runner.load_sam31",
+        lambda _m, **_kw: (sam_calls.append(1), MagicMock())[1],
+    )
+    monkeypatch.setattr(
+        "custom_sam_peft.eval.runner.lookup",
+        lambda kind, name: lambda cfg_dict, **kw: MagicMock(),
+    )
+    ev = MagicMock()
+    ev.evaluate_and_save.return_value = MagicMock(overall={})
+    monkeypatch.setattr("custom_sam_peft.eval.runner.Evaluator", lambda _c: ev)
+    run_eval(cfg, checkpoint=None, split="val", output_dir=tmp_path)
+    assert load_calls == []  # no adapter load on baseline
+    assert sam_calls == [1]  # base model loaded once
+    assert ev.evaluate_and_save.called
+
+
+def test_baseline_output_dir_fallback(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """checkpoint=None + output_dir=None falls back to cfg.run.output_dir (no crash)."""
+    cfg = _make_cfg()
+    cfg.run.output_dir = str(tmp_path / "runs")
+    monkeypatch.setattr("custom_sam_peft.eval.runner.load_sam31", lambda _m, **_kw: MagicMock())
+    monkeypatch.setattr(
+        "custom_sam_peft.eval.runner.lookup",
+        lambda kind, name: lambda cfg_dict, **kw: MagicMock(),
+    )
+    captured: dict[str, object] = {}
+    ev = MagicMock()
+
+    def _save(wrapper: object, dataset: object, out: object) -> object:
+        captured["out"] = out
+        return MagicMock(overall={})
+
+    ev.evaluate_and_save.side_effect = _save
+    monkeypatch.setattr("custom_sam_peft.eval.runner.Evaluator", lambda _c: ev)
+    run_eval(cfg, checkpoint=None, split="val", output_dir=None)
+    assert str(captured["out"]) == str(tmp_path / "runs")  # no NoneType.parent crash
