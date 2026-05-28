@@ -50,7 +50,9 @@ def _make_trainer_with_val_ds() -> object:
     return Trainer(model, val_ds, val_ds, NoopTracker(), cfg)
 
 
-def test_eval_epoch_caps_auto_batch_by_oom_state(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_eval_epoch_caps_auto_batch_by_oom_state(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """_eval_epoch must cap decide_eval_batch_size result by oom_state.micro_batch_size."""
     trainer = _make_trainer_with_val_ds()
 
@@ -72,7 +74,7 @@ def test_eval_epoch_caps_auto_batch_by_oom_state(monkeypatch: pytest.MonkeyPatch
     monkeypatch.setattr("custom_sam_peft.train.trainer.Evaluator", _fake_evaluator)
 
     oom_state = OomState(micro_batch_size=2)
-    trainer._eval_epoch(step=1, oom_state=oom_state)  # type: ignore[attr-defined]
+    trainer._eval_epoch(step=1, run_dir=tmp_path, oom_state=oom_state)  # type: ignore[attr-defined]
 
     assert len(captured) == 1
     assert captured[0].batch_size == 2, (
@@ -81,6 +83,7 @@ def test_eval_epoch_caps_auto_batch_by_oom_state(monkeypatch: pytest.MonkeyPatch
 
 
 def test_eval_epoch_no_cap_when_predictor_within_train_batch(
+    tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """When predictor picks ≤ oom_state.micro_batch_size, the value is unchanged."""
@@ -102,13 +105,15 @@ def test_eval_epoch_no_cap_when_predictor_within_train_batch(
     monkeypatch.setattr("custom_sam_peft.train.trainer.Evaluator", _fake_evaluator)
 
     oom_state = OomState(micro_batch_size=4)
-    trainer._eval_epoch(step=1, oom_state=oom_state)  # type: ignore[attr-defined]
+    trainer._eval_epoch(step=1, run_dir=tmp_path, oom_state=oom_state)  # type: ignore[attr-defined]
 
     assert len(captured) == 1
     assert captured[0].batch_size == 2
 
 
-def test_eval_epoch_no_cap_when_oom_state_none(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_eval_epoch_no_cap_when_oom_state_none(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """When oom_state is None (legacy / no-train path), no cap is applied."""
     trainer = _make_trainer_with_val_ds()
 
@@ -127,7 +132,7 @@ def test_eval_epoch_no_cap_when_oom_state_none(monkeypatch: pytest.MonkeyPatch) 
 
     monkeypatch.setattr("custom_sam_peft.train.trainer.Evaluator", _fake_evaluator)
 
-    trainer._eval_epoch(step=1, oom_state=None)  # type: ignore[attr-defined]
+    trainer._eval_epoch(step=1, run_dir=tmp_path, oom_state=None)  # type: ignore[attr-defined]
 
     assert len(captured) == 1
     assert captured[0].batch_size == 8
