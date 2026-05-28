@@ -41,7 +41,6 @@ def _make_cfg_k1(**train_overrides: Any) -> TrainConfig:
             format="coco",
             train=DataSplit(annotations="a.json", images="i"),
             val=DataSplit(annotations="a.json", images="i"),
-            prompt_mode="text",
         ),
         peft=PEFTConfig(method="lora", scope="vision"),
         train=TrainHyperparams(

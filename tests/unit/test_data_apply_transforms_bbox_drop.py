@@ -145,7 +145,6 @@ def _make_coco_dataset_with_transform(
         ds = COCODataset(
             annotations=str(ann_path),
             images=str(img_dir),
-            prompt_mode="bbox",
             transforms=transforms,
             text_prompt=TextPromptConfig(),
         )
@@ -269,7 +268,6 @@ def test_hf_apply_transforms_bbox_drop_keeps_aligned_lengths(
         hfds = HFDataset(
             name="x",
             split="train",
-            prompt_mode="bbox",
             transforms=compose,
             text_prompt=TextPromptConfig(),
             field_map=HFFieldMap(segmentation=None),
@@ -307,7 +305,6 @@ def test_hf_getitem_bbox_drop_does_not_raise(
         hfds = HFDataset(
             name="x",
             split="train",
-            prompt_mode="bbox",
             transforms=compose,
             text_prompt=TextPromptConfig(),
             field_map=HFFieldMap(segmentation=None),
@@ -331,7 +328,6 @@ def test_hf_apply_transforms_empty_annotations_still_works(
         hfds = HFDataset(
             name="x",
             split="train",
-            prompt_mode="bbox",
             transforms=compose,
             text_prompt=TextPromptConfig(),
             field_map=HFFieldMap(segmentation=None),

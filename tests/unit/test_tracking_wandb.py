@@ -31,7 +31,6 @@ def _cfg(tmp_path: Path) -> TrainConfig:
             format="coco",
             train=DataSplit(annotations="x.json", images="x/"),
             val=DataSplit(annotations="x.json", images="x/"),
-            prompt_mode="text",
             image_size=32,
         ),
         peft=PEFTConfig(method="lora", scope="vision"),

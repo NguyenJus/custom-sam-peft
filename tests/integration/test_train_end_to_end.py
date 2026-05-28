@@ -48,7 +48,6 @@ def _ds(tiny_coco_dir: Path, pipeline: str) -> COCODataset:
     return COCODataset(
         annotations=str(tiny_coco_dir / "annotations.json"),
         images=str(tiny_coco_dir / "images"),
-        prompt_mode="text",
         transforms=transforms,
         text_prompt=TextPromptConfig(),
     )
@@ -74,7 +73,6 @@ def test_fit_end_to_end_on_tiny_coco(backend: str, tmp_path: Path, tiny_coco_dir
                 annotations=str(tiny_coco_dir / "annotations.json"),
                 images=str(tiny_coco_dir / "images"),
             ),
-            prompt_mode="text",
             image_size=32,
             augmentations=AugmentationsConfig(preset="none"),
         ),
@@ -138,7 +136,6 @@ def test_end_to_end_writes_loss_bundle_json(tmp_path: Path, tiny_coco_dir: Path)
                 annotations=str(tiny_coco_dir / "annotations.json"),
                 images=str(tiny_coco_dir / "images"),
             ),
-            prompt_mode="text",
             image_size=32,
             augmentations=AugmentationsConfig(preset="none"),
         ),
@@ -192,7 +189,6 @@ def _bad_data_cfg(
             format="coco",
             train=DataSplit(annotations=str(annotations), images=str(images)),
             val=DataSplit(annotations=str(annotations), images=str(images)),
-            prompt_mode="text",
             image_size=32,
         ),
         peft=PEFTConfig(
@@ -232,7 +228,6 @@ def test_malformed_coco_json_raises_clear_error(tmp_path: Path) -> None:
         COCODataset(
             annotations=str(annotations),
             images=str(images),
-            prompt_mode="text",
             transforms=build_train_transforms(
                 AugmentationsConfig(preset="none"),
                 32,
@@ -273,7 +268,6 @@ def test_missing_image_file_raises_clear_error(tmp_path: Path) -> None:
     ds_train = COCODataset(
         annotations=str(annotations),
         images=str(images),
-        prompt_mode="text",
         transforms=build_train_transforms(
             AugmentationsConfig(preset="none"),
             32,
@@ -338,7 +332,6 @@ def test_missing_annotation_entry_does_not_crash(tmp_path: Path) -> None:
     ds_train = COCODataset(
         annotations=str(annotations),
         images=str(images),
-        prompt_mode="text",
         transforms=build_train_transforms(
             AugmentationsConfig(preset="none"),
             32,
@@ -385,7 +378,6 @@ def test_e2e_auto_split_on_tiny_coco(tmp_path: Path, tiny_coco_dir: Path) -> Non
             ),
             val=None,
             val_split=ValSplitConfig(fraction=0.5, seed=None),
-            prompt_mode="text",
             image_size=32,
         ),
         peft=PEFTConfig(
@@ -436,7 +428,6 @@ def test_e2e_no_val_on_tiny_coco(tmp_path: Path, tiny_coco_dir: Path) -> None:
             ),
             val=None,
             val_split=None,
-            prompt_mode="text",
             image_size=32,
         ),
         peft=PEFTConfig(

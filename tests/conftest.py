@@ -150,7 +150,7 @@ def tiny_coco_dir() -> Path:
 
 @pytest.fixture
 def tiny_coco_dataset(tiny_coco_dir: Path) -> COCODataset:
-    """A COCODataset pointing at the tiny_coco fixture (bbox prompt mode)."""
+    """A COCODataset pointing at the tiny_coco fixture."""
     from custom_sam_peft.config.schema import NormalizeConfig, TextPromptConfig
     from custom_sam_peft.data.transforms import build_eval_transforms
 
@@ -160,7 +160,6 @@ def tiny_coco_dataset(tiny_coco_dir: Path) -> COCODataset:
     return COCODataset(
         annotations=str(tiny_coco_dir / "annotations.json"),
         images=str(tiny_coco_dir / "images"),
-        prompt_mode="bbox",
         transforms=transforms,
         text_prompt=TextPromptConfig(),
     )

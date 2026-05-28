@@ -39,7 +39,6 @@ def _make_cfg(*, classes_per_forward: int = 16, **train_overrides: Any) -> Train
             format="coco",
             train=DataSplit(annotations="a.json", images="i"),
             val=DataSplit(annotations="a.json", images="i"),
-            prompt_mode="text",
         ),
         peft=PEFTConfig(method="lora", scope="vision"),
         train=TrainHyperparams(

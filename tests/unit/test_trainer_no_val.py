@@ -42,7 +42,6 @@ def _ds_train(tiny_coco_dir: Path) -> COCODataset:
     return COCODataset(
         annotations=str(tiny_coco_dir / "annotations.json"),
         images=str(tiny_coco_dir / "images"),
-        prompt_mode="text",
         transforms=transforms,
         text_prompt=TextPromptConfig(),
     )
@@ -59,7 +58,6 @@ def _cfg(tmp_path: Path, tiny_coco_dir: Path) -> TrainConfig:
             ),
             val=None,
             val_split=None,
-            prompt_mode="text",
             image_size=32,
         ),
         peft=PEFTConfig(

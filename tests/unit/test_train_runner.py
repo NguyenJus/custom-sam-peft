@@ -17,7 +17,7 @@ def _make_cfg(tmp_path: Path) -> MagicMock:
     cfg.run.name = "smoke"
     cfg.run.seed = 0
     cfg.data.format = "coco"
-    cfg.data.prompt_mode = "text"
+
     cfg.data.model_dump.return_value = {"format": "coco"}
     cfg.model.name = "facebook/sam3.1"
     cfg.peft.method = "lora"
@@ -125,7 +125,6 @@ def test_run_training_writes_val_source_json_on_auto_split(
             ),
             val=None,
             val_split=ValSplitConfig(fraction=0.5, seed=None),
-            prompt_mode="text",
             image_size=32,
         ),
         peft=PEFTConfig(
@@ -188,7 +187,6 @@ def test_run_training_resume_reuses_saved_val_source(
                 ),
                 val=None,
                 val_split=ValSplitConfig(fraction=0.5, seed=None),
-                prompt_mode="text",
                 image_size=32,
             ),
             peft=PEFTConfig(

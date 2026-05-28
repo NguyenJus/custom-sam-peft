@@ -78,7 +78,6 @@ def _make_cfg(tmp_path: Path) -> TrainConfig:
             format="coco",
             train=DataSplit(annotations="x", images="x"),
             val=DataSplit(annotations="x", images="x"),
-            prompt_mode="text",
         ),
         peft=PEFTConfig(
             method="lora",
