@@ -24,7 +24,7 @@ from custom_sam_peft.cli.main import app
 def test_calibrate_real_activation_in_sane_range(tmp_path: Path) -> None:
     runner = CliRunner()
     os.chdir(tmp_path)
-    result = runner.invoke(app, ["calibrate", "--image-size", "1008", "--force"])
+    result = runner.invoke(app, ["calibrate", "--force"])
     assert result.exit_code == 0, result.output
     data = json.loads((tmp_path / ".custom_sam_peft_calibration.json").read_text())
     activation = int(data["activation_bytes_per_example"])

@@ -417,7 +417,8 @@ def build_hf(
         split = hf_cfg["split_train"]
     else:
         split = hf_cfg["split_train"] if pipeline == "train" else hf_cfg["split_val"]
-    image_size = int(cfg["image_size"])
+    from custom_sam_peft.models.sam3 import SAM3_IMAGE_SIZE
+
     normalize = NormalizeConfig.model_validate(cfg.get("normalize", {}))
     text_prompt = TextPromptConfig.model_validate(cfg.get("text_prompt", {}))
     field_map = HFFieldMap.model_validate(hf_cfg.get("field_map", {}))
@@ -426,7 +427,7 @@ def build_hf(
         aug = AugmentationsConfig.model_validate(cfg.get("augmentations", {}))
         transforms = build_train_transforms(
             aug,
-            image_size,
+            SAM3_IMAGE_SIZE,
             model_name=model_name,
             normalize=normalize,
             channel_semantics=channel_semantics,
@@ -434,7 +435,7 @@ def build_hf(
         )
     else:
         transforms = build_eval_transforms(
-            image_size,
+            SAM3_IMAGE_SIZE,
             model_name=model_name,
             normalize=normalize,
             channel_semantics=channel_semantics,

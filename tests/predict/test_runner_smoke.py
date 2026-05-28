@@ -439,8 +439,8 @@ def test_run_predict_resolves_auto(monkeypatch: pytest.MonkeyPatch, tmp_path: Pa
     """run_predict resolves 'auto' once at entry via decide_eval_batch_size."""
     call_args: list[tuple] = []
 
-    def _fake_decide(image_size: int, classes_per_forward: int = 16):
-        call_args.append((image_size, classes_per_forward))
+    def _fake_decide(classes_per_forward: int = 16):
+        call_args.append((classes_per_forward,))
         return 1, 0, "analytic"  # (batch_size, predicted_bytes, provenance)
 
     monkeypatch.setattr(

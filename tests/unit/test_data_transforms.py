@@ -268,13 +268,11 @@ def test_train_transforms_deterministic_with_seeded_global_rng() -> None:
 from pathlib import Path
 
 from custom_sam_peft.config.loader import load_config
-from custom_sam_peft.config.schema import DataConfig
 
 
 def test_shipped_yamls_match_schema_defaults() -> None:
-    """Shipped example YAMLs resolve normalize / image_size
-    to the schema's default values — i.e. the YAML echoes are consistent with the
-    schema as the source of truth.
+    """Shipped example YAMLs resolve normalize to schema's default values —
+    i.e. the YAML echoes are consistent with the schema as the source of truth.
 
     Note: CLI template files under cli/templates/ contain ${...} substitution
     placeholders and are not valid standalone YAML — they are excluded from this
@@ -285,7 +283,6 @@ def test_shipped_yamls_match_schema_defaults() -> None:
         repo_root / "configs" / "examples" / "coco_text_lora.yaml",
         repo_root / "configs" / "examples" / "coco_text_qlora.yaml",
     ]
-    schema_image_size = DataConfig.model_fields["image_size"].default
     # NormalizeConfig defaults are constructed via default_factory; build an
     # instance to read them.
     from custom_sam_peft.config.schema import NormalizeConfig
@@ -296,7 +293,6 @@ def test_shipped_yamls_match_schema_defaults() -> None:
     for p in yaml_paths:
         assert p.is_file(), p
         cfg = load_config(p)
-        assert cfg.data.image_size == schema_image_size, p
         assert cfg.data.normalize.mean == schema_mean, p
         assert cfg.data.normalize.std == schema_std, p
 

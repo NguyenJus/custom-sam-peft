@@ -50,7 +50,7 @@ def _make_cfg(*, classes_per_forward: int = 16, **train_overrides: Any) -> Train
 
 
 def _make_wrapper() -> Sam3Wrapper:
-    return Sam3Wrapper(TinySam3Stub(num_queries=4, mask_size=8), image_size=8, mask_size=8)
+    return Sam3Wrapper(TinySam3Stub(num_queries=4, mask_size=8), mask_size=8)
 
 
 def _instance(class_id: int) -> Instance:

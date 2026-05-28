@@ -48,7 +48,6 @@ def _base_cfg(tiny_coco_dir: Path, *, val: bool, val_split: bool) -> TrainConfig
             ),
             val_split=(ValSplitConfig(fraction=0.5, seed=None) if val_split else None),
             prompt_mode="text",
-            image_size=32,
         ),
         peft=PEFTConfig(method="lora"),
         train=TrainHyperparams(epochs=1),

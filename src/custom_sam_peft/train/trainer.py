@@ -261,9 +261,7 @@ class Trainer:
             if cfg.eval.batch_size == "auto":
                 from custom_sam_peft.presets import decide_eval_batch_size
 
-                bs, _, _ = decide_eval_batch_size(
-                    cfg.data.image_size, classes_per_forward=MULTIPLEX_CAP
-                )
+                bs, _, _ = decide_eval_batch_size(classes_per_forward=MULTIPLEX_CAP)
                 update["batch_size"] = bs
             lite_cfg = cfg.eval.model_copy(update=update)
             report = Evaluator(lite_cfg).evaluate(self.model, self.val_ds)
@@ -416,9 +414,7 @@ class Trainer:
                 if full_eval_cfg.batch_size == "auto":
                     from custom_sam_peft.presets import decide_eval_batch_size
 
-                    bs, _, _ = decide_eval_batch_size(
-                        cfg.data.image_size, classes_per_forward=MULTIPLEX_CAP
-                    )
+                    bs, _, _ = decide_eval_batch_size(classes_per_forward=MULTIPLEX_CAP)
                     full_eval_cfg = full_eval_cfg.model_copy(update={"batch_size": bs})
                 full_report = Evaluator(full_eval_cfg).evaluate(self.model, self.val_ds)
             if full_report is not None:

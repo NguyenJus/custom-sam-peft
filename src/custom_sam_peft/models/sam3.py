@@ -166,6 +166,12 @@ def _build_geometric_prompt(
     return Prompt(box_embeddings=box_embeddings, box_mask=box_mask, box_labels=None)
 
 
+# SAM 3.1's native input resolution. The model internally rescales every input
+# to 1008x1008, so this is a model property, not a user-configurable knob.
+# All call sites that need this number (transforms, box normalization, calibration
+# probe shape) import this constant — no scattered 1008 literals or cfg.data.image_size lookups.
+SAM3_IMAGE_SIZE: int = 1008
+
 # SAM 3.1's multiplex forward is trained at K ≤ 16 class prompts per call.
 # This is a model property, not a tunable. Trainer/evaluator/predict cite
 # this constant for chunking; see docs/superpowers/specs/2026-05-23-multiplex-forward-design.md §4.
@@ -206,7 +212,6 @@ class Sam3Wrapper(nn.Module):
     def __init__(
         self,
         model: nn.Module,
-        image_size: int = 1008,
         mask_size: int = 288,
         *,
         channels: int = 3,
@@ -214,7 +219,7 @@ class Sam3Wrapper(nn.Module):
     ) -> None:
         super().__init__()
         self.model = model
-        self.image_size = image_size
+        self.image_size = SAM3_IMAGE_SIZE
         self.mask_size = mask_size
         self.channels = channels
         self.channel_semantics = channel_semantics
@@ -379,21 +384,20 @@ class _Sam3ImageAdapter(nn.Module):
     every entry is ``None`` (or the kwarg itself is ``None``), the builder
     returns ``None`` and we substitute Meta's zero-length-seq dummy.
 
-    ``image_size`` must match the wrapper's image_size; ``load_sam31`` plumbs
-    it through the constructor.
+    ``image_size`` is fixed to ``SAM3_IMAGE_SIZE``; SAM 3.1 always rescales
+    inputs internally and does not expose a configurable resolution.
     """
 
     def __init__(
         self,
         model: nn.Module,
-        image_size: int = 1008,
         *,
         channels: int = 3,
         channel_semantics: str = "rgb",
     ) -> None:
         super().__init__()
         self.model = model
-        self.image_size = image_size
+        self.image_size = SAM3_IMAGE_SIZE
         self.channels = channels
         self.channel_semantics = channel_semantics
         self.channel_adapter = _build_channel_adapter(channels, channel_semantics)
@@ -743,12 +747,9 @@ def load_sam31(
     _apply_patches(raw_model)
     _freeze_base(raw_model, peft_method=None)
 
-    adapter = _Sam3ImageAdapter(
-        raw_model, image_size=1008, channels=channels, channel_semantics=channel_semantics
-    )
+    adapter = _Sam3ImageAdapter(raw_model, channels=channels, channel_semantics=channel_semantics)
     return Sam3Wrapper(
         adapter,
-        image_size=1008,
         mask_size=288,
         channels=channels,
         channel_semantics=channel_semantics,

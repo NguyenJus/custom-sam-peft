@@ -353,9 +353,8 @@ def _ask_peft_sizing(ctx: Ctx) -> dict[str, Any]:
     if ctx.cuda_available and ask_confirm(
         "Auto-size the PEFT config to your GPU's VRAM?", default=True
     ):
-        image_size = ctx.answers.get("data", {}).get("image_size", 1008)
         try:
-            decision = decide_preset(image_size)
+            decision = decide_preset()
         except RuntimeError as exc:
             typer.echo(f"could not auto-size: {exc}; falling back to manual")
         else:

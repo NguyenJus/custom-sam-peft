@@ -12,7 +12,7 @@ from tests.fixtures.tiny_sam3_stub import TinySam3Stub
 
 def test_wrapper_passes_through_single_class_text_prompts() -> None:
     stub = TinySam3Stub(num_queries=2, mask_size=16)
-    wrapper = Sam3Wrapper(stub, image_size=64, mask_size=16)
+    wrapper = Sam3Wrapper(stub, mask_size=16)
     image = torch.zeros(2, 3, 64, 64)
     prompts = [TextPrompts(classes=["cat"]), TextPrompts(classes=["cat"])]
     out = wrapper(image, prompts)
@@ -25,7 +25,7 @@ def test_wrapper_rejects_multi_class_text_prompts() -> None:
     from custom_sam_peft.models.sam3 import MULTIPLEX_CAP
 
     stub = TinySam3Stub()
-    wrapper = Sam3Wrapper(stub, image_size=64, mask_size=16)
+    wrapper = Sam3Wrapper(stub, mask_size=16)
     image = torch.zeros(1, 3, 64, 64)
     too_many = [f"c{i}" for i in range(MULTIPLEX_CAP + 1)]
     prompts = [TextPrompts(classes=too_many)]
@@ -35,7 +35,7 @@ def test_wrapper_rejects_multi_class_text_prompts() -> None:
 
 def test_wrapper_rejects_mixed_prompt_variants() -> None:
     stub = TinySam3Stub()
-    wrapper = Sam3Wrapper(stub, image_size=64, mask_size=16)
+    wrapper = Sam3Wrapper(stub, mask_size=16)
     image = torch.zeros(2, 3, 64, 64)
     prompts = [
         TextPrompts(classes=["cat"]),
@@ -47,7 +47,7 @@ def test_wrapper_rejects_mixed_prompt_variants() -> None:
 
 def test_wrapper_rejects_batch_size_mismatch() -> None:
     stub = TinySam3Stub()
-    wrapper = Sam3Wrapper(stub, image_size=64, mask_size=16)
+    wrapper = Sam3Wrapper(stub, mask_size=16)
     image = torch.zeros(2, 3, 64, 64)
     prompts = [TextPrompts(classes=["cat"])]  # B=2 images but 1 prompt
     with pytest.raises(ValueError, match="len\\(prompts\\)"):
@@ -59,7 +59,7 @@ def test_sam3_wrapper_has_peft_model_slot() -> None:
 
     from custom_sam_peft.models.sam3 import Sam3Wrapper
 
-    wrapper = Sam3Wrapper(nn.Identity(), image_size=8, mask_size=8)
+    wrapper = Sam3Wrapper(nn.Identity(), mask_size=8)
     assert hasattr(wrapper, "peft_model")
     assert wrapper.peft_model is None
 
@@ -78,7 +78,7 @@ def _default_wrapper() -> Sam3Wrapper:
     """Return a Sam3Wrapper with default (rgb, 3-channel) settings for _validate_inputs tests."""
     from torch import nn
 
-    return Sam3Wrapper(nn.Identity(), image_size=8, mask_size=8)
+    return Sam3Wrapper(nn.Identity(), mask_size=8)
 
 
 def test_validate_inputs_accepts_K_between_1_and_cap() -> None:

@@ -18,7 +18,6 @@ data:
     annotations: data/placeholder/annotations.json
     images: data/placeholder/images
   prompt_mode: text
-  image_size: 1008
   augmentations:
     preset: natural
     intensity: medium

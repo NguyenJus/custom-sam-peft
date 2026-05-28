@@ -8,6 +8,7 @@ Spec: docs/superpowers/specs/2026-05-22-algo-vram-preset-design.md.
 
 from __future__ import annotations
 
+import dataclasses
 import hashlib
 import json
 import logging
@@ -56,7 +57,7 @@ forward_only_factor: float = 0.25
 # === CALIBRATION CACHE =====================================================
 
 CACHE_FILENAME = ".custom_sam_peft_calibration.json"
-CACHE_SCHEMA_VERSION = 1
+CACHE_SCHEMA_VERSION = 2
 
 
 # === PresetDecision ========================================================
@@ -80,7 +81,6 @@ class PresetDecision:
     headroom_bytes: int
     predicted_bytes: int
     budget_bytes: int
-    image_size: int
     gpu_name: str
     provenance: Literal["calibrated", "analytic"]
     cache_path: Path | None
@@ -125,6 +125,9 @@ class PresetDecision:
         d = json.loads(s)
         d["cache_path"] = None if d["cache_path"] is None else Path(d["cache_path"])
         # calibrated_at is str | None — pass through as-is
+        # Drop fields that may exist in old sidecars but no longer in the dataclass.
+        known = {f.name for f in dataclasses.fields(cls)}
+        d = {k: v for k, v in d.items() if k in known}
         return cls(**d)
 
 
@@ -201,7 +204,7 @@ def _current_sam3_checkpoint_sha() -> str:
     return h.hexdigest()
 
 
-def _load_cache(image_size: int, gpu_name: str) -> tuple[dict[str, Any] | None, Path | None]:
+def _load_cache(gpu_name: str) -> tuple[dict[str, Any] | None, Path | None]:
     """Return (cache_dict, absolute_cache_path) iff the cache matches."""
     cache_path = Path(CACHE_FILENAME).resolve()
     if not cache_path.is_file():
@@ -220,7 +223,6 @@ def _load_cache(image_size: int, gpu_name: str) -> tuple[dict[str, Any] | None, 
         return None, None
     if (
         data.get("gpu_name") != gpu_name
-        or int(data.get("image_size", -1)) != image_size
         or data.get("sam3_checkpoint_sha") != _current_sam3_checkpoint_sha()
     ):
         return None, None
@@ -267,17 +269,17 @@ def _sort_key(c: tuple[str, int, int]) -> tuple[int, int, int]:
 # === Public entry point ====================================================
 
 
-def decide_preset(image_size: int) -> PresetDecision:
+def decide_preset() -> PresetDecision:
     """Pick the largest configuration that fits within the VRAM budget.
 
     Raises:
-      ValueError: image_size invalid.
       RuntimeError: CUDA unavailable, env-var malformed, or no candidate fits.
 
     Spec: design §3 + §7.
     """
-    if not isinstance(image_size, int) or image_size <= 0:
-        raise ValueError("image_size must be a positive integer")
+    from custom_sam_peft.models.sam3 import SAM3_IMAGE_SIZE
+
+    image_size = SAM3_IMAGE_SIZE
     if not torch.cuda.is_available():
         raise RuntimeError(_CUDA_HINT)
 
@@ -290,7 +292,7 @@ def decide_preset(image_size: int) -> PresetDecision:
     headroom = _headroom_bytes()
     budget = total - headroom
 
-    cache, cache_path = _load_cache(image_size, gpu_name)
+    cache, cache_path = _load_cache(gpu_name)
     provenance: Literal["calibrated", "analytic"] = (
         "calibrated" if cache is not None else "analytic"
     )
@@ -325,7 +327,6 @@ def decide_preset(image_size: int) -> PresetDecision:
         headroom_bytes=headroom,
         predicted_bytes=predicted,
         budget_bytes=budget,
-        image_size=image_size,
         gpu_name=gpu_name,
         provenance=provenance,
         cache_path=cache_path,
@@ -334,7 +335,6 @@ def decide_preset(image_size: int) -> PresetDecision:
 
 
 def decide_eval_batch_size(
-    image_size: int,
     classes_per_forward: int = 16,
 ) -> tuple[int, int, Literal["calibrated", "analytic"]]:
     """Pick the largest forward-only batch size that fits within the eval VRAM budget.
@@ -351,12 +351,12 @@ def decide_eval_batch_size(
     follow-up).  Pass ``MULTIPLEX_CAP`` from ``custom_sam_peft.models.sam3`` so
     that callsites remain correct when K-awareness is wired in.
     """
-    if not isinstance(image_size, int) or image_size <= 0:
-        raise ValueError("image_size must be a positive integer")
+    from custom_sam_peft.models.sam3 import MULTIPLEX_CAP as _CAP
+    from custom_sam_peft.models.sam3 import SAM3_IMAGE_SIZE
+
+    image_size = SAM3_IMAGE_SIZE
     # Guard against mis-use: classes_per_forward must be in [1, MULTIPLEX_CAP].
     # Import lazily to avoid a circular dependency at module load time.
-    from custom_sam_peft.models.sam3 import MULTIPLEX_CAP as _CAP
-
     if not (1 <= classes_per_forward <= _CAP):
         raise ValueError(f"classes_per_forward must be in [1, {_CAP}]; got {classes_per_forward}")
     if not torch.cuda.is_available():
@@ -370,7 +370,7 @@ def decide_eval_batch_size(
     headroom = _headroom_bytes()
     budget = total - headroom
 
-    cache, _ = _load_cache(image_size, gpu_name)
+    cache, _ = _load_cache(gpu_name)
     provenance: Literal["calibrated", "analytic"] = (
         "calibrated" if cache is not None else "analytic"
     )

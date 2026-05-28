@@ -40,7 +40,7 @@ _LOG = logging.getLogger(__name__)
 
 def _fallback_preset(cfg: TrainConfig) -> PresetDecision:
     """No sidecar — synthesize one from cfg + decide_preset(). Spec §11.4."""
-    return decide_preset(image_size=cfg.data.image_size)
+    return decide_preset()
 
 
 def _load_preset_or_fallback(cfg: TrainConfig) -> PresetDecision:

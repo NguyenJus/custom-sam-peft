@@ -25,7 +25,6 @@ data:
     fraction: 0.1
     # seed: null → inherit run.seed at resolve time
   prompt_mode: text
-  image_size: 1008
   augmentations:
     preset: natural
     intensity: medium

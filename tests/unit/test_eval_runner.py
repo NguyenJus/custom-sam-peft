@@ -21,7 +21,6 @@ def _make_cfg(
         "val": {"annotations": "v.json", "images": "v/"},
         "test": ({"annotations": "te.json", "images": "te/"} if has_test else None),
         "prompt_mode": "text",
-        "image_size": 1008,
     }
     cfg.data.val = MagicMock()
     cfg.data.val_split = None
@@ -321,8 +320,7 @@ def test_run_eval_resolves_auto_via_decide_eval_batch_size(
     """run_eval calls presets.decide_eval_batch_size when cfg.eval.batch_size == 'auto'."""
     called: dict[str, object] = {}
 
-    def _fake_decide(image_size: int, classes_per_forward: int = 16) -> tuple[int, int, str]:
-        called["image_size"] = image_size
+    def _fake_decide(classes_per_forward: int = 16) -> tuple[int, int, str]:
         called["k"] = classes_per_forward
         return (3, 1, "analytic")
 
@@ -336,7 +334,6 @@ def test_run_eval_resolves_auto_via_decide_eval_batch_size(
     monkeypatch.setattr("custom_sam_peft.presets.decide_eval_batch_size", _fake_decide)
 
     cfg = _make_cfg(format_="coco", peft_method="lora")
-    cfg.data.image_size = 1008
 
     from custom_sam_peft.config.schema import EvalConfig
 
@@ -360,7 +357,6 @@ def test_run_eval_resolves_auto_via_decide_eval_batch_size(
 
     run_eval(cfg, checkpoint=tmp_path, split="val", output_dir=tmp_path)
 
-    assert called.get("image_size") == 1008, f"decide not called with image_size=1008; got {called}"
     assert called.get("k") == 16, f"decide not called with k=16; got {called}"
     # The resolved batch_size must be 3 (what _fake_decide returned).
     assert len(evaluator_init_cfg) == 1
@@ -382,7 +378,6 @@ def test_run_eval_cpu_fallback_logs_info(
     monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
 
     cfg = _make_cfg(format_="coco", peft_method="lora")
-    cfg.data.image_size = 1008
 
     from custom_sam_peft.config.schema import EvalConfig
 

@@ -23,8 +23,9 @@ pytestmark = [
 
 
 def test_real_K16_forward_at_chosen_B_within_predicted_envelope() -> None:
-    image_size = 1008
-    bs, predicted_bytes, _ = decide_eval_batch_size(image_size, classes_per_forward=MULTIPLEX_CAP)
+    from custom_sam_peft.models.sam3 import SAM3_IMAGE_SIZE
+
+    bs, predicted_bytes, _ = decide_eval_batch_size(classes_per_forward=MULTIPLEX_CAP)
 
     if predicted_bytes == 0:
         pytest.skip("CPU fallback — needs a compatible GPU")
@@ -33,7 +34,9 @@ def test_real_K16_forward_at_chosen_B_within_predicted_envelope() -> None:
     wrapper = load_sam31(cfg)
     wrapper.eval()
 
-    images = torch.zeros(bs, 3, image_size, image_size, dtype=torch.bfloat16, device="cuda")
+    images = torch.zeros(
+        bs, 3, SAM3_IMAGE_SIZE, SAM3_IMAGE_SIZE, dtype=torch.bfloat16, device="cuda"
+    )
     classes = [f"class_{i}" for i in range(MULTIPLEX_CAP)]
     prompts = [TextPrompts(classes=classes) for _ in range(bs)]
 

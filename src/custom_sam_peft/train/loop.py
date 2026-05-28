@@ -122,8 +122,7 @@ def _train_step_with_oom_ladder(
                 )
                 continue
             raise RuntimeError(
-                f"OOM at step {state.step} after micro_batch=1. "
-                f"Use a larger GPU or smaller image_size."
+                f"OOM at step {state.step} after micro_batch=1. Use a larger GPU."
             ) from oom_err
 
 
