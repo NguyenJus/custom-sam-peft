@@ -84,11 +84,22 @@ def _flag_driven_blocks(peft_method: str) -> dict[str, str]:
         if peft_method == "qlora"
         else ""
     )
+    # No flag drives data.limit; emit the commented discoverable block (mirrors
+    # setup_wizard._limit_block's unset branch) so the knob is visible to edit.
+    limit_block = (
+        "  # Limit dataset size for quick/smoke runs (int = count, float in (0,1] = fraction):\n"
+        "  # limit:\n"
+        "  #   train: 100\n"
+        "  #   val: 50\n"
+        "  #   strategy: random   # random | stratified | first_n\n"
+        "  #   seed: 42"
+    )
     return {
         "model_block": model_block,
         "dataset_block": dataset_block,
         "validation_block": validation_block,
         "qlora_block": qlora_block,
+        "limit_block": limit_block,
     }
 
 

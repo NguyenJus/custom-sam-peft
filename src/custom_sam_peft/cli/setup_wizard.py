@@ -242,6 +242,59 @@ def _aug_overrides_block() -> str:
     )
 
 
+def _limit_validate(s: str) -> str | None:
+    """Validate a limit field: blank | int >= 1 | float in (0.0, 1.0]."""
+    if s == "":
+        return None
+    if "." in s:
+        try:
+            v = float(s)
+        except ValueError:
+            return "enter a float in (0.0, 1.0], an integer >= 1, or leave blank"
+        if 0.0 < v <= 1.0:
+            return None
+        return "float limit must be in (0.0, 1.0]"
+    try:
+        v = int(s)
+    except ValueError:
+        return "enter an integer >= 1, a float in (0.0, 1.0], or leave blank"
+    if v >= 1:
+        return None
+    return "integer limit must be >= 1"
+
+
+def _parse_limit_value(s: str) -> int | float:
+    """Parse a validated non-blank limit string into int or float."""
+    if "." in s:
+        return float(s)
+    return int(s)
+
+
+def _limit_block(answers: dict[str, Any]) -> str:
+    """Render the data.limit YAML block (active when set, commented otherwise)."""
+    limit = answers.get("data", {}).get("limit", {})
+    train = limit.get("train")
+    val = limit.get("val")
+    if train is not None or val is not None:
+        lines = ["  limit:"]
+        if train is not None:
+            lines.append(f"    train: {train}")
+        if val is not None:
+            lines.append(f"    val: {val}")
+        lines.append("    # Advanced knobs (uncomment to override defaults):")
+        lines.append("    # strategy: random   # random | stratified | first_n")
+        lines.append("    # seed: 42")
+        return "\n".join(lines)
+    return (
+        "  # Limit dataset size for quick/smoke runs (int = count, float in (0,1] = fraction):\n"
+        "  # limit:\n"
+        "  #   train: 100\n"
+        "  #   val: 50\n"
+        "  #   strategy: random   # random | stratified | first_n\n"
+        "  #   seed: 42"
+    )
+
+
 def render(answers: dict[str, Any], *, run_mode: RunMode) -> str:
     """Render the YAML config string from collected answers."""
     data = answers.get("data", {})
@@ -264,6 +317,7 @@ def render(answers: dict[str, Any], *, run_mode: RunMode) -> str:
         dataset_block=_dataset_block(answers),
         validation_block=_validation_block(answers),
         qlora_block=_qlora_block(answers),
+        limit_block=_limit_block(answers),
     )
 
 
@@ -424,11 +478,35 @@ def _ask_model_weights(ctx: Ctx) -> dict[str, Any]:
     return {}
 
 
+def _ask_limit(ctx: Ctx) -> dict[str, Any]:
+    if not ask_confirm("Limit dataset size for a quick/smoke run?", default=False):
+        return {}
+    limit: dict[str, int | float] = {}
+    train_raw = ask_text(
+        "Train limit (int count or float fraction, blank = no limit)?",
+        default="",
+        validate=_limit_validate,
+    )
+    if train_raw:
+        limit["train"] = _parse_limit_value(train_raw)
+    val_raw = ask_text(
+        "Val limit (int count or float fraction, blank = no limit)?",
+        default="",
+        validate=_limit_validate,
+    )
+    if val_raw:
+        limit["val"] = _parse_limit_value(val_raw)
+    if not limit:
+        return {}
+    return {"data": {"limit": limit}}
+
+
 STEPS: list[WizardStep] = [
     WizardStep("run_mode", _ask_run_mode),
     WizardStep("run_name", _ask_run_name),
     WizardStep("dataset_source", _ask_dataset_source),
     WizardStep("validation", _ask_validation),
+    WizardStep("limit", _ask_limit),
     WizardStep("domain", _ask_domain),
     WizardStep(
         "class_imbalance",

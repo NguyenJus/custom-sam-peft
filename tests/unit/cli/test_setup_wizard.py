@@ -221,6 +221,7 @@ def test_step_fragment_shapes_are_nested_dicts(monkeypatch) -> None:
         monkeypatch,
         texts=["my-run", "ann.json", "imgs/", "5", ""],
         choices=["train", "coco", "none", "natural", "medium", "lora"],
+        confirms=[False],  # decline limit step
     )
     # Class-imbalance step measures the ratio (no ask_choice). Undetectable
     # annotations → balanced with no confirm prompt.
@@ -388,6 +389,7 @@ def test_generate_config_happy_path_local_coco_autosplit(tmp_path, monkeypatch) 
         monkeypatch,
         texts=["my-run", "ann.json", "imgs/", "0.1", "7", ""],
         choices=["train", "coco", "auto-split", "natural", "medium", "lora"],
+        confirms=[False],  # decline limit step
     )
     monkeypatch.setattr(sw, "measure_class_imbalance_ratio", lambda *a, **k: None)
     out = tmp_path / "c.yaml"
@@ -583,3 +585,251 @@ def test_fraction_validator_rejects_non_numeric(monkeypatch) -> None:
     # validate accepts valid fractions
     assert validate("0.1") is None
     assert validate("0.5") is None
+
+
+# ---------------------------------------------------------------------------
+# Issue #164: _ask_limit step + _limit_block render helper
+# ---------------------------------------------------------------------------
+
+
+def test_limit_validator_accepts_blank() -> None:
+    """_ask_limit's validate callback must accept blank (= no limit)."""
+    from custom_sam_peft.cli.setup_wizard import _limit_validate
+
+    assert _limit_validate("") is None
+
+
+def test_limit_validator_accepts_int_count() -> None:
+    from custom_sam_peft.cli.setup_wizard import _limit_validate
+
+    assert _limit_validate("1") is None
+    assert _limit_validate("100") is None
+    assert _limit_validate("9999") is None
+
+
+def test_limit_validator_accepts_float_fraction() -> None:
+    from custom_sam_peft.cli.setup_wizard import _limit_validate
+
+    assert _limit_validate("0.1") is None
+    assert _limit_validate("0.5") is None
+    assert _limit_validate("1.0") is None
+
+
+def test_limit_validator_rejects_zero() -> None:
+    from custom_sam_peft.cli.setup_wizard import _limit_validate
+
+    assert _limit_validate("0") is not None
+
+
+def test_limit_validator_rejects_negative_int() -> None:
+    from custom_sam_peft.cli.setup_wizard import _limit_validate
+
+    assert _limit_validate("-1") is not None
+    assert _limit_validate("-100") is not None
+
+
+def test_limit_validator_rejects_out_of_range_float() -> None:
+    from custom_sam_peft.cli.setup_wizard import _limit_validate
+
+    assert _limit_validate("0.0") is not None
+    assert _limit_validate("1.1") is not None
+    assert _limit_validate("2.5") is not None
+
+
+def test_limit_validator_rejects_bool_like_strings() -> None:
+    """Strings 'true'/'false'/'True'/'False' must be rejected (not numeric)."""
+    from custom_sam_peft.cli.setup_wizard import _limit_validate
+
+    assert _limit_validate("true") is not None
+    assert _limit_validate("false") is not None
+    assert _limit_validate("True") is not None
+    assert _limit_validate("False") is not None
+
+
+def test_limit_validator_rejects_non_numeric() -> None:
+    from custom_sam_peft.cli.setup_wizard import _limit_validate
+
+    assert _limit_validate("abc") is not None
+    assert _limit_validate("nan") is not None
+
+
+def test_limit_scientific_notation_with_dot_accepted() -> None:
+    """'1.5e-1' has a dot → float branch → 0.15 is in (0.0, 1.0] → accepted."""
+    from custom_sam_peft.cli.setup_wizard import _limit_validate, _parse_limit_value
+
+    assert _limit_validate("1.5e-1") is None
+    assert _parse_limit_value("1.5e-1") == pytest.approx(0.15)
+
+
+def test_limit_scientific_notation_without_dot_rejected() -> None:
+    """'1e2' has no dot → int branch → int('1e2') raises → rejected."""
+    from custom_sam_peft.cli.setup_wizard import _limit_validate
+
+    assert _limit_validate("1e2") is not None
+
+
+def test_ask_limit_declined_returns_empty(monkeypatch) -> None:
+    """Declining the confirm must yield {} (no data.limit in fragment)."""
+    monkeypatch.setattr(sw, "ask_confirm", lambda *a, **k: False)
+    ctx = sw.Ctx(answers={}, cuda_available=False)
+    frag = sw._ask_limit(ctx)
+    assert frag == {}
+
+
+def test_ask_limit_train_only_fragment(monkeypatch) -> None:
+    """Accepting and providing only a train limit produces correct nested shape."""
+    cf_iter = iter([True])
+    tx_iter = iter(["100", ""])  # train=100, val=blank
+    monkeypatch.setattr(sw, "ask_confirm", lambda *a, **k: next(cf_iter))
+    monkeypatch.setattr(sw, "ask_text", lambda *a, **k: next(tx_iter))
+    ctx = sw.Ctx(answers={}, cuda_available=False)
+    frag = sw._ask_limit(ctx)
+    assert frag == {"data": {"limit": {"train": 100}}}
+
+
+def test_ask_limit_both_set_fragment(monkeypatch) -> None:
+    """Providing both train and val produces correct nested shape with parsed types."""
+    cf_iter = iter([True])
+    tx_iter = iter(["200", "0.2"])  # train=200 (int), val=0.2 (float)
+    monkeypatch.setattr(sw, "ask_confirm", lambda *a, **k: next(cf_iter))
+    monkeypatch.setattr(sw, "ask_text", lambda *a, **k: next(tx_iter))
+    ctx = sw.Ctx(answers={}, cuda_available=False)
+    frag = sw._ask_limit(ctx)
+    assert frag == {"data": {"limit": {"train": 200, "val": 0.2}}}
+
+
+def test_ask_limit_both_blank_returns_empty(monkeypatch) -> None:
+    """Accepting but leaving both fields blank should return {}."""
+    cf_iter = iter([True])
+    tx_iter = iter(["", ""])
+    monkeypatch.setattr(sw, "ask_confirm", lambda *a, **k: next(cf_iter))
+    monkeypatch.setattr(sw, "ask_text", lambda *a, **k: next(tx_iter))
+    ctx = sw.Ctx(answers={}, cuda_available=False)
+    frag = sw._ask_limit(ctx)
+    assert frag == {}
+
+
+def test_limit_block_active_train_only() -> None:
+    """_limit_block with only train set emits an active YAML block."""
+    block = sw._limit_block({"data": {"limit": {"train": 100}}})
+    assert "limit:" in block
+    assert "train: 100" in block
+    # val should NOT appear as an active (uncommented) key
+    lines = block.splitlines()
+    active_val_lines = [ln for ln in lines if "val:" in ln and not ln.lstrip().startswith("#")]
+    assert active_val_lines == []
+
+
+def test_limit_block_active_both() -> None:
+    """_limit_block with train and val set emits both keys as active lines."""
+    block = sw._limit_block({"data": {"limit": {"train": 50, "val": 0.1}}})
+    assert "train: 50" in block
+    assert "val: 0.1" in block
+    # No leading # before these active lines
+    for line in block.splitlines():
+        stripped = line.lstrip()
+        if stripped.startswith("train: 50") or stripped.startswith("val: 0.1"):
+            assert not stripped.startswith("#"), f"Active line must not be commented: {line!r}"
+
+
+def test_limit_block_commented_when_unset() -> None:
+    """_limit_block with no limit set emits a fully-commented discovery block."""
+    block = sw._limit_block({})
+    # Every non-blank line must be commented
+    for line in block.splitlines():
+        if line.strip():
+            assert line.lstrip().startswith("#"), f"Expected comment, got: {line!r}"
+    # Key knobs should appear in comments
+    assert "limit:" in block
+    assert "strategy" in block
+    assert "seed" in block
+
+
+def test_render_with_limit_round_trips(tmp_path) -> None:
+    """render() with data.limit produces a config that round-trips through load_config."""
+    answers = {
+        "run": {"name": "r"},
+        "data": {
+            "format": "coco",
+            "train": {"annotations": "t.json", "images": "t/"},
+            "augmentations": {"preset": "natural", "intensity": "medium"},
+            "limit": {"train": 100, "val": 0.1},
+        },
+        "peft": {"method": "lora"},
+        "train": {"epochs": 1, "loss": {"preset": "natural", "class_imbalance": "balanced"}},
+    }
+    rendered = sw.render(answers, run_mode="train")
+    assert "train: 100" in rendered
+    assert "val: 0.1" in rendered
+    out = tmp_path / "c.yaml"
+    out.write_text(rendered)
+    cfg = load_config(out)
+    assert cfg.data.limit.train == 100
+    assert cfg.data.limit.val == pytest.approx(0.1)
+
+
+def test_render_without_limit_has_commented_block(tmp_path) -> None:
+    """render() with no data.limit emits commented discovery block and still loads."""
+    answers = {
+        "run": {"name": "r"},
+        "data": {
+            "format": "coco",
+            "train": {"annotations": "t.json", "images": "t/"},
+            "augmentations": {"preset": "natural", "intensity": "medium"},
+        },
+        "peft": {"method": "lora"},
+        "train": {"epochs": 1, "loss": {"preset": "natural", "class_imbalance": "balanced"}},
+    }
+    rendered = sw.render(answers, run_mode="train")
+    # The discovery comment block must appear
+    assert "# limit:" in rendered
+    out = tmp_path / "c.yaml"
+    out.write_text(rendered)
+    cfg = load_config(out)
+    # No limit set => schema defaults (train/val both None)
+    assert cfg.data.limit.train is None
+    assert cfg.data.limit.val is None
+
+
+def test_limit_step_in_steps_list_after_validation() -> None:
+    """STEPS must contain a 'limit' step positioned after 'validation'."""
+    ids = [s.id for s in sw.STEPS]
+    assert "limit" in ids
+    val_idx = ids.index("validation")
+    limit_idx = ids.index("limit")
+    assert limit_idx > val_idx, "limit step must come after validation step"
+
+
+def test_step_fragment_shapes_updated_for_limit_step(monkeypatch) -> None:
+    """Full run_wizard with limit step declining the confirm still works end-to-end."""
+    # The limit step adds one ask_confirm call (decline) — include False in confirms
+    _patch_prompts(
+        monkeypatch,
+        texts=["my-run", "ann.json", "imgs/", "5", ""],
+        choices=["train", "coco", "none", "natural", "medium", "balanced", "lora"],
+        confirms=[False],  # decline limit
+    )
+    monkeypatch.setattr(sw, "infer_class_imbalance", lambda *a, **k: "balanced")
+    ctx = sw.Ctx(answers={}, cuda_available=False)
+    answers = sw.run_wizard(ctx)
+    assert answers["run"]["name"] == "my-run"
+    assert answers["data"]["format"] == "coco"
+    assert answers["train"]["epochs"] == 5
+    assert "limit" not in answers.get("data", {})
+
+
+def test_generate_config_happy_path_with_limit_step(tmp_path, monkeypatch) -> None:
+    """generate_config works end-to-end when the limit step is answered (decline)."""
+    _patch_prompts(
+        monkeypatch,
+        texts=["my-run", "ann.json", "imgs/", "0.1", "7", ""],
+        choices=["train", "coco", "auto-split", "natural", "medium", "lora"],
+        confirms=[False],  # decline limit
+    )
+    monkeypatch.setattr(sw, "measure_class_imbalance_ratio", lambda *a, **k: None)
+    out = tmp_path / "c.yaml"
+    sw.generate_config(out, force=False, cuda_available=False)
+    cfg = load_config(out)
+    assert cfg.run.name == "my-run"
+    assert cfg.data.val_split is not None
+    assert cfg.train.epochs == 7
