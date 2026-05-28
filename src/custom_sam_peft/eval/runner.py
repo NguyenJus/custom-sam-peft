@@ -20,8 +20,7 @@ from custom_sam_peft.eval._artifacts import EvalArtifacts
 from custom_sam_peft.eval.evaluator import Evaluator
 from custom_sam_peft.eval.metrics import MetricsReport
 from custom_sam_peft.models.sam3 import MULTIPLEX_CAP, load_sam31
-from custom_sam_peft.peft_adapters import make_peft_method
-from custom_sam_peft.train.checkpoint import _load_channel_adapter
+from custom_sam_peft.train.checkpoint import load_adapter
 
 _LOG = logging.getLogger(__name__)
 
@@ -71,13 +70,17 @@ def run_eval(
     """Load model + adapter, build dataset, run Evaluator.
 
     When ``artifacts`` is provided (the EvalArtifacts seam), the evaluator reads
-    ``checkpoint_path``, ``peft_method``, and ``run_dir`` from it and does NOT
-    reach into trainer internals. ``checkpoint`` is ignored when ``artifacts`` is
-    given.
+    ``checkpoint_path`` and ``run_dir`` from it and does NOT reach into trainer
+    internals. ``checkpoint`` is ignored when ``artifacts`` is given.
 
-    When ``artifacts`` is None, the existing standalone-eval-from-config path
-    remains (for ``custom-sam-peft eval cfg.yaml``), and ``checkpoint`` must be
-    supplied.
+    When ``artifacts`` is None (standalone eval path), ``checkpoint`` is optional:
+      - ``checkpoint`` supplied: loads the adapter from disk, dispatching LoRA vs
+        QLoRA via the canonical sentinel-based discovery seam
+        (``train.checkpoint.load_adapter``). Emits a WARNING when the detected
+        method disagrees with ``cfg.peft.method`` (config value is ignored for
+        dispatch; the checkpoint's sentinel wins).
+      - ``checkpoint=None``: evaluates the baseline (zero-shot) SAM — no adapter
+        is loaded and no channel-adapter restore is attempted.
 
     Optional additive kwargs (used by `custom_sam_peft run`):
       - ``val_dataset``: pre-built dataset; skips registry lookup + transform setup.
@@ -89,21 +92,15 @@ def run_eval(
 
     Raises:
         ValueError: split == 'test' and cfg.data.test is None.
-        ValueError: neither ``checkpoint`` nor ``artifacts`` provided.
     """
-    # Resolve checkpoint and peft_method from artifacts when provided.
+    # Resolve checkpoint and run_dir from artifacts when provided.
+    resolved_checkpoint: Path | None
     if artifacts is not None:
         resolved_checkpoint = artifacts.checkpoint_path
-        resolved_peft_method = artifacts.peft_method
         resolved_run_dir = artifacts.run_dir
     else:
-        if checkpoint is None:
-            raise ValueError("run_eval requires either 'checkpoint' or 'artifacts' to be provided.")
-        resolved_checkpoint = checkpoint
-        resolved_peft_method = cfg.peft.method
+        resolved_checkpoint = checkpoint  # may be None → baseline
         resolved_run_dir = None
-
-    _peft_method = make_peft_method(resolved_peft_method)
     _hf_val = (
         cfg.data.format == "hf" and cfg.data.hf is not None and cfg.data.hf.split_val is not None
     )
@@ -132,8 +129,20 @@ def run_eval(
         wrapper = load_sam31(
             cfg.model, channels=cfg.data.channels, channel_semantics=cfg.data.channel_semantics
         )
-        _peft_method.load_from_disk(wrapper, resolved_checkpoint)
-        _load_channel_adapter(wrapper, resolved_checkpoint)
+        if resolved_checkpoint is not None:
+            from custom_sam_peft.peft_adapters import discover_method_from_checkpoint
+
+            detected = discover_method_from_checkpoint(resolved_checkpoint)
+            if cfg.peft.method != detected:
+                _LOG.warning(
+                    "cfg.peft.method=%r but the checkpoint at %s is %r; loading the "
+                    "checkpoint's method (config value ignored for eval dispatch).",
+                    cfg.peft.method,
+                    resolved_checkpoint,
+                    detected,
+                )
+            load_adapter(wrapper, resolved_checkpoint)
+        # else: baseline — no adapter load, no channel-adapter restore.
     else:
         wrapper = model
 
@@ -157,12 +166,16 @@ def run_eval(
         eval_cfg = eval_cfg.model_copy(update={"batch_size": bs})
 
     evaluator = Evaluator(eval_cfg)
-    # Output dir: prefer explicit, then artifacts.run_dir, then checkpoint parent.
-    out = (
-        output_dir
-        if output_dir is not None
-        else (resolved_run_dir if resolved_run_dir is not None else resolved_checkpoint.parent)
-    )
+    # Output dir: prefer explicit arg, then artifacts.run_dir, then checkpoint parent,
+    # then cfg.run.output_dir (baseline path where checkpoint is None).
+    if output_dir is not None:
+        out = output_dir
+    elif resolved_run_dir is not None:
+        out = resolved_run_dir
+    elif resolved_checkpoint is not None:
+        out = resolved_checkpoint.parent
+    else:
+        out = Path(cfg.run.output_dir) if cfg.run.output_dir else Path.cwd()
 
     if return_per_example_iou:
         # We need both the metrics report (and metrics.json on disk) AND the

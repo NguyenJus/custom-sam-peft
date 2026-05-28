@@ -8,89 +8,34 @@ docs/superpowers/specs/2026-05-26-interactive-setup-wizard-design.md.
 from __future__ import annotations
 
 import string
-import tempfile
-from collections.abc import Callable
-from dataclasses import dataclass, field
-from datetime import date
 from importlib.resources import files
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any
 
 import typer
 
+from custom_sam_peft.cli._interactive import (
+    Ctx,
+    RunMode,
+    WizardStep,
+    _ask_dataset_source,
+    _ask_model_weights,
+    _ask_validation,
+    _deep_merge,  # noqa: F401  # re-exported: tests access sw._deep_merge
+    _header,
+    _launch_command,
+    ask_choice,
+    ask_confirm,
+    ask_text,
+    run_wizard,
+    validate,
+)
 from custom_sam_peft.cli.init_cmd import UNIFIED_TEMPLATE, _build_loss_overrides_block
-from custom_sam_peft.config.loader import load_config
 from custom_sam_peft.config.schema import ClassImbalance
 from custom_sam_peft.errors import ConfigError
 
 IMBALANCE_MODERATE_RATIO = 3.0  # R < 3 → balanced
 IMBALANCE_SEVERE_RATIO = 10.0  # 3 <= R < 10 → moderate; R >= 10 → severe
-
-RunMode = Literal["train", "run", "eval"]
-
-
-@dataclass
-class Ctx:
-    answers: dict[str, Any]
-    cuda_available: bool
-    run_mode: RunMode = "train"
-    categories: list[str] | None = None
-    category_counts: dict[str, int] | None = None
-
-
-@dataclass(frozen=True)
-class WizardStep:
-    id: str
-    ask: Callable[[Ctx], dict[str, Any]]
-    when: Callable[[Ctx], bool] = field(default=lambda ctx: True)
-
-
-def _deep_merge(dst: dict[str, Any], src: dict[str, Any]) -> None:
-    """Recursively merge src into dst. Nested dicts merge; scalars/lists overwrite."""
-    for k, v in src.items():
-        if isinstance(v, dict) and isinstance(dst.get(k), dict):
-            _deep_merge(dst[k], v)
-        else:
-            dst[k] = v
-
-
-def ask_text(
-    prompt: str,
-    *,
-    default: str | None = None,
-    validate: Callable[[str], str | None] | None = None,
-) -> str:
-    """Free-text prompt; re-asks on validate failure. validate returns an error string or None."""
-    while True:
-        value = (
-            typer.prompt(prompt, default=default) if default is not None else typer.prompt(prompt)
-        )
-        value = str(value).strip()
-        if validate is not None:
-            err = validate(value)
-            if err is not None:
-                typer.echo(err)
-                continue
-        return value
-
-
-def ask_choice(prompt: str, choices: list[str], *, default: str | None = None) -> str:
-    """Membership-checked choice; re-asks on invalid."""
-    rendered = f"{prompt} [{'/'.join(choices)}]"
-    while True:
-        value = (
-            typer.prompt(rendered, default=default)
-            if default is not None
-            else typer.prompt(rendered)
-        )
-        value = str(value).strip()
-        if value in choices:
-            return value
-        typer.echo(f"choose one of: {', '.join(choices)}")
-
-
-def ask_confirm(prompt: str, *, default: bool = True) -> bool:
-    return typer.confirm(prompt, default=default)
 
 
 def measure_class_imbalance_ratio(annotations: str) -> float | None:
@@ -327,52 +272,13 @@ def render(answers: dict[str, Any], *, run_mode: RunMode) -> str:
 
 
 def _ask_run_mode(ctx: Ctx) -> dict[str, Any]:
-    ctx.run_mode = ask_choice("Run mode?", ["train", "run", "eval"], default="train")  # type: ignore[assignment]
+    ctx.run_mode = ask_choice("Run mode?", ["train", "run"], default="train")  # type: ignore[assignment]
     return {}
 
 
 def _ask_run_name(ctx: Ctx) -> dict[str, Any]:
     name = ask_text("Run name?", default="my-run")
     return {"run": {"name": name}}
-
-
-def _ask_dataset_source(ctx: Ctx) -> dict[str, Any]:
-    fmt = ask_choice("Dataset format?", ["coco", "hf"], default="coco")
-    if fmt == "coco":
-        ann = ask_text("Path to COCO train annotations (.json)?")
-        imgs = ask_text("Path to COCO train images dir?")
-        return {"data": {"format": "coco", "train": {"annotations": ann, "images": imgs}}}
-    name = ask_text("HuggingFace dataset name (org/dataset)?")
-    return {"data": {"format": "hf", "hf": {"name": name}}}
-
-
-def _ask_validation(ctx: Ctx) -> dict[str, Any]:
-    fmt = ctx.answers.get("data", {}).get("format", "coco")
-    mode = ask_choice("Validation?", ["explicit", "auto-split", "none"], default="auto-split")
-    if mode == "none":
-        if ctx.run_mode in {"eval", "run"}:
-            typer.echo(
-                "note: eval/run needs a validation set to score against; "
-                "selecting none means eval will have nothing to evaluate."
-            )
-        return {}
-    if mode == "auto-split":
-
-        def _fraction(s: str) -> str | None:
-            try:
-                f = float(s)
-            except ValueError:
-                return "fraction must be a number"
-            return None if 0.0 < f <= 0.5 else "fraction must be in (0, 0.5]"
-
-        frac = ask_text("Auto-split fraction (0<f<=0.5)?", default="0.1", validate=_fraction)
-        return {"data": {"val_split": {"fraction": float(frac)}}}
-    if fmt == "hf":
-        split = ask_text("HF validation split name?", default="validation")
-        return {"data": {"hf": {"split_val": split}}}
-    ann = ask_text("Path to COCO val annotations (.json)?")
-    imgs = ask_text("Path to COCO val images dir?")
-    return {"data": {"val": {"annotations": ann, "images": imgs}}}
 
 
 def _ask_domain(ctx: Ctx) -> dict[str, Any]:
@@ -457,27 +363,6 @@ def _ask_epochs(ctx: Ctx) -> dict[str, Any]:
     return {"train": {"epochs": int(epochs)}}
 
 
-def _ask_model_weights(ctx: Ctx) -> dict[str, Any]:
-    def _is_file_or_blank(s: str) -> str | None:
-        if s == "":
-            return None
-        return None if Path(s).is_file() else f"no file at {s}"
-
-    raw = ask_text(
-        "Path to an existing SAM 3.1 checkpoint (.pt)? Leave blank to use "
-        "`models/sam3.1` and download if missing.",
-        default="",
-        validate=_is_file_or_blank,
-    )
-    if raw:
-        p = Path(raw)
-        return {"model": {"local_dir": str(p.parent), "checkpoint_file": p.name}}
-    hits = sorted(Path("models").glob("**/sam3.1_multiplex.pt")) if Path("models").is_dir() else []
-    if hits:
-        return {"model": {"local_dir": str(hits[0].parent)}}
-    return {}
-
-
 def _ask_limit(ctx: Ctx) -> dict[str, Any]:
     if not ask_confirm("Limit dataset size for a quick/smoke run?", default=False):
         return {}
@@ -508,52 +393,16 @@ STEPS: list[WizardStep] = [
     WizardStep("validation", _ask_validation),
     WizardStep("limit", _ask_limit),
     WizardStep("domain", _ask_domain),
-    WizardStep(
-        "class_imbalance",
-        _ask_class_imbalance,
-        when=lambda ctx: ctx.run_mode in {"train", "run"},
-    ),
+    WizardStep("class_imbalance", _ask_class_imbalance),
     WizardStep("peft_sizing", _ask_peft_sizing),
-    WizardStep("epochs", _ask_epochs, when=lambda ctx: ctx.run_mode != "eval"),
+    WizardStep("epochs", _ask_epochs),
     WizardStep("model_weights", _ask_model_weights),
 ]
-
-
-def run_wizard(ctx: Ctx) -> dict[str, Any]:
-    for step in STEPS:
-        if step.when(ctx):
-            fragment = step.ask(ctx)
-            _deep_merge(ctx.answers, fragment)
-    return ctx.answers
 
 
 # ---------------------------------------------------------------------------
 # validate + emit
 # ---------------------------------------------------------------------------
-
-_LAUNCH_VERB = {"train": "train", "run": "run", "eval": "eval"}
-
-
-def validate(rendered: str) -> None:
-    """Validate the exact bytes via load_config by round-tripping through a temp file."""
-    with tempfile.NamedTemporaryFile("w", suffix=".yaml", delete=False) as f:
-        f.write(rendered)
-        tmp = Path(f.name)
-    try:
-        load_config(tmp)
-    finally:
-        tmp.unlink(missing_ok=True)
-
-
-def _launch_command(output: Path, run_mode: RunMode) -> str:
-    return f"custom-sam-peft {_LAUNCH_VERB[run_mode]} --config {output}"
-
-
-def _header(launch: str) -> str:
-    return (
-        f"# Generated by `custom-sam-peft init --interactive` on {date.today().isoformat()}\n"
-        f"# Launch: {launch}\n\n"
-    )
 
 
 def emit(rendered: str, output: Path, force: bool, *, run_mode: RunMode) -> str:
@@ -576,7 +425,7 @@ def generate_config(output: Path, *, force: bool, cuda_available: bool) -> tuple
       KeyboardInterrupt: propagates; no file written.
     """
     ctx = Ctx(answers={}, cuda_available=cuda_available)
-    answers = run_wizard(ctx)  # KeyboardInterrupt propagates out untouched
+    answers = run_wizard(ctx, STEPS)  # KeyboardInterrupt propagates out untouched
     rendered = render(answers, run_mode=ctx.run_mode)
     launch = _launch_command(output, ctx.run_mode)
     body = _header(launch) + rendered

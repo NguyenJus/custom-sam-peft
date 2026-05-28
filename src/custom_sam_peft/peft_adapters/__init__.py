@@ -20,6 +20,7 @@ instead of testing ``cfg.peft.method``.
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import Any, Protocol, cast, runtime_checkable
 
@@ -27,6 +28,7 @@ from custom_sam_peft._registry import RegistryError, lookup, register
 from custom_sam_peft.errors import CheckpointError
 
 _QLORA_META_FILENAME = "custom_sam_peft_qlora.json"
+_LORA_CONFIG_FILENAME = "adapter_config.json"
 
 
 @runtime_checkable
@@ -159,6 +161,35 @@ def method_pretty_name(method: str) -> str:
     if method == "qlora":
         return "QLoRA"
     raise ValueError(f"Unknown peft.method {method!r}; expected 'lora' or 'qlora'.")
+
+
+def discover_method_from_checkpoint(adapter_dir: Path) -> str:
+    """Discover the PEFT method of an unknown checkpoint dir from the sentinel file.
+
+    Convention: custom_sam_peft_qlora.json present → 'qlora', else 'lora'.
+    This is DISCOVERY (no prior expectation). Contrast detect_method_from_checkpoint
+    (an INSTANCE method on LoraAdapter/QloraAdapter) which VERIFIES a *known* method
+    and raises CheckpointError on contradiction.
+
+    Returns 'lora' or 'qlora'. Does not validate adapter_config.json presence —
+    callers that need that check do it separately (e.g. predict's detect_adapter_kind).
+    """
+    return "qlora" if (adapter_dir / _QLORA_META_FILENAME).is_file() else "lora"
+
+
+def read_adapter_base_model_name(adapter_dir: Path) -> str | None:
+    """Read base_model_name_or_path from adapter_config.json, or return None.
+
+    Returns None if the file is absent or the key is missing. Pure JSON read
+    (no torch/bnb), safe to call from any path.
+    """
+    config_path = adapter_dir / _LORA_CONFIG_FILENAME
+    if not config_path.is_file():
+        return None
+    with config_path.open(encoding="utf-8") as fh:
+        data: dict[str, object] = json.load(fh)
+    value = data.get("base_model_name_or_path")
+    return str(value) if value is not None else None
 
 
 def make_peft_method(method: str) -> PEFTMethod:

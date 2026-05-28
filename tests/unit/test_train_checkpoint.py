@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import random
 from pathlib import Path
+from unittest.mock import MagicMock
 
 import numpy as np
 import pytest
@@ -490,3 +491,31 @@ def test_find_latest_checkpoint_raises_checkpoint_error_when_no_match(tmp_path: 
     msg = str(exc_info.value)
     assert str(tmp_path) in msg
     assert "test" in msg
+
+
+def test_load_adapter_uses_discover_qlora(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """load_adapter dispatches load_qlora when the qlora sentinel is present."""
+    from custom_sam_peft.train import checkpoint as ckpt_mod
+
+    (tmp_path / "custom_sam_peft_qlora.json").write_text("{}")
+    calls: list[str] = []
+    monkeypatch.setattr(ckpt_mod, "load_qlora", lambda w, p: calls.append("qlora"))
+    monkeypatch.setattr(ckpt_mod, "load_lora", lambda w, p: calls.append("lora"))
+    monkeypatch.setattr(ckpt_mod, "_load_channel_adapter", lambda w, p: None)
+    wrapper = MagicMock()
+    ckpt_mod.load_adapter(wrapper, tmp_path)
+    assert calls == ["qlora"]
+
+
+def test_load_adapter_uses_discover_lora(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """load_adapter dispatches load_lora when the qlora sentinel is absent."""
+    from custom_sam_peft.train import checkpoint as ckpt_mod
+
+    (tmp_path / "adapter_config.json").write_text("{}")
+    calls: list[str] = []
+    monkeypatch.setattr(ckpt_mod, "load_qlora", lambda w, p: calls.append("qlora"))
+    monkeypatch.setattr(ckpt_mod, "load_lora", lambda w, p: calls.append("lora"))
+    monkeypatch.setattr(ckpt_mod, "_load_channel_adapter", lambda w, p: None)
+    wrapper = MagicMock()
+    ckpt_mod.load_adapter(wrapper, tmp_path)
+    assert calls == ["lora"]
