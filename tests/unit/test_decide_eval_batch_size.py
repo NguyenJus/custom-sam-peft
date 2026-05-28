@@ -122,12 +122,15 @@ def test_decide_eval_batch_size_sdpa_attention_cap(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     """On a 23.46 GiB GPU the auto-batch must NOT return a batch size whose
-    SDPA attention score matrix (B*H*N*N*dtype_bytes) would exceed the eval budget.
+    full predicted peak (model + SDPA score matrix + activations + workspace)
+    exceeds GPU memory.
 
     SAM 3.1 vision backbone: patch_size=14 -> N=(1008/14)^2=5184, H=16.
-    At bf16 (2 bytes), attn_per_example = 16*5184*5184*2 ~860 MiB.
-    Without the cap the analytic model picks bs~35 -> 35*860 MiB ~29 GiB > 23 GiB budget.
-    With the cap, bs must satisfy B*attn_per_example <= budget.  Issue #162.
+    At fp32 (4 bytes, worst-case SDPA math-fallback upcast),
+    attn_per_example = 16*5184*5184*4 ~1.72 GiB.
+    Without the cap the analytic model picks bs~35 -> full peak ~37 GiB > 23 GiB.
+    With the cap, peak must fit: model + bs*(attn+act) + workspace <= gpu_total.
+    Issue #162.
     """
     monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
     # 23.46 GiB -- the exact card reported in issue #162.
@@ -138,18 +141,31 @@ def test_decide_eval_batch_size_sdpa_attention_cap(
         "custom_sam_peft.presets._current_sam3_checkpoint_sha",
         lambda: "deadbeef",
     )
-    from custom_sam_peft.presets import decide_eval_batch_size
+    from custom_sam_peft.presets import (
+        WORKSPACE_BYTES,
+        _activation_per_example,
+        _model_bytes,
+        decide_eval_batch_size,
+        forward_only_factor,
+    )
 
     bs, _predicted, _prov = decide_eval_batch_size()
 
-    # SAM 3.1 vision backbone constants (patch_size=14, num_heads=16, bf16).
+    # SAM 3.1 vision backbone constants (patch_size=14, num_heads=16, fp32).
     _N = (1008 // 14) ** 2  # 5184 tokens
     _H = 16
-    _dtype_bytes = 2  # bf16
+    _dtype_bytes = 4  # fp32: worst-case SDPA math-fallback upcast
     attn_bytes_for_bs = bs * _H * _N * _N * _dtype_bytes
 
-    budget = gpu_total - _GB  # 1 GiB headroom
-    assert attn_bytes_for_bs <= budget, (
-        f"bs={bs} -> SDPA attn matrix = {attn_bytes_for_bs / _GB:.2f} GiB "
-        f"exceeds eval budget {budget / _GB:.2f} GiB (issue #162)"
+    # Full peak must fit in GPU memory (no headroom subtraction — conservative).
+    image_size = 1008  # SAM3_IMAGE_SIZE
+    model_bytes = _model_bytes("lora")
+    workspace = WORKSPACE_BYTES
+    activations_at_bs = int(_activation_per_example(image_size, None) * forward_only_factor) * bs
+    full_peak = model_bytes + attn_bytes_for_bs + activations_at_bs + workspace
+    assert full_peak <= gpu_total, (
+        f"bs={bs} -> full peak = {full_peak / _GB:.2f} GiB "
+        f"(model={model_bytes / _GB:.2f} + attn={attn_bytes_for_bs / _GB:.2f} "
+        f"+ act={activations_at_bs / _GB:.2f} + ws={workspace / _GB:.2f}) "
+        f"exceeds gpu_total {gpu_total / _GB:.2f} GiB (issue #162)"
     )
