@@ -246,3 +246,63 @@ def peek_adapter(checkpoint_dir: Path) -> tuple[str, str | None]:
 
     method = discover_method_from_checkpoint(checkpoint_dir)
     return method_pretty_name(method), read_adapter_base_model_name(checkpoint_dir)
+
+
+# ---------------------------------------------------------------------------
+# eval --interactive helper
+# ---------------------------------------------------------------------------
+
+
+def _eval_reuse() -> None:
+    """Interactive reuse path: print a runnable eval command; write nothing."""
+    config_path = ask_text(
+        "Path to your existing training config (.yaml)?",
+        validate=validate_config_with_eval_split,
+    )
+    checkpoint_dir = ask_text(
+        "Path to the adapter checkpoint directory?",
+        validate=validate_checkpoint_dir,
+    )
+    pretty, base = peek_adapter(Path(checkpoint_dir))
+    typer.echo(f"detected adapter: {pretty}, base model: {base or '(unspecified)'}")
+    split = ask_choice("Which split?", ["val", "test"], default="val")
+    typer.echo(
+        f"custom-sam-peft eval --config {config_path} --checkpoint {checkpoint_dir} --split {split}"
+    )
+
+
+def _eval_baseline(*, output: Path, force: bool) -> None:
+    """Interactive baseline path: run shared wizard steps, write a config, print command."""
+    from custom_sam_peft.cli.setup_wizard import emit, render
+
+    ctx = Ctx(answers={"run": {"name": "baseline-eval"}}, cuda_available=False, run_mode="eval")
+    steps = [
+        WizardStep("dataset_source", _ask_dataset_source),
+        WizardStep("validation", _ask_validation),
+        WizardStep("model_weights", _ask_model_weights),
+    ]
+    answers = run_wizard(ctx, steps)
+    rendered = render(answers, run_mode="eval")
+    validate(rendered)
+    emit(rendered, output, force, run_mode="eval")
+    typer.echo(f"custom-sam-peft eval --config {output} --split val")
+
+
+def run_eval_interactive(*, output: Path | None, force: bool) -> None:
+    """Entry point for `csp eval --interactive`.
+
+    Prompts the user to choose between evaluating a trained adapter (reuse) or
+    running a zero-shot baseline (baseline). The reuse path prints a runnable
+    command and writes nothing; the baseline path drives the shared wizard steps,
+    validates and writes a config, then prints a runnable command.
+    """
+    mode = ask_choice(
+        "Evaluate a trained adapter, or baseline zero-shot SAM?",
+        ["reuse", "baseline"],
+        default="reuse",
+    )
+    if mode == "reuse":
+        _eval_reuse()
+    else:
+        out = output if output is not None else Path("baseline-eval.yaml")
+        _eval_baseline(output=out, force=force)
