@@ -133,7 +133,7 @@ def calibrate(
         )
         raise typer.Exit(code=5) from exc
     except (RuntimeError, ValueError) as exc:
-        typer.echo(f"ERROR: LoRA stub attach failed: {exc}", err=True)
+        typer.echo(f"ERROR: probe failed: {exc}", err=True)
         raise typer.Exit(code=4) from exc
 
     overhead = (

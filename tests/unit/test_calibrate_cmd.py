@@ -20,34 +20,6 @@ _GB = 1024**3
 runner = CliRunner()
 
 
-def _patch_probe(
-    monkeypatch: pytest.MonkeyPatch,
-    *,
-    peak: int = int(38 * _GB),
-    gpu_name: str = "NVIDIA A100-SXM4-40GB",
-    total: int = int(40 * _GB),
-    sha: str = "deadbeef",
-    tmp_path: Path | None = None,
-) -> None:
-    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
-    props = MagicMock(total_memory=total)
-    props.name = gpu_name
-    monkeypatch.setattr(torch.cuda, "get_device_properties", lambda _idx: props)
-    monkeypatch.setattr(torch.cuda, "get_device_name", lambda _idx: gpu_name)
-    monkeypatch.setattr(torch.cuda, "max_memory_allocated", lambda: peak)
-    monkeypatch.setattr(torch.cuda, "reset_peak_memory_stats", lambda: None)
-    monkeypatch.setattr(
-        "custom_sam_peft.cli.calibrate_cmd._run_probe",
-        lambda **kw: peak,
-    )
-    monkeypatch.setattr(
-        "custom_sam_peft.cli.calibrate_cmd._sam3_checkpoint_sha",
-        lambda: sha,
-    )
-    if tmp_path is not None:
-        _write_config(tmp_path / "config.yaml", method="lora", r=16, k=16)
-
-
 def _write_config(path: Path, *, method: str, r: int, k: int) -> None:
     """Write a minimal valid TrainConfig YAML with the given peft/multiplex settings."""
     content = f"""\
@@ -84,6 +56,34 @@ tracking:
     path.write_text(content)
 
 
+def _patch_probe(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    peak: int = int(38 * _GB),
+    gpu_name: str = "NVIDIA A100-SXM4-40GB",
+    total: int = int(40 * _GB),
+    sha: str = "deadbeef",
+    tmp_path: Path | None = None,
+) -> None:
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    props = MagicMock(total_memory=total)
+    props.name = gpu_name
+    monkeypatch.setattr(torch.cuda, "get_device_properties", lambda _idx: props)
+    monkeypatch.setattr(torch.cuda, "get_device_name", lambda _idx: gpu_name)
+    monkeypatch.setattr(torch.cuda, "max_memory_allocated", lambda: peak)
+    monkeypatch.setattr(torch.cuda, "reset_peak_memory_stats", lambda: None)
+    monkeypatch.setattr(
+        "custom_sam_peft.cli.calibrate_cmd._run_probe",
+        lambda **kw: peak,
+    )
+    monkeypatch.setattr(
+        "custom_sam_peft.cli.calibrate_cmd._sam3_checkpoint_sha",
+        lambda: sha,
+    )
+    if tmp_path is not None:
+        _write_config(tmp_path / "config.yaml", method="lora", r=16, k=16)
+
+
 def test_calibrate_writes_cache_with_schema_v2(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -112,7 +112,9 @@ def test_calibrate_writes_cache_with_schema_v2(
 
 
 def test_calibrate_cache_fresh_exits_zero(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    _patch_probe(monkeypatch)
+    # Write a config too: the fresh-cache exit currently fires before load_config,
+    # but Task 6 may move config reading earlier — don't let this test depend on order.
+    _patch_probe(monkeypatch, tmp_path=tmp_path)
     monkeypatch.chdir(tmp_path)
     cache = tmp_path / ".custom_sam_peft_calibration.json"
     cache.write_text(
