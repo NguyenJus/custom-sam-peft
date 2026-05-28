@@ -131,7 +131,6 @@ class HFDataset:
         self,
         name: str,
         split: str,
-        prompt_mode: Literal["text", "bbox"],
         *,
         transforms: Any,
         text_prompt: TextPromptConfig,
@@ -140,12 +139,9 @@ class HFDataset:
         row_indices: Iterable[int] | None = None,
         channels: int = 3,
     ) -> None:
-        if prompt_mode not in ("text", "bbox"):
-            raise ValueError(f"prompt_mode must be 'text' or 'bbox'; got {prompt_mode!r}")
         self._name = name
         self._split = split
         self._channels = channels
-        self._prompt_mode: Literal["text", "bbox"] = prompt_mode
         self._transforms = transforms
         self._text_prompt_cfg = text_prompt
         self._field_map = field_map
@@ -305,7 +301,7 @@ class HFDataset:
         import numpy as _np
         import torch
 
-        from custom_sam_peft.data.base import BoxPrompts, Instance, TextPrompts
+        from custom_sam_peft.data.base import Instance, TextPrompts
         from custom_sam_peft.data.coco import _build_text_prompts
 
         instances: list[Instance] = []
@@ -319,65 +315,31 @@ class HFDataset:
             )
 
         image_id = str(i)
-        if self._prompt_mode == "text":
-            present = sorted(set(out_classes))
-            rng = _random.Random(f"{self._seed}:{i}")  # noqa: S311 — deterministic seeded RNG for prompt sampling, not security
-            prompts_list = _build_text_prompts(
-                present_dense_ids=present,
-                class_names=self._class_names,
-                cfg=self._text_prompt_cfg,
-                rng=rng,
-                image_id=i,
-            )
-            if len(prompts_list) > self._multiplex_cap:
-                if not self._warned_truncation:
-                    _LOG.warning(
-                        "custom_sam_peft.data.hf: image_id=%s requested %d text prompts; "
-                        "truncating to %d. Suppressing further warnings.",
-                        image_id,
-                        len(prompts_list),
-                        self._multiplex_cap,
-                    )
-                    self._warned_truncation = True
-                prompts_list = prompts_list[: self._multiplex_cap]
-            return Example(
-                image=image_tensor,
-                image_id=image_id,
-                prompts=TextPrompts(classes=prompts_list),
-                instances=instances,
-            )
-
-        order = sorted(
-            range(len(instances)),
-            key=lambda k: (
-                instances[k].class_id,
-                float(instances[k].box[0]),
-                float(instances[k].box[1]),
-            ),
+        present = sorted(set(out_classes))
+        rng = _random.Random(f"{self._seed}:{i}")  # noqa: S311 — deterministic seeded RNG for prompt sampling, not security
+        prompts_list = _build_text_prompts(
+            present_dense_ids=present,
+            class_names=self._class_names,
+            cfg=self._text_prompt_cfg,
+            rng=rng,
+            image_id=i,
         )
-        if len(order) > self._multiplex_cap:
+        if len(prompts_list) > self._multiplex_cap:
             if not self._warned_truncation:
                 _LOG.warning(
-                    "custom_sam_peft.data.hf: image_id=%s requested %d box prompts; "
+                    "custom_sam_peft.data.hf: image_id=%s requested %d text prompts; "
                     "truncating to %d. Suppressing further warnings.",
                     image_id,
-                    len(order),
+                    len(prompts_list),
                     self._multiplex_cap,
                 )
                 self._warned_truncation = True
-            order = order[: self._multiplex_cap]
-        kept_instances = [instances[k] for k in order]
-        boxes_t = (
-            torch.stack([inst.box for inst in kept_instances])
-            if kept_instances
-            else torch.zeros((0, 4))
-        )
-        class_ids_t = torch.tensor([inst.class_id for inst in kept_instances], dtype=torch.int64)
+            prompts_list = prompts_list[: self._multiplex_cap]
         return Example(
             image=image_tensor,
             image_id=image_id,
-            prompts=BoxPrompts(boxes=boxes_t.to(torch.float32), class_ids=class_ids_t),
-            instances=kept_instances,
+            prompts=TextPrompts(classes=prompts_list),
+            instances=instances,
         )
 
     def __getitem__(self, i: int) -> Example:
@@ -443,7 +405,6 @@ def build_hf(
     return HFDataset(
         name=hf_cfg["name"],
         split=split,
-        prompt_mode=cfg["prompt_mode"],
         transforms=transforms,
         text_prompt=text_prompt,
         field_map=field_map,

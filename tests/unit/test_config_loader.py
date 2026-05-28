@@ -20,7 +20,6 @@ data:
   format: coco
   train: { annotations: train.json, images: train/ }
   val: { annotations: val.json, images: val/ }
-  prompt_mode: bbox
 peft:
   method: lora
 train:
@@ -147,7 +146,6 @@ data:
   format: coco
   train: { annotations: data/train.json, images: data/train/ }
   val: { annotations: data/val.json, images: data/val/ }
-  prompt_mode: text
 peft:
   method: lora
 train:

@@ -101,7 +101,6 @@ def _minimal_data(format: str = "coco") -> dict[str, object]:
         "format": format,
         "train": {"annotations": "a.json", "images": "imgs/"},
         "val": {"annotations": "a.json", "images": "imgs/"},
-        "prompt_mode": "bbox",
     }
 
 
@@ -153,7 +152,6 @@ def _make_data(**kw):
     base = dict(
         format="coco",
         train={"annotations": "a.json", "images": "imgs"},
-        prompt_mode="text",
     )
     base.update(kw)
     return DataConfig.model_validate(base)

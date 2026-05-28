@@ -16,7 +16,6 @@ def _minimal_dict() -> dict[str, object]:
             "format": "coco",
             "train": {"annotations": "data/train.json", "images": "data/train/"},
             "val": {"annotations": "data/val.json", "images": "data/val/"},
-            "prompt_mode": "bbox",
         },
         "peft": {"method": "lora"},
         "train": {"epochs": 10},
@@ -44,11 +43,23 @@ def test_invalid_dtype_rejected() -> None:
         TrainConfig.model_validate(d)
 
 
-def test_invalid_prompt_mode_rejected() -> None:
+def test_prompt_mode_rejected_by_schema() -> None:
+    """Spec #126 §6: any prompt_mode key (regardless of value) fails at load.
+
+    The schema is the sole gate; `_Strict`'s extra="forbid" rejects the key
+    with a Pydantic ValidationError of type "extra_forbidden".
+    """
     d = _minimal_dict()
-    d["data"]["prompt_mode"] = "points"  # type: ignore[index]
-    with pytest.raises(ValidationError):
-        TrainConfig.model_validate(d)
+    # _minimal_dict() now constructs a payload without prompt_mode (Step 2).
+    # Add it back as an extra key and assert it is rejected.
+    for value in ("text", "bbox", "something_else"):
+        d["data"]["prompt_mode"] = value  # type: ignore[index]
+        with pytest.raises(ValidationError) as exc_info:
+            TrainConfig.model_validate(d)
+        errors = exc_info.value.errors()
+        assert any(
+            e["type"] == "extra_forbidden" and e["loc"][-1] == "prompt_mode" for e in errors
+        ), f"expected extra_forbidden on data.prompt_mode for value={value!r}; got {errors}"
 
 
 def test_invalid_peft_method_rejected() -> None:
@@ -205,7 +216,6 @@ def minimal_data_config_dict() -> dict:
         "format": "coco",
         "train": {"annotations": "t.json", "images": "t/"},
         "val": {"annotations": "v.json", "images": "v/"},
-        "prompt_mode": "text",
     }
 
 

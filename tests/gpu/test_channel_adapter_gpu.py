@@ -32,7 +32,7 @@ def test_G1_real_forward_nchannel(tmp_path):
     images = torch.randn(1, n, 1008, 1008, device="cuda", dtype=torch.bfloat16)
     prompts = [TextPrompts(classes=["thing"])]
     with torch.no_grad():
-        out = wrapper(images, prompts, box_hints=None)
+        out = wrapper(images, prompts, support=None)
     assert "pred_masks" in out
 
 

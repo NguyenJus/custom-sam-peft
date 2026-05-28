@@ -20,7 +20,6 @@ $model_block
 data:
 $dataset_block
 $validation_block
-  prompt_mode: text
   # --- advanced ---
   # channels: 3
   # channel_semantics: rgb

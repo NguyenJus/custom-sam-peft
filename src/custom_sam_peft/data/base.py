@@ -16,18 +16,30 @@ class TextPrompts:
 
 
 @dataclass(frozen=True)
-class BoxPrompts:
-    """Per-image box prompts and their target class ids.
+class SupportPrompts:
+    """Auxiliary localization prompts that ride alongside TextPrompts.
 
-    `boxes` is `(N, 4)` xyxy in pixel coords; converted to normalized cxcywh
-    at the collator boundary before reaching the matcher/losses.
+    Never replaces text; never used at inference. Today carries only optional
+    per-image GT box hints (the ``box_hint`` curriculum from #14). Future fields
+    (masks, positive points, negative points) will be added when their
+    plumbing is built — see #126 §12.
+
+    Length convention for ``boxes`` (identical to the legacy ``box_hints`` kwarg):
+
+    - Length is ``B*K`` (image-major, class-minor), where ``K`` is the number
+      of class prompts per multiplex forward call.
+    - Each element is either ``None`` (no hint for that image/class slot) or a
+      ``(M_i, 4)`` float tensor of absolute pixel xyxy boxes.
+    - For the common ``K=1`` case, length is ``B`` and the ordering is
+      trivially image-major.
     """
 
-    boxes: torch.Tensor  # (N, 4) xyxy, pixel coords
-    class_ids: torch.Tensor  # (N,) int64
+    boxes: list[torch.Tensor | None] | None = None
 
 
-Prompts = TextPrompts | BoxPrompts
+# After #126, `Prompts` is an alias for `TextPrompts`. The alias is preserved
+# so call sites referring to `Prompts` continue to resolve.
+Prompts = TextPrompts
 
 
 @dataclass(frozen=True)

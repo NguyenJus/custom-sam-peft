@@ -41,7 +41,6 @@ def _make_cfg_k1(**train_overrides: Any) -> TrainConfig:
             format="coco",
             train=DataSplit(annotations="a.json", images="i"),
             val=DataSplit(annotations="a.json", images="i"),
-            prompt_mode="text",
         ),
         peft=PEFTConfig(method="lora", scope="vision"),
         train=TrainHyperparams(
@@ -243,9 +242,9 @@ def test_legacy_k1_each_model_call_has_one_class(
     call_class_lists: list[list[str]] = []
     real_forward = wrapper.forward
 
-    def spy(images: torch.Tensor, prompts: list[Any], box_hints: Any = None) -> Any:
+    def spy(images: torch.Tensor, prompts: list[Any], support: Any = None) -> Any:
         call_class_lists.append(list(prompts[0].classes))
-        return real_forward(images, prompts, box_hints=box_hints)
+        return real_forward(images, prompts, support=support)
 
     monkeypatch.setattr(wrapper, "forward", spy)
     monkeypatch.setattr(random, "random", lambda: 0.0)
@@ -295,7 +294,7 @@ def test_legacy_k1_nan_in_one_group_not_skip(monkeypatch: pytest.MonkeyPatch) ->
     wrapper = _make_wrapper()
     call_count = [0]
 
-    def spy(images: torch.Tensor, prompts: list[Any], box_hints: Any = None) -> Any:
+    def spy(images: torch.Tensor, prompts: list[Any], support: Any = None) -> Any:
         call_count[0] += 1
         out = TinySam3Stub(num_queries=4, mask_size=8).forward(images, prompts)
         # First call (class A) returns NaN.

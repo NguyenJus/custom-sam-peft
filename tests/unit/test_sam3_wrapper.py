@@ -5,7 +5,7 @@ from __future__ import annotations
 import pytest
 import torch
 
-from custom_sam_peft.data.base import BoxPrompts, TextPrompts
+from custom_sam_peft.data.base import TextPrompts
 from custom_sam_peft.models.sam3 import Sam3Wrapper
 from tests.fixtures.tiny_sam3_stub import TinySam3Stub
 
@@ -30,18 +30,6 @@ def test_wrapper_rejects_multi_class_text_prompts() -> None:
     too_many = [f"c{i}" for i in range(MULTIPLEX_CAP + 1)]
     prompts = [TextPrompts(classes=too_many)]
     with pytest.raises(ValueError, match="MULTIPLEX_CAP"):
-        wrapper(image, prompts)
-
-
-def test_wrapper_rejects_mixed_prompt_variants() -> None:
-    stub = TinySam3Stub()
-    wrapper = Sam3Wrapper(stub, mask_size=16)
-    image = torch.zeros(2, 3, 64, 64)
-    prompts = [
-        TextPrompts(classes=["cat"]),
-        BoxPrompts(boxes=torch.zeros(1, 4), class_ids=torch.zeros(1, dtype=torch.long)),
-    ]
-    with pytest.raises(ValueError, match="same prompt variant"):
         wrapper(image, prompts)
 
 

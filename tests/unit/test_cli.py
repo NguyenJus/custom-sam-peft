@@ -92,29 +92,6 @@ def test_train_invokes_runner(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -
     assert called["resume_from"] is None
 
 
-def test_train_rejects_bbox_prompt_mode(tmp_path: Path) -> None:
-    """prompt_mode=bbox is surfaced as a CLI BadParameter, not a stack trace."""
-    from custom_sam_peft.cli.main import app
-
-    cfg_path = tmp_path / "cfg.yaml"
-    cfg_path.write_text(
-        """
-run: {name: t, output_dir: ./runs, seed: 0}
-data:
-  format: coco
-  train: {annotations: t.json, images: t/}
-  val: {annotations: v.json, images: v/}
-  prompt_mode: bbox
-peft: {method: lora}
-train: {epochs: 1}
-"""
-    )
-    local_runner = CliRunner()
-    result = local_runner.invoke(app, ["train", "--config", str(cfg_path)])
-    assert result.exit_code != 0
-    assert "bbox" in _plain(result.output).lower()
-
-
 def test_eval_command_with_split_test_missing_data_test(tmp_path: Path) -> None:
     """`custom_sam_peft eval --split test` errors when data.test is None."""
     from custom_sam_peft.cli.main import app
@@ -127,7 +104,6 @@ data:
   format: coco
   train: {annotations: t.json, images: t/}
   val: {annotations: v.json, images: v/}
-  prompt_mode: text
 peft: {method: lora}
 train: {epochs: 1}
 """
@@ -172,7 +148,6 @@ data:
   format: coco
   train: {annotations: t.json, images: t/}
   val: {annotations: v.json, images: v/}
-  prompt_mode: text
 peft: {method: lora}
 train: {epochs: 1}
 """
@@ -206,7 +181,6 @@ data:
   format: coco
   train: {annotations: t.json, images: t/}
   val: {annotations: v.json, images: v/}
-  prompt_mode: text
 peft: {method: qlora}
 train: {epochs: 1}
 """
@@ -236,7 +210,6 @@ data:
   format: coco
   train: {annotations: t.json, images: t/}
   val: {annotations: v.json, images: v/}
-  prompt_mode: text
 peft: {method: lora}
 train: {epochs: 1}
 """

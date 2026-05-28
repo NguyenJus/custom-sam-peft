@@ -23,7 +23,7 @@ from torch import Tensor
 
 from custom_sam_peft.cli._progress import progress as P
 from custom_sam_peft.config.schema import BoxHintSchedule, TrainConfig
-from custom_sam_peft.data.base import Instance, TextPrompts
+from custom_sam_peft.data.base import Instance, SupportPrompts, TextPrompts
 from custom_sam_peft.models.losses import total_loss
 from custom_sam_peft.models.sam3 import MULTIPLEX_CAP, Sam3Wrapper
 from custom_sam_peft.peft_adapters import PEFTMethod, make_peft_method
@@ -290,7 +290,9 @@ def train_step(
                     ]
                     micro_imgs = images[micro_indices]
                     with _autocast_ctx(cfg, _pm):
-                        micro_out = _model(micro_imgs, micro_prompts, box_hints=micro_hints)
+                        micro_out = _model(
+                            micro_imgs, micro_prompts, support=SupportPrompts(boxes=micro_hints)
+                        )
                         micro_grp_losses = total_loss(micro_out, micro_targets, cfg.train.loss)
                     _losses_out.clear()
                     _losses_out.append(micro_grp_losses)
@@ -309,7 +311,7 @@ def train_step(
                     is_finite = bool(torch.isfinite(group_scaled_val))
             else:
                 with _autocast_ctx(cfg, _peft_method):
-                    out = model(images, prompts_g, box_hints=hints_g)
+                    out = model(images, prompts_g, support=SupportPrompts(boxes=hints_g))
                     group_losses = total_loss(out, targets_g, cfg.train.loss)
                 group_scaled = group_losses["total"] / (G * cfg.train.grad_accum_steps)
                 is_finite = bool(torch.isfinite(group_scaled))

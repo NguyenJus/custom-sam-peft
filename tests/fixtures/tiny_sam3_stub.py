@@ -23,8 +23,8 @@ class TinySam3Stub(nn.Module):
     In multiplex mode (K > 1 classes per TextPrompts), the real SAM 3.1 model
     returns (B*K, Q, ...) shaped outputs (one row per image-class pair).  This
     stub replicates that contract: when prompts is a list of TextPrompts with
-    K classes each, the output batch dimension is B*K.  For K=1 (legacy) or
-    BoxPrompts / ignored-prompt modes the output batch dimension is B.
+    K classes each, the output batch dimension is B*K.  For K=1 (legacy) the
+    output batch dimension is B.
     """
 
     def __init__(self, num_queries: int = 4, mask_size: int = 16) -> None:
@@ -38,9 +38,9 @@ class TinySam3Stub(nn.Module):
         self,
         image: torch.Tensor,
         prompts: Any,
-        box_hints: Any = None,
+        **kwargs: Any,
     ) -> dict[str, torch.Tensor]:
-        del box_hints  # ignored by the stub
+        del kwargs  # box_hints= (inner-model path) and support= (outer-model path) are both ignored
         b = image.shape[0] if image.ndim == 4 else 1
         # Multiplex: if prompts are TextPrompts with K classes each,
         # the real model expands the batch to B*K (one row per image-class slot).

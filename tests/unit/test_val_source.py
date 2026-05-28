@@ -47,7 +47,6 @@ def _base_cfg(tiny_coco_dir: Path, *, val: bool, val_split: bool) -> TrainConfig
                 else None
             ),
             val_split=(ValSplitConfig(fraction=0.5, seed=None) if val_split else None),
-            prompt_mode="text",
         ),
         peft=PEFTConfig(method="lora"),
         train=TrainHyperparams(epochs=1),
@@ -221,7 +220,6 @@ def _hf_cfg(split_val: str | None) -> TrainConfig:
                 "format": "hf",
                 "train": {"annotations": "unused", "images": "unused"},
                 "val": None,
-                "prompt_mode": "text",
                 "hf": hf,
             },
             "peft": {"method": "lora"},

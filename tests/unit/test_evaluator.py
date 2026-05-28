@@ -87,7 +87,7 @@ def test_evaluate_disables_grad(tiny_text_dataset):
 
         training = False
 
-        def __call__(self, image: Any, prompts: Any, box_hints: Any) -> dict:
+        def __call__(self, image: Any, prompts: Any, support: Any = None) -> dict:
             grad_enabled_during_forward.append(torch.is_grad_enabled())
             b = image.shape[0]
             k_g = len(prompts[0].classes) if prompts else 1
@@ -196,7 +196,7 @@ class _DeviceRecordingStub(torch.nn.Module):
         self.received_image_devices: list[torch.device] = []
 
     def forward(
-        self, image: torch.Tensor, prompts: Any, box_hints: Any = None
+        self, image: torch.Tensor, prompts: Any, support: Any = None
     ) -> dict[str, torch.Tensor]:
         self.received_image_devices.append(image.device)
         b = image.shape[0]
@@ -232,7 +232,7 @@ def test_evaluate_falls_back_to_cpu_for_parameterless_model(tiny_text_dataset) -
             super().__init__()
             self.seen: list[torch.device] = []
 
-        def forward(self, image: torch.Tensor, prompts: Any, box_hints: Any = None):
+        def forward(self, image: torch.Tensor, prompts: Any, support: Any = None):
             self.seen.append(image.device)
             b = image.shape[0]
             k_g = len(prompts[0].classes) if prompts else 1
@@ -368,7 +368,7 @@ def test_iter_predictions_iterates_image_chunks_x_groups(monkeypatch) -> None:
     K_g = 3  # 3 classes, 1 group
     Q = 2
 
-    def _mock_forward(images, prompts, box_hints=None):
+    def _mock_forward(images, prompts, support=None):
         B = images.shape[0]
         h, w = images.shape[-2], images.shape[-1]
         rows = B * K_g

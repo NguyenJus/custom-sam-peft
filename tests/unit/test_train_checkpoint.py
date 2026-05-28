@@ -37,7 +37,6 @@ def _make_cfg(tmp_path: Path) -> TrainConfig:
             format="coco",
             train=DataSplit(annotations="a.json", images="i"),
             val=DataSplit(annotations="a.json", images="i"),
-            prompt_mode="text",
         ),
         peft=PEFTConfig(method="lora", target_modules=FIXTURE_SCOPE_PATTERNS["vision"]),
         train=TrainHyperparams(epochs=1),

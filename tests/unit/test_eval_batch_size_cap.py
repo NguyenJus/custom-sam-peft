@@ -39,7 +39,6 @@ def _make_trainer_with_val_ds() -> object:
             format="coco",
             train=DataSplit(annotations="a.json", images="i"),
             val=DataSplit(annotations="a.json", images="i"),
-            prompt_mode="text",
         ),
         peft=PEFTConfig(method="lora", scope="vision"),
         train=TrainHyperparams(epochs=1, batch_size=2),
@@ -173,7 +172,6 @@ def _make_run_eval_cfg(train_batch_size: int = 2) -> MagicMock:
         "train": {"annotations": "t.json", "images": "t/"},
         "val": {"annotations": "v.json", "images": "v/"},
         "test": None,
-        "prompt_mode": "text",
     }
     cfg.data.val = MagicMock()
     cfg.data.val_split = None
