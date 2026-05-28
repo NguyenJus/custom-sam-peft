@@ -145,3 +145,12 @@ def test_read_adapter_base_model_name_absent_returns_none(tmp_path: Path) -> Non
 def test_read_adapter_base_model_name_no_file_returns_none(tmp_path: Path) -> None:
     """Returns None when adapter_config.json does not exist at all."""
     assert read_adapter_base_model_name(tmp_path) is None
+
+
+def test_read_base_model_name_delegates() -> None:
+    """The predict delegator and the relocated peft_adapters impl agree."""
+    from custom_sam_peft.peft_adapters import (
+        read_adapter_base_model_name as _impl,
+    )
+
+    assert read_adapter_base_model_name(_LORA_DIR) == _impl(_LORA_DIR)

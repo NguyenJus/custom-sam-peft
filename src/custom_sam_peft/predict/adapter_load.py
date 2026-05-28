@@ -13,7 +13,6 @@ base-model-only hot path never imports peft_adapters (spec §2).
 
 from __future__ import annotations
 
-import json
 import logging
 from pathlib import Path
 from typing import Literal
@@ -87,12 +86,11 @@ def maybe_merge_adapter(model: nn.Module, *, merge: bool) -> nn.Module:
 def read_adapter_base_model_name(checkpoint_dir: Path) -> str | None:
     """Read base_model_name_or_path from adapter_config.json, or return None.
 
-    Returns None if the file is absent or the key is missing.
+    Thin delegator to the relocated peft_adapters implementation (spec §7.2).
+    Import stays lazy to match this module's import discipline.
     """
-    config_path = checkpoint_dir / _LORA_CONFIG
-    if not config_path.is_file():
-        return None
-    with config_path.open(encoding="utf-8") as fh:
-        data: dict[str, object] = json.load(fh)
-    value = data.get("base_model_name_or_path")
-    return str(value) if value is not None else None
+    from custom_sam_peft.peft_adapters import (
+        read_adapter_base_model_name as _impl,
+    )
+
+    return _impl(checkpoint_dir)

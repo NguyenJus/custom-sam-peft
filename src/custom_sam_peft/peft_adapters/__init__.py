@@ -20,6 +20,7 @@ instead of testing ``cfg.peft.method``.
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import Any, Protocol, cast, runtime_checkable
 
@@ -173,6 +174,24 @@ def discover_method_from_checkpoint(adapter_dir: Path) -> str:
     callers that need that check do it separately (e.g. predict's detect_adapter_kind).
     """
     return "qlora" if (adapter_dir / _QLORA_META_FILENAME).is_file() else "lora"
+
+
+_LORA_CONFIG_FILENAME = "adapter_config.json"
+
+
+def read_adapter_base_model_name(adapter_dir: Path) -> str | None:
+    """Read base_model_name_or_path from adapter_config.json, or return None.
+
+    Returns None if the file is absent or the key is missing. Pure JSON read
+    (no torch/bnb), safe to call from any path.
+    """
+    config_path = adapter_dir / _LORA_CONFIG_FILENAME
+    if not config_path.is_file():
+        return None
+    with config_path.open(encoding="utf-8") as fh:
+        data: dict[str, object] = json.load(fh)
+    value = data.get("base_model_name_or_path")
+    return str(value) if value is not None else None
 
 
 def make_peft_method(method: str) -> PEFTMethod:
