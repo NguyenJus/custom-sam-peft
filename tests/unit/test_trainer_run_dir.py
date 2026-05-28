@@ -48,9 +48,16 @@ def test_fit_uses_caller_provided_run_dir(tmp_path: Path, monkeypatch: pytest.Mo
     cfg.train.box_hint.p_start = 0.0
     cfg.train.box_hint.p_end = 0.0
     cfg.train.box_hint.decay_steps = 1
+    cfg.train.save_every = 1000
+    cfg.train.eval_every = 500
     cfg.peft.method = "lora"
     cfg.export.merge = False
     cfg.model_dump.return_value = {"run": {"name": "irrelevant"}}
+    # model_copy returns self so that the chained .model_dump() call still uses
+    # the configured return_value above.
+    cfg.model_copy.return_value = cfg
+    cfg.train.model_copy.return_value = cfg.train
+    cfg.train.box_hint.model_copy.return_value = cfg.train.box_hint
 
     # Stub model with at least one trainable parameter on CPU.
     # Use side_effect so each parameters() call gets a fresh iterator.
