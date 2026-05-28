@@ -78,7 +78,6 @@ def _cfg(
                 images=str(tiny_coco_dir / "images"),
             ),
             prompt_mode="text",
-            image_size=32,
         ),
         peft=PEFTConfig(
             method="lora",

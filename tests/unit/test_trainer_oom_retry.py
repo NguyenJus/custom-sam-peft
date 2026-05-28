@@ -185,7 +185,6 @@ def test_oom_events_serialise_into_bundle_edge_cases() -> None:
             headroom_bytes=0,
             predicted_bytes=0,
             budget_bytes=0,
-            image_size=1008,
             gpu_name="StubGPU",
             provenance="analytic",
             cache_path=None,

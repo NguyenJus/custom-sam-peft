@@ -11,7 +11,7 @@ from tests.fixtures.tiny_sam3_stub import TinySam3Stub
 
 
 def _wrapper() -> Sam3Wrapper:
-    return Sam3Wrapper(TinySam3Stub(), image_size=8, mask_size=8)
+    return Sam3Wrapper(TinySam3Stub(), mask_size=8)
 
 
 def test_forward_accepts_none_box_hints() -> None:

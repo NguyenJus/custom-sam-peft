@@ -126,7 +126,6 @@ def test_run_training_writes_val_source_json_on_auto_split(
             val=None,
             val_split=ValSplitConfig(fraction=0.5, seed=None),
             prompt_mode="text",
-            image_size=32,
         ),
         peft=PEFTConfig(
             method="lora", scope="vision", target_modules=FIXTURE_SCOPE_PATTERNS["vision"]
@@ -189,7 +188,6 @@ def test_run_training_resume_reuses_saved_val_source(
                 val=None,
                 val_split=ValSplitConfig(fraction=0.5, seed=None),
                 prompt_mode="text",
-                image_size=32,
             ),
             peft=PEFTConfig(
                 method="lora", scope="vision", target_modules=FIXTURE_SCOPE_PATTERNS["vision"]

@@ -17,7 +17,6 @@ def _minimal_dict() -> dict[str, object]:
             "train": {"annotations": "data/train.json", "images": "data/train/"},
             "val": {"annotations": "data/val.json", "images": "data/val/"},
             "prompt_mode": "bbox",
-            "image_size": 1024,
         },
         "peft": {"method": "lora"},
         "train": {"epochs": 10},

@@ -72,9 +72,7 @@ def _eval_forward_with_oom_ladder(
                 _LOG.warning("eval OOM — halving batch_size to %d", state["batch_size"])
                 state["warned"] = True
             raise
-        raise RuntimeError(
-            "eval OOM at batch_size=1; use a larger GPU or smaller image_size."
-        ) from oom_err
+        raise RuntimeError("eval OOM at batch_size=1; use a larger GPU.") from oom_err
 
 
 def _int_image_id(image_id: str) -> int:

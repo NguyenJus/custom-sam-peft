@@ -385,7 +385,8 @@ def build_coco(
     else:
         split_key = "train" if pipeline == "train" else "val"
         split = cfg[split_key]
-    image_size = int(cfg["image_size"])
+    from custom_sam_peft.models.sam3 import SAM3_IMAGE_SIZE
+
     normalize = NormalizeConfig.model_validate(cfg.get("normalize", {}))
     text_prompt = TextPromptConfig.model_validate(cfg.get("text_prompt", {}))
     channel_semantics: str = str(cfg.get("channel_semantics", "rgb"))
@@ -393,7 +394,7 @@ def build_coco(
         aug = AugmentationsConfig.model_validate(cfg.get("augmentations", {}))
         transforms = build_train_transforms(
             aug,
-            image_size,
+            SAM3_IMAGE_SIZE,
             model_name=model_name,
             normalize=normalize,
             channel_semantics=channel_semantics,
@@ -401,7 +402,7 @@ def build_coco(
         )
     else:
         transforms = build_eval_transforms(
-            image_size,
+            SAM3_IMAGE_SIZE,
             model_name=model_name,
             normalize=normalize,
             channel_semantics=channel_semantics,

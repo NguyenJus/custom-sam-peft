@@ -164,7 +164,6 @@ def _make_decision() -> PresetDecision:
         headroom_bytes=int(1.6 * 1024**3),
         predicted_bytes=int(38.4 * 1024**3),
         budget_bytes=39 * 1024**3,
-        image_size=1008,
         gpu_name="NVIDIA A100-SXM4-40GB",
         provenance="calibrated",
         cache_path="/tmp/.custom_sam_peft_calibration.json",  # noqa: S108
