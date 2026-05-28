@@ -19,11 +19,17 @@ from custom_sam_peft.runs.bundle import run_export
 
 
 def evaluate(
-    config: Path = typer.Option(..., "--config", help="Path to config YAML."),
-    checkpoint: Path = typer.Option(..., "--checkpoint", help="Path to adapter checkpoint."),
+    config: Path | None = typer.Option(None, "--config", help="Path to config YAML."),
+    checkpoint: Path | None = typer.Option(
+        None,
+        "--checkpoint",
+        help="Path to adapter checkpoint. Omit to evaluate baseline (zero-shot) SAM.",
+    ),
     split: str = typer.Option("val", "--split", help="Dataset split: val | test."),
     output: Path | None = typer.Option(
-        None, "--output", help="Output dir; defaults to checkpoint.parent."
+        None,
+        "--output",
+        help="Output dir; defaults to checkpoint.parent, else cfg.run.output_dir.",
     ),
     save_predictions: bool | None = typer.Option(
         None,
@@ -45,6 +51,8 @@ def evaluate(
 ) -> None:
     """Evaluate a checkpoint on the val or test split."""
     configure_logging(verbose)
+    if config is None:
+        raise typer.BadParameter("--config is required", param_hint="--config")
     if split not in ("val", "test"):
         raise typer.BadParameter(f"--split must be val|test; got {split!r}", param_hint="--split")
     cfg = load_config(config)
