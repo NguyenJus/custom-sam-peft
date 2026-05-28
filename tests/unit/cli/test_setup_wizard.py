@@ -173,7 +173,6 @@ def test_render_coco_explicit_val_reloads(tmp_path) -> None:
         "train": {"epochs": 3, "loss": {"preset": "medical", "class_imbalance": "moderate"}},
     }
     rendered = sw.render(answers, run_mode="train")
-    assert "prompt_mode: text" in rendered
     assert "format: coco" in rendered
     assert "# hf:" in rendered
     assert "# val_split:" in rendered

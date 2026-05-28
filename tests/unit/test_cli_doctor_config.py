@@ -43,7 +43,6 @@ data:
   val:
     annotations: tests/fixtures/tiny_coco/annotations.json
     images: tests/fixtures/tiny_coco/images
-  prompt_mode: bbox
   limit:
     train: 1
     val: 1

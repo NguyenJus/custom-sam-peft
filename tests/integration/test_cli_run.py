@@ -23,7 +23,6 @@ def _plain(s: str) -> str:
 
 def _make_cfg_yaml(tmp_path: Path, *, merge: bool = False, bbox: bool = False) -> Path:
     cfg = tmp_path / "config.yaml"
-    prompt = "bbox" if bbox else "text"
     cfg.write_text(
         f"""
 run: {{name: t, output_dir: {tmp_path / "runs"}, seed: 0}}
@@ -31,7 +30,6 @@ data:
   format: coco
   train: {{annotations: t.json, images: t/}}
   val: {{annotations: v.json, images: v/}}
-  prompt_mode: {prompt}
 peft: {{method: lora}}
 train: {{epochs: 1}}
 export: {{merge: {str(merge).lower()}}}

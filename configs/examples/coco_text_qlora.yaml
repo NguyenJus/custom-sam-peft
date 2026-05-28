@@ -25,7 +25,6 @@ data:
   val:
     annotations: data/coco/instances_val2017.json
     images: data/coco/val2017
-  prompt_mode: text
   image_size: 1008
   augmentations:
     preset: natural

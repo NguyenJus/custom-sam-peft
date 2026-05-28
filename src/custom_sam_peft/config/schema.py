@@ -74,7 +74,6 @@ __all__ = [  # noqa: RUF022
     "PEFTMethod",
     "PresenceFamily",
     "Preset",
-    "PromptMode",
     "QuantType",
     "SubsetStrategy",
     "TextPromptMode",
@@ -89,7 +88,6 @@ __all__ = [  # noqa: RUF022
 
 Dtype = Literal["bfloat16", "float16"]
 DataFormat = Literal["coco", "hf"]
-PromptMode = Literal["text", "bbox"]
 PEFTMethod = Literal["lora", "qlora"]
 QuantType = Literal["nf4", "fp4"]
 # "auto" resolves at trainer construction via peft_method.recommended_optimizer()
@@ -216,7 +214,7 @@ class AugmentationsConfig(_Strict):
 
 
 class TextPromptConfig(_Strict):
-    """How TextPrompts.classes is populated for each image when prompt_mode='text'.
+    """How TextPrompts.classes is populated for each image.
 
     - present:                Use exactly the categories present in the image's
                               annotations (post-iscrowd filter). Default.
@@ -383,7 +381,6 @@ class DataConfig(_Strict):
     train: DataSplit
     val: DataSplit | None = None
     val_split: ValSplitConfig | None = None
-    prompt_mode: PromptMode = "text"
     image_size: PositiveInt = 1008  # SAM3.1's native input; see models/sam3.py:192,304,1202-1203.
     channels: int = Field(
         default=3,

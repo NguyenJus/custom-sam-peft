@@ -20,7 +20,6 @@ def _make_cfg(
         "train": {"annotations": "t.json", "images": "t/"},
         "val": {"annotations": "v.json", "images": "v/"},
         "test": ({"annotations": "te.json", "images": "te/"} if has_test else None),
-        "prompt_mode": "text",
         "image_size": 1008,
     }
     cfg.data.val = MagicMock()

@@ -19,7 +19,6 @@ def _hf_cfg(split_val: str | None) -> TrainConfig:
                 "format": "hf",
                 "train": {"annotations": "unused", "images": "unused"},
                 "val": None,
-                "prompt_mode": "text",
                 "hf": hf,
             },
             "peft": {"method": "lora"},

@@ -127,7 +127,6 @@ data:
   format: coco
   train: {annotations: t.json, images: t/}
   val: {annotations: v.json, images: v/}
-  prompt_mode: text
 peft: {method: lora}
 train: {epochs: 1}
 """
@@ -172,7 +171,6 @@ data:
   format: coco
   train: {annotations: t.json, images: t/}
   val: {annotations: v.json, images: v/}
-  prompt_mode: text
 peft: {method: lora}
 train: {epochs: 1}
 """
@@ -206,7 +204,6 @@ data:
   format: coco
   train: {annotations: t.json, images: t/}
   val: {annotations: v.json, images: v/}
-  prompt_mode: text
 peft: {method: qlora}
 train: {epochs: 1}
 """

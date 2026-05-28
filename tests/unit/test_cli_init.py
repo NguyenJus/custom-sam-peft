@@ -59,7 +59,6 @@ def test_init_emits_comprehensive_config(tmp_path: Path) -> None:
     body = out.read_text()
     for section in ("run:", "model:", "data:", "peft:", "train:", "eval:", "tracking:", "export:"):
         assert section in body
-    assert "prompt_mode: text" in body
     # Alternative branches present as comments:
     assert "# val_split:" in body
     assert "# hf:" in body

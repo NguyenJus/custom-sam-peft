@@ -23,7 +23,6 @@ data:
     annotations: data/coco/instances_train2017.json
     images: data/coco/train2017
   # No `val:` block → no-val mode (one WARN at training start).
-  prompt_mode: text
   image_size: 1008
   augmentations:
     preset: natural
