@@ -1,9 +1,8 @@
-"""decide_eval_batch_size: forward-only VRAM math; calibrated/analytic/CPU paths."""
+"""decide_eval_batch_size: forward-only VRAM math; calibrated/analytic paths."""
 
 from __future__ import annotations
 
 import json
-import logging
 from pathlib import Path
 from unittest.mock import MagicMock
 
@@ -35,19 +34,6 @@ def _write_cache(path: Path, **fields: object) -> None:
     }
     base.update(fields)
     path.write_text(json.dumps(base))
-
-
-def test_decide_eval_batch_size_cpu_fallback(caplog, monkeypatch) -> None:
-    caplog.set_level(logging.INFO)
-    monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
-    from custom_sam_peft.presets import decide_eval_batch_size
-
-    bs, predicted_bytes, provenance = decide_eval_batch_size(1024)
-    assert bs == 1
-    assert predicted_bytes == 0
-    assert provenance == "analytic"
-    msgs = [r.message for r in caplog.records if "eval.batch_size=auto on CPU" in r.message]
-    assert len(msgs) == 1
 
 
 def test_decide_eval_batch_size_analytic_no_cache(

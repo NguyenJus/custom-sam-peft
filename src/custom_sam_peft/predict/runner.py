@@ -67,7 +67,7 @@ class PredictOptions:
     top_k: int
     save_masks: Literal["rle", "png", "none"]
     visualize: bool
-    device: Literal["auto", "cuda", "cpu"]
+    device: Literal["auto", "cuda"]
     dtype: Literal["auto", "bfloat16", "float32"]
     seed: int
     dry_run: bool
@@ -97,7 +97,7 @@ class _ResolvedConfig:
     image_size: int
     channels: int
     channel_semantics: str
-    device: str  # "cuda" or "cpu" (auto resolves to "cuda"; "cpu" for test stubs only)
+    device: str  # "cuda" (auto resolves to "cuda")
     dtype: torch.dtype  # resolved torch.dtype
     dtype_str: str  # "bfloat16" or "float32"
     normalize_mean: list[float]

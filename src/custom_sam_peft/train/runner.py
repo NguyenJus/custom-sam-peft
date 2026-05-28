@@ -19,6 +19,7 @@ from custom_sam_peft.data.val_source import (
 )
 from custom_sam_peft.eval._artifacts import EvalArtifacts
 from custom_sam_peft.models.sam3 import load_sam31
+from custom_sam_peft.runtime import require_cuda
 from custom_sam_peft.tracking import build_tracker
 from custom_sam_peft.train.trainer import Trainer
 
@@ -84,6 +85,7 @@ def run_training(
 
     Spec: docs/superpowers/specs/2026-05-22-data-no-val-auto-split-design.md §6.4.
     """
+    require_cuda()
     run_dir = make_run_dir(cfg)
 
     # On resume, look for val_source.json in the run dir that owns the

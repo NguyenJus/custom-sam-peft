@@ -30,7 +30,7 @@ def _make_opts(
     images: Path | None = None,
     checkpoint: Path | None = None,
     config: Path | None = None,
-    device: str = "cpu",
+    device: str = "cuda",
     dtype: str = "float32",
     score_threshold: float = 0.3,
     top_k: int = 100,
@@ -156,11 +156,11 @@ def test_no_checkpoint_no_config_uses_builtin_default(tmp_path: Path) -> None:
 
 def test_cli_flag_beats_config(tmp_path: Path) -> None:
     """CLI --device and --dtype flags are passed through without override."""
-    opts = _make_opts(tmp_path, device="cpu", dtype="float32", config=None)
+    opts = _make_opts(tmp_path, device="cuda", dtype="float32", config=None)
     resolved = _resolve_config(opts)
 
-    # "cpu" is passed through as-is (only "auto" gets resolved to "cuda")
-    assert resolved.device == "cpu"
+    # explicit "cuda" is passed through as-is (only "auto" gets resolved)
+    assert resolved.device == "cuda"
     assert resolved.dtype_str == "float32"
 
 

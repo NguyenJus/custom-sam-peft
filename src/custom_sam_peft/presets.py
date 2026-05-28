@@ -359,10 +359,6 @@ def decide_eval_batch_size(
 
     if not (1 <= classes_per_forward <= _CAP):
         raise ValueError(f"classes_per_forward must be in [1, {_CAP}]; got {classes_per_forward}")
-    if not torch.cuda.is_available():
-        _LOG.info("eval.batch_size=auto on CPU -> falling back to 1")
-        return 1, 0, "analytic"
-
     props = torch.cuda.get_device_properties(0)
     total = int(props.total_memory)
     gpu_name = torch.cuda.get_device_name(0)
