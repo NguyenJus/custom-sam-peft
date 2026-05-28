@@ -22,7 +22,6 @@ def coco_ds(tiny_coco_dir: Path) -> COCODataset:
     return COCODataset(
         annotations=str(tiny_coco_dir / "annotations.json"),
         images=str(tiny_coco_dir / "images"),
-        prompt_mode="bbox",
         transforms=transforms,
         text_prompt=TextPromptConfig(),
     )
@@ -65,7 +64,6 @@ def test_int_limit_via_build_dataset(tiny_coco_dir: Path) -> None:
             "annotations": str(tiny_coco_dir / "annotations.json"),
             "images": str(tiny_coco_dir / "images"),
         },
-        "prompt_mode": "bbox",
         "augmentations": {"preset": "none"},
         "text_prompt": {"mode": "present", "negatives_per_image": 0, "k": 16},
         "normalize": {"mean": [0.5, 0.5, 0.5], "std": [0.5, 0.5, 0.5]},
@@ -101,7 +99,6 @@ def test_fraction_limit_rounds_correctly(tiny_coco_dir: Path) -> None:
             "annotations": str(tiny_coco_dir / "annotations.json"),
             "images": str(tiny_coco_dir / "images"),
         },
-        "prompt_mode": "bbox",
         "augmentations": {"preset": "none"},
         "text_prompt": {"mode": "present", "negatives_per_image": 0, "k": 16},
         "normalize": {"mean": [0.5, 0.5, 0.5], "std": [0.5, 0.5, 0.5]},
@@ -126,7 +123,6 @@ def test_stratified_limit_preserves_all_classes(tiny_coco_dir: Path) -> None:
     ds = COCODataset(
         annotations=str(tiny_coco_dir / "annotations.json"),
         images=str(tiny_coco_dir / "images"),
-        prompt_mode="bbox",
         transforms=transforms,
         text_prompt=TextPromptConfig(),
     )

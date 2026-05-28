@@ -44,7 +44,6 @@ def _cfg(tmp_path: Path) -> TrainConfig:
             format="coco",
             train=DataSplit(annotations=str(tmp_path / "a.json"), images=str(tmp_path)),
             val=DataSplit(annotations=str(tmp_path / "a.json"), images=str(tmp_path)),
-            prompt_mode="text",
         ),
         peft=PEFTConfig(
             method="lora",

@@ -28,7 +28,6 @@ def _cfg(tmp_path: Path, backend: str = "none") -> TrainConfig:
             format="coco",
             train=DataSplit(annotations="x.json", images="x/"),
             val=DataSplit(annotations="x.json", images="x/"),
-            prompt_mode="text",
         ),
         peft=PEFTConfig(method="lora", scope="vision"),
         train=TrainHyperparams(

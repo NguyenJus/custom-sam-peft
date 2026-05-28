@@ -128,7 +128,6 @@ def _write_doctor_config(tmp_path) -> str:
                 "images": str(data_dir / "train"),
             },
             "val": {"annotations": str(data_dir / "val.json"), "images": str(data_dir / "val")},
-            "prompt_mode": "text",
             "augmentations": {"preset": "medical", "intensity": "medium"},
         },
         "peft": {"method": "lora"},

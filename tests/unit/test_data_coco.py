@@ -175,7 +175,7 @@ from unittest.mock import patch as mock_patch
 import torch
 
 from custom_sam_peft.config.schema import NormalizeConfig
-from custom_sam_peft.data.base import BoxPrompts, TextPrompts
+from custom_sam_peft.data.base import TextPrompts
 from custom_sam_peft.data.coco import COCODataset
 
 
@@ -200,7 +200,6 @@ def test_class_names_dense_and_ordered(tiny_coco_dir: Path) -> None:
         ds = COCODataset(
             annotations=str(tiny_coco_dir / "annotations.json"),
             images=str(tiny_coco_dir / "images"),
-            prompt_mode="bbox",
             transforms=_build_eval(),
             text_prompt=TextPromptConfig(),
         )
@@ -252,7 +251,6 @@ def test_len_drops_empty_after_iscrowd(tmp_path: Path, caplog: pytest.LogCapture
         ds = COCODataset(
             annotations=str(p),
             images=str(images_dir),
-            prompt_mode="bbox",
             transforms=_build_eval(8),
             text_prompt=TextPromptConfig(),
         )
@@ -265,7 +263,6 @@ def test_getitem_text_mode_present(tiny_coco_dir: Path) -> None:
         ds = COCODataset(
             annotations=str(tiny_coco_dir / "annotations.json"),
             images=str(tiny_coco_dir / "images"),
-            prompt_mode="text",
             transforms=_build_eval(),
             text_prompt=TextPromptConfig(mode="present"),
         )
@@ -279,7 +276,6 @@ def test_getitem_text_mode_all(tiny_coco_dir: Path) -> None:
         ds = COCODataset(
             annotations=str(tiny_coco_dir / "annotations.json"),
             images=str(tiny_coco_dir / "images"),
-            prompt_mode="text",
             transforms=_build_eval(),
             text_prompt=TextPromptConfig(mode="all"),
         )
@@ -323,7 +319,6 @@ def test_getitem_text_mode_present_plus_negatives(tmp_path: Path) -> None:
         ds = COCODataset(
             annotations=str(p),
             images=str(images_dir),
-            prompt_mode="text",
             transforms=_build_eval(8),
             text_prompt=TextPromptConfig(mode="present_plus_negatives", negatives_per_image=2),
             seed=42,
@@ -365,7 +360,6 @@ def test_getitem_text_mode_sampled_fixed_k(tmp_path: Path) -> None:
         ds = COCODataset(
             annotations=str(p),
             images=str(images_dir),
-            prompt_mode="text",
             transforms=_build_eval(8),
             text_prompt=TextPromptConfig(mode="sampled_fixed_k", k=3),
             seed=7,
@@ -414,7 +408,6 @@ def test_multiplex_truncation_text(tmp_path: Path, caplog: pytest.LogCaptureFixt
         ds = COCODataset(
             annotations=str(ann),
             images=str(imgs),
-            prompt_mode="text",
             transforms=_build_eval(32),
             text_prompt=TextPromptConfig(mode="all"),
         )
@@ -424,47 +417,11 @@ def test_multiplex_truncation_text(tmp_path: Path, caplog: pytest.LogCaptureFixt
     assert any(re.search(r"truncating to 16", rec.message) for rec in caplog.records)
 
 
-def test_multiplex_truncation_box(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
-    ann, imgs = _synth_many_cats(tmp_path, 20)
-    caplog.set_level(logging.WARNING, logger="custom_sam_peft.data.coco")
-    with _patch_imagenet_ctx():
-        ds = COCODataset(
-            annotations=str(ann),
-            images=str(imgs),
-            prompt_mode="bbox",
-            transforms=_build_eval(32),
-            text_prompt=TextPromptConfig(),
-        )
-    ex = ds[0]
-    assert isinstance(ex.prompts, BoxPrompts)
-    assert ex.prompts.boxes.shape == (16, 4)
-    assert ex.prompts.class_ids.shape == (16,)
-    assert len(ex.instances) == 16
-
-
-def test_getitem_bbox_mode_returns_BoxPrompts(tiny_coco_dir: Path) -> None:
-    with _patch_imagenet_ctx():
-        ds = COCODataset(
-            annotations=str(tiny_coco_dir / "annotations.json"),
-            images=str(tiny_coco_dir / "images"),
-            prompt_mode="bbox",
-            transforms=_build_eval(32),
-            text_prompt=TextPromptConfig(),
-        )
-    ex = ds[0]
-    assert isinstance(ex.prompts, BoxPrompts)
-    assert ex.prompts.boxes.dtype == torch.float32
-    assert ex.prompts.class_ids.dtype == torch.int64
-    coords = ex.prompts.boxes.reshape(-1)
-    assert (coords >= 0).all() and (coords <= 32).all()
-
-
 def test_polygon_segmentation_decoded(tiny_coco_dir: Path) -> None:
     with _patch_imagenet_ctx():
         ds = COCODataset(
             annotations=str(tiny_coco_dir / "annotations.json"),
             images=str(tiny_coco_dir / "images"),
-            prompt_mode="bbox",
             transforms=_build_eval(32),
             text_prompt=TextPromptConfig(),
         )
@@ -509,7 +466,6 @@ def test_rle_segmentation_decoded(tmp_path: Path) -> None:
         ds = COCODataset(
             annotations=str(p),
             images=str(images_dir),
-            prompt_mode="bbox",
             transforms=_build_eval(8),
             text_prompt=TextPromptConfig(),
         )
@@ -556,7 +512,6 @@ def test_iscrowd_skipped(tmp_path: Path) -> None:
         ds = COCODataset(
             annotations=str(p),
             images=str(images_dir),
-            prompt_mode="bbox",
             transforms=_build_eval(8),
             text_prompt=TextPromptConfig(),
         )
@@ -608,7 +563,6 @@ def test_dropped_empty_image_logged_once(tmp_path: Path, caplog: pytest.LogCaptu
         COCODataset(
             annotations=str(p),
             images=str(images_dir),
-            prompt_mode="bbox",
             transforms=_build_eval(8),
             text_prompt=TextPromptConfig(),
         )
@@ -621,14 +575,13 @@ def test_image_resize_geometry(tiny_coco_dir: Path) -> None:
         ds = COCODataset(
             annotations=str(tiny_coco_dir / "annotations.json"),
             images=str(tiny_coco_dir / "images"),
-            prompt_mode="bbox",
             transforms=_build_eval(64),
             text_prompt=TextPromptConfig(),
         )
     ex = ds[0]
     assert ex.image.shape == (3, 64, 64)
     assert ex.instances[0].mask.shape == (64, 64)
-    coords = ex.prompts.boxes.reshape(-1)
+    coords = ex.instances[0].box
     assert (coords >= 0).all() and (coords <= 64).all()
 
 
@@ -674,7 +627,6 @@ def test_sparse_to_dense_remap(tmp_path: Path) -> None:
         ds = COCODataset(
             annotations=str(p),
             images=str(images_dir),
-            prompt_mode="bbox",
             transforms=_build_eval(8),
             text_prompt=TextPromptConfig(),
         )
@@ -702,7 +654,6 @@ def test_register_coco_lookup(tiny_coco_dir: Path) -> None:
             "annotations": str(tiny_coco_dir / "annotations.json"),
             "images": str(tiny_coco_dir / "images"),
         },
-        "prompt_mode": "bbox",
         "augmentations": {"preset": "natural", "intensity": "medium"},
         "text_prompt": {"mode": "present"},
         "normalize": {"mean": [0.485, 0.456, 0.406], "std": [0.229, 0.224, 0.225]},
@@ -727,7 +678,6 @@ def test_build_coco_train_pipeline_uses_train_transforms(tiny_coco_dir: Path) ->
             "annotations": str(tiny_coco_dir / "annotations.json"),
             "images": str(tiny_coco_dir / "images"),
         },
-        "prompt_mode": "bbox",
         "augmentations": {"preset": "none"},
         "text_prompt": {"mode": "present"},
         "normalize": {"mean": [0.485, 0.456, 0.406], "std": [0.229, 0.224, 0.225]},
@@ -745,7 +695,6 @@ def test_deterministic_text_sampling_under_fixed_seed(tmp_path: Path) -> None:
             return COCODataset(
                 annotations=str(ann),
                 images=str(imgs),
-                prompt_mode="text",
                 transforms=_build_eval(32),
                 text_prompt=TextPromptConfig(mode="sampled_fixed_k", k=4),
                 seed=42,
@@ -769,7 +718,6 @@ def test_cocodataset_image_ids_filters_to_subset(tiny_coco_dir: Path) -> None:
         full = COCODataset(
             annotations=str(tiny_coco_dir / "annotations.json"),
             images=str(tiny_coco_dir / "images"),
-            prompt_mode="text",
             transforms=_build_eval(),
             text_prompt=TextPromptConfig(),
         )
@@ -780,7 +728,6 @@ def test_cocodataset_image_ids_filters_to_subset(tiny_coco_dir: Path) -> None:
         ds = COCODataset(
             annotations=str(tiny_coco_dir / "annotations.json"),
             images=str(tiny_coco_dir / "images"),
-            prompt_mode="text",
             transforms=_build_eval(),
             text_prompt=TextPromptConfig(),
             image_ids=subset,
@@ -796,7 +743,6 @@ def test_cocodataset_image_ids_missing_raises_value_error(tiny_coco_dir: Path) -
         COCODataset(
             annotations=str(tiny_coco_dir / "annotations.json"),
             images=str(tiny_coco_dir / "images"),
-            prompt_mode="text",
             transforms=_build_eval(),
             text_prompt=TextPromptConfig(),
             image_ids=[999999],
@@ -809,14 +755,12 @@ def test_cocodataset_image_ids_none_preserves_existing_behavior(tiny_coco_dir: P
         ds_a = COCODataset(
             annotations=str(tiny_coco_dir / "annotations.json"),
             images=str(tiny_coco_dir / "images"),
-            prompt_mode="text",
             transforms=_build_eval(),
             text_prompt=TextPromptConfig(),
         )
         ds_b = COCODataset(
             annotations=str(tiny_coco_dir / "annotations.json"),
             images=str(tiny_coco_dir / "images"),
-            prompt_mode="text",
             transforms=_build_eval(),
             text_prompt=TextPromptConfig(),
             image_ids=None,
@@ -830,7 +774,6 @@ def test_cocodataset_image_ids_sorted_order_preserved(tiny_coco_dir: Path) -> No
         full = COCODataset(
             annotations=str(tiny_coco_dir / "annotations.json"),
             images=str(tiny_coco_dir / "images"),
-            prompt_mode="text",
             transforms=_build_eval(),
             text_prompt=TextPromptConfig(),
         )
@@ -839,7 +782,6 @@ def test_cocodataset_image_ids_sorted_order_preserved(tiny_coco_dir: Path) -> No
         ds = COCODataset(
             annotations=str(tiny_coco_dir / "annotations.json"),
             images=str(tiny_coco_dir / "images"),
-            prompt_mode="text",
             transforms=_build_eval(),
             text_prompt=TextPromptConfig(),
             image_ids=ids_sorted_desc,
@@ -859,7 +801,6 @@ def test_image_level_leak_invariant_on_tiny_coco(tiny_coco_dir: Path) -> None:
             annotations=str(tiny_coco_dir / "annotations.json"),
             images=str(tiny_coco_dir / "images"),
         ),
-        prompt_mode="text",
     )
     items = _enumerate_coco_items(data_cfg)
     if len(items) < 2:

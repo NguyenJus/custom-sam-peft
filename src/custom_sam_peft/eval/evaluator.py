@@ -62,7 +62,7 @@ def _eval_forward_with_oom_ladder(
     On OOM at state["batch_size"]==1, raises RuntimeError("eval OOM at batch_size=1; ...").
     """
     try:
-        return cast("dict[str, torch.Tensor]", model(images, prompts, box_hints=None))
+        return cast("dict[str, torch.Tensor]", model(images, prompts, support=None))
     except torch.cuda.OutOfMemoryError as oom_err:
         if torch.cuda.is_available():
             torch.cuda.empty_cache()

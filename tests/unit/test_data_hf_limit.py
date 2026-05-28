@@ -25,7 +25,7 @@ def _make_hf_dataset(n: int = 4, n_classes: int = 3):
     ds = HFDataset.__new__(HFDataset)
     ds._name = "fake"
     ds._split = "train"
-    ds._prompt_mode = "bbox"
+
     ds._transforms = MagicMock()
     ds._text_prompt_cfg = TextPromptConfig()
     ds._field_map = HFFieldMap()

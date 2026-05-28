@@ -117,7 +117,7 @@ def test_resolve_class_names_from_classlabel_in_objects() -> None:
 # ---------------------------------------------------------------------------
 
 from custom_sam_peft._registry import lookup
-from custom_sam_peft.data.base import BoxPrompts, TextPrompts
+from custom_sam_peft.data.base import TextPrompts
 from custom_sam_peft.data.hf import HFDataset
 
 
@@ -147,7 +147,6 @@ def test_required_fields_validation_default_paths(
         HFDataset(
             name="x",
             split="train",
-            prompt_mode="bbox",
             transforms=_build_eval(),
             text_prompt=TextPromptConfig(),
             field_map=HFFieldMap(segmentation=None),
@@ -183,7 +182,6 @@ def test_field_map_override_picks_alternate_path(
         hfds = HFDataset(
             name="x",
             split="train",
-            prompt_mode="bbox",
             transforms=_build_eval(),
             text_prompt=TextPromptConfig(),
             field_map=HFFieldMap(
@@ -222,7 +220,6 @@ def test_class_names_from_categories_feature(
         hfds = HFDataset(
             name="x",
             split="train",
-            prompt_mode="text",
             transforms=_build_eval(),
             text_prompt=TextPromptConfig(),
             field_map=HFFieldMap(segmentation=None),
@@ -254,7 +251,6 @@ def test_getitem_text_mode_present(monkeypatch: pytest.MonkeyPatch) -> None:
         hfds = HFDataset(
             name="x",
             split="train",
-            prompt_mode="text",
             transforms=_build_eval(),
             text_prompt=TextPromptConfig(mode="present"),
             field_map=HFFieldMap(segmentation=None),
@@ -262,59 +258,6 @@ def test_getitem_text_mode_present(monkeypatch: pytest.MonkeyPatch) -> None:
     ex = hfds[0]
     assert isinstance(ex.prompts, TextPrompts)
     assert ex.prompts.classes == ["b"]
-
-
-def test_getitem_bbox_mode(monkeypatch: pytest.MonkeyPatch) -> None:
-    ds = _build_hf_dataset(use_class_label=True)
-    _patch_load_dataset(monkeypatch, ds)
-    with _patch_imagenet_ctx():
-        hfds = HFDataset(
-            name="x",
-            split="train",
-            prompt_mode="bbox",
-            transforms=_build_eval(),
-            text_prompt=TextPromptConfig(),
-            field_map=HFFieldMap(segmentation=None),
-        )
-    ex = hfds[0]
-    assert isinstance(ex.prompts, BoxPrompts)
-    assert ex.prompts.boxes.dtype == torch.float32
-    assert ex.prompts.class_ids.dtype == torch.int64
-
-
-def test_bbox_format_xywh_conversion(monkeypatch: pytest.MonkeyPatch) -> None:
-    features = hf_datasets.Features(
-        {
-            "image": hf_datasets.Image(),
-            "objects": hf_datasets.Sequence(
-                {
-                    "bbox": hf_datasets.Sequence(hf_datasets.Value("float32"), length=4),
-                    "category": hf_datasets.ClassLabel(names=["thing"]),
-                }
-            ),
-        }
-    )
-    ds = hf_datasets.Dataset.from_dict(
-        {
-            "image": [Image.new("RGB", (8, 8))],
-            "objects": [{"bbox": [[1.0, 2.0, 3.0, 4.0]], "category": [0]}],
-        },
-        features=features,
-    )
-    _patch_load_dataset(monkeypatch, ds)
-    with _patch_imagenet_ctx():
-        hfds = HFDataset(
-            name="x",
-            split="train",
-            prompt_mode="bbox",
-            transforms=_build_eval(),
-            text_prompt=TextPromptConfig(),
-            field_map=HFFieldMap(segmentation=None, bbox_format="xywh"),
-        )
-    ex = hfds[0]
-    box = ex.prompts.boxes[0]
-    assert abs(float(box[0]) - 1.0) < 0.5
-    assert abs(float(box[2]) - 4.0) < 0.5
 
 
 def test_masks_from_boxes_when_segmentation_absent(
@@ -327,7 +270,6 @@ def test_masks_from_boxes_when_segmentation_absent(
         hfds = HFDataset(
             name="x",
             split="train",
-            prompt_mode="bbox",
             transforms=_build_eval(),
             text_prompt=TextPromptConfig(),
             field_map=HFFieldMap(segmentation=None),
@@ -359,7 +301,6 @@ def test_register_hf_lookup(monkeypatch: pytest.MonkeyPatch) -> None:
                 "bbox_format": "xyxy",
             },
         },
-        "prompt_mode": "bbox",
         "augmentations": {"preset": "none"},
         "text_prompt": {"mode": "present"},
         "normalize": {"mean": [0.485, 0.456, 0.406], "std": [0.229, 0.224, 0.225]},
@@ -405,7 +346,6 @@ def test_multiplex_truncation_text_hf(
         hfds = HFDataset(
             name="x",
             split="train",
-            prompt_mode="text",
             transforms=_build_eval(16),
             text_prompt=TextPromptConfig(mode="all"),
             field_map=HFFieldMap(segmentation=None),
@@ -414,26 +354,6 @@ def test_multiplex_truncation_text_hf(
     assert isinstance(ex.prompts, TextPrompts)
     assert len(ex.prompts.classes) == 16
     assert any(re.search(r"truncating to 16", rec.message) for rec in caplog.records)
-
-
-def test_multiplex_truncation_box_hf(
-    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
-) -> None:
-    ds = _build_many_cat_hf(20)
-    _patch_load_dataset(monkeypatch, ds)
-    caplog.set_level(logging.WARNING, logger="custom_sam_peft.data.hf")
-    with _patch_imagenet_ctx():
-        hfds = HFDataset(
-            name="x",
-            split="train",
-            prompt_mode="bbox",
-            transforms=_build_eval(16),
-            text_prompt=TextPromptConfig(),
-            field_map=HFFieldMap(segmentation=None),
-        )
-    ex = hfds[0]
-    assert isinstance(ex.prompts, BoxPrompts)
-    assert ex.prompts.boxes.shape == (16, 4)
 
 
 def test_build_hf_train_pipeline(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -457,7 +377,6 @@ def test_build_hf_train_pipeline(monkeypatch: pytest.MonkeyPatch) -> None:
                 "bbox_format": "xyxy",
             },
         },
-        "prompt_mode": "bbox",
         "augmentations": {"preset": "none"},
         "text_prompt": {"mode": "present"},
         "normalize": {"mean": [0.485, 0.456, 0.406], "std": [0.229, 0.224, 0.225]},
@@ -485,7 +404,6 @@ def test_hfdataset_row_indices_filters_to_subset(monkeypatch: pytest.MonkeyPatch
         ds = HFDataset(
             name="x",
             split="train",
-            prompt_mode="text",
             transforms=_build_eval(),
             text_prompt=TextPromptConfig(),
             field_map=HFFieldMap(),
@@ -502,7 +420,6 @@ def test_hfdataset_row_indices_out_of_range_raises(monkeypatch: pytest.MonkeyPat
         HFDataset(
             name="x",
             split="train",
-            prompt_mode="text",
             transforms=_build_eval(),
             text_prompt=TextPromptConfig(),
             field_map=HFFieldMap(),
@@ -512,7 +429,6 @@ def test_hfdataset_row_indices_out_of_range_raises(monkeypatch: pytest.MonkeyPat
         HFDataset(
             name="x",
             split="train",
-            prompt_mode="text",
             transforms=_build_eval(),
             text_prompt=TextPromptConfig(),
             field_map=HFFieldMap(),
@@ -529,7 +445,6 @@ def test_hfdataset_image_id_uses_underlying_row_index(monkeypatch: pytest.Monkey
         ds = HFDataset(
             name="x",
             split="train",
-            prompt_mode="text",
             transforms=_build_eval(),
             text_prompt=TextPromptConfig(),
             field_map=HFFieldMap(),

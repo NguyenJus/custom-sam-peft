@@ -19,7 +19,6 @@ def _make_cfg(tmp_path: Path) -> MagicMock:
     cfg.run.name = "ch-test"
     cfg.run.seed = 0
     cfg.data.format = "coco"
-    cfg.data.prompt_mode = "text"
     cfg.data.model_dump.return_value = {"format": "coco"}
     cfg.data.channels = 4
     cfg.data.channel_semantics = "rgba"

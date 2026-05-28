@@ -37,7 +37,7 @@ def test_oom_halves_batch_size_sticky_and_warns_once(caplog) -> None:
 
     call_count = 0
 
-    def _flaky_model(images, prompts, box_hints=None):
+    def _flaky_model(images, prompts, support=None):
         nonlocal call_count
         call_count += 1
         if call_count == 1:
@@ -131,7 +131,7 @@ def test_mid_chunk_oom_does_not_produce_duplicate_predictions(monkeypatch) -> No
     # Track forward call count.
     call_count: list[int] = [0]
 
-    def _model(images: torch.Tensor, prompts: list[Any], box_hints: Any = None):
+    def _model(images: torch.Tensor, prompts: list[Any], support: Any = None):
         call_count[0] += 1
         # Call 2 is the 2nd group of the first chunk (B=2).
         # Raise OOM to simulate mid-chunk failure.
@@ -172,7 +172,7 @@ def test_mid_chunk_oom_does_not_produce_duplicate_predictions(monkeypatch) -> No
 def test_oom_raises_at_B1_floor() -> None:
     """Persistent OOM at B=1 raises a RuntimeError mentioning OOM."""
 
-    def _always_oom(images, prompts, box_hints=None):
+    def _always_oom(images, prompts, support=None):
         raise _make_oom_error()
 
     state: dict = {"batch_size": 1, "warned": False}

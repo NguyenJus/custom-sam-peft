@@ -198,11 +198,6 @@ def run(
     """
     configure_logging(verbose)
     cfg = load_config(config)
-    if cfg.data.prompt_mode == "bbox":
-        raise typer.BadParameter(
-            "prompt_mode='bbox' is not supported for training in v0.",
-            param_hint="--config",
-        )
     mode = resolve_mode(
         progress_flag if progress_flag != "auto" else None,
         os.environ,

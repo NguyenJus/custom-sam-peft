@@ -370,7 +370,7 @@ def run_predict(opts: PredictOptions) -> PredictReport:
         )
         _dummy_prompt = [TextPrompts(classes=["warmup"])]
         with contextlib.suppress(Exception):
-            model(_warmup_input, _dummy_prompt, box_hints=None)
+            model(_warmup_input, _dummy_prompt, support=None)
 
     # ---------------------------------------------------------------------------
     # Step 9: forward loop — flat (image_chunk, class_group) iteration
@@ -433,7 +433,7 @@ def run_predict(opts: PredictOptions) -> PredictReport:
             prompts_g = [TextPrompts(classes=list(group)) for _ in metas]
             try:
                 with torch.no_grad():
-                    outputs = model(img_batch, prompts_g, box_hints=None)
+                    outputs = model(img_batch, prompts_g, support=None)
             except RuntimeError as exc:
                 if "out of memory" in str(exc).lower():
                     logger.error(

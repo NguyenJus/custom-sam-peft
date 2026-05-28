@@ -3,6 +3,8 @@
 This is the one-page reference for how `custom_sam_peft` is wired together. The
 full design rationale lives in `docs/superpowers/specs/`.
 
+**Prompt invariant:** Text is the only primary prompt — the model takes one or more text (class) prompts and segments all matching instances. Auxiliary localization hints (currently just GT box hints, the `box_hint` curriculum from #14) ride alongside via `SupportPrompts`. They never replace text and are never used at inference. See [#126](https://github.com/NguyenJus/custom-sam-peft/issues/126).
+
 ## Module map
 
 ```text
@@ -12,7 +14,7 @@ src/custom_sam_peft/
     schema.py          pydantic v2 — defaults + validation contract
     loader.py          load YAML + apply --override + resolve paths
   data/
-    base.py            Example, Prompts (TextPrompts | BoxPrompts), Dataset protocol
+    base.py            Example, Prompts (= TextPrompts), SupportPrompts, Dataset protocol
     coco.py / hf.py    @register("dataset", ...) adapters (call with pipeline + model_name kwargs)
     transforms.py      image + prompt augmentation
     collate.py         batch collator (variable-shape per image)

@@ -261,7 +261,7 @@ def _reinfer_one_example(
         outputs = model_wrapper(
             image_chw.unsqueeze(0),
             [TextPrompts(classes=classes)],
-            box_hints=None,
+            support=None,
         )
     # Outputs include `pred_masks` of shape (1, Q, H, W) — take union over queries
     # thresholded at 0.0 (same as Evaluator's default).

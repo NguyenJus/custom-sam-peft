@@ -43,7 +43,7 @@ def test_existing_rgb_config_unchanged(tmp_path):
     from custom_sam_peft.config.schema import DataConfig
 
     d = DataConfig.model_validate(
-        dict(format="coco", train={"annotations": "a.json", "images": "i"}, prompt_mode="text")
+        dict(format="coco", train={"annotations": "a.json", "images": "i"})
     )
     assert d.channels == 3
     assert d.channel_semantics == "rgb"

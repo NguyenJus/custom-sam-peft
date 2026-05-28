@@ -35,7 +35,7 @@ def test_fit_uses_caller_provided_run_dir(tmp_path: Path, monkeypatch: pytest.Mo
     cfg.run.output_dir = str(tmp_path / "ignored")  # Trainer must NOT use this.
     cfg.run.name = "irrelevant"
     cfg.run.seed = 0
-    cfg.data.prompt_mode = "text"
+
     cfg.data.augmentations = AugmentationsConfig(preset="none")
     cfg.train.loss = LossConfig()
     cfg.train.num_workers = 0
@@ -126,7 +126,6 @@ def test_fit_creates_expected_layout(tmp_path: Path) -> None:
             format="coco",
             train=DataSplit(annotations="a.json", images="i"),
             val=DataSplit(annotations="a.json", images="i"),
-            prompt_mode="text",
         ),
         peft=PEFTConfig(method="lora", target_modules=FIXTURE_SCOPE_PATTERNS["vision"]),
         train=TrainHyperparams(
@@ -194,14 +193,12 @@ def test_fit_calls_start_run_once_before_first_log(tmp_path: Path) -> None:
     ds_train = COCODataset(
         annotations=str(tiny_coco_dir / "annotations.json"),
         images=str(tiny_coco_dir / "images"),
-        prompt_mode="text",
         transforms=transforms_t,
         text_prompt=TextPromptConfig(),
     )
     ds_val = COCODataset(
         annotations=str(tiny_coco_dir / "annotations.json"),
         images=str(tiny_coco_dir / "images"),
-        prompt_mode="text",
         transforms=transforms_v,
         text_prompt=TextPromptConfig(),
     )
@@ -218,7 +215,6 @@ def test_fit_calls_start_run_once_before_first_log(tmp_path: Path) -> None:
                 annotations=str(tiny_coco_dir / "annotations.json"),
                 images=str(tiny_coco_dir / "images"),
             ),
-            prompt_mode="text",
         ),
         peft=PEFTConfig(
             method="lora", scope="vision", target_modules=FIXTURE_SCOPE_PATTERNS["vision"]
@@ -273,8 +269,8 @@ class _PanelDeviceRecordingStub(torch.nn.Module):
         self.dummy = torch.nn.Parameter(torch.zeros(1, device=param_device))
         self.received_image_devices: list[torch.device] = []
 
-    def forward(self, image: torch.Tensor, prompts: object, box_hints: object = None) -> dict:
-        del prompts, box_hints
+    def forward(self, image: torch.Tensor, prompts: object, support: object = None) -> dict:
+        del prompts, support
         self.received_image_devices.append(image.device)
         b = image.shape[0]
         return {
@@ -348,14 +344,12 @@ def test_run_dir_writes_augmentation_pipeline_json(
     ds_train = COCODataset(
         annotations=str(tiny_coco_dir / "annotations.json"),
         images=str(tiny_coco_dir / "images"),
-        prompt_mode="text",
         transforms=transforms_t,
         text_prompt=TextPromptConfig(),
     )
     ds_val = COCODataset(
         annotations=str(tiny_coco_dir / "annotations.json"),
         images=str(tiny_coco_dir / "images"),
-        prompt_mode="text",
         transforms=transforms_v,
         text_prompt=TextPromptConfig(),
     )
@@ -372,7 +366,6 @@ def test_run_dir_writes_augmentation_pipeline_json(
                 annotations=str(tiny_coco_dir / "annotations.json"),
                 images=str(tiny_coco_dir / "images"),
             ),
-            prompt_mode="text",
             augmentations=AugmentationsConfig(preset="medical", intensity="medium"),
         ),
         peft=PEFTConfig(
@@ -447,14 +440,12 @@ def test_run_dir_writes_loss_bundle_json(tmp_path: Path, monkeypatch: pytest.Mon
     ds_train = COCODataset(
         annotations=str(tiny_coco_dir / "annotations.json"),
         images=str(tiny_coco_dir / "images"),
-        prompt_mode="text",
         transforms=transforms_t,
         text_prompt=TextPromptConfig(),
     )
     ds_val = COCODataset(
         annotations=str(tiny_coco_dir / "annotations.json"),
         images=str(tiny_coco_dir / "images"),
-        prompt_mode="text",
         transforms=transforms_v,
         text_prompt=TextPromptConfig(),
     )
@@ -471,7 +462,6 @@ def test_run_dir_writes_loss_bundle_json(tmp_path: Path, monkeypatch: pytest.Mon
                 annotations=str(tiny_coco_dir / "annotations.json"),
                 images=str(tiny_coco_dir / "images"),
             ),
-            prompt_mode="text",
             augmentations=AugmentationsConfig(preset="medical", intensity="medium"),
         ),
         peft=PEFTConfig(

@@ -125,7 +125,6 @@ class COCODataset:
         self,
         annotations: str,
         images: str,
-        prompt_mode: Literal["text", "bbox"],
         *,
         transforms: Any,
         text_prompt: TextPromptConfig,
@@ -133,11 +132,8 @@ class COCODataset:
         image_ids: Iterable[int] | None = None,
         channels: int = 3,
     ) -> None:
-        if prompt_mode not in ("text", "bbox"):
-            raise ValueError(f"prompt_mode must be 'text' or 'bbox'; got {prompt_mode!r}")
         self._image_root = Path(images)
         self._channels = channels
-        self._prompt_mode: Literal["text", "bbox"] = prompt_mode
         self._transforms = transforms
         self._text_prompt_cfg = text_prompt
         self._seed = seed
@@ -271,7 +267,7 @@ class COCODataset:
         """Assemble `Instance` objects and return the final `Example`."""
         import torch
 
-        from custom_sam_peft.data.base import BoxPrompts, Instance, TextPrompts
+        from custom_sam_peft.data.base import Instance, TextPrompts
 
         image_id, _rec, _anns = raw
 
@@ -285,66 +281,31 @@ class COCODataset:
                 )
             )
 
-        if self._prompt_mode == "text":
-            present = sorted(set(out_classes))
-            rng = random.Random(f"{self._seed}:{int(image_id)}")  # noqa: S311 — deterministic seeded RNG for prompt sampling, not security
-            prompts_list = _build_text_prompts(
-                present_dense_ids=present,
-                class_names=self._class_names,
-                cfg=self._text_prompt_cfg,
-                rng=rng,
-                image_id=int(image_id),
-            )
-            if len(prompts_list) > self._multiplex_cap:
-                if not self._warned_truncation:
-                    _LOG.warning(
-                        "custom_sam_peft.data.coco: image_id=%s requested %d text prompts; "
-                        "truncating to %d. Suppressing further warnings for this dataset.",
-                        image_id,
-                        len(prompts_list),
-                        self._multiplex_cap,
-                    )
-                    self._warned_truncation = True
-                prompts_list = prompts_list[: self._multiplex_cap]
-            return Example(
-                image=image_tensor,
-                image_id=str(image_id),
-                prompts=TextPrompts(classes=prompts_list),
-                instances=instances,
-            )
-
-        # bbox mode
-        order = sorted(
-            range(len(instances)),
-            key=lambda k: (
-                instances[k].class_id,
-                float(instances[k].box[0]),
-                float(instances[k].box[1]),
-            ),
+        present = sorted(set(out_classes))
+        rng = random.Random(f"{self._seed}:{int(image_id)}")  # noqa: S311 — deterministic seeded RNG for prompt sampling, not security
+        prompts_list = _build_text_prompts(
+            present_dense_ids=present,
+            class_names=self._class_names,
+            cfg=self._text_prompt_cfg,
+            rng=rng,
+            image_id=int(image_id),
         )
-        if len(order) > self._multiplex_cap:
+        if len(prompts_list) > self._multiplex_cap:
             if not self._warned_truncation:
                 _LOG.warning(
-                    "custom_sam_peft.data.coco: image_id=%s requested %d box prompts; "
+                    "custom_sam_peft.data.coco: image_id=%s requested %d text prompts; "
                     "truncating to %d. Suppressing further warnings for this dataset.",
                     image_id,
-                    len(order),
+                    len(prompts_list),
                     self._multiplex_cap,
                 )
                 self._warned_truncation = True
-            order = order[: self._multiplex_cap]
-        kept_instances = [instances[k] for k in order]
-        boxes_t = (
-            torch.stack([inst.box for inst in kept_instances])
-            if kept_instances
-            else torch.zeros((0, 4))
-        )
-        class_ids_t = torch.tensor([inst.class_id for inst in kept_instances], dtype=torch.int64)
+            prompts_list = prompts_list[: self._multiplex_cap]
         return Example(
             image=image_tensor,
             image_id=str(image_id),
-            prompts=BoxPrompts(boxes=boxes_t.to(torch.float32), class_ids=class_ids_t),
-            instances=kept_instances,
+            prompts=TextPrompts(classes=prompts_list),
+            instances=instances,
         )
 
     def __getitem__(self, i: int) -> Example:
@@ -410,7 +371,6 @@ def build_coco(
     return COCODataset(
         annotations=split["annotations"],
         images=split["images"],
-        prompt_mode=cfg["prompt_mode"],
         transforms=transforms,
         text_prompt=text_prompt,
         image_ids=[int(s) for s in resolved] if resolved is not None else None,
