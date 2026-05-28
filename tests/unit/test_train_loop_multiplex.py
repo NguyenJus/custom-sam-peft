@@ -369,7 +369,7 @@ def test_oom_k_rung_zero_grad_and_whole_step_replay(
     batch = _batch([class_names], [[_instance(i) for i in range(K_total)]])
 
     wrapper = _make_wrapper()
-    _make_oom_wrapper_spy(monkeypatch, wrapper, oom_when_group_size_gt=2)
+    _oom_spy, ok_spy = _make_oom_wrapper_spy(monkeypatch, wrapper, oom_when_group_size_gt=2)
 
     cfg = _make_cfg(classes_per_forward=4, nan_abort_after=99)
     opt = MagicMock()
@@ -377,6 +377,16 @@ def test_oom_k_rung_zero_grad_and_whole_step_replay(
     sched.get_last_lr.return_value = [1e-4]
 
     oom_state = OomState(micro_batch_size=1, effective_K=4)
+
+    # Record the value of oom_state.effective_K at each zero_grad call.
+    # loop.py line 388 calls zero_grad BEFORE halving effective_K at line 389,
+    # so at least one recorded value must equal the pre-halve value (4).
+    k_at_zero_grad: list[int] = []
+
+    def _recording_zero_grad(**kwargs: object) -> None:
+        k_at_zero_grad.append(oom_state.effective_K)
+
+    opt.zero_grad.side_effect = _recording_zero_grad
 
     train_step(
         wrapper,
@@ -390,9 +400,29 @@ def test_oom_k_rung_zero_grad_and_whole_step_replay(
         oom_state=oom_state,
     )
 
-    # zero_grad must have been called at least once on OOM K-rung entry
-    # (to discard the partial grads from the failed larger-K attempt).
+    # 1. zero_grad must have been called at least once on OOM K-rung entry
+    #    (to discard the partial grads from the failed larger-K attempt).
     assert opt.zero_grad.called, "optimizer.zero_grad() must be called during K-rung replay"
+
+    # 2. Prove the K-rung zero_grad fired while effective_K was still the
+    #    pre-halve value (4).  loop.py §388 calls zero_grad, §389 halves to 2.
+    assert any(k == 4 for k in k_at_zero_grad), (
+        f"Expected at least one zero_grad call while effective_K==4 (pre-halve); "
+        f"recorded values: {k_at_zero_grad}"
+    )
+
+    # 3. Prove the replay restarts from group 0: the first successful forward
+    #    after the K-rung must be group 0 of the re-chunked layout ([cls0, cls1]).
+    assert ok_spy, "Expected at least one successful forward after K-rung replay"
+    assert ok_spy[0] == ["cls0", "cls1"], (
+        f"Replay must restart from group 0 ([cls0, cls1]); got first ok group: {ok_spy[0]}"
+    )
+
+    # 4. Prove all classes are covered by the replay (no class dropped).
+    trained_classes = {c for group_cls in ok_spy for c in group_cls}
+    assert trained_classes == set(class_names), (
+        f"Not all classes trained in replay: missing {set(class_names) - trained_classes}"
+    )
 
 
 def test_oom_effective_k_sticky_across_steps(
