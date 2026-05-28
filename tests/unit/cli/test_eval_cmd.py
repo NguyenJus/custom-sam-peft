@@ -39,3 +39,24 @@ def test_eval_config_required_non_interactive() -> None:
     result = runner.invoke(app, ["eval", "--split", "val"])
     assert result.exit_code != 0
     assert "config" in result.output.lower()
+
+
+def test_eval_export_requires_checkpoint(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """--export without --checkpoint must exit non-zero with a message mentioning
+    export and checkpoint."""
+    cfg = tmp_path / "c.yaml"
+    cfg.write_text("placeholder")
+    monkeypatch.setattr("custom_sam_peft.cli.eval_cmd.load_config", lambda p: MagicMock())
+
+    def _fake_run_eval(cfg, **kw):
+        report = MagicMock()
+        report.overall = {}
+        return report
+
+    monkeypatch.setattr("custom_sam_peft.cli.eval_cmd.run_eval", _fake_run_eval)
+    monkeypatch.setattr("custom_sam_peft.cli.eval_cmd.run_export", lambda *a, **kw: None)
+
+    result = runner.invoke(app, ["eval", "--config", str(cfg), "--split", "val", "--export"])
+    assert result.exit_code != 0
+    output_lower = result.output.lower()
+    assert "export" in output_lower or "checkpoint" in output_lower

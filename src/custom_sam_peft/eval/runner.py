@@ -20,7 +20,7 @@ from custom_sam_peft.eval._artifacts import EvalArtifacts
 from custom_sam_peft.eval.evaluator import Evaluator
 from custom_sam_peft.eval.metrics import MetricsReport
 from custom_sam_peft.models.sam3 import MULTIPLEX_CAP, load_sam31
-from custom_sam_peft.train.checkpoint import _load_channel_adapter, load_adapter  # noqa: F401
+from custom_sam_peft.train.checkpoint import load_adapter
 
 _LOG = logging.getLogger(__name__)
 

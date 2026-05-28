@@ -507,16 +507,12 @@ def test_peft_mismatch_logs_warning(
 def test_checkpoint_none_skips_adapter_load(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """checkpoint=None (baseline) must skip load_adapter and _load_channel_adapter."""
+    """checkpoint=None (baseline) must skip load_adapter entirely."""
     cfg = _make_cfg()
     load_calls: list[str] = []
     monkeypatch.setattr(
         "custom_sam_peft.eval.runner.load_adapter",
         lambda *a, **k: load_calls.append("adapter"),
-    )
-    monkeypatch.setattr(
-        "custom_sam_peft.eval.runner._load_channel_adapter",
-        lambda *a, **k: load_calls.append("channel"),
     )
     sam_calls: list[int] = []
     monkeypatch.setattr(
@@ -531,7 +527,7 @@ def test_checkpoint_none_skips_adapter_load(
     ev.evaluate_and_save.return_value = MagicMock(overall={})
     monkeypatch.setattr("custom_sam_peft.eval.runner.Evaluator", lambda _c: ev)
     run_eval(cfg, checkpoint=None, split="val", output_dir=tmp_path)
-    assert load_calls == []  # no adapter / channel-adapter load on baseline
+    assert load_calls == []  # no adapter load on baseline
     assert sam_calls == [1]  # base model loaded once
     assert ev.evaluate_and_save.called
 
