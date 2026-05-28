@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 import sys
+from typing import Any
 
+import click
 import typer
+import typer.core
 
 from custom_sam_peft._bootstrap import bootstrap
 
@@ -27,11 +30,49 @@ from custom_sam_peft.errors import CustomSamPeftError  # noqa: E402
 # progress_session also calls this defensively on entry — the double-call is safe.
 _silence_third_party_progress()
 
+# ---------------------------------------------------------------------------
+# Flag-value override for --resume
+#
+# typer.Option does not support "flag_value" (option that can be used with or
+# without a value).  We work around this via a thin TyperGroup subclass that
+# patches the compiled click params for the two affected commands (train/run)
+# immediately after typer builds them, before any invocation occurs.
+#
+# The two attributes that enable click's optional-value behaviour are:
+#   _flag_needs_value = True  — tells the parser the option may omit its value
+#   flag_value = sentinel     — the value injected when no argument is given
+#
+# Because Typer.__call__ calls typer.main.get_command(self) on every invocation,
+# and get_command rebuilds all click Commands from scratch each time, we must
+# apply the patch inside the TyperGroup constructor (which runs inside that
+# rebuild) so it takes effect before the parser runs.
+# ---------------------------------------------------------------------------
+
+_LATEST_SENTINEL = train_cmd._LATEST_SENTINEL  # shared sentinel value
+_RESUME_PATCH_CMDS: frozenset[str] = frozenset({"train", "run"})
+
+
+class _ResumeAwareGroup(typer.core.TyperGroup):
+    """TyperGroup that patches --resume on 'train' and 'run' to accept an optional value."""
+
+    def __init__(self, *, commands: dict[str, click.Command] | None = None, **kwargs: Any) -> None:
+        super().__init__(commands=commands, **kwargs)
+        for cmd_name in _RESUME_PATCH_CMDS:
+            cmd = (self.commands or {}).get(cmd_name)
+            if cmd is None:
+                continue
+            for p in cmd.params:
+                if isinstance(p, click.Option) and p.name == "resume":
+                    p._flag_needs_value = True
+                    p.flag_value = _LATEST_SENTINEL
+
+
 app = typer.Typer(
     name="custom-sam-peft",
     help="Closed-vocab finetuning of SAM-family models with LoRA / QLoRA.",
     no_args_is_help=True,
     add_completion=False,
+    cls=_ResumeAwareGroup,
 )
 
 app.command("train", help="Run a finetune.")(train_cmd.train)
