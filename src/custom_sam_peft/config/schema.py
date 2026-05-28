@@ -518,7 +518,15 @@ class BoxHintSchedule(_Strict):
 
     p_start: float = Field(default=1.0, ge=0.0, le=1.0)
     p_end: float = Field(default=0.0, ge=0.0, le=1.0)
-    decay_steps: PositiveInt = 5000
+    decay_steps: PositiveInt | None = Field(
+        default=None,
+        description=(
+            "Steps over which box-hint probability decays from p_start to p_end. "
+            "None (default) means auto-resolve at runtime to "
+            "max(1, round(0.75 * epochs * steps_per_epoch)), "
+            "so the schedule decays over the first 75% of the run."
+        ),
+    )
     # early_stop_p_threshold demoted (audit Section E): no active src consumer;
     # retained as seam scaffolding for a future early-stopping mechanism.
     # See follow-up issue (Section J4). Not user-settable from YAML.
@@ -551,12 +559,26 @@ class TrainHyperparams(_Strict):
     learning_rate: PositiveFloat = 1.0e-4
     lr_schedule: LRSchedule = "cosine"
     warmup_steps: int = Field(default=100, ge=0)
-    save_every: PositiveInt = 1000
+    save_every: PositiveInt | None = Field(
+        default=None,
+        description=(
+            "Save a checkpoint every N global steps. "
+            "None (default) means auto-resolve at runtime to steps_per_epoch, "
+            "so one checkpoint per epoch."
+        ),
+    )
     box_hint: BoxHintSchedule = Field(default_factory=BoxHintSchedule)
     log_every: PositiveInt = 50
     # --- advanced ---
     max_grad_norm: PositiveFloat = 1.0
-    eval_every: PositiveInt = 500
+    eval_every: PositiveInt | None = Field(
+        default=None,
+        description=(
+            "Run mid-run evaluation every N global steps. "
+            "None (default) means auto-resolve at runtime to steps_per_epoch, "
+            "so one evaluation per epoch."
+        ),
+    )
     loss: LossConfig = Field(default_factory=LossConfig)
     nan_abort_after: PositiveInt = 20
     num_workers: int = Field(

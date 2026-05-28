@@ -18,7 +18,8 @@ def test_box_hint_schedule_defaults() -> None:
     s = BoxHintSchedule()
     assert s.p_start == 1.0
     assert s.p_end == 0.0
-    assert s.decay_steps == 5000
+    # decay_steps defaults to None (auto-resolved at runtime to epoch-relative value).
+    assert s.decay_steps is None
     # early_stop_p_threshold demoted (audit Section E): removed from user-facing schema;
     # no active src consumer. See follow-up issue (Section J4).
     assert not hasattr(s, "early_stop_p_threshold")

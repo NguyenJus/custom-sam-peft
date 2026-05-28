@@ -152,6 +152,11 @@ class StepResult:
 
 
 def _box_hint_p(global_step: int, cfg: BoxHintSchedule) -> float:
+    # decay_steps is None when not yet resolved (Trainer.fit resolves it before
+    # the first step; can be None in unit tests that call train_step directly).
+    # Fall back to p_start (no decay applied) so direct callers are not disrupted.
+    if cfg.decay_steps is None:
+        return cfg.p_start
     if global_step >= cfg.decay_steps:
         return cfg.p_end
     frac = global_step / cfg.decay_steps
@@ -477,8 +482,12 @@ def run_epoch(
                 lr=scalars.get("lr", 0.0),
                 it_s=scalars.get("throughput/img_s", 0.0),
             )
-        if global_step % cfg.train.save_every == 0:
+        if cfg.train.save_every is not None and global_step % cfg.train.save_every == 0:
             on_checkpoint(global_step, epoch, result.p_t, nan_streak)
-        if global_step > 0 and global_step % cfg.train.eval_every == 0:
+        if (
+            cfg.train.eval_every is not None
+            and global_step > 0
+            and global_step % cfg.train.eval_every == 0
+        ):
             on_eval(global_step)
     return global_step, nan_streak
