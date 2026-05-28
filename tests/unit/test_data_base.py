@@ -9,6 +9,7 @@ from custom_sam_peft.data.base import (
     Dataset,
     Example,
     Instance,
+    SupportPrompts,
     TextPrompts,
     is_dataset,
 )
@@ -38,6 +39,32 @@ def test_example_holds_image_prompts_and_instances() -> None:
     )
     assert ex.image_id == "img-1"
     assert ex.instances[0].class_id == 0
+
+
+def test_support_prompts_dataclass() -> None:
+    """SupportPrompts is a frozen dataclass with one optional `boxes` field."""
+    import dataclasses
+
+    import pytest
+
+    # Default ctor: boxes is None.
+    s_default = SupportPrompts()
+    assert s_default.boxes is None
+    assert dataclasses.is_dataclass(s_default)
+
+    # With per-image boxes (some None, some (M_i, 4) tensors).
+    s = SupportPrompts(boxes=[torch.zeros(2, 4), None])
+    assert s.boxes is not None
+    assert s.boxes[0].shape == (2, 4)
+    assert s.boxes[1] is None
+
+    # Frozen: direct field assignment raises FrozenInstanceError.
+    with pytest.raises(dataclasses.FrozenInstanceError):
+        s.boxes = None  # type: ignore[misc]
+
+    # dataclasses.replace works (frozen instances support copy-with-changes).
+    s2 = dataclasses.replace(s, boxes=None)
+    assert s2.boxes is None
 
 
 class _FakeDataset:
