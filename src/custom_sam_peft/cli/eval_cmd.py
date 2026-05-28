@@ -84,6 +84,11 @@ def evaluate(
 
     rprint(f"[green]eval complete[/green] — {report.overall}")
     if do_export:
+        if checkpoint is None:
+            raise typer.BadParameter(
+                "--export requires a checkpoint; omit --export for baseline eval",
+                param_hint="--checkpoint",
+            )
         try:
             run_export(cfg, checkpoint)
         except Exception as e:
