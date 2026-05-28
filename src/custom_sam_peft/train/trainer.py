@@ -272,9 +272,7 @@ class Trainer:
             if cfg.eval.batch_size == "auto":
                 from custom_sam_peft.presets import decide_eval_batch_size
 
-                bs, _, _ = decide_eval_batch_size(
-                    cfg.data.image_size, classes_per_forward=MULTIPLEX_CAP
-                )
+                bs, _, _ = decide_eval_batch_size(classes_per_forward=MULTIPLEX_CAP)
                 # Cap by the sticky train micro-batch size to avoid eval OOM.
                 if oom_state is not None:
                     bs = self._cap_eval_batch_size(bs, oom_state.micro_batch_size)
@@ -430,9 +428,7 @@ class Trainer:
                 if full_eval_cfg.batch_size == "auto":
                     from custom_sam_peft.presets import decide_eval_batch_size
 
-                    bs, _, _ = decide_eval_batch_size(
-                        cfg.data.image_size, classes_per_forward=MULTIPLEX_CAP
-                    )
+                    bs, _, _ = decide_eval_batch_size(classes_per_forward=MULTIPLEX_CAP)
                     # Cap by the sticky train micro-batch size to avoid eval OOM.
                     bs = self._cap_eval_batch_size(bs, oom_state.micro_batch_size)
                     full_eval_cfg = full_eval_cfg.model_copy(update={"batch_size": bs})

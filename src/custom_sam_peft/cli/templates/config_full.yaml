@@ -21,7 +21,6 @@ data:
 $dataset_block
 $validation_block
   prompt_mode: text
-  image_size: 1008
   # --- advanced ---
   # channels: 3
   # channel_semantics: rgb

@@ -70,11 +70,11 @@ def _make_opts(
     )
 
 
-def _make_config_yaml(tmp_path: Path, model_name: str, image_size: int = 1024) -> Path:
+def _make_config_yaml(tmp_path: Path, model_name: str) -> Path:
     """Write a minimal predict config YAML that pins model.name."""
     cfg_path = tmp_path / "predict_cfg.yaml"
     cfg_path.write_text(
-        f"model:\n  name: {model_name!r}\ndata:\n  image_size: {image_size}\n",
+        f"model:\n  name: {model_name!r}\n",
         encoding="utf-8",
     )
     return cfg_path
@@ -193,21 +193,27 @@ def test_adapter_pin_no_conflict_no_warn(tmp_path: Path, caplog: pytest.LogCaptu
 
 
 # ---------------------------------------------------------------------------
-# Test 6: image_size from config
+# Test 6: image_size is always SAM3_IMAGE_SIZE=1008
 # ---------------------------------------------------------------------------
 
 
-def test_image_size_from_config(tmp_path: Path) -> None:
-    """image_size is read from --config.data.image_size when present."""
-    cfg_path = _make_config_yaml(tmp_path, _BUILTIN_DEFAULT, image_size=512)
+def test_image_size_always_1008_with_config(tmp_path: Path) -> None:
+    """data.image_size in a predict YAML is silently ignored; image_size is always 1008."""
+    # Write a YAML that explicitly sets data.image_size to a non-default value so we
+    # actually exercise the "key present but ignored" code path.
+    cfg_path = tmp_path / "predict_cfg.yaml"
+    cfg_path.write_text(
+        f"model:\n  name: {_BUILTIN_DEFAULT!r}\ndata:\n  image_size: 512\n",
+        encoding="utf-8",
+    )
     opts = _make_opts(tmp_path, config=cfg_path)
     resolved = _resolve_config(opts)
 
-    assert resolved.image_size == 512
+    assert resolved.image_size == 1008
 
 
-def test_image_size_defaults_to_1008_when_no_config(tmp_path: Path) -> None:
-    """image_size defaults to 1008 (SAM 3.1 actual input resolution) when no config is given."""
+def test_image_size_always_1008_when_no_config(tmp_path: Path) -> None:
+    """image_size is always 1008 (SAM 3.1 native input resolution)."""
     opts = _make_opts(tmp_path, config=None)
     resolved = _resolve_config(opts)
 
@@ -231,7 +237,6 @@ def test_invalid_config_yaml_logs_warning_and_falls_back(
         resolved = _resolve_config(opts)
 
     assert resolved.model_name == _BUILTIN_DEFAULT
-    assert resolved.image_size == 1008
     warns = [r for r in caplog.records if "Failed to parse --config" in r.getMessage()]
     assert warns, "expected a WARN about the corrupt YAML"
 
@@ -343,8 +348,7 @@ def test_C12_resolve_config_reads_channels_and_semantics(tmp_path: Path) -> None
     """_resolve_config parses data.channels and data.channel_semantics from YAML."""
     cfg = tmp_path / "c.yaml"
     cfg.write_text(
-        "model:\n  name: facebook/sam3.1\n"
-        "data:\n  image_size: 512\n  channels: 4\n  channel_semantics: rgba\n",
+        "model:\n  name: facebook/sam3.1\ndata:\n  channels: 4\n  channel_semantics: rgba\n",
         encoding="utf-8",
     )
     opts = _make_opts(tmp_path, config=cfg, checkpoint=None)
@@ -357,7 +361,7 @@ def test_C12_defaults_when_absent(tmp_path: Path) -> None:
     """When data.channels / data.channel_semantics absent, defaults to 3 / 'rgb'."""
     cfg = tmp_path / "c.yaml"
     cfg.write_text(
-        "model:\n  name: facebook/sam3.1\ndata:\n  image_size: 512\n",
+        "model:\n  name: facebook/sam3.1\n",
         encoding="utf-8",
     )
     opts = _make_opts(tmp_path, config=cfg, checkpoint=None)
@@ -381,7 +385,7 @@ def test_C12b_bogus_channel_semantics_raises_value_error(tmp_path: Path) -> None
     cfg = tmp_path / "bad.yaml"
     cfg.write_text(
         "model:\n  name: facebook/sam3.1\n"
-        "data:\n  image_size: 512\n  channels: 4\n  channel_semantics: hyperspectral\n",
+        "data:\n  channels: 4\n  channel_semantics: hyperspectral\n",
         encoding="utf-8",
     )
     opts = _make_opts(tmp_path, config=cfg, checkpoint=None)

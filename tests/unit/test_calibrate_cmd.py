@@ -37,7 +37,7 @@ def _patch_probe(
     monkeypatch.setattr(torch.cuda, "reset_peak_memory_stats", lambda: None)
     monkeypatch.setattr(
         "custom_sam_peft.cli.calibrate_cmd._run_probe",
-        lambda image_size: peak,
+        lambda: peak,
     )
     monkeypatch.setattr(
         "custom_sam_peft.cli.calibrate_cmd._sam3_checkpoint_sha",
@@ -45,12 +45,12 @@ def _patch_probe(
     )
 
 
-def test_calibrate_writes_cache_with_schema_v1(
+def test_calibrate_writes_cache_with_schema_v2(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     _patch_probe(monkeypatch)
     monkeypatch.chdir(tmp_path)
-    result = runner.invoke(app, ["calibrate", "--image-size", "1008"])
+    result = runner.invoke(app, ["calibrate"])
     assert result.exit_code == 0, result.output
     cache = tmp_path / ".custom_sam_peft_calibration.json"
     assert cache.is_file()
@@ -60,7 +60,6 @@ def test_calibrate_writes_cache_with_schema_v1(
         "calibrated_at",
         "gpu_name",
         "gpu_total_memory_bytes",
-        "image_size",
         "sam3_checkpoint_sha",
         "torch_version",
         "custom_sam_peft_version",
@@ -68,8 +67,8 @@ def test_calibrate_writes_cache_with_schema_v1(
         "peak_memory_bytes_at_probe",
     }
     assert expected_keys.issubset(data.keys())
-    assert data["schema_version"] == 1
-    assert data["image_size"] == 1008
+    assert data["schema_version"] == 2
+    assert "image_size" not in data
     assert data["sam3_checkpoint_sha"] == "deadbeef"
 
 
@@ -80,11 +79,10 @@ def test_calibrate_cache_fresh_exits_zero(tmp_path: Path, monkeypatch: pytest.Mo
     cache.write_text(
         json.dumps(
             {
-                "schema_version": 1,
+                "schema_version": 2,
                 "calibrated_at": "2026-05-22T00:00:00+00:00",
                 "gpu_name": "NVIDIA A100-SXM4-40GB",
                 "gpu_total_memory_bytes": int(40 * _GB),
-                "image_size": 1008,
                 "sam3_checkpoint_sha": "deadbeef",
                 "torch_version": "2.4.0",
                 "custom_sam_peft_version": "0.0.0",
@@ -94,7 +92,7 @@ def test_calibrate_cache_fresh_exits_zero(tmp_path: Path, monkeypatch: pytest.Mo
         )
     )
     mtime_before = cache.stat().st_mtime
-    result = runner.invoke(app, ["calibrate", "--image-size", "1008"])
+    result = runner.invoke(app, ["calibrate"])
     assert result.exit_code == 0, result.output
     assert "cache fresh" in result.output
     assert cache.stat().st_mtime == mtime_before  # not rewritten
@@ -105,10 +103,10 @@ def test_calibrate_force_overwrites_cache(tmp_path: Path, monkeypatch: pytest.Mo
     monkeypatch.chdir(tmp_path)
     cache = tmp_path / ".custom_sam_peft_calibration.json"
     cache.write_text('{"stale": true}')
-    result = runner.invoke(app, ["calibrate", "--image-size", "1008", "--force"])
+    result = runner.invoke(app, ["calibrate", "--force"])
     assert result.exit_code == 0, result.output
     data = json.loads(cache.read_text())
-    assert data.get("schema_version") == 1
+    assert data.get("schema_version") == 2
 
 
 def test_calibrate_non_cuda_exits_2(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -125,7 +123,7 @@ def test_calibrate_negative_activation_warns(
     # peak much smaller than model+adapter+opt → negative raw activation.
     _patch_probe(monkeypatch, peak=10 * 1024**2)  # 10 MiB peak — tiny
     monkeypatch.chdir(tmp_path)
-    result = runner.invoke(app, ["calibrate", "--image-size", "1008"])
+    result = runner.invoke(app, ["calibrate"])
     assert result.exit_code == 0
     data = json.loads((tmp_path / ".custom_sam_peft_calibration.json").read_text())
     assert data["activation_bytes_per_example"] == 0
@@ -143,7 +141,7 @@ def test_calibrate_atomic_write(tmp_path: Path, monkeypatch: pytest.MonkeyPatch)
         "custom_sam_peft.cli.calibrate_cmd.os.replace",
         lambda _src, _dst: (_ for _ in ()).throw(OSError("disk full")),
     )
-    result = runner.invoke(app, ["calibrate", "--image-size", "1008", "--force"])
+    result = runner.invoke(app, ["calibrate", "--force"])
     assert result.exit_code == 6
     # The original file content survives the failed write.
     assert json.loads(cache.read_text()) == {"prior": True}

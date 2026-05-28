@@ -37,8 +37,7 @@ def test_G4_real_nchannel_predict(tmp_path):
     # No 'format' or 'train' keys needed — runner.py raw-parses only model/data sections.
     cfg_path = tmp_path / "predict_rgba.yaml"
     cfg_path.write_text(
-        "model:\n  name: facebook/sam3.1\n"
-        "data:\n  image_size: 1008\n  channels: 4\n  channel_semantics: rgba\n"
+        "model:\n  name: facebook/sam3.1\ndata:\n  channels: 4\n  channel_semantics: rgba\n"
     )
 
     opts = PredictOptions(

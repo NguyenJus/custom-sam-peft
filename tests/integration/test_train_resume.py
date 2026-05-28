@@ -60,7 +60,6 @@ def _cfg(tmp_path: Path, tiny_coco_dir: Path, save_every: int) -> TrainConfig:
                 images=str(tiny_coco_dir / "images"),
             ),
             prompt_mode="text",
-            image_size=32,
         ),
         peft=PEFTConfig(
             method="lora",

@@ -42,7 +42,7 @@ def _make_fake_inner(captured: dict[str, object]) -> MagicMock:
 def test_adapter_builds_img_text_ids_image_major(b: int, k: int) -> None:
     captured: dict[str, object] = {}
     inner = _make_fake_inner(captured)
-    adapter = _Sam3ImageAdapter(inner, image_size=8)
+    adapter = _Sam3ImageAdapter(inner)
 
     images = torch.zeros(b, 3, 8, 8)
     classes = [f"c{i}" for i in range(k)]
@@ -69,7 +69,7 @@ def test_adapter_builds_img_text_ids_image_major(b: int, k: int) -> None:
 def test_adapter_calls_forward_text_once_with_k_names(b: int, k: int) -> None:
     captured: dict[str, object] = {}
     inner = _make_fake_inner(captured)
-    adapter = _Sam3ImageAdapter(inner, image_size=8)
+    adapter = _Sam3ImageAdapter(inner)
 
     classes = [f"c{i}" for i in range(k)]
     prompts = [TextPrompts(classes=classes) for _ in range(b)]

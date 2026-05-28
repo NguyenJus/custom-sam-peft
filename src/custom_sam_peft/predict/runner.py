@@ -36,7 +36,6 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 _BUILTIN_DEFAULT_MODEL = "facebook/sam3.1"
-_BUILTIN_DEFAULT_IMAGE_SIZE = 1008  # SAM 3.1 actual input resolution used by load_sam31
 
 
 # ---------------------------------------------------------------------------
@@ -94,7 +93,7 @@ class _ResolvedConfig:
     """Post-resolution values; computed once by _resolve_config."""
 
     model_name: str
-    image_size: int
+    image_size: int  # always SAM3_IMAGE_SIZE; kept for logging / backward-compat uses
     channels: int
     channel_semantics: str
     device: str  # "cuda" or "cpu" (auto already resolved)
@@ -118,13 +117,12 @@ def _resolve_config(opts: PredictOptions) -> _ResolvedConfig:
       2. --config.model.name (when config given).
       3. Builtin default ("facebook/sam3.1").
 
-    Precedence for image_size:
-      1. --config.data.image_size
-      2. Builtin default (1008).
+    image_size is always SAM3_IMAGE_SIZE (1008); SAM 3.1 rescales inputs internally.
     """
+    from custom_sam_peft.models.sam3 import SAM3_IMAGE_SIZE
+
     # --- parse --config YAML (if given) ---
     config_model_name: str | None = None
-    config_image_size: int | None = None
     config_channels: int | None = None
     config_channel_semantics: str | None = None
 
@@ -140,9 +138,6 @@ def _resolve_config(opts: PredictOptions) -> _ResolvedConfig:
                     config_model_name = str(val)
             data_section = raw.get("data", {})
             if isinstance(data_section, dict):
-                val = data_section.get("image_size")
-                if val is not None:
-                    config_image_size = int(val)
                 val = data_section.get("channels")
                 if val is not None:
                     config_channels = int(val)
@@ -174,8 +169,8 @@ def _resolve_config(opts: PredictOptions) -> _ResolvedConfig:
     else:
         model_name = fallback_model_name
 
-    # --- image_size ---
-    image_size = config_image_size if config_image_size is not None else _BUILTIN_DEFAULT_IMAGE_SIZE
+    # --- image_size (constant — SAM 3.1 always rescales to SAM3_IMAGE_SIZE) ---
+    image_size = SAM3_IMAGE_SIZE
 
     # --- channels + channel_semantics ---
     channels = config_channels if config_channels is not None else 3
@@ -349,7 +344,7 @@ def run_predict(opts: PredictOptions) -> PredictReport:
         from custom_sam_peft.models.sam3 import MULTIPLEX_CAP
         from custom_sam_peft.presets import decide_eval_batch_size
 
-        bs, _, _ = decide_eval_batch_size(rcfg.image_size, classes_per_forward=MULTIPLEX_CAP)
+        bs, _, _ = decide_eval_batch_size(classes_per_forward=MULTIPLEX_CAP)
     else:
         bs = int(opts.batch_size)
 

@@ -703,7 +703,6 @@ def test_register_coco_lookup(tiny_coco_dir: Path) -> None:
             "images": str(tiny_coco_dir / "images"),
         },
         "prompt_mode": "bbox",
-        "image_size": 32,
         "augmentations": {"preset": "natural", "intensity": "medium"},
         "text_prompt": {"mode": "present"},
         "normalize": {"mean": [0.485, 0.456, 0.406], "std": [0.229, 0.224, 0.225]},
@@ -729,7 +728,6 @@ def test_build_coco_train_pipeline_uses_train_transforms(tiny_coco_dir: Path) ->
             "images": str(tiny_coco_dir / "images"),
         },
         "prompt_mode": "bbox",
-        "image_size": 32,
         "augmentations": {"preset": "none"},
         "text_prompt": {"mode": "present"},
         "normalize": {"mean": [0.485, 0.456, 0.406], "std": [0.229, 0.224, 0.225]},
@@ -862,7 +860,6 @@ def test_image_level_leak_invariant_on_tiny_coco(tiny_coco_dir: Path) -> None:
             images=str(tiny_coco_dir / "images"),
         ),
         prompt_mode="text",
-        image_size=32,
     )
     items = _enumerate_coco_items(data_cfg)
     if len(items) < 2:

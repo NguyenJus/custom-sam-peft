@@ -60,7 +60,6 @@ def _cfg(tmp_path: Path, tiny_coco_dir: Path) -> TrainConfig:
             val=None,
             val_split=None,
             prompt_mode="text",
-            image_size=32,
         ),
         peft=PEFTConfig(
             method="lora", scope="vision", target_modules=FIXTURE_SCOPE_PATTERNS["vision"]

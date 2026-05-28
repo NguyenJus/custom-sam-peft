@@ -120,7 +120,7 @@ def make_stub_wrapper(dim: int = 128, working: bool = False) -> Sam3Wrapper:
     """
     base = TinySam3LoraStub(dim=dim, working=working)
     adapter = _StubAdapter(base)
-    return Sam3Wrapper(adapter, image_size=8, mask_size=8)
+    return Sam3Wrapper(adapter, mask_size=8)
 
 
 # Regex patterns matching the renamed fixture subtrees. The production

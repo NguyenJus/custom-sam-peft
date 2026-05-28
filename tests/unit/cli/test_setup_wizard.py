@@ -349,13 +349,12 @@ def test_vram_autosize_applies_config_patch(monkeypatch) -> None:
         headroom_bytes=0,
         predicted_bytes=0,
         budget_bytes=0,
-        image_size=1008,
         gpu_name="StubGPU",
         provenance="analytic",
         cache_path=None,
         calibrated_at=None,
     )
-    monkeypatch.setattr("custom_sam_peft.presets.decide_preset", lambda image_size: decision)
+    monkeypatch.setattr("custom_sam_peft.presets.decide_preset", lambda: decision)
     monkeypatch.setattr(sw, "ask_confirm", lambda *a, **k: True)
     ctx = sw.Ctx(answers={}, cuda_available=True)
     frag = sw._ask_peft_sizing(ctx)
@@ -364,7 +363,7 @@ def test_vram_autosize_applies_config_patch(monkeypatch) -> None:
 
 
 def test_vram_autosize_runtime_error_falls_back_to_manual(monkeypatch) -> None:
-    def _boom(image_size):
+    def _boom():
         raise RuntimeError("nothing fits")
 
     monkeypatch.setattr("custom_sam_peft.presets.decide_preset", _boom)

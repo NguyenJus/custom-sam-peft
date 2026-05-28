@@ -22,11 +22,10 @@ def _stub_gpu(monkeypatch: pytest.MonkeyPatch, total_bytes: int, name: str = "St
 
 def _write_cache(path: Path, **fields: object) -> None:
     base = {
-        "schema_version": 1,
+        "schema_version": 2,
         "calibrated_at": "2026-05-22T00:00:00+00:00",
         "gpu_name": "StubGPU",
         "gpu_total_memory_bytes": int(40 * _GB),
-        "image_size": 1024,
         "sam3_checkpoint_sha": "deadbeef",
         "torch_version": "2.4.0",
         "custom_sam_peft_version": "0.0.0",
@@ -42,7 +41,7 @@ def test_decide_eval_batch_size_cpu_fallback(caplog, monkeypatch) -> None:
     monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
     from custom_sam_peft.presets import decide_eval_batch_size
 
-    bs, predicted_bytes, provenance = decide_eval_batch_size(1024)
+    bs, predicted_bytes, provenance = decide_eval_batch_size()
     assert bs == 1
     assert predicted_bytes == 0
     assert provenance == "analytic"
@@ -64,7 +63,7 @@ def test_decide_eval_batch_size_analytic_no_cache(
     )
     from custom_sam_peft.presets import decide_eval_batch_size
 
-    bs, _predicted_bytes, provenance = decide_eval_batch_size(1024)
+    bs, _predicted_bytes, provenance = decide_eval_batch_size()
     assert provenance == "analytic"
     assert bs >= 1
 
@@ -83,7 +82,7 @@ def test_decide_eval_batch_size_caps_search_at_64(
     )
     from custom_sam_peft.presets import decide_eval_batch_size
 
-    bs, _predicted_bytes, _provenance = decide_eval_batch_size(1024)
+    bs, _predicted_bytes, _provenance = decide_eval_batch_size()
     assert bs <= 64
 
 
@@ -103,7 +102,7 @@ def test_decide_eval_batch_size_uses_calibrated_cache(
     )
     from custom_sam_peft.presets import decide_eval_batch_size
 
-    bs, _predicted_bytes, provenance = decide_eval_batch_size(1024)
+    bs, _predicted_bytes, provenance = decide_eval_batch_size()
     assert provenance == "calibrated"
     assert bs >= 1
 

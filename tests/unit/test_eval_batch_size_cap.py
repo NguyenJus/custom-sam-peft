@@ -40,7 +40,6 @@ def _make_trainer_with_val_ds() -> object:
             train=DataSplit(annotations="a.json", images="i"),
             val=DataSplit(annotations="a.json", images="i"),
             prompt_mode="text",
-            image_size=1008,
         ),
         peft=PEFTConfig(method="lora", scope="vision"),
         train=TrainHyperparams(epochs=1, batch_size=2),
@@ -175,12 +174,10 @@ def _make_run_eval_cfg(train_batch_size: int = 2) -> MagicMock:
         "val": {"annotations": "v.json", "images": "v/"},
         "test": None,
         "prompt_mode": "text",
-        "image_size": 1008,
     }
     cfg.data.val = MagicMock()
     cfg.data.val_split = None
     cfg.data.test = None
-    cfg.data.image_size = 1008
     cfg.model.name = "facebook/sam3.1"
     cfg.peft.method = "lora"
     cfg.train.batch_size = train_batch_size
