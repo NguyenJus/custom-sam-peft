@@ -117,10 +117,7 @@ def test_resolve_class_names_from_classlabel_in_objects() -> None:
 # ---------------------------------------------------------------------------
 
 from custom_sam_peft._registry import lookup
-from custom_sam_peft.data.base import (  # noqa: F401 — BoxPrompts removed in Task 4
-    BoxPrompts,
-    TextPrompts,
-)
+from custom_sam_peft.data.base import TextPrompts
 from custom_sam_peft.data.hf import HFDataset
 
 

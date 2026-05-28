@@ -5,7 +5,6 @@ from __future__ import annotations
 import torch
 
 from custom_sam_peft.data.base import (
-    BoxPrompts,
     Dataset,
     Example,
     Instance,
@@ -13,16 +12,6 @@ from custom_sam_peft.data.base import (
     TextPrompts,
     is_dataset,
 )
-
-
-def test_text_prompts_and_box_prompts_are_distinct_types() -> None:
-    t = TextPrompts(classes=["cat", "dog"])
-    b = BoxPrompts(
-        boxes=torch.zeros((2, 4)),
-        class_ids=torch.tensor([0, 1]),
-    )
-    assert isinstance(t, TextPrompts)
-    assert isinstance(b, BoxPrompts)
 
 
 def test_example_holds_image_prompts_and_instances() -> None:

@@ -175,10 +175,7 @@ from unittest.mock import patch as mock_patch
 import torch
 
 from custom_sam_peft.config.schema import NormalizeConfig
-from custom_sam_peft.data.base import (  # noqa: F401 — BoxPrompts removed in Task 4
-    BoxPrompts,
-    TextPrompts,
-)
+from custom_sam_peft.data.base import TextPrompts
 from custom_sam_peft.data.coco import COCODataset
 
 

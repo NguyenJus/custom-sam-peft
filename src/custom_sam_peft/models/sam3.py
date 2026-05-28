@@ -249,8 +249,7 @@ class Sam3Wrapper(nn.Module):
         if not prompts:
             return
 
-        # After #126, Prompts == TextPrompts; the mixed-batch / BoxPrompts checks
-        # are gone. Per-prompt: validate K ∈ [1, MULTIPLEX_CAP].
+        # After #126, Prompts == TextPrompts. Per-prompt: validate K ∈ [1, MULTIPLEX_CAP].
         for p in prompts:
             if not isinstance(p, TextPrompts) or not (1 <= len(p.classes) <= MULTIPLEX_CAP):
                 raise ValueError(

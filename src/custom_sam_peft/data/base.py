@@ -16,18 +16,6 @@ class TextPrompts:
 
 
 @dataclass(frozen=True)
-class BoxPrompts:
-    """Per-image box prompts and their target class ids.
-
-    `boxes` is `(N, 4)` xyxy in pixel coords; converted to normalized cxcywh
-    at the collator boundary before reaching the matcher/losses.
-    """
-
-    boxes: torch.Tensor  # (N, 4) xyxy, pixel coords
-    class_ids: torch.Tensor  # (N,) int64
-
-
-@dataclass(frozen=True)
 class SupportPrompts:
     """Auxiliary localization prompts that ride alongside TextPrompts.
 
@@ -49,7 +37,9 @@ class SupportPrompts:
     boxes: list[torch.Tensor | None] | None = None
 
 
-Prompts = TextPrompts | BoxPrompts
+# After #126, `Prompts` is an alias for `TextPrompts`. The alias is preserved
+# so call sites referring to `Prompts` continue to resolve.
+Prompts = TextPrompts
 
 
 @dataclass(frozen=True)

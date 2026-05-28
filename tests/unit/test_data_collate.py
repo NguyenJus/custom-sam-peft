@@ -5,7 +5,7 @@ from __future__ import annotations
 import pytest
 import torch
 
-from custom_sam_peft.data.base import BoxPrompts, Example, Instance, TextPrompts
+from custom_sam_peft.data.base import Example, Instance, TextPrompts
 from custom_sam_peft.data.collate import collate_batch
 
 
@@ -35,9 +35,7 @@ def test_collate_keeps_prompts_as_list() -> None:
     b = Example(
         image=torch.zeros((3, 64, 64)),
         image_id="b",
-        prompts=BoxPrompts(
-            boxes=torch.zeros((2, 4)), class_ids=torch.tensor([0, 1], dtype=torch.int64)
-        ),
+        prompts=TextPrompts(classes=["b-class"]),
         instances=[],
     )
     c = _ex("c")
@@ -45,7 +43,7 @@ def test_collate_keeps_prompts_as_list() -> None:
     assert isinstance(batch["prompts"], list)
     assert len(batch["prompts"]) == 3
     assert isinstance(batch["prompts"][0], TextPrompts)
-    assert isinstance(batch["prompts"][1], BoxPrompts)
+    assert isinstance(batch["prompts"][1], TextPrompts)
     assert isinstance(batch["prompts"][2], TextPrompts)
 
 
