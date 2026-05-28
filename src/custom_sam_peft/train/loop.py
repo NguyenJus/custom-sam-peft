@@ -482,8 +482,12 @@ def run_epoch(
                 lr=scalars.get("lr", 0.0),
                 it_s=scalars.get("throughput/img_s", 0.0),
             )
-        if global_step % cfg.train.save_every == 0:
+        if cfg.train.save_every is not None and global_step % cfg.train.save_every == 0:
             on_checkpoint(global_step, epoch, result.p_t, nan_streak)
-        if global_step > 0 and global_step % cfg.train.eval_every == 0:
+        if (
+            cfg.train.eval_every is not None
+            and global_step > 0
+            and global_step % cfg.train.eval_every == 0
+        ):
             on_eval(global_step)
     return global_step, nan_streak
