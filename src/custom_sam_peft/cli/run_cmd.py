@@ -25,12 +25,15 @@ from custom_sam_peft.cli._progress import ProgressKind, ProgressMode, progress_s
 from custom_sam_peft.config.loader import load_config
 from custom_sam_peft.config.schema import TrainConfig
 from custom_sam_peft.data.base import Dataset
+from custom_sam_peft.errors import CheckpointError
 from custom_sam_peft.eval.runner import run_eval
 from custom_sam_peft.models.sam3 import load_sam31
 from custom_sam_peft.presets import PresetDecision, decide_preset
 from custom_sam_peft.runs.bundle import BundleContext, write_bundle
-from custom_sam_peft.train.checkpoint import load_adapter, save_merged
+from custom_sam_peft.train.checkpoint import find_latest_checkpoint, load_adapter, save_merged
 from custom_sam_peft.train.runner import run_training
+
+_LATEST_SENTINEL = "__latest__"
 
 if TYPE_CHECKING:
     from custom_sam_peft.data.val_source import ValSource
@@ -172,7 +175,14 @@ def _orchestrate(cfg: TrainConfig, resume: Path | None, mode: ProgressMode) -> i
 
 def run(
     config: Path = typer.Option(..., "--config", help="Path to config YAML."),
-    resume: Path | None = typer.Option(None, "--resume", help="Path to resume checkpoint."),
+    resume: str | None = typer.Option(
+        None,
+        "--resume",
+        help=(
+            "Resume checkpoint. Pass a path, or omit value for the latest "
+            "checkpoint matching cfg.run.name."
+        ),
+    ),
     verbose: bool = typer.Option(False, "-v", "--verbose", help="Enable DEBUG logging."),
     progress_flag: str = typer.Option(
         "auto",
@@ -199,4 +209,17 @@ def run(
         sys.stdout.isatty(),
         Console().is_jupyter,
     )
-    _orchestrate(cfg, resume, mode)
+
+    resume_path: Path | None
+    if resume == _LATEST_SENTINEL:
+        try:
+            resume_path = find_latest_checkpoint(cfg)
+        except CheckpointError as e:
+            rprint(f"[red]error[/red] {e}")
+            raise typer.Exit(code=1) from e
+    elif resume is not None:
+        resume_path = Path(resume)
+    else:
+        resume_path = None
+
+    _orchestrate(cfg, resume_path, mode)

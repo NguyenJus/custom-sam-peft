@@ -219,3 +219,242 @@ train: {epochs: 1}
     # Must NOT contain the old rejection message.
     assert "checkpoint loading currently supports only LoRA" not in _plain(result.output)
     assert "only lora" not in _plain(result.output).lower()
+
+
+# ---------------------------------------------------------------------------
+# --resume flag tests (train + run)
+# ---------------------------------------------------------------------------
+
+
+def _make_train_cfg_file(tmp_path: Path) -> Path:
+    """Write a minimal valid training config and return its path."""
+    cfg_path = tmp_path / "cfg.yaml"
+    cfg_path.write_text(
+        """
+run: {name: myrun, output_dir: ./runs, seed: 0}
+data:
+  format: coco
+  train: {annotations: t.json, images: t/}
+  val: {annotations: v.json, images: v/}
+  prompt_mode: text
+peft: {method: lora}
+train: {epochs: 1}
+"""
+    )
+    return cfg_path
+
+
+def test_train_resume_no_flag_forwards_none(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """train with no --resume flag passes resume_from=None."""
+    from unittest.mock import MagicMock
+
+    from custom_sam_peft.cli import train_cmd
+    from custom_sam_peft.cli.main import app
+
+    cfg_path = _make_train_cfg_file(tmp_path)
+    fake_result = MagicMock(
+        run_dir=tmp_path / "r",
+        checkpoint_path=tmp_path / "r" / "adapter",
+        final_metrics=None,
+    )
+    called: dict[str, object] = {}
+
+    def fake_run(cfg_obj, *, resume_from=None):
+        called["resume_from"] = resume_from
+        return fake_result
+
+    monkeypatch.setattr(train_cmd, "run_train", fake_run)
+    local_runner = CliRunner()
+    result = local_runner.invoke(app, ["train", "--config", str(cfg_path)])
+    assert result.exit_code == 0, result.output
+    assert called["resume_from"] is None
+
+
+def test_train_resume_explicit_path_forwarded(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """train --resume /explicit/path forwards Path('/explicit/path') as resume_from."""
+    from pathlib import Path as _Path
+    from unittest.mock import MagicMock
+
+    from custom_sam_peft.cli import train_cmd
+    from custom_sam_peft.cli.main import app
+
+    cfg_path = _make_train_cfg_file(tmp_path)
+    fake_result = MagicMock(
+        run_dir=tmp_path / "r",
+        checkpoint_path=tmp_path / "r" / "adapter",
+        final_metrics=None,
+    )
+    called: dict[str, object] = {}
+
+    def fake_run(cfg_obj, *, resume_from=None):
+        called["resume_from"] = resume_from
+        return fake_result
+
+    monkeypatch.setattr(train_cmd, "run_train", fake_run)
+    local_runner = CliRunner()
+    result = local_runner.invoke(
+        app, ["train", "--config", str(cfg_path), "--resume", "/explicit/path"]
+    )
+    assert result.exit_code == 0, result.output
+    assert called["resume_from"] == _Path("/explicit/path")
+
+
+def test_train_resume_latest_calls_find_latest_checkpoint(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """train --resume (no value) calls find_latest_checkpoint and passes result to run_train."""
+    from pathlib import Path as _Path
+    from unittest.mock import MagicMock
+
+    from custom_sam_peft.cli import train_cmd
+    from custom_sam_peft.cli.main import app
+
+    cfg_path = _make_train_cfg_file(tmp_path)
+    fake_result = MagicMock(
+        run_dir=tmp_path / "r",
+        checkpoint_path=tmp_path / "r" / "adapter",
+        final_metrics=None,
+    )
+    resolved_ckpt = _Path(tmp_path / "myrun-2026-01-01T00-00-00" / "checkpoints" / "step_10")
+    called: dict[str, object] = {}
+
+    def fake_run(cfg_obj, *, resume_from=None):
+        called["resume_from"] = resume_from
+        return fake_result
+
+    def fake_find_latest(cfg_obj):
+        called["find_cfg"] = cfg_obj
+        return resolved_ckpt
+
+    monkeypatch.setattr(train_cmd, "run_train", fake_run)
+    monkeypatch.setattr(train_cmd, "find_latest_checkpoint", fake_find_latest)
+    local_runner = CliRunner()
+    result = local_runner.invoke(app, ["train", "--config", str(cfg_path), "--resume"])
+    assert result.exit_code == 0, result.output
+    assert called["resume_from"] == resolved_ckpt
+
+
+def test_train_resume_latest_no_checkpoint_exits_nonzero(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """train --resume with no checkpoints found exits non-zero with error message."""
+    from unittest.mock import MagicMock
+
+    from custom_sam_peft.cli import train_cmd
+    from custom_sam_peft.cli.main import app
+    from custom_sam_peft.errors import CheckpointError
+
+    cfg_path = _make_train_cfg_file(tmp_path)
+    fake_result = MagicMock(
+        run_dir=tmp_path / "r",
+        checkpoint_path=tmp_path / "r" / "adapter",
+        final_metrics=None,
+    )
+
+    monkeypatch.setattr(train_cmd, "run_train", lambda *a, **kw: fake_result)
+    monkeypatch.setattr(
+        train_cmd,
+        "find_latest_checkpoint",
+        lambda cfg: (_ for _ in ()).throw(CheckpointError("no checkpoint found for myrun in /tmp")),
+    )
+    local_runner = CliRunner()
+    result = local_runner.invoke(app, ["train", "--config", str(cfg_path), "--resume"])
+    assert result.exit_code != 0
+
+
+def test_run_resume_no_flag_forwards_none(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """run with no --resume flag passes resume_from=None."""
+    from custom_sam_peft.cli import run_cmd
+    from custom_sam_peft.cli.main import app
+
+    cfg_path = _make_train_cfg_file(tmp_path)
+    called: dict[str, object] = {}
+
+    def fake_orchestrate(cfg_obj, resume, mode):
+        called["resume"] = resume
+        return 0
+
+    monkeypatch.setattr(run_cmd, "_orchestrate", fake_orchestrate)
+    local_runner = CliRunner()
+    result = local_runner.invoke(app, ["run", "--config", str(cfg_path)])
+    assert result.exit_code == 0, result.output
+    assert called["resume"] is None
+
+
+def test_run_resume_explicit_path_forwarded(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """run --resume /explicit/path forwards Path('/explicit/path')."""
+    from pathlib import Path as _Path
+
+    from custom_sam_peft.cli import run_cmd
+    from custom_sam_peft.cli.main import app
+
+    cfg_path = _make_train_cfg_file(tmp_path)
+    called: dict[str, object] = {}
+
+    def fake_orchestrate(cfg_obj, resume, mode):
+        called["resume"] = resume
+        return 0
+
+    monkeypatch.setattr(run_cmd, "_orchestrate", fake_orchestrate)
+    local_runner = CliRunner()
+    result = local_runner.invoke(
+        app, ["run", "--config", str(cfg_path), "--resume", "/explicit/path"]
+    )
+    assert result.exit_code == 0, result.output
+    assert called["resume"] == _Path("/explicit/path")
+
+
+def test_run_resume_latest_calls_find_latest_checkpoint(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """run --resume (no value) calls find_latest_checkpoint and passes result to _orchestrate."""
+    from pathlib import Path as _Path
+
+    from custom_sam_peft.cli import run_cmd
+    from custom_sam_peft.cli.main import app
+
+    cfg_path = _make_train_cfg_file(tmp_path)
+    resolved_ckpt = _Path(tmp_path / "myrun-2026-01-01T00-00-00" / "checkpoints" / "step_10")
+    called: dict[str, object] = {}
+
+    def fake_orchestrate(cfg_obj, resume, mode):
+        called["resume"] = resume
+        return 0
+
+    def fake_find_latest(cfg_obj):
+        called["find_cfg"] = cfg_obj
+        return resolved_ckpt
+
+    monkeypatch.setattr(run_cmd, "_orchestrate", fake_orchestrate)
+    monkeypatch.setattr(run_cmd, "find_latest_checkpoint", fake_find_latest)
+    local_runner = CliRunner()
+    result = local_runner.invoke(app, ["run", "--config", str(cfg_path), "--resume"])
+    assert result.exit_code == 0, result.output
+    assert called["resume"] == resolved_ckpt
+
+
+def test_run_resume_latest_no_checkpoint_exits_nonzero(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """run --resume with no checkpoints found exits non-zero."""
+    from custom_sam_peft.cli import run_cmd
+    from custom_sam_peft.cli.main import app
+    from custom_sam_peft.errors import CheckpointError
+
+    cfg_path = _make_train_cfg_file(tmp_path)
+
+    monkeypatch.setattr(run_cmd, "_orchestrate", lambda *a, **kw: 0)
+    monkeypatch.setattr(
+        run_cmd,
+        "find_latest_checkpoint",
+        lambda cfg: (_ for _ in ()).throw(CheckpointError("no checkpoint found for myrun in /tmp")),
+    )
+    local_runner = CliRunner()
+    result = local_runner.invoke(app, ["run", "--config", str(cfg_path), "--resume"])
+    assert result.exit_code != 0

@@ -420,3 +420,74 @@ def test_load_channel_adapter_silent_noop_when_file_absent_and_ca_none(
 
     warning_records = [r for r in caplog.records if r.levelno == logging.WARNING]
     assert not warning_records, f"Unexpected warnings for clean rgb no-op: {warning_records}"
+
+
+# ---------------------------------------------------------------------------
+# find_latest_checkpoint tests
+# ---------------------------------------------------------------------------
+
+
+def _make_run_dir(base: Path, name: str, stamp: str, steps: list[int]) -> Path:
+    """Create a fake run directory with checkpoints."""
+    run_dir = base / f"{name}-{stamp}"
+    for step in steps:
+        step_dir = run_dir / "checkpoints" / f"step_{step}"
+        step_dir.mkdir(parents=True)
+    return run_dir
+
+
+def test_find_latest_checkpoint_picks_newest_run_and_highest_step(tmp_path: Path) -> None:
+    """Happy path: newest run dir (lex) with highest step_N is returned."""
+    from custom_sam_peft.train.checkpoint import find_latest_checkpoint
+
+    cfg = _make_cfg(tmp_path)
+
+    _make_run_dir(tmp_path, "test", "2026-01-01T00-00-00", [10, 20])
+    _make_run_dir(tmp_path, "test", "2026-02-01T00-00-00", [10, 20])
+
+    result = find_latest_checkpoint(cfg)
+    assert result == tmp_path / "test-2026-02-01T00-00-00" / "checkpoints" / "step_20"
+
+
+def test_find_latest_checkpoint_ignores_mismatched_name_run_dirs(tmp_path: Path) -> None:
+    """Run directories with a different name prefix are not considered."""
+    from custom_sam_peft.train.checkpoint import find_latest_checkpoint
+
+    cfg = _make_cfg(tmp_path)
+
+    _make_run_dir(tmp_path, "otherrun", "2026-03-01T00-00-00", [100])
+    _make_run_dir(tmp_path, "test", "2026-01-01T00-00-00", [5])
+
+    result = find_latest_checkpoint(cfg)
+    assert result == tmp_path / "test-2026-01-01T00-00-00" / "checkpoints" / "step_5"
+
+
+def test_find_latest_checkpoint_skips_run_dirs_without_checkpoints(tmp_path: Path) -> None:
+    """Run dirs that have no checkpoints/step_* subdirs are skipped; next candidate wins."""
+    from custom_sam_peft.train.checkpoint import find_latest_checkpoint
+
+    cfg = _make_cfg(tmp_path)
+
+    # Newest run has no checkpoints
+    empty_run = tmp_path / "test-2026-03-01T00-00-00"
+    empty_run.mkdir(parents=True)
+
+    _make_run_dir(tmp_path, "test", "2026-01-01T00-00-00", [7])
+
+    result = find_latest_checkpoint(cfg)
+    assert result == tmp_path / "test-2026-01-01T00-00-00" / "checkpoints" / "step_7"
+
+
+def test_find_latest_checkpoint_raises_checkpoint_error_when_no_match(tmp_path: Path) -> None:
+    """Empty / no-matching output_dir raises CheckpointError mentioning output_dir and name."""
+    from custom_sam_peft.errors import CheckpointError
+    from custom_sam_peft.train.checkpoint import find_latest_checkpoint
+
+    cfg = _make_cfg(tmp_path)
+
+    with pytest.raises(CheckpointError) as exc_info:
+        find_latest_checkpoint(cfg)
+
+    msg = str(exc_info.value)
+    assert str(tmp_path) in msg
+    assert "test" in msg

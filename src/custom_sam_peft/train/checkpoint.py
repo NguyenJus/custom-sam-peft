@@ -25,6 +25,7 @@ import torch
 from custom_sam_peft.config.schema import TrainConfig
 from custom_sam_peft.errors import CheckpointError
 from custom_sam_peft.models.sam3 import Sam3Wrapper
+from custom_sam_peft.paths import CHECKPOINTS_SUBDIR
 from custom_sam_peft.peft_adapters import make_peft_method
 from custom_sam_peft.peft_adapters.lora import load_lora, merge_lora, save_lora
 from custom_sam_peft.peft_adapters.qlora import load_qlora, save_qlora
@@ -240,4 +241,63 @@ def load_full_state(
         start_epoch=int(state["epoch"]),
         nan_streak=int(state["nan_streak"]),
         box_hint_p=float(state["box_hint_p"]),
+    )
+
+
+def find_latest_checkpoint(cfg: TrainConfig) -> Path:
+    """Return <run_dir>/checkpoints/step_N for the newest run matching cfg.run.name.
+
+    "Newest" is determined by lexicographic sort of the run directory name, which is
+    valid because make_run_dir writes an ISO-style timestamp suffix.
+
+    Raises:
+        CheckpointError: if no matching checkpoint can be found in cfg.run.output_dir.
+    """
+    output_dir = Path(cfg.run.output_dir)
+    prefix = f"{cfg.run.name}-"
+
+    # Collect run dirs whose name starts with the run name prefix and contain
+    # at least one checkpoints/step_* directory.
+    candidates: list[Path] = []
+    if output_dir.is_dir():
+        for entry in output_dir.iterdir():
+            if not entry.is_dir():
+                continue
+            if not entry.name.startswith(prefix):
+                continue
+            ckpt_dir = entry / CHECKPOINTS_SUBDIR
+            if not ckpt_dir.is_dir():
+                continue
+            step_dirs = [d for d in ckpt_dir.iterdir() if d.is_dir() and d.name.startswith("step_")]
+            if step_dirs:
+                candidates.append(entry)
+
+    # Sort descending by run dir name (lex — works because timestamp is ISO-style).
+    candidates.sort(key=lambda p: p.name, reverse=True)
+
+    for run_dir in candidates:
+        ckpt_dir = run_dir / CHECKPOINTS_SUBDIR
+        step_dirs = [d for d in ckpt_dir.iterdir() if d.is_dir() and d.name.startswith("step_")]
+        if not step_dirs:
+            continue
+
+        # Pick the step dir with the largest integer suffix.
+        def _step_num(p: Path) -> int:
+            try:
+                return int(p.name.split("_", 1)[1])
+            except (IndexError, ValueError):
+                return -1
+
+        best = max(step_dirs, key=_step_num)
+        return best
+
+    raise CheckpointError(
+        f"find_latest_checkpoint: no checkpoint found for run name "
+        f"{cfg.run.name!r} in output_dir {cfg.run.output_dir!r}.",
+        expected=f"at least one {prefix}<timestamp>/{CHECKPOINTS_SUBDIR}/step_<N>/ directory",
+        found=f"no matching directories under {cfg.run.output_dir!r}",
+        fix=(
+            "run `csp train --config <cfg>` first to produce a checkpoint, "
+            "or pass an explicit path to --resume"
+        ),
     )
