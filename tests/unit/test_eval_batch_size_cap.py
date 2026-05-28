@@ -214,10 +214,7 @@ def test_run_eval_caps_auto_batch_by_train_batch_size(
         lambda *_a, **_kw: lambda *a, **kw: MagicMock(__len__=lambda self: 0, class_names=[]),
     )
     monkeypatch.setattr("custom_sam_peft.eval.runner.load_sam31", lambda _m, **_kw: MagicMock())
-    monkeypatch.setattr("custom_sam_peft.peft_adapters.lora.load_lora", lambda *_a, **_kw: None)
-    monkeypatch.setattr(
-        "custom_sam_peft.eval.runner._load_channel_adapter", lambda *_a, **_kw: None
-    )
+    monkeypatch.setattr("custom_sam_peft.eval.runner.load_adapter", lambda *_a, **_kw: None)
 
     run_eval(cfg, checkpoint=tmp_path, split="val", output_dir=tmp_path)
 
@@ -254,10 +251,7 @@ def test_run_eval_no_cap_when_predictor_within_train_batch(
         lambda *_a, **_kw: lambda *a, **kw: MagicMock(__len__=lambda self: 0, class_names=[]),
     )
     monkeypatch.setattr("custom_sam_peft.eval.runner.load_sam31", lambda _m, **_kw: MagicMock())
-    monkeypatch.setattr("custom_sam_peft.peft_adapters.lora.load_lora", lambda *_a, **_kw: None)
-    monkeypatch.setattr(
-        "custom_sam_peft.eval.runner._load_channel_adapter", lambda *_a, **_kw: None
-    )
+    monkeypatch.setattr("custom_sam_peft.eval.runner.load_adapter", lambda *_a, **_kw: None)
 
     run_eval(cfg, checkpoint=tmp_path, split="val", output_dir=tmp_path)
 
@@ -288,10 +282,7 @@ def test_run_eval_cap_logs_info_when_applied(
         lambda *_a, **_kw: lambda *a, **kw: MagicMock(__len__=lambda self: 0, class_names=[]),
     )
     monkeypatch.setattr("custom_sam_peft.eval.runner.load_sam31", lambda _m, **_kw: MagicMock())
-    monkeypatch.setattr("custom_sam_peft.peft_adapters.lora.load_lora", lambda *_a, **_kw: None)
-    monkeypatch.setattr(
-        "custom_sam_peft.eval.runner._load_channel_adapter", lambda *_a, **_kw: None
-    )
+    monkeypatch.setattr("custom_sam_peft.eval.runner.load_adapter", lambda *_a, **_kw: None)
 
     with caplog.at_level(logging.INFO, logger="custom_sam_peft.eval.runner"):
         run_eval(cfg, checkpoint=tmp_path, split="val", output_dir=tmp_path)
