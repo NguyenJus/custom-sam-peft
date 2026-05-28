@@ -7,6 +7,30 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ---
 
+## [Unreleased]
+
+### Breaking — text-primary prompt invariant (#126)
+
+- **schema**: removed the `data.prompt_mode` field. Any config that carries
+  `prompt_mode:` (any value) now fails at load with a Pydantic
+  `extra_forbidden` error. Migration: delete the line from your YAML.
+- **api**: replaced `Sam3Wrapper.forward(..., box_hints=...)` with
+  `Sam3Wrapper.forward(..., support=SupportPrompts(boxes=...))`. Downstream
+  callers that pass per-image GT boxes as a training hint must wrap them in
+  a `SupportPrompts(boxes=...)` and pass via `support=`. Passing
+  `support=None` (the default) is equivalent to today's `box_hints=None`.
+- **types**: removed `BoxPrompts` and `PromptMode`. `Prompts` is now an alias
+  for `TextPrompts`.
+- **trainer/CLI**: removed three hand-rolled `prompt_mode == "bbox"` guards
+  (`train/trainer.py`, `cli/train_cmd.py`, `cli/run_cmd.py`) — the schema is
+  the sole gate.
+
+The `box_hint` training curriculum (`train.box_hint.*`, `BoxHintSchedule`) is
+unchanged — it continues to sample per-image GT boxes alongside text prompts
+as an auxiliary localization hint, now flowing through `SupportPrompts`.
+
+---
+
 ## [0.12.0] — 2026-05-23
 
 ### Added — SAM 3.1 multiplex forward (issue #22)

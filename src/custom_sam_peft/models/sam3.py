@@ -598,6 +598,9 @@ def _construct_raw_model(cfg: ModelConfig) -> nn.Module:
             checkpoint_path=str(ckpt_path),
             load_from_HF=False,
             enable_segmentation=True,
+            # Disabled by design: this is SAM3's vendor point/box-primary
+            # interactive pipe. Our prompt invariant is text-primary (see
+            # #126); no code path routes to it.
             enable_inst_interactivity=False,
             compile=False,
         )
