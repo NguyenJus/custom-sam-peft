@@ -40,6 +40,7 @@ def test_fit_uses_caller_provided_run_dir(tmp_path: Path, monkeypatch: pytest.Mo
     cfg.train.loss = LossConfig()
     cfg.train.num_workers = 0
     cfg.train.batch_size = 1
+    cfg.train.multiplex.classes_per_forward = 1  # OomState reads this (int, not MagicMock).
     cfg.train.epochs = 0  # Skip the train loop entirely.
     cfg.train.warmup_steps = 0
     cfg.train.lr_schedule = "constant"
