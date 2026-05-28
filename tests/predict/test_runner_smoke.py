@@ -58,7 +58,7 @@ class _StubSamModule(torch.nn.Module):
         self,
         images: torch.Tensor,
         prompts: list[Any],
-        box_hints: list[Any] | None = None,
+        support: Any = None,
     ) -> dict[str, torch.Tensor]:
         self.forward_call_count += 1
         b = images.shape[0]
@@ -487,7 +487,7 @@ class _MultiplexStubSamModule(torch.nn.Module):
         self,
         images: torch.Tensor,
         prompts: list[Any],
-        box_hints: list[Any] | None = None,
+        support: Any = None,
     ) -> dict[str, torch.Tensor]:
         self.call_count += 1
         self.prompts_per_call.append(prompts)

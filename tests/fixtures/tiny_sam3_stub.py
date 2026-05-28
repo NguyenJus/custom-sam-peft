@@ -38,9 +38,9 @@ class TinySam3Stub(nn.Module):
         self,
         image: torch.Tensor,
         prompts: Any,
-        box_hints: Any = None,
+        **kwargs: Any,
     ) -> dict[str, torch.Tensor]:
-        del box_hints  # ignored by the stub
+        del kwargs  # box_hints= (inner-model path) and support= (outer-model path) are both ignored
         b = image.shape[0] if image.ndim == 4 else 1
         # Multiplex: if prompts are TextPrompts with K classes each,
         # the real model expands the batch to B*K (one row per image-class slot).

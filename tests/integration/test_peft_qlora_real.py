@@ -113,7 +113,7 @@ def test_save_load_qlora_roundtrip(tmp_path: Path) -> None:
     # Forward-output parity setup: capture w1's outputs BEFORE deleting it.
     # Host RAM (~12 GB) cannot hold w1 and w2 simultaneously, so only the small
     # CPU output tensors survive the del. Mirrors evaluator.py's call pattern:
-    #   wrapper(images, prompts, box_hints=None) -> dict[str, Tensor]
+    #   wrapper(images, prompts, support=None) -> dict[str, Tensor]
     # with keys pred_logits / pred_boxes / pred_masks / presence_logit_dec.
     from custom_sam_peft.data.base import TextPrompts
 
@@ -122,7 +122,7 @@ def test_save_load_qlora_roundtrip(tmp_path: Path) -> None:
     _images = torch.zeros(1, 3, 1024, 1024, device="cuda", dtype=torch.float32)
     _prompts = [TextPrompts(classes=["object"])]
     with torch.no_grad():
-        _out_w1 = w1(_images, _prompts, box_hints=None)
+        _out_w1 = w1(_images, _prompts, support=None)
     _out_w1_cpu = {k: v.detach().cpu() for k, v in _out_w1.items() if isinstance(v, torch.Tensor)}
 
     # Free w1 before constructing w2 — Colab host RAM (~12 GB) cannot hold
@@ -151,7 +151,7 @@ def test_save_load_qlora_roundtrip(tmp_path: Path) -> None:
     _images2 = torch.zeros(1, 3, 1024, 1024, device="cuda", dtype=torch.float32)
     _prompts2 = [TextPrompts(classes=["object"])]
     with torch.no_grad():
-        _out_w2 = w2(_images2, _prompts2, box_hints=None)
+        _out_w2 = w2(_images2, _prompts2, support=None)
     _out_w2_cpu = {k: v.detach().cpu() for k, v in _out_w2.items() if isinstance(v, torch.Tensor)}
     assert set(_out_w1_cpu) == set(_out_w2_cpu), (
         f"forward output keys differ: {set(_out_w1_cpu) ^ set(_out_w2_cpu)}"

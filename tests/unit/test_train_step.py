@@ -87,10 +87,10 @@ def test_train_step_class_loop_visits_union(monkeypatch: pytest.MonkeyPatch) -> 
     calls: list[list[str]] = []
     real_forward = wrapper.forward
 
-    def spy(images: torch.Tensor, prompts: list[Any], box_hints: Any = None) -> Any:
+    def spy(images: torch.Tensor, prompts: list[Any], support: Any = None) -> Any:
         # Record the sorted class list from the first prompt (all prompts share the same list).
         calls.append(list(prompts[0].classes))
-        return real_forward(images, prompts, box_hints=box_hints)
+        return real_forward(images, prompts, support=support)
 
     monkeypatch.setattr(wrapper, "forward", spy)
 
@@ -127,8 +127,9 @@ def test_train_step_box_hint_sampling(monkeypatch: pytest.MonkeyPatch) -> None:
 
     hint_records: list[list[bool]] = []
 
-    def spy(images: torch.Tensor, prompts: list[Any], box_hints: Any = None) -> Any:
-        hint_records.append([h is not None for h in (box_hints or [None] * len(prompts))])
+    def spy(images: torch.Tensor, prompts: list[Any], support: Any = None) -> Any:
+        boxes = support.boxes if support is not None else None
+        hint_records.append([h is not None for h in (boxes or [None] * len(prompts))])
         return TinySam3Stub(num_queries=4, mask_size=8).forward(images, prompts)
 
     monkeypatch.setattr(wrapper, "forward", spy)
@@ -159,7 +160,7 @@ def test_train_step_nan_in_one_class_does_not_count_as_skip(
 
     class_call = {"count": 0}
 
-    def spy(images: torch.Tensor, prompts: list[Any], box_hints: Any = None) -> Any:
+    def spy(images: torch.Tensor, prompts: list[Any], support: Any = None) -> Any:
         class_call["count"] += 1
         out = TinySam3Stub(num_queries=4, mask_size=8).forward(images, prompts)
         if class_call["count"] == 1:
@@ -191,7 +192,7 @@ def test_train_step_nan_in_all_classes_increments_streak(
     cfg = _make_cfg(nan_abort_after=99)
     wrapper = _make_wrapper()
 
-    def spy(images: torch.Tensor, prompts: list[Any], box_hints: Any = None) -> Any:
+    def spy(images: torch.Tensor, prompts: list[Any], support: Any = None) -> Any:
         out = TinySam3Stub(num_queries=4, mask_size=8).forward(images, prompts)
         out["pred_masks"] = out["pred_masks"] * float("nan")
         return out
@@ -214,7 +215,7 @@ def test_train_step_aborts_after_nan_abort_after(
     cfg = _make_cfg(nan_abort_after=3)
     wrapper = _make_wrapper()
 
-    def spy(images: torch.Tensor, prompts: list[Any], box_hints: Any = None) -> Any:
+    def spy(images: torch.Tensor, prompts: list[Any], support: Any = None) -> Any:
         out = TinySam3Stub(num_queries=4, mask_size=8).forward(images, prompts)
         out["pred_masks"] = out["pred_masks"] * float("nan")
         return out

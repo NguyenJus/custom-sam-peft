@@ -270,8 +270,8 @@ class _PanelDeviceRecordingStub(torch.nn.Module):
         self.dummy = torch.nn.Parameter(torch.zeros(1, device=param_device))
         self.received_image_devices: list[torch.device] = []
 
-    def forward(self, image: torch.Tensor, prompts: object, box_hints: object = None) -> dict:
-        del prompts, box_hints
+    def forward(self, image: torch.Tensor, prompts: object, support: object = None) -> dict:
+        del prompts, support
         self.received_image_devices.append(image.device)
         b = image.shape[0]
         return {

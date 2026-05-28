@@ -179,9 +179,9 @@ def test_K_4_multiplex_calls_model_once(monkeypatch: pytest.MonkeyPatch) -> None
     call_prompts: list[list[Any]] = []
     real_forward = wrapper.forward
 
-    def spy(images: torch.Tensor, prompts: list[Any], box_hints: Any = None) -> Any:
+    def spy(images: torch.Tensor, prompts: list[Any], support: Any = None) -> Any:
         call_prompts.append(list(prompts))
-        return real_forward(images, prompts, box_hints=box_hints)
+        return real_forward(images, prompts, support=support)
 
     monkeypatch.setattr(wrapper, "forward", spy)
     monkeypatch.setattr(random, "random", lambda: 0.0)
@@ -215,10 +215,10 @@ def test_train_step_one_total_loss_per_group(monkeypatch: pytest.MonkeyPatch) ->
     prompts_seen: list[list[Any]] = []
     real_forward = wrapper.forward
 
-    def spy_forward(images: torch.Tensor, prompts: list[Any], box_hints: Any = None) -> Any:
+    def spy_forward(images: torch.Tensor, prompts: list[Any], support: Any = None) -> Any:
         forward_call_count[0] += 1
         prompts_seen.append(list(prompts))
-        return real_forward(images, prompts, box_hints=box_hints)
+        return real_forward(images, prompts, support=support)
 
     monkeypatch.setattr(wrapper, "forward", spy_forward)
     monkeypatch.setattr(random, "random", lambda: 0.0)
@@ -250,9 +250,9 @@ def test_two_groups_two_model_calls(monkeypatch: pytest.MonkeyPatch) -> None:
     call_class_lists: list[list[str]] = []
     real_forward = wrapper.forward
 
-    def spy(images: torch.Tensor, prompts: list[Any], box_hints: Any = None) -> Any:
+    def spy(images: torch.Tensor, prompts: list[Any], support: Any = None) -> Any:
         call_class_lists.append(list(prompts[0].classes))
-        return real_forward(images, prompts, box_hints=box_hints)
+        return real_forward(images, prompts, support=support)
 
     monkeypatch.setattr(wrapper, "forward", spy)
     monkeypatch.setattr(random, "random", lambda: 0.0)

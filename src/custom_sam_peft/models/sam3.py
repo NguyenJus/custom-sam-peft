@@ -720,7 +720,7 @@ def load_sam31(
 ) -> Sam3Wrapper:
     """Load SAM 3.1 via Meta's `sam3` package and wrap it for our trainer.
 
-    Returns a `Sam3Wrapper` whose `forward(images, prompts, box_hints=None)` returns Meta's
+    Returns a `Sam3Wrapper` whose `forward(images, prompts, support=None)` returns Meta's
     native per-class output dict (`pred_logits`, `pred_boxes`, `pred_masks`,
     `presence_logit_dec`).
     """

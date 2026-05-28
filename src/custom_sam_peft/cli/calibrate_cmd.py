@@ -87,7 +87,7 @@ def _run_probe(image_size: int) -> int:
     prompts = [TextPrompts(classes=["thing"])]
 
     torch.cuda.reset_peak_memory_stats()
-    out = wrapper(images, prompts, box_hints=None)
+    out = wrapper(images, prompts, support=None)
     # Synthetic loss: sum of all output tensors that require grad.
     loss = torch.zeros((), device=device, dtype=torch.float32)
     for t in out.values():
