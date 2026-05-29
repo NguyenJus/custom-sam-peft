@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import ClassVar
+
 import torch
 from PIL import Image
 
@@ -70,8 +72,6 @@ def _dataset(class_ids: list[int]):
             image=ex.image, image_id=f"img_{i}", prompts=ex.prompts, instances=ex.instances
         )
 
-    from typing import ClassVar
-
     class _DS:
         class_names: ClassVar[list[str]] = ["cat", "dog"]
 
@@ -114,8 +114,6 @@ def test_write_eval_visualizations_zero_candidates(tmp_path, caplog) -> None:
                 prompts=TextPrompts(classes=["cat", "dog"]), instances=[])
         for i in range(2)
     ]
-
-    from typing import ClassVar
 
     class _DS:
         class_names: ClassVar[list[str]] = ["cat", "dog"]
@@ -168,3 +166,7 @@ def test_write_eval_visualizations_per_image_failure_is_caught(
         )
     assert len(paths) == 1  # one survived
     assert any(r.levelname == "WARNING" for r in caplog.records)
+    assert any(
+        r.levelname == "WARNING" and ("image_id=" in r.getMessage() or "img_" in r.getMessage())
+        for r in caplog.records
+    )
