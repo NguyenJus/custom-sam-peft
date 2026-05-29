@@ -18,6 +18,7 @@ import logging
 import math
 import re
 from collections.abc import Sequence
+from pathlib import Path
 from typing import Any
 
 import numpy as np
@@ -25,7 +26,10 @@ import pycocotools.mask as mask_utils
 import torch
 from PIL import Image, ImageDraw, ImageFont
 
+from custom_sam_peft.config._internal import MatcherWeights
+from custom_sam_peft.config.schema import NormalizeConfig
 from custom_sam_peft.data.base import Dataset, Example, Instance, TextPrompts
+from custom_sam_peft.data.transforms import resolve_normalization
 from custom_sam_peft.eval.evaluator import _row_outputs
 from custom_sam_peft.eval.postprocess import queries_to_coco_results
 from custom_sam_peft.models.matching import HungarianMatcher, meta_to_canonical
@@ -310,3 +314,66 @@ def render_eval_pair(
     }
     names_present = [class_names[c - 1] for c in sorted(present_ids) if 0 < c <= len(class_names)]
     return _compose_pair(gt_panel, pred_panel, class_names_present=names_present)
+
+
+def write_eval_visualizations(
+    model: Any,
+    dataset: Dataset,
+    output_dir: Path,
+    *,
+    per_example_iou: Sequence[float],
+    count: int,
+    mask_threshold: float,
+    model_name: str,
+    normalize: NormalizeConfig | None,
+    channel_semantics: str,
+) -> list[Path]:
+    """Phase-2 viz pass. Selects `count` variety-weighted images (§5), renders a
+    GT-vs-Pred composite per image (§7.4-7.5), writes PNGs under
+    output_dir/visualizations/, and returns the written paths. Memory-bounded:
+    processes and frees one image at a time. Per-image failures are caught and
+    logged at WARNING; never raises for a single bad image.
+    """
+    selected = pick_samples(per_example_iou, dataset, count)
+    if not selected:
+        _LOG.info("eval visualize: no GT-bearing images to visualize; skipping.")
+        return []
+
+    mean, std = resolve_normalization(
+        model_name, normalize, channel_semantics=channel_semantics  # type: ignore[arg-type]
+    )
+    w = MatcherWeights()
+    matcher = HungarianMatcher(
+        lambda_l1=w.lambda_l1, lambda_giou=w.lambda_giou, lambda_mask=w.lambda_mask
+    )
+
+    vis_dir = Path(output_dir) / "visualizations"
+    vis_dir.mkdir(parents=True, exist_ok=True)
+
+    was_training = bool(getattr(model, "training", False))
+    if hasattr(model, "eval"):
+        model.eval()
+
+    written: list[Path] = []
+    try:
+        with torch.no_grad():
+            for idx in selected:
+                example = dataset[idx]
+                try:
+                    composite = render_eval_pair(
+                        model, example, list(dataset.class_names),
+                        mask_threshold=mask_threshold, mean=mean, std=std, matcher=matcher,
+                    )
+                    out_path = vis_dir / f"{_sanitize_image_id(example.image_id)}.png"
+                    composite.save(out_path)
+                    written.append(out_path)
+                except Exception:
+                    _LOG.warning(
+                        "eval visualize: failed to render image_id=%r (idx=%d); skipping.",
+                        example.image_id, idx, exc_info=True,
+                    )
+    finally:
+        if was_training and hasattr(model, "train"):
+            model.train()
+
+    return written
