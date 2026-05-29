@@ -599,6 +599,8 @@ class EvalConfig(_Strict):
     mask_threshold: float = 0.0
     save_predictions: bool = False
     batch_size: PositiveInt | Literal["auto"] = "auto"
+    visualize: bool = True
+    visualize_count: PositiveInt = 10
 
 
 # WandbConfig, ExportConfig moved to config._internal (audit Section G).
