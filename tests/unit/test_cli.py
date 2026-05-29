@@ -133,6 +133,7 @@ def test_eval_command_save_predictions_flag_parses(monkeypatch: object, tmp_path
         split: str,
         output_dir: Path | None,
         save_predictions: bool | None,
+        visualize: bool | None = None,
     ):
         captured["save_predictions"] = save_predictions
         return MagicMock(overall={})
@@ -347,7 +348,7 @@ def test_run_resume_no_flag_forwards_none(monkeypatch: pytest.MonkeyPatch, tmp_p
     cfg_path = _make_train_cfg_file(tmp_path)
     called: dict[str, object] = {}
 
-    def fake_orchestrate(cfg_obj, resume, mode):
+    def fake_orchestrate(cfg_obj, resume, mode, *, visualize=None):
         called["resume"] = resume
         return 0
 
@@ -370,7 +371,7 @@ def test_run_resume_explicit_path_forwarded(
     cfg_path = _make_train_cfg_file(tmp_path)
     called: dict[str, object] = {}
 
-    def fake_orchestrate(cfg_obj, resume, mode):
+    def fake_orchestrate(cfg_obj, resume, mode, *, visualize=None):
         called["resume"] = resume
         return 0
 
@@ -396,7 +397,7 @@ def test_run_resume_latest_calls_find_latest_checkpoint(
     resolved_ckpt = _Path(tmp_path / "myrun-2026-01-01T00-00-00" / "checkpoints" / "step_10")
     called: dict[str, object] = {}
 
-    def fake_orchestrate(cfg_obj, resume, mode):
+    def fake_orchestrate(cfg_obj, resume, mode, *, visualize=None):
         called["resume"] = resume
         return 0
 

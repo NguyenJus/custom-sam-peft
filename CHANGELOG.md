@@ -9,6 +9,18 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added — eval GT-vs-Pred visualization
+
+- **eval**: new `eval.visualize` (bool, default `true`) and `eval.visualize_count`
+  (int, default `10`) config knobs. On the final/standalone eval path (`csp eval`,
+  `csp run`'s eval phase, `csp train --eval`), eval now writes one
+  `Ground Truth | Prediction` composite PNG per variety-weighted sampled image
+  under `<output>/visualizations/`, with per-class color legend. Predictions are
+  the Hungarian mask-only matched 1:1 set per class.
+- **cli**: `csp eval --visualize/--no-visualize` (tri-state; defers to config when
+  unset) and `csp run --visualize/--no-visualize` (default on). The in-loop
+  training eval is unchanged.
+
 ### Breaking — text-primary prompt invariant (#126)
 
 - **schema**: removed the `data.prompt_mode` field. Any config that carries

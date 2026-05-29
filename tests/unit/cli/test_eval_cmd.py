@@ -90,3 +90,35 @@ def test_eval_export_requires_checkpoint(tmp_path: Path, monkeypatch: pytest.Mon
     assert result.exit_code != 0
     output_lower = result.output.lower()
     assert "export" in output_lower or "checkpoint" in output_lower
+
+
+def test_eval_no_visualize_threads_false(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    cfg = tmp_path / "c.yaml"
+    cfg.write_text("placeholder")
+    monkeypatch.setattr("custom_sam_peft.cli.eval_cmd.load_config", lambda p: MagicMock())
+    captured: dict[str, object] = {}
+
+    def _fake_run_eval(cfg, **kw):
+        captured.update(kw)
+        report = MagicMock()
+        report.overall = {}
+        return report
+
+    monkeypatch.setattr("custom_sam_peft.cli.eval_cmd.run_eval", _fake_run_eval)
+    result = runner.invoke(app, ["eval", "--config", str(cfg), "--split", "val", "--no-visualize"])
+    assert result.exit_code == 0, result.output
+    assert captured["visualize"] is False
+
+
+def test_eval_default_visualize_is_none(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    cfg = tmp_path / "c.yaml"
+    cfg.write_text("placeholder")
+    monkeypatch.setattr("custom_sam_peft.cli.eval_cmd.load_config", lambda p: MagicMock())
+    captured: dict[str, object] = {}
+    monkeypatch.setattr(
+        "custom_sam_peft.cli.eval_cmd.run_eval",
+        lambda cfg, **kw: (captured.update(kw), MagicMock(overall={}))[1],
+    )
+    result = runner.invoke(app, ["eval", "--config", str(cfg), "--split", "val"])
+    assert result.exit_code == 0, result.output
+    assert captured["visualize"] is None  # tri-state: defer to cfg

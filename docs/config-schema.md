@@ -150,6 +150,8 @@ Evaluation configuration. All fields are optional — the section defaults are u
 | `eval.lite_max_images` | int (>0) | `64` | advanced | Maximum images evaluated in `"lite"` mode. | Audit §E: 0 non-test hits; only meaningful when `eval.mode == "lite"`. |
 | `eval.mask_threshold` | float | `0.0` | advanced | Sigmoid threshold above which a mask pixel is considered foreground. | Audit §E: 0 non-test hits; 0.0 uses SAM's raw sigmoid output; only tune for precision/recall trade-offs. |
 | `eval.save_predictions` | bool | `false` | advanced | Persist per-image COCO-format prediction JSON to the run directory. | Audit §E: 0 non-test hits; useful for detailed error analysis but adds disk usage. |
+| `eval.visualize` | bool | `true` | advanced | On the final/standalone eval path, write a `Ground Truth \| Prediction` composite PNG per sampled image under `<output>/visualizations/`. Disabled per-command via `--no-visualize`. | Additive qualitative aid; default on so `csp eval` / `csp run` show results without extra flags. |
+| `eval.visualize_count` | int (>0) | `10` | advanced | Number of images to sample for visualization (variety-weighted toward high IoU, always including a couple of the worst). | Bounded second pass (~N extra single-class forwards); 10 is a legible default. |
 
 ---
 

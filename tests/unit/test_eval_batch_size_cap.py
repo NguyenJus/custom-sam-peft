@@ -187,7 +187,7 @@ def _make_run_eval_cfg(train_batch_size: int = 2) -> MagicMock:
 
     from custom_sam_peft.config.schema import EvalConfig
 
-    cfg.eval = EvalConfig(batch_size="auto")
+    cfg.eval = EvalConfig(batch_size="auto", visualize=False)
     return cfg
 
 

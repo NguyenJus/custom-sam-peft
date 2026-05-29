@@ -27,6 +27,7 @@ def _make_cfg(
     cfg.model.name = "facebook/sam3.1"
     cfg.peft.method = peft_method
     cfg.eval.model_copy = lambda update=None: cfg.eval
+    cfg.eval.visualize = False
     return cfg
 
 
@@ -350,7 +351,7 @@ def test_run_eval_resolves_auto_via_decide_eval_batch_size(
 
     from custom_sam_peft.config.schema import EvalConfig
 
-    cfg.eval = EvalConfig(batch_size="auto")
+    cfg.eval = EvalConfig(batch_size="auto", visualize=False)
 
     evaluator_init_cfg: list[object] = []
 
@@ -396,7 +397,7 @@ def test_run_eval_cpu_fallback_logs_info(
 
     from custom_sam_peft.config.schema import EvalConfig
 
-    cfg.eval = EvalConfig(batch_size="auto")
+    cfg.eval = EvalConfig(batch_size="auto", visualize=False)
 
     monkeypatch.setattr(
         "custom_sam_peft.eval.runner.lookup",
@@ -552,3 +553,104 @@ def test_baseline_output_dir_fallback(tmp_path: Path, monkeypatch: pytest.Monkey
     monkeypatch.setattr("custom_sam_peft.eval.runner.Evaluator", lambda _c: ev)
     run_eval(cfg, checkpoint=None, split="val", output_dir=None)
     assert str(captured["out"]) == str(tmp_path / "runs")  # no NoneType.parent crash
+
+
+# ---------------------------------------------------------------------------
+# Task 8: visualize parameter wiring in run_eval
+# ---------------------------------------------------------------------------
+
+
+def test_run_eval_calls_write_eval_visualizations_when_on(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """visualize resolves True (from cfg) → write_eval_visualizations is called on
+    the default (Branch-2) path, after metrics persist."""
+    cfg = _make_cfg()
+    cfg.eval.visualize = True
+    cfg.eval.visualize_count = 7
+    cfg.eval.mask_threshold = 0.0
+    cfg.data.normalize = None
+    cfg.data.channel_semantics = "rgb"
+    cfg.eval.save_predictions = False
+
+    monkeypatch.setattr("custom_sam_peft.eval.runner.load_sam31", lambda _m, **_kw: MagicMock())
+    monkeypatch.setattr(
+        "custom_sam_peft.eval.runner.lookup",
+        lambda *_a, **_kw: lambda *a, **kw: MagicMock(__len__=lambda self: 0, class_names=["cat"]),
+    )
+    # Evaluator.evaluate(..., return_per_example_iou=True) -> (report, iou_list)
+    ev = MagicMock()
+    ev.evaluate.return_value = (
+        MagicMock(overall={}, per_class={}, n_images=1, n_predictions=0),
+        [0.5],
+    )
+    ev._last_predictions = []
+    monkeypatch.setattr("custom_sam_peft.eval.runner.Evaluator", lambda _c: ev)
+
+    captured: dict[str, object] = {}
+
+    def _fake_write(model, dataset, out, **kw):
+        captured.update(kw)
+        captured["out"] = out
+        return []
+
+    monkeypatch.setattr("custom_sam_peft.eval.visualize.write_eval_visualizations", _fake_write)
+
+    run_eval(cfg, checkpoint=None, split="val", output_dir=tmp_path)
+    assert captured["count"] == 7
+    assert "per_example_iou" in captured
+    assert captured["per_example_iou"] == [0.5]
+
+
+def test_run_eval_no_visualize_skips_pass(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """visualize=False overrides cfg → write_eval_visualizations is NOT called and the
+    plain evaluate_and_save path is used."""
+    cfg = _make_cfg()
+    cfg.eval.visualize = True  # cfg says on; flag says off → off wins.
+    monkeypatch.setattr("custom_sam_peft.eval.runner.load_sam31", lambda _m, **_kw: MagicMock())
+    monkeypatch.setattr(
+        "custom_sam_peft.eval.runner.lookup",
+        lambda *_a, **_kw: lambda *a, **kw: MagicMock(__len__=lambda self: 0, class_names=["cat"]),
+    )
+    ev = MagicMock()
+    ev.evaluate_and_save.return_value = MagicMock(overall={})
+    monkeypatch.setattr("custom_sam_peft.eval.runner.Evaluator", lambda _c: ev)
+    called: list[int] = []
+    monkeypatch.setattr(
+        "custom_sam_peft.eval.visualize.write_eval_visualizations",
+        lambda *a, **k: called.append(1),
+    )
+    run_eval(cfg, checkpoint=None, split="val", output_dir=tmp_path, visualize=False)
+    assert called == []
+    assert ev.evaluate_and_save.called  # plain path preserved
+
+
+def test_run_eval_viz_failure_does_not_abort(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A whole-pass viz failure is caught in run_eval (metrics already persisted)."""
+    cfg = _make_cfg()
+    cfg.eval.visualize = True
+    cfg.eval.save_predictions = False
+    cfg.data.normalize = None
+    cfg.data.channel_semantics = "rgb"
+    monkeypatch.setattr("custom_sam_peft.eval.runner.load_sam31", lambda _m, **_kw: MagicMock())
+    monkeypatch.setattr(
+        "custom_sam_peft.eval.runner.lookup",
+        lambda *_a, **_kw: lambda *a, **kw: MagicMock(__len__=lambda self: 0, class_names=["cat"]),
+    )
+    ev = MagicMock()
+    ev.evaluate.return_value = (
+        MagicMock(overall={}, per_class={}, n_images=1, n_predictions=0),
+        [0.5],
+    )
+    ev._last_predictions = []
+    monkeypatch.setattr("custom_sam_peft.eval.runner.Evaluator", lambda _c: ev)
+    monkeypatch.setattr(
+        "custom_sam_peft.eval.visualize.write_eval_visualizations",
+        lambda *a, **k: (_ for _ in ()).throw(RuntimeError("viz boom")),
+    )
+    with caplog.at_level("WARNING"):
+        run_eval(cfg, checkpoint=None, split="val", output_dir=tmp_path)
+    assert (tmp_path / "metrics.json").exists()  # persisted before viz
+    assert any("viz" in r.message.lower() or "visuali" in r.message.lower() for r in caplog.records)

@@ -596,3 +596,21 @@ def test_normalize_keeps_per_value_range_checks():
         NormalizeConfig(mean=[1.5], std=[0.2])
     with pytest.raises(ValueError, match=r"normalize\.std values must be > 0"):
         NormalizeConfig(mean=[0.5], std=[0.0])
+
+
+def test_eval_config_visualize_defaults() -> None:
+    from custom_sam_peft.config.schema import EvalConfig
+
+    cfg = EvalConfig()
+    assert cfg.visualize is True
+    assert cfg.visualize_count == 10
+
+
+def test_eval_config_visualize_count_must_be_positive() -> None:
+    import pytest
+    from pydantic import ValidationError
+
+    from custom_sam_peft.config.schema import EvalConfig
+
+    with pytest.raises(ValidationError):
+        EvalConfig(visualize_count=0)

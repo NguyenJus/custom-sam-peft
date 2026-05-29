@@ -34,6 +34,7 @@ def run_eval(
     split: Literal["val", "test"] = "val",
     output_dir: Path | None = None,
     save_predictions: bool | None = None,
+    visualize: bool | None = None,
     val_dataset: Dataset | None = None,
     model: Any | None = None,
     return_per_example_iou: Literal[False] = False,
@@ -49,6 +50,7 @@ def run_eval(
     split: Literal["val", "test"] = "val",
     output_dir: Path | None = None,
     save_predictions: bool | None = None,
+    visualize: bool | None = None,
     val_dataset: Dataset | None = None,
     model: Any | None = None,
     return_per_example_iou: Literal[True],
@@ -63,6 +65,7 @@ def run_eval(
     split: Literal["val", "test"] = "val",
     output_dir: Path | None = None,
     save_predictions: bool | None = None,
+    visualize: bool | None = None,
     val_dataset: Dataset | None = None,
     model: Any | None = None,
     return_per_example_iou: bool = False,
@@ -165,6 +168,8 @@ def run_eval(
             bs = min(bs, train_cap)
         eval_cfg = eval_cfg.model_copy(update={"batch_size": bs})
 
+    visualize_resolved = cfg.eval.visualize if visualize is None else visualize
+
     evaluator = Evaluator(eval_cfg)
     # Output dir: prefer explicit arg, then artifacts.run_dir, then checkpoint parent,
     # then cfg.run.output_dir (baseline path where checkpoint is None).
@@ -176,6 +181,26 @@ def run_eval(
         out = resolved_checkpoint.parent
     else:
         out = Path(cfg.run.output_dir) if cfg.run.output_dir else Path.cwd()
+
+    def _run_viz(per_example_iou: list[float]) -> None:
+        if not visualize_resolved:
+            return
+        try:
+            from custom_sam_peft.eval.visualize import write_eval_visualizations
+
+            write_eval_visualizations(
+                wrapper,
+                dataset,
+                out,
+                per_example_iou=per_example_iou,
+                count=cfg.eval.visualize_count,
+                mask_threshold=cfg.eval.mask_threshold,
+                model_name=cfg.model.name,
+                normalize=cfg.data.normalize,
+                channel_semantics=cfg.data.channel_semantics,
+            )
+        except Exception:
+            _LOG.warning("eval visualize pass failed; metrics are persisted.", exc_info=True)
 
     if return_per_example_iou:
         # We need both the metrics report (and metrics.json on disk) AND the
@@ -197,6 +222,28 @@ def run_eval(
         )
         if eval_cfg.save_predictions and eval_cfg.mode == "full":
             (out / "predictions.json").write_text(json.dumps(evaluator._last_predictions))
+        _run_viz(per_example_iou)
         return report, per_example_iou
 
-    return evaluator.evaluate_and_save(wrapper, dataset, out)
+    # Branch 2 (default): when visualize is on, promote to the IoU-shape so the viz
+    # pass has its ranking; mirror evaluate_and_save's persistence. When off, keep
+    # the original evaluate_and_save call unchanged (no behavior change).
+    if not visualize_resolved:
+        return evaluator.evaluate_and_save(wrapper, dataset, out)
+
+    out.mkdir(parents=True, exist_ok=True)
+    report, per_example_iou = evaluator.evaluate(wrapper, dataset, return_per_example_iou=True)
+    (out / "metrics.json").write_text(
+        json.dumps(
+            {
+                "overall": report.overall,
+                "per_class": report.per_class,
+                "n_images": report.n_images,
+                "n_predictions": report.n_predictions,
+            },
+            indent=2,
+        )
+    )
+    evaluator._maybe_save_predictions(evaluator._last_predictions, run_dir=out)
+    _run_viz(per_example_iou)
+    return report

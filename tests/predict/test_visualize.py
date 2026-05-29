@@ -142,3 +142,39 @@ class TestNoSegmentation:
         # Must not crash
         out = write_visualization(img_path, [entry], tmp_path, prompts=["cat"])
         assert out.exists()
+
+
+def test_render_overlay_score_optional() -> None:
+    """An entry without a `score` key labels the class name only; an entry with a
+    score labels `<class> <score>` (predict's existing behavior, regression guard)."""
+    from custom_sam_peft.predict.visualize import render_overlay
+
+    img = _make_image(32, 32)
+
+    # Scored entry (predict path) — must still render without error.
+    scored = _make_rle_entry(category_id=1, score=0.42)
+    out_scored = render_overlay(img, [scored], prompts=["cat", "dog"])
+    assert out_scored.size == (32, 32)
+
+    # GT entry: no score key at all.
+    gt = dict(scored)
+    gt.pop("score")
+    out_gt = render_overlay(img, [gt], prompts=["cat", "dog"])
+    assert out_gt.size == (32, 32)
+
+    # None score behaves like absent.
+    none_score = dict(scored)
+    none_score["score"] = None
+    out_none = render_overlay(img, [none_score], prompts=["cat", "dog"])
+    assert out_none.size == (32, 32)
+
+    # Behavioral assertion: scored label draws more text → different pixels.
+    bg = Image.new("RGB", (128, 128), (200, 200, 200))
+    scored_big = _make_rle_entry(category_id=1, score=0.42, h=128, w=128)
+    gt_big = dict(scored_big)
+    gt_big.pop("score")
+    arr_scored = np.asarray(render_overlay(bg.copy(), [scored_big], prompts=["cat", "dog"]))
+    arr_gt = np.asarray(render_overlay(bg.copy(), [gt_big], prompts=["cat", "dog"]))
+    assert not np.array_equal(arr_scored, arr_gt), (
+        "scored label ('cat 0.42') and GT label ('cat') must produce different pixels"
+    )

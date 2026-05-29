@@ -36,6 +36,11 @@ def evaluate(
         "--save-predictions/--no-save-predictions",
         help="Override cfg.eval.save_predictions.",
     ),
+    visualize: bool | None = typer.Option(
+        None,
+        "--visualize/--no-visualize",
+        help="Override cfg.eval.visualize (write GT-vs-Pred composite panels).",
+    ),
     do_export: bool = typer.Option(
         False,
         "--export",
@@ -90,6 +95,7 @@ def evaluate(
                 split=split_lit,
                 output_dir=output,
                 save_predictions=save_predictions,
+                visualize=visualize,
             )
     except ValueError as e:
         raise typer.BadParameter(str(e), param_hint="--checkpoint") from e
