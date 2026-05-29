@@ -26,7 +26,9 @@ def _example(class_id: int) -> Example:
 
 def _matcher() -> HungarianMatcher:
     w = MatcherWeights()
-    return HungarianMatcher(lambda_l1=w.lambda_l1, lambda_giou=w.lambda_giou, lambda_mask=w.lambda_mask)
+    return HungarianMatcher(
+        lambda_l1=w.lambda_l1, lambda_giou=w.lambda_giou, lambda_mask=w.lambda_mask
+    )
 
 
 def test_render_eval_pair_returns_hstacked_image() -> None:

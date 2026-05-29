@@ -246,8 +246,7 @@ def _matched_pred_entries(
     h, w = int(example.image.shape[-2]), int(example.image.shape[-1])
     images_1 = to_device(example.image.unsqueeze(0), runtime)  # (1, C, H, W)
     out_entries: list[dict[str, object]] = []
-    for class_name in class_names:
-        cls_idx = class_names.index(class_name)
+    for cls_idx, class_name in enumerate(class_names):
         targets = [inst for inst in example.instances if int(inst.class_id) == cls_idx]
         if not targets:
             continue  # no GT for this class → nothing matched/drawn
