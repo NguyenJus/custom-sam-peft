@@ -373,14 +373,12 @@ def run_predict(opts: PredictOptions) -> PredictReport:
             model(_warmup_input, _dummy_prompt, support=None)
 
     # ---------------------------------------------------------------------------
-    # Step 9: forward loop — flat (image_chunk, class_group) iteration
+    # Step 9: forward loop — index-driven while loops with OomLadder B-then-K recovery
     # ---------------------------------------------------------------------------
     from custom_sam_peft.eval.evaluator import _row_outputs
     from custom_sam_peft.eval.postprocess import queries_to_coco_results
     from custom_sam_peft.models.sam3 import MULTIPLEX_CAP
-
-    def _chunked(seq: list[Any], n: int) -> list[list[Any]]:
-        return [seq[i : i + n] for i in range(0, len(seq), n)]
+    from custom_sam_peft.oom import OomDecision, OomLadder
 
     all_predictions: list[dict[str, object]] = []
     id_to_path: dict[int, Path] = {}
@@ -390,14 +388,24 @@ def run_predict(opts: PredictOptions) -> PredictReport:
     t_start = time.perf_counter()
 
     # Initialise progress inner bar to the real image count (no-op outside a session).
-    P.reset_inner(total=len(image_paths))
-    log_every_n = max(1, len(image_paths) // 50)
+    image_path_list = list(image_paths)
+    n_images = len(image_path_list)
+    P.reset_inner(total=n_images)
+    log_every_n = max(1, n_images // 50)
     images_processed = 0
 
-    for chunk_paths in _chunked(list(image_paths), bs):
+    ladder = OomLadder(
+        micro_batch_size=bs,
+        effective_K=min(MULTIPLEX_CAP, len(prompts)) if prompts else 1,
+    )
+    i = 0
+
+    while i < n_images:
+        bs_cur = ladder.micro_batch_size
+        chunk_paths = image_path_list[i : i + bs_cur]
         chunk_t0 = time.perf_counter()
 
-        # --- open + transform each image in the chunk ---
+        # --- open + transform each image in the chunk (preserved from original) ---
         imgs: list[torch.Tensor] = []
         metas: list[tuple[int, int, int]] = []  # (image_id, orig_h, orig_w)
         chunk_paths_ok: list[Path] = []  # parallel to metas; used for verbose logging
@@ -423,29 +431,42 @@ def run_predict(opts: PredictOptions) -> PredictReport:
             chunk_paths_ok.append(img_path)
 
         if not imgs:
+            i += len(chunk_paths)  # advance past the (all-unreadable) chunk
             continue
 
         img_batch = torch.stack(imgs, dim=0)  # (B, C, H, W)
 
-        # --- flat inner loop over class groups ---
-        for group in _chunked(prompts, MULTIPLEX_CAP):
-            K_g = len(group)
+        # --- index-driven inner class loop with the K-rung + buffer-and-commit ---
+        chunk_buf: list[dict[str, object]] = []
+        restart_chunk = False
+        j = 0  # class index into prompts
+        while j < len(prompts):
+            K_g = min(ladder.effective_K, len(prompts) - j)
+            group = prompts[j : j + K_g]
             prompts_g = [TextPrompts(classes=list(group)) for _ in metas]
             try:
                 with torch.no_grad():
                     outputs = model(img_batch, prompts_g, support=None)
-            except RuntimeError as exc:
-                if "out of memory" in str(exc).lower():
-                    logger.error(
-                        "OOM: consider --no-merge-adapter (QLoRA), --batch-size 1, or --device cpu"
-                    )
-                raise
+            except torch.cuda.OutOfMemoryError as oom_err:
+                decision = ladder.on_oom()
+                if decision is OomDecision.RETRY_B:
+                    restart_chunk = True
+                    break  # discard chunk_buf; restart this image-chunk at smaller B
+                if decision is OomDecision.RETRY_K:
+                    continue  # resume from j at the smaller K_g
+                if decision is OomDecision.FLOOR_RETRY:
+                    continue  # retry the same forward once
+                raise RuntimeError(
+                    "OOM at batch_size=1 and classes_per_forward=1; "
+                    "use a larger GPU or smaller image_size."
+                ) from oom_err
 
-            # postprocess each (image, class) row from the multiplexed output
+            # postprocess each (image, class) row — category_id uses index arithmetic
+            # (j+kk)+1, value-equivalent to the old prompts.index(group[kk])+1
             for r in range(len(metas) * K_g):
                 ii, kk = divmod(r, K_g)
                 image_id, orig_h, orig_w = metas[ii]
-                class_idx_one_based = prompts.index(group[kk]) + 1
+                class_idx_one_based = (j + kk) + 1
                 entries = queries_to_coco_results(
                     _row_outputs(outputs, r),
                     image_id=image_id,
@@ -456,12 +477,18 @@ def run_predict(opts: PredictOptions) -> PredictReport:
                 entries = [e for e in entries if cast(float, e["score"]) >= opts.score_threshold]
                 entries.sort(key=lambda e: cast(float, e["score"]), reverse=True)
                 entries = entries[: opts.top_k]
-                all_predictions.extend(entries)
+                chunk_buf.extend(entries)
+            j += K_g  # advance by the ACTUAL group length
 
+        if restart_chunk:
+            continue  # re-enter outer while at smaller B; i unchanged, buffer dropped
+
+        # Chunk completed every class group: commit exactly once.
+        all_predictions.extend(chunk_buf)
         n_successful += len(metas)
         images_processed += len(metas)
 
-        # Verbose: emit one INFO line per image in the chunk.
+        # Verbose: emit one INFO line per image in the chunk (preserved from original).
         if opts.verbose:
             chunk_latency_ms = (time.perf_counter() - chunk_t0) * 1000.0
             per_image_ms = chunk_latency_ms / max(len(metas), 1)
@@ -469,21 +496,23 @@ def run_predict(opts: PredictOptions) -> PredictReport:
                 logger.info(
                     "image %d/%d %s (%.1f ms)",
                     images_processed - len(metas) + chunk_paths_ok.index(img_path) + 1,
-                    len(image_paths),
+                    n_images,
                     img_path.name,
                     per_image_ms,
                 )
 
-        # Progress ticks: one advance per image in this chunk.
+        # Progress ticks: one advance per image in this chunk (preserved from original).
         for _ in metas:
             P.advance_inner()
 
-        if images_processed % log_every_n == 0 or images_processed == len(image_paths):
+        if images_processed % log_every_n == 0 or images_processed == n_images:
             elapsed_so_far = max(time.perf_counter() - t_start, 1e-9)
             P.update_postfix(
-                done=f"{images_processed}/{len(image_paths)}",
+                done=f"{images_processed}/{n_images}",
                 it_s=images_processed / elapsed_so_far,
             )
+
+        i += len(chunk_paths)  # advance the image index by the consumed chunk
 
     elapsed_sec = time.perf_counter() - t_start
 
