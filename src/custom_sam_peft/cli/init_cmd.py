@@ -176,9 +176,6 @@ def run_init(
     if torch.cuda.is_available():
         try:
             decision = decide_preset(k=k)
-        except RuntimeError as exc:
-            rprint(f"[yellow]could not auto-size ({exc}); leaving template defaults[/yellow]")
-        else:
             _rewrite_sizing_block(
                 output,
                 method=decision.method,
@@ -188,6 +185,10 @@ def run_init(
                 dtype=decision.dtype,
                 annotation="# formula-derived",
             )
+        except (OSError, ValueError, RuntimeError) as exc:
+            # Symmetric with calibrate's rewrite guard: a sizing or rewrite failure
+            # must not crash init — leave the safe template defaults in place.
+            rprint(f"[yellow]could not auto-size ({exc}); leaving template defaults[/yellow]")
     else:
         rprint(
             "[yellow]init ran CPU-only; wrote safe template defaults. Re-run "

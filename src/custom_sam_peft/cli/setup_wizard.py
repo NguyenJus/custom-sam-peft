@@ -422,6 +422,9 @@ def _invoke_calibrate(output: Path) -> None:
     from custom_sam_peft.cli.calibrate_cmd import calibrate
     from custom_sam_peft.presets import CACHE_FILENAME
 
+    # Call the Typer command function directly with ALL options passed explicitly,
+    # so Typer's OptionInfo defaults are never relied upon. Keep passing every
+    # option explicitly if `calibrate` gains new ones.
     calibrate(config=output, output=Path(CACHE_FILENAME), force=False)
 
 

@@ -313,3 +313,53 @@ def test_rewrite_annotation_idempotent(tmp_path: Path) -> None:
     body = cfg_path.read_text()
     count = body.count("# calibrated 2026-05-28")
     assert count == 1, f"expected 1 annotation line after 2 rewrites, got {count}"
+
+
+def test_rewrite_against_real_rendered_template(tmp_path: Path) -> None:
+    """_rewrite_sizing_block must work against the ACTUAL rendered config_full.yaml
+    template (comment scaffolding, blank lines, $qlora_block) — not only the
+    hand-written minimal configs the other tests use. Locks the init/calibrate
+    template contract that is otherwise exercised only on the GPU bake path.
+    """
+    from custom_sam_peft.cli.init_cmd import run_init
+
+    out = tmp_path / "config.yaml"
+    # CPU-safe: run_init renders the real template defaults (no GPU bake on CPU).
+    run_init("coco-text-lora", out, force=True)
+
+    _rewrite_sizing_block(
+        out,
+        method="qlora",
+        r=32,
+        batch_size=4,
+        grad_accum_steps=2,
+        dtype="float16",
+        annotation="# formula-derived",
+    )
+    cfg = load_config(out)
+    assert cfg.peft.method == "qlora"
+    assert cfg.peft.r == 32
+    assert cfg.train.batch_size == 4
+    assert cfg.train.grad_accum_steps == 2
+    assert cfg.model.dtype == "float16"
+    assert "# formula-derived" in out.read_text()
+
+    # Cross-tool idempotency: a second rewrite (as calibrate would do) replaces the
+    # prior annotation rather than stacking it, and updates every sizing value.
+    _rewrite_sizing_block(
+        out,
+        method="lora",
+        r=8,
+        batch_size=1,
+        grad_accum_steps=8,
+        dtype="bfloat16",
+        annotation="# calibrated",
+    )
+    text = out.read_text()
+    assert "# formula-derived" not in text
+    assert "# calibrated" in text
+    cfg2 = load_config(out)
+    assert cfg2.peft.method == "lora"
+    assert cfg2.peft.r == 8
+    assert cfg2.train.batch_size == 1
+    assert cfg2.model.dtype == "bfloat16"
