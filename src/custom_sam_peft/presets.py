@@ -447,8 +447,12 @@ def decide_eval_batch_size(
     # Attention-memory ceiling via the shared helper so the train term and this
     # eval cap cite one definition (spec §3.2 / issue #162).
     _attn_per_example = _attention_bytes_per_example(image_size)
-    # Model weights and forward activations are ALREADY resident when SDPA runs;
-    # subtract them from the budget before solving for the attention-bound bs.
+    # Model weights and CUDA workspace are fixed overhead, independent of batch
+    # size; subtract them from the budget once. Attention scores AND forward
+    # activations both scale per-example, so they share the divisor below.
+    # Counting activations in the divisor (not just attention) makes the cap
+    # conservative — it can only lower bs, which is safe for OOM prevention
+    # (issue #162).
     attn_budget = budget - _model_bytes("lora") - WORKSPACE_BYTES
     _act_per_example = int(_activation_per_example(image_size, cache) * forward_only_factor)
     _per_example = _attn_per_example + _act_per_example
