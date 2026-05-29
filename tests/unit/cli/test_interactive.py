@@ -45,6 +45,63 @@ def test_shared_steps_return_fragments(monkeypatch: pytest.MonkeyPatch) -> None:
     }
 
 
+def test_auto_detect_path_accepts_candidate(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    monkeypatch.setattr(itv, "ask_confirm", lambda *a, **k: True)
+    result = itv._auto_detect_path("train annotations", "Path?", [tmp_path / "train.json"])
+    assert result == str(tmp_path / "train.json")
+
+
+def test_auto_detect_path_override_candidate(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    monkeypatch.setattr(itv, "ask_confirm", lambda *a, **k: False)
+    monkeypatch.setattr(itv, "ask_text", lambda *a, **k: "custom.json")
+    result = itv._auto_detect_path("train annotations", "Path?", [tmp_path / "train.json"])
+    assert result == "custom.json"
+
+
+def test_auto_detect_path_no_candidates(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(itv, "ask_text", lambda *a, **k: "manual.json")
+    result = itv._auto_detect_path("train annotations", "Path?", [])
+    assert result == "manual.json"
+
+
+def test_ask_dataset_source_detects_json(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    data_dir = tmp_path / "data"
+    data_dir.mkdir()
+    (data_dir / "train.json").write_text("{}")
+    train_img = data_dir / "train"
+    train_img.mkdir()
+
+    monkeypatch.setattr(itv, "ask_choice", lambda *a, **k: "coco")
+    monkeypatch.setattr(itv, "ask_confirm", lambda *a, **k: True)
+    monkeypatch.setattr(itv, "_detect_json_candidates", lambda **kw: [data_dir / "train.json"])
+    monkeypatch.setattr(itv, "_detect_dir_candidates", lambda subdirs, **kw: [train_img])
+
+    ctx = itv.Ctx(answers={}, cuda_available=False)
+    frag = itv._ask_dataset_source(ctx)
+    assert frag["data"]["train"]["annotations"] == str(data_dir / "train.json")
+    assert frag["data"]["train"]["images"] == str(train_img)
+
+
+def test_detect_json_candidates_empty_when_no_data_dir(tmp_path: Path) -> None:
+    result = itv._detect_json_candidates(tmp_path / "nonexistent")
+    assert result == []
+
+
+def test_detect_json_candidates_finds_jsons(tmp_path: Path) -> None:
+    (tmp_path / "train.json").write_text("{}")
+    (tmp_path / "val.json").write_text("{}")
+    (tmp_path / "other.txt").write_text("")
+    result = itv._detect_json_candidates(tmp_path)
+    assert {p.name for p in result} == {"train.json", "val.json"}
+
+
+def test_detect_dir_candidates_finds_subdir(tmp_path: Path) -> None:
+    (tmp_path / "train").mkdir()
+    result = itv._detect_dir_candidates(["train", "val"], tmp_path)
+    assert len(result) == 1
+    assert result[0].name == "train"
+
+
 def test_require_tty_non_tty_raises(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(itv.sys.stdin, "isatty", lambda: False)
     with pytest.raises(typer.BadParameter, match="TTY"):

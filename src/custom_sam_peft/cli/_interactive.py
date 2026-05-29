@@ -92,11 +92,46 @@ def ask_confirm(prompt: str, *, default: bool = True) -> bool:
     return typer.confirm(prompt, default=default)
 
 
+def _detect_json_candidates(data_dir: Path = Path("data")) -> list[Path]:
+    """Return sorted .json files found directly in data_dir, or empty list."""
+    if not data_dir.is_dir():
+        return []
+    return sorted(data_dir.glob("*.json"))
+
+
+def _detect_dir_candidates(subdirs: list[str], data_dir: Path = Path("data")) -> list[Path]:
+    """Return the first matching subdir under data_dir that exists, or empty list."""
+    return [data_dir / s for s in subdirs if (data_dir / s).is_dir()]
+
+
+def _auto_detect_path(
+    label: str,
+    prompt: str,
+    candidates: list[Path],
+    *,
+    validate: Callable[[str], str | None] | None = None,
+) -> str:
+    """Propose the first candidate (if any) and confirm; fall back to ask_text."""
+    if candidates:
+        typer.echo(f"Detected {label}: {candidates[0]}")
+        if ask_confirm("Use this path?", default=True):
+            return str(candidates[0])
+    return ask_text(prompt, validate=validate)
+
+
 def _ask_dataset_source(ctx: Ctx) -> dict[str, Any]:
     fmt = ask_choice("Dataset format?", ["coco", "hf"], default="coco")
     if fmt == "coco":
-        ann = ask_text("Path to COCO train annotations (.json)?")
-        imgs = ask_text("Path to COCO train images dir?")
+        ann = _auto_detect_path(
+            "train annotations",
+            "Path to COCO train annotations (.json)?",
+            _detect_json_candidates(),
+        )
+        imgs = _auto_detect_path(
+            "train images dir",
+            "Path to COCO train images dir?",
+            _detect_dir_candidates(["train"]),
+        )
         return {"data": {"format": "coco", "train": {"annotations": ann, "images": imgs}}}
     name = ask_text("HuggingFace dataset name (org/dataset)?")
     return {"data": {"format": "hf", "hf": {"name": name}}}
@@ -126,8 +161,18 @@ def _ask_validation(ctx: Ctx) -> dict[str, Any]:
     if fmt == "hf":
         split = ask_text("HF validation split name?", default="validation")
         return {"data": {"hf": {"split_val": split}}}
-    ann = ask_text("Path to COCO val annotations (.json)?")
-    imgs = ask_text("Path to COCO val images dir?")
+    json_candidates = _detect_json_candidates()
+    val_candidates = [p for p in json_candidates if "val" in p.name.lower()] or json_candidates
+    ann = _auto_detect_path(
+        "val annotations",
+        "Path to COCO val annotations (.json)?",
+        val_candidates,
+    )
+    imgs = _auto_detect_path(
+        "val images dir",
+        "Path to COCO val images dir?",
+        _detect_dir_candidates(["val"]),
+    )
     return {"data": {"val": {"annotations": ann, "images": imgs}}}
 
 
