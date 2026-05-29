@@ -345,8 +345,8 @@ def write_eval_visualizations(
 
     mean, std = resolve_normalization(
         model_name,
-        normalize,
-        channel_semantics=channel_semantics,  # type: ignore[arg-type]
+        normalize,  # type: ignore[arg-type]
+        channel_semantics=channel_semantics,
     )
     w = MatcherWeights()
     matcher = HungarianMatcher(
