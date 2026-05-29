@@ -158,6 +158,36 @@ def test_run_training_writes_val_source_json_on_auto_split(
     assert vs.train_ids is not None and vs.val_ids is not None
 
 
+def test_eval_batch_size_auto_still_resolved_at_runtime() -> None:
+    """eval.batch_size: 'auto' is NOT baked; decide_eval_batch_size still owns it.
+    Spec §6.3 (invariant d).
+
+    EvalConfig.batch_size has type PositiveInt | Literal["auto"] and defaults to "auto".
+    The schema must accept "auto" so the run-time sentinel survives config loading.
+    """
+    from custom_sam_peft.config.schema import EvalConfig
+
+    assert EvalConfig(batch_size="auto").batch_size == "auto"
+
+
+def test_train_tuple_has_no_auto_sentinel() -> None:
+    """No 'auto' sentinel was added to the train sizing tuple. Spec §6.3 (invariant e).
+
+    PEFTConfig.method annotation is Literal["lora", "qlora"] — no "auto".
+    TrainHyperparams.batch_size default is a concrete int, not "auto".
+    """
+    import typing
+
+    from custom_sam_peft.config.schema import PEFTConfig, TrainHyperparams
+
+    # method must not have "auto" as a member.
+    method_args = typing.get_args(PEFTConfig.model_fields["method"].annotation)
+    assert "auto" not in method_args
+
+    # batch_size default is a concrete int (PositiveInt = 1), not "auto".
+    assert isinstance(TrainHyperparams(epochs=1).batch_size, int)
+
+
 def test_run_training_resume_reuses_saved_val_source(
     tmp_path: Path, tiny_coco_dir: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

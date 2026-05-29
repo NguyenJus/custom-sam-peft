@@ -319,6 +319,68 @@ def test_run_synthesizes_analytic_preset_when_sidecar_absent(
     assert ctx.preset.provenance == "analytic"
 
 
+def test_run_consumes_train_tuple_verbatim(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """run passes cfg's peft.method/r, train.batch_size/grad_accum, model.dtype to
+    run_training unchanged — no run-time resolution. Spec §6.1."""
+    run_dir = tmp_path / "runs" / "r"
+    _patch_phases(monkeypatch, run_dir=run_dir)
+
+    seen: dict[str, object] = {}
+
+    def _capturing_train(cfg: object, *, resume_from: object = None) -> object:
+        import typing
+
+        cfg_ = typing.cast(object, cfg)
+        seen["method"] = cfg_.peft.method  # type: ignore[union-attr]
+        seen["r"] = cfg_.peft.r  # type: ignore[union-attr]
+        seen["bs"] = cfg_.train.batch_size  # type: ignore[union-attr]
+        seen["ga"] = cfg_.train.grad_accum_steps  # type: ignore[union-attr]
+        seen["dtype"] = cfg_.model.dtype  # type: ignore[union-attr]
+        # Return a result compatible with _orchestrate expectations.
+        from unittest.mock import MagicMock
+
+        run_dir.mkdir(parents=True, exist_ok=True)
+        (run_dir / "adapter").mkdir(exist_ok=True)
+        (run_dir / "val_source.json").write_text(
+            '{"mode": "explicit", "fraction_requested": null, "seed_used": null, '
+            '"realized_fraction": null, "n_train": null, "n_val": null, '
+            '"per_class_counts": null, "missing_in_val": null, '
+            '"train_ids": null, "val_ids": null}'
+        )
+        return MagicMock(
+            run_dir=run_dir,
+            checkpoint_path=run_dir / "adapter",
+            oom_events=(),
+        )
+
+    # Override the run_training stub _patch_phases already set.
+    monkeypatch.setattr("custom_sam_peft.cli.run_cmd.run_training", _capturing_train)
+
+    cfg_path = tmp_path / "config.yaml"
+    cfg_path.write_text(
+        f"""
+run: {{name: t, output_dir: {tmp_path / "runs"}, seed: 0}}
+data:
+  format: coco
+  train: {{annotations: t.json, images: t/}}
+  val: {{annotations: v.json, images: v/}}
+model: {{dtype: float16}}
+peft: {{method: qlora, r: 32}}
+train: {{epochs: 1, batch_size: 4, grad_accum_steps: 4}}
+export: {{merge: false}}
+"""
+    )
+
+    result = runner.invoke(app, ["run", "--config", str(cfg_path)])
+    assert result.exit_code == 0, result.output
+
+    assert seen["method"] == "qlora"
+    assert seen["r"] == 32
+    assert seen["bs"] == 4
+    assert seen["ga"] == 4
+    assert seen["dtype"] == "float16"
+
+
 def test_run_skip_init_guard_warns_and_autoinits(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
