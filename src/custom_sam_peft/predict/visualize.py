@@ -74,8 +74,10 @@ def render_overlay(
         image:   The original PIL RGB image.
         entries: List of COCO-flat prediction dicts for *this image*.
                  Each entry should have ``category_id``, ``bbox``
-                 ``[x, y, w, h]``, ``score``, and optionally
-                 ``segmentation`` (COCO RLE dict with ASCII counts).
+                 ``[x, y, w, h]``, optional ``score`` (when absent or
+                 None, the label is the class name only — GT panels),
+                 and optionally ``segmentation`` (COCO RLE dict with
+                 ASCII counts).
         prompts: 1-indexed list of class names; ``category_id=1`` maps to
                  ``prompts[0]``.
 
@@ -86,7 +88,8 @@ def render_overlay(
 
     for entry in entries:
         category_id = int(cast(int, entry["category_id"]))
-        score = float(cast(float, entry["score"]))
+        raw_score = entry.get("score")
+        score = float(cast(float, raw_score)) if raw_score is not None else None
         bbox: list[float] = list(cast("list[float]", entry["bbox"]))
 
         class_name = (
@@ -125,7 +128,7 @@ def render_overlay(
             width=2,
         )
         font = ImageFont.load_default()
-        label = f"{class_name} {score:.2f}"
+        label = class_name if score is None else f"{class_name} {score:.2f}"
         draw.text((x, y), label, fill=color, font=font)
 
     return result
