@@ -379,8 +379,8 @@ def test_oom_k_rung_zero_grad_and_whole_step_replay(
     oom_state = OomState(micro_batch_size=1, effective_K=4)
 
     # Record the value of oom_state.effective_K at each zero_grad call.
-    # loop.py line 388 calls zero_grad BEFORE halving effective_K at line 389,
-    # so at least one recorded value must equal the pre-halve value (4).
+    # on_oom() halves effective_K (4->2) BEFORE the RETRY_K branch calls
+    # zero_grad, so the recorded value is the post-halve value (2).
     k_at_zero_grad: list[int] = []
 
     def _recording_zero_grad(**kwargs: object) -> None:
@@ -404,10 +404,11 @@ def test_oom_k_rung_zero_grad_and_whole_step_replay(
     #    (to discard the partial grads from the failed larger-K attempt).
     assert opt.zero_grad.called, "optimizer.zero_grad() must be called during K-rung replay"
 
-    # 2. Prove the K-rung zero_grad fired while effective_K was still the
-    #    pre-halve value (4).  loop.py §388 calls zero_grad, §389 halves to 2.
-    assert any(k == 4 for k in k_at_zero_grad), (
-        f"Expected at least one zero_grad call while effective_K==4 (pre-halve); "
+    # 2. Prove the K-rung zero_grad fired after on_oom() halved effective_K (4->2).
+    #    on_oom() halves K first, then RETRY_K branch calls zero_grad, so the
+    #    recorded value is the post-halve value (2).
+    assert any(k == 2 for k in k_at_zero_grad), (
+        f"Expected at least one zero_grad call while effective_K==2 (post-halve); "
         f"recorded values: {k_at_zero_grad}"
     )
 

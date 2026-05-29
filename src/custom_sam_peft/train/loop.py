@@ -26,11 +26,11 @@ from custom_sam_peft.config.schema import BoxHintSchedule, TrainConfig
 from custom_sam_peft.data.base import Instance, SupportPrompts, TextPrompts
 from custom_sam_peft.models.losses import total_loss
 from custom_sam_peft.models.sam3 import MULTIPLEX_CAP, Sam3Wrapper
+from custom_sam_peft.oom import OomDecision, OomLadder, _halve_microbatch
 from custom_sam_peft.peft_adapters import PEFTMethod, make_peft_method
 from custom_sam_peft.runtime import Runtime, to_device
 from custom_sam_peft.runtime._runtime import coerce_dtype_for_capability
 from custom_sam_peft.tracking.base import Tracker
-from custom_sam_peft.train.types import OomEvent
 
 _LOG = logging.getLogger(__name__)
 
@@ -61,23 +61,16 @@ def _chunked(seq: list[str], n: int) -> list[list[str]]:
 
 
 @dataclass
-class OomState:
-    """Mutable state the OOM ladder reads/writes across steps.
+class OomState(OomLadder):
+    """Back-compat alias for OomLadder used by the trainer.
 
-    Held by the Trainer for the lifetime of a `fit()` call. The trainer's
-    inner per-class loss block calls `_train_step_with_oom_ladder` once per
-    step; on OOM the helper halves `micro_batch_size` in place (sticky) and
-    appends to `pending_oom_events`.
-
-    Two sticky ladder dimensions (Spec §4):
-      - `micro_batch_size`: halved by the inner B-ladder on OOM; never resets.
-      - `effective_K`: halved by the outer K-rung when B is exhausted; never resets.
+    Keeps the name `OomState` (imported by tests/unit/test_eval_batch_size_cap.py)
+    and makes `effective_K` default to 1 so `OomState(micro_batch_size=N)` still
+    constructs (the trainer always passes effective_K explicitly; the cap test
+    does not). All ladder behavior is inherited unchanged. Spec §4 / §5.1.
     """
 
-    step: int = 0
-    micro_batch_size: int = 1
-    pending_oom_events: list[OomEvent] = field(default_factory=list)
-    effective_K: int = 1  # initialised by Trainer to min(classes_per_forward, MULTIPLEX_CAP)
+    effective_K: int = 1
 
 
 def _train_step_with_oom_ladder(
@@ -120,20 +113,13 @@ def _train_step_with_oom_ladder(
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
             if state.micro_batch_size > 1:
-                state.micro_batch_size //= 2
-                state.pending_oom_events.append(
-                    OomEvent(
-                        step=state.step,
-                        action="microbatch_halved",
-                        new_micro_batch_size=state.micro_batch_size,
-                    )
-                )
-                _LOG.warning(
-                    "OOM at step %d — halving micro_batch_size to %d",
-                    state.step,
-                    state.micro_batch_size,
-                )
+                # Shared B-rung mechanic — field-only, so the method-less _State
+                # stub works. The SAME routine backs OomLadder.on_oom()'s B-branch,
+                # so there is one implementation of the B-halving, not a copy.
+                _halve_microbatch(state, state.step)
                 continue
+            # B == 1: hand off to train_step's outer rung, which is the single
+            # on_oom() site for the K decision. _MicrobatchExhausted stays FIELDLESS.
             raise _MicrobatchExhausted(f"micro_batch exhausted at step {state.step}") from oom_err
 
 
@@ -377,33 +363,31 @@ def train_step(
             break
 
         except _MicrobatchExhausted as exc:
-            # Inner B-ladder exhausted. Try the outer K-rung (halve effective_K
-            # and replay the whole step from group 0).
-            if oom_state is None or oom_state.effective_K <= 1:
+            # Inner B-ladder exhausted at micro_batch=1. Source the K/floor/terminal
+            # decision from the single shared ladder (spec §3 mapping table, train
+            # column). on_oom() is called exactly once here for this OOM event; the
+            # inner helper did NOT call it (it halved B via the shared
+            # _halve_microbatch routine), so K is never double-halved.
+            if oom_state is None:
                 raise RuntimeError(
                     f"OOM at step {global_step} after micro_batch=1 and "
                     f"classes_per_forward=1. Use a larger GPU or smaller image_size."
                 ) from exc
-            # Discard partial grads from the failed larger-K attempt.
-            optimizer.zero_grad(set_to_none=True)
-            oom_state.effective_K = max(1, oom_state.effective_K // 2)
-            oom_state.pending_oom_events.append(
-                OomEvent(
-                    step=global_step,
-                    action="multiplex_halved",
-                    new_micro_batch_size=oom_state.micro_batch_size,
-                    effective_K=oom_state.effective_K,
-                )
-            )
-            _LOG.warning(
-                "OOM at step %d after micro_batch=1 — halving effective_K to %d "
-                "(re-chunking %d classes into %d groups; no class dropped)",
-                global_step,
-                oom_state.effective_K,
-                len(classes_in_batch),
-                len(_chunked(classes_in_batch, oom_state.effective_K)),
-            )
-            # loop continues -> replays whole step at smaller K
+            decision = oom_state.on_oom(global_step)
+            if decision is OomDecision.RETRY_K:
+                # Discard partial grads from the failed larger-K attempt; replay the
+                # whole step from group 0 at the smaller (already-decremented) K.
+                optimizer.zero_grad(set_to_none=True)
+                continue
+            if decision is OomDecision.FLOOR_RETRY:
+                # Retry the whole step once at the floor (B and K unchanged).
+                optimizer.zero_grad(set_to_none=True)
+                continue
+            # TERMINAL
+            raise RuntimeError(
+                f"OOM at step {global_step} after micro_batch=1 and "
+                f"classes_per_forward=1. Use a larger GPU or smaller image_size."
+            ) from exc
 
     # Step is skipped only when EVERY group is non-finite.
     skipped = finite_group_count == 0

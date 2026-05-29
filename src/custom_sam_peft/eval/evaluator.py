@@ -23,17 +23,11 @@ from custom_sam_peft.data.base import Dataset, Example, TextPrompts
 from custom_sam_peft.eval.metrics import MetricsReport, compute_coco_map
 from custom_sam_peft.eval.postprocess import queries_to_coco_results
 from custom_sam_peft.models.sam3 import MULTIPLEX_CAP
+from custom_sam_peft.oom import OomDecision, OomLadder
 from custom_sam_peft.paths import predictions_path
 from custom_sam_peft.runtime import Runtime, to_device
 
 _LOG = logging.getLogger(__name__)
-
-
-def _chunked[T](seq: Sequence[T], n: int) -> list[list[T]]:
-    """Tiny local helper; mirrors train/loop.py:_chunked."""
-    if n <= 0:
-        raise ValueError(f"_chunked: n must be positive; got {n}")
-    return [list(seq[i : i + n]) for i in range(0, len(seq), n)]
 
 
 def _row_outputs(outputs: dict[str, torch.Tensor], r: int) -> dict[str, torch.Tensor]:
@@ -45,42 +39,6 @@ def _row_outputs(outputs: dict[str, torch.Tensor], r: int) -> dict[str, torch.Te
     (``pred_logits``, ``pred_boxes``, ``pred_masks``, ``presence_logit_dec``).
     """
     return {k: v[r : r + 1] for k, v in outputs.items() if isinstance(v, torch.Tensor)}
-
-
-def _eval_forward_with_oom_ladder(
-    model: Any,
-    images: torch.Tensor,
-    prompts: list[Any],
-    *,
-    state: dict[str, Any],  # mutable: {"batch_size": int, "warned": bool}
-) -> dict[str, torch.Tensor]:
-    """One multiplex forward with sticky-B-halving on OOM.
-
-    No grad-checkpoint rung (eval is under no_grad). On OOM with state["batch_size"]>1,
-    halves state["batch_size"], emits at most one _LOG.warning("eval OOM ..."), and
-    RAISES (the outer chunking loop re-issues at the smaller size).
-    On OOM at state["batch_size"]==1, empty_cache() is called to return training's
-    freed-but-reserved activation pool to the driver, then the forward is retried
-    exactly once.  Only if that retry also raises OutOfMemoryError is a RuntimeError
-    raised (see #176).
-    """
-    try:
-        return cast("dict[str, torch.Tensor]", model(images, prompts, support=None))
-    except torch.cuda.OutOfMemoryError:
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
-        if state["batch_size"] > 1:
-            state["batch_size"] //= 2
-            if not state["warned"]:
-                _LOG.warning("eval OOM — halving batch_size to %d", state["batch_size"])
-                state["warned"] = True
-            raise
-        # bs == 1 floor: empty_cache() above returned the (training) reserved
-        # pool to the driver; retry the forward once before giving up (#176).
-        try:
-            return cast("dict[str, torch.Tensor]", model(images, prompts, support=None))
-        except torch.cuda.OutOfMemoryError as retry_err:
-            raise RuntimeError("eval OOM at batch_size=1; use a larger GPU.") from retry_err
 
 
 def _int_image_id(image_id: str) -> int:
@@ -167,16 +125,18 @@ class Evaluator:
 
         Puts the model into eval mode for the duration of the loop and restores
         its training state on exit. Iterates flat over (image_chunk, class_group)
-        pairs, using MULTIPLEX_CAP classes per group. Moves dataset images to the
-        model's device before each forward via runtime.to_device (§3 seam discipline).
-        The dataset yields CPU tensors; passing them straight to a CUDA-resident
-        model raises `Input type (CPUBFloat16Type) and weight type (CUDABFloat16Type)
-        should be the same` inside the first Conv2d. Falls back to CPU for
-        parameterless / non-nn.Module test stubs.
+        pairs using the shared OomLadder for B-then-K OOM recovery. Moves dataset
+        images to the model's device before each forward via runtime.to_device
+        (§3 seam discipline). The dataset yields CPU tensors; passing them straight
+        to a CUDA-resident model raises a device mismatch inside the first Conv2d.
+        Falls back to CPU for parameterless / non-nn.Module test stubs.
 
         cfg.batch_size is already resolved to an int by run_eval (T10 wires the
-        "auto" resolution). The OOM ladder halves state["batch_size"] stickily on
-        torch.cuda.OutOfMemoryError and re-raises so the outer while-loop re-chunks.
+        "auto" resolution). The OomLadder halves B then K stickily on
+        torch.cuda.OutOfMemoryError; RETRY_B discards chunk_buf and restarts the
+        image-chunk at the smaller B; RETRY_K resumes from the current class index
+        at the smaller K, keeping chunk_buf; FLOOR_RETRY retries once; TERMINAL
+        raises RuntimeError. Buffer-and-commit ensures no dup/drop on any path.
         """
         cfg = self.cfg
 
@@ -190,8 +150,13 @@ class Evaluator:
             param_device = torch.device("cpu")
         eval_runtime = Runtime(device=param_device, dtype=torch.float32)
 
-        # cfg.batch_size is already resolved by run_eval (T10) — int here.
-        state: dict[str, Any] = {"batch_size": int(cfg.batch_size), "warned": False}
+        # Replace the old state dict with the shared ladder. effective_K starts at
+        # min(MULTIPLEX_CAP, n_classes); micro_batch_size at the resolved cfg.batch_size.
+        n_classes = len(dataset.class_names)
+        ladder = OomLadder(
+            micro_batch_size=int(cfg.batch_size),
+            effective_K=min(MULTIPLEX_CAP, n_classes) if n_classes else 1,
+        )
 
         predictions: list[dict[str, object]] = []
         img_idx_global = 0
@@ -199,31 +164,41 @@ class Evaluator:
             with torch.no_grad(), P.push_subtask("eval", total=len(examples)) as sub:
                 i = 0
                 while i < len(examples):
-                    # Re-chunk based on the (possibly halved) state["batch_size"].
-                    bs = state["batch_size"]
+                    bs = ladder.micro_batch_size
                     image_chunk = list(examples[i : i + bs])
                     images_t = to_device(
                         torch.stack([ex.image for ex in image_chunk]), eval_runtime
                     )
-                    # Collect this chunk's predictions into a local buffer so that
-                    # a mid-chunk OOM (which breaks out of the group loop) discards
-                    # the partial results rather than committing them.  Without this,
-                    # groups already processed before the OOM would be extended into
-                    # `predictions` and then re-emitted when the outer while-loop
-                    # re-runs the same image_chunk at the halved batch size.
                     chunk_buf: list[dict[str, object]] = []
-                    advanced_i = False
-                    for group in _chunked(dataset.class_names, MULTIPLEX_CAP):
-                        K_g = len(group)
+                    restart_chunk = False
+                    j = 0  # class index into dataset.class_names
+                    while j < n_classes:
+                        K_g = min(ladder.effective_K, n_classes - j)
+                        group = dataset.class_names[j : j + K_g]
                         prompts_g = [TextPrompts(classes=list(group)) for _ in image_chunk]
                         try:
-                            outputs = _eval_forward_with_oom_ladder(
-                                model, images_t, prompts_g, state=state
+                            outputs = cast(
+                                "dict[str, torch.Tensor]",
+                                model(images_t, prompts_g, support=None),
                             )
                         except torch.cuda.OutOfMemoryError:
-                            # state["batch_size"] was halved; discard chunk_buf and
-                            # re-chunk from i at the new (smaller) batch size.
-                            break
+                            decision = ladder.on_oom()
+                            if decision is OomDecision.RETRY_B:
+                                # Image set per forward changed: discard the buffer
+                                # and restart this image-chunk at the smaller B.
+                                restart_chunk = True
+                                break
+                            if decision is OomDecision.RETRY_K:
+                                # Resume from the SAME class index at the smaller K_g
+                                # (recomputed at the top of the loop). Completed
+                                # K-groups' rows in chunk_buf stay valid.
+                                continue
+                            if decision is OomDecision.FLOOR_RETRY:
+                                continue  # retry the same forward once
+                            raise RuntimeError(
+                                "eval OOM at batch_size=1 and classes_per_forward=1; "
+                                "use a larger GPU or smaller image_size."
+                            ) from None
                         for r in range(len(image_chunk) * K_g):
                             ii, kk = divmod(r, K_g)
                             ex = image_chunk[ii]
@@ -241,17 +216,16 @@ class Evaluator:
                                 cfg.mask_threshold,
                             )
                             chunk_buf.extend(entries)
-                    else:
-                        # No break: completed all groups for this image_chunk.
-                        # Only now commit the buffer — avoids duplicates on OOM retry.
-                        predictions.extend(chunk_buf)
-                        advanced_i = True
-                    if advanced_i:
-                        i += len(image_chunk)
-                        img_idx_global += len(image_chunk)
-                        for _ in range(len(image_chunk)):
-                            sub.advance()
-                        sub.update_postfix(it_s=float(img_idx_global))
+                        j += K_g  # advance by the ACTUAL group length
+                    if restart_chunk:
+                        continue  # re-enter outer while at smaller B; i unchanged
+                    # Completed every class group for this image-chunk: commit once.
+                    predictions.extend(chunk_buf)
+                    i += len(image_chunk)
+                    img_idx_global += len(image_chunk)
+                    for _ in range(len(image_chunk)):
+                        sub.advance()
+                    sub.update_postfix(it_s=float(img_idx_global))
         finally:
             if was_training and hasattr(model, "train"):
                 model.train()

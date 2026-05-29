@@ -1,20 +1,22 @@
-"""_eval_forward_with_oom_ladder: sticky B halving on OOM; <= 1 warn per call.
+"""Eval OOM ladder integration tests.
 
-Also contains a regression test for the mid-chunk OOM duplicate-predictions bug:
-when _eval_forward_with_oom_ladder raises on the 2nd group of a chunk, the evaluator
-must NOT emit the already-processed group's predictions twice (once for the first
-pass, once when the outer while-loop retries the same image_chunk at smaller bs).
+Tests cover the end-to-end _iter_predictions behavior:
+- Mid-chunk B-OOM: chunk_buf is discarded and the chunk is restarted at the
+  smaller batch size (no dup/drop).
+- K-rung: at B==1, an OOM halves effective_K and resumes from the current class
+  index; completed K-groups' rows are retained (no dup/drop).
+
+The B-halving/floor/retry behaviors that were previously tested via
+_eval_forward_with_oom_ladder directly are now covered by tests/unit/test_oom_ladder.py
+(test_decision_sequence_b_then_k_then_floor_then_terminal, test_pending_oom_events_emission,
+test_empty_cache_guarded_called_when_available).
 """
 
 from __future__ import annotations
 
-import logging
 from typing import Any, ClassVar
 
-import pytest
 import torch
-
-from custom_sam_peft.eval.evaluator import _eval_forward_with_oom_ladder
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -29,54 +31,6 @@ def _make_oom_error() -> torch.cuda.OutOfMemoryError:
 # ---------------------------------------------------------------------------
 # Tests
 # ---------------------------------------------------------------------------
-
-
-def test_oom_halves_batch_size_sticky_and_warns_once(caplog) -> None:
-    """Ladder halves batch_size on OOM and emits exactly one warning per call."""
-    caplog.set_level(logging.WARNING)
-
-    call_count = 0
-
-    def _flaky_model(images, prompts, support=None):
-        nonlocal call_count
-        call_count += 1
-        if call_count == 1:
-            raise _make_oom_error()
-        # Second call succeeds — return a minimal valid dict.
-        b = images.shape[0]
-        return {
-            "pred_logits": torch.zeros(b, 1, 1),
-            "pred_boxes": torch.zeros(b, 1, 4),
-            "pred_masks": torch.zeros(b, 1, 4, 4),
-            "presence_logit_dec": torch.zeros(b, 1),
-        }
-
-    state: dict = {"batch_size": 4, "warned": False}
-    images = torch.zeros(4, 3, 8, 8)
-    prompts = [None] * 4
-
-    # First call raises OOM (ladder halves and re-raises for outer loop).
-    with pytest.raises(torch.cuda.OutOfMemoryError):
-        _eval_forward_with_oom_ladder(_flaky_model, images, prompts, state=state)
-
-    # batch_size should be halved.
-    assert state["batch_size"] == 2
-    assert state["warned"] is True
-
-    # Exactly one warning about "eval OOM" should have been emitted.
-    warns = [r for r in caplog.records if "eval OOM" in r.message]
-    assert len(warns) == 1
-
-    # Second call with smaller images succeeds; no additional warning.
-    caplog.clear()
-    images2 = torch.zeros(2, 3, 8, 8)
-    prompts2 = [None] * 2
-    result = _eval_forward_with_oom_ladder(_flaky_model, images2, prompts2, state=state)
-    assert result is not None
-
-    # No second warning emitted (warned=True suppresses it).
-    extra_warns = [r for r in caplog.records if "eval OOM" in r.message]
-    assert len(extra_warns) == 0
 
 
 def test_mid_chunk_oom_does_not_produce_duplicate_predictions(monkeypatch) -> None:
@@ -169,59 +123,162 @@ def test_mid_chunk_oom_does_not_produce_duplicate_predictions(monkeypatch) -> No
     )
 
 
-def test_oom_raises_at_B1_floor() -> None:
-    """Persistent OOM at B=1 raises a RuntimeError mentioning OOM."""
+def test_eval_k_rung_resumes_mid_chunk_no_dup_no_drop(monkeypatch) -> None:
+    """At B==1 with K>1, an OOM on a multi-class group halves effective_K and
+    resumes from the current class index; completed K-groups' rows are retained;
+    no (image_id, category_id) is duplicated or dropped. Spec §5.2 / §7.3."""
+    from custom_sam_peft.config.schema import EvalConfig
+    from custom_sam_peft.data.base import Example, Instance, TextPrompts
+    from custom_sam_peft.eval.evaluator import Evaluator
 
-    def _always_oom(images, prompts, support=None):
-        raise _make_oom_error()
+    # 4 classes, start K=4 (MULTIPLEX_CAP high enough). batch_size=1 so B is at
+    # the floor immediately and the FIRST OOM goes straight to the K-rung.
+    class_names = ["a", "b", "c", "d"]
+    monkeypatch.setattr("custom_sam_peft.eval.evaluator.MULTIPLEX_CAP", 4, raising=False)
 
-    state: dict = {"batch_size": 1, "warned": False}
-    images = torch.zeros(1, 3, 8, 8)
-    prompts = [None]
+    def _make_ex(idx: int) -> Example:
+        h = w = 8
+        image = torch.zeros(3, h, w)
+        mask = torch.zeros(h, w, dtype=torch.bool)
+        mask[:4, :4] = True
+        return Example(
+            image=image,
+            image_id=f"img_{idx}",
+            prompts=TextPrompts(classes=class_names),
+            instances=[Instance(mask=mask, class_id=0, box=torch.tensor([0.0, 0.0, 4.0, 4.0]))],
+        )
 
-    with pytest.raises(RuntimeError, match="OOM"):
-        _eval_forward_with_oom_ladder(_always_oom, images, prompts, state=state)
+    class _DS:
+        class_names: ClassVar[list[str]] = ["a", "b", "c", "d"]
 
+        def __len__(self) -> int:
+            return 1
 
-def test_oom_at_B1_retries_once_and_succeeds(monkeypatch) -> None:
-    """At bs==1, a transient OOM is retried exactly once; success on the second call is returned.
+        def __getitem__(self, i: int) -> Example:
+            return _make_ex(i)
 
-    Patches torch.cuda.is_available -> True and torch.cuda.empty_cache -> no-op so the
-    test runs on CPU.  The model must be called exactly twice and the result returned.
-    """
-    import torch as _torch
+    dataset = _DS()
+    calls: list[int] = [0]
 
-    monkeypatch.setattr(_torch.cuda, "is_available", lambda: True)
-    empty_cache_calls: list[int] = []
-
-    def _noop_empty_cache() -> None:
-        empty_cache_calls.append(1)
-
-    monkeypatch.setattr(_torch.cuda, "empty_cache", _noop_empty_cache)
-
-    call_count: list[int] = [0]
-
-    def _oom_then_ok(images, prompts, support=None):
-        call_count[0] += 1
-        if call_count[0] == 1:
+    def _model(images, prompts, support=None):
+        calls[0] += 1
+        k_g = len(prompts[0].classes)
+        # First forward sees K_g=4 (the full group) -> OOM. After K halves to 2,
+        # forwards with K_g<=2 succeed.
+        if k_g > 2:
             raise _make_oom_error()
         b = images.shape[0]
+        rows = b * k_g
+        h, w = images.shape[-2], images.shape[-1]
         return {
-            "pred_logits": torch.zeros(b, 1, 1),
-            "pred_boxes": torch.zeros(b, 1, 4),
-            "pred_masks": torch.zeros(b, 1, 4, 4),
-            "presence_logit_dec": torch.zeros(b, 1),
+            "pred_logits": torch.zeros(rows, 1, 1),
+            "pred_boxes": torch.zeros(rows, 1, 4),
+            "pred_masks": torch.zeros(rows, 1, h, w),
+            "presence_logit_dec": torch.zeros(rows, 1),
         }
 
-    state: dict = {"batch_size": 1, "warned": False}
-    images = torch.zeros(1, 3, 8, 8)
-    prompts = [None]
+    cfg = EvalConfig(mode="full", iou_thresholds=[0.5], batch_size=1)
+    ev = Evaluator(cfg)
+    examples = [dataset[0]]
+    preds = ev._iter_predictions(_model, examples, dataset)
 
-    result = _eval_forward_with_oom_ladder(_oom_then_ok, images, prompts, state=state)
+    seen: set[tuple[int, int]] = set()
+    dups: list[tuple[int, int]] = []
+    for p in preds:
+        key = (int(p["image_id"]), int(p["category_id"]))
+        if key in seen:
+            dups.append(key)
+        seen.add(key)
+    assert not dups, f"duplicate (image_id, category_id): {dups}"
+    # All 4 classes (category_id 1..4) must appear exactly once for the 1 image.
+    assert {cid for _, cid in seen} == {1, 2, 3, 4}, f"missing/extra classes: {seen}"
 
-    assert result is not None, "Expected a result dict, got None"
-    assert call_count[0] == 2, f"Expected exactly 2 model calls, got {call_count[0]}"
-    # The retry only works because the reserved pool was freed first (#176 invariant).
-    assert len(empty_cache_calls) == 1, (
-        f"Expected exactly 1 empty_cache() call before the retry, got {len(empty_cache_calls)}"
-    )
+
+def test_eval_k_rung_retains_nonempty_buffer_across_halving(monkeypatch) -> None:
+    """chunk_buf rows buffered BEFORE a RETRY_K OOM must survive the K halving.
+
+    Setup:
+      - MULTIPLEX_CAP=2, 4 classes ["a","b","c","d"], batch_size=1.
+        → effective_K starts at 2; first group is [a,b] (j=0), second is [c,d] (j=2).
+      - Forward 1: group [a,b] succeeds → a,b rows enter chunk_buf.
+      - Forward 2: group [c,d] OOMs ONCE → RETRY_K decision; K halves to 1.
+      - Resume j=2 at K_g=1: [c] succeeds, [d] succeeds.
+      - All four a/b/c/d rows must appear in the final prediction list.
+
+    A buffer-retention bug (dropping chunk_buf on RETRY_K) would drop category_ids
+    1 and 2 (the a,b rows buffered before the OOM). Spec invariant (f) §7.3.
+    """
+    from custom_sam_peft.config.schema import EvalConfig
+    from custom_sam_peft.data.base import Example, Instance, TextPrompts
+    from custom_sam_peft.eval.evaluator import Evaluator
+
+    class_names = ["a", "b", "c", "d"]
+    monkeypatch.setattr("custom_sam_peft.eval.evaluator.MULTIPLEX_CAP", 2, raising=False)
+
+    def _make_ex(idx: int) -> Example:
+        h = w = 8
+        image = torch.zeros(3, h, w)
+        mask = torch.zeros(h, w, dtype=torch.bool)
+        mask[:4, :4] = True
+        return Example(
+            image=image,
+            image_id=f"img_{idx}",
+            prompts=TextPrompts(classes=class_names),
+            instances=[Instance(mask=mask, class_id=0, box=torch.tensor([0.0, 0.0, 4.0, 4.0]))],
+        )
+
+    class _DS:
+        class_names: ClassVar[list[str]] = ["a", "b", "c", "d"]
+
+        def __len__(self) -> int:
+            return 1
+
+        def __getitem__(self, i: int) -> Example:
+            return _make_ex(i)
+
+    dataset = _DS()
+
+    # Track call count to fire OOM exactly once on the [c,d] group (K_g==2, j==2).
+    # After K halves to 1, [c] and [d] are each forwarded alone and succeed.
+    cd_oom_fired: list[bool] = [False]
+
+    def _model(images, prompts, support=None):
+        classes = list(prompts[0].classes)
+        k_g = len(classes)
+        # OOM once when we see a 2-class group containing "c" (i.e. the [c,d] group).
+        if k_g == 2 and "c" in classes and not cd_oom_fired[0]:
+            cd_oom_fired[0] = True
+            raise _make_oom_error()
+        b = images.shape[0]
+        rows = b * k_g
+        h, w = images.shape[-2], images.shape[-1]
+        return {
+            "pred_logits": torch.zeros(rows, 1, 1),
+            "pred_boxes": torch.zeros(rows, 1, 4),
+            "pred_masks": torch.zeros(rows, 1, h, w),
+            "presence_logit_dec": torch.zeros(rows, 1),
+        }
+
+    cfg = EvalConfig(mode="full", iou_thresholds=[0.5], batch_size=1)
+    ev = Evaluator(cfg)
+    examples = [dataset[0]]
+    preds = ev._iter_predictions(_model, examples, dataset)
+
+    # Verify no duplicates.
+    seen: set[tuple[int, int]] = set()
+    dups: list[tuple[int, int]] = []
+    for p in preds:
+        key = (int(p["image_id"]), int(p["category_id"]))
+        if key in seen:
+            dups.append(key)
+        seen.add(key)
+    assert not dups, f"duplicate (image_id, category_id): {dups}"
+
+    # All 4 classes must appear exactly once.
+    found_cids = {cid for _, cid in seen}
+    assert found_cids == {1, 2, 3, 4}, f"missing/extra category_ids: {found_cids}"
+
+    # Specifically confirm that category_ids 1 and 2 (the a,b rows buffered BEFORE
+    # the halving) are present — proving non-empty chunk_buf was retained across RETRY_K.
+    assert 1 in found_cids, "category_id 1 (class 'a', buffered before OOM) was dropped"
+    assert 2 in found_cids, "category_id 2 (class 'b', buffered before OOM) was dropped"
