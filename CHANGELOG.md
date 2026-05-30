@@ -41,6 +41,18 @@ The `box_hint` training curriculum (`train.box_hint.*`, `BoxHintSchedule`) is
 unchanged — it continues to sample per-image GT boxes alongside text prompts
 as an auxiliary localization hint, now flowing through `SupportPrompts`.
 
+### Removed — box_hint localization-hint curriculum (#88)
+
+- **train**: removed the `box_hint` curriculum and the `BoxHintSchedule`
+  config model (`train.box_hint.*`). Training is now text-only.
+- **Changed**: `SupportPrompts` is retained as a field-less reserved extension
+  seam (#126 §12) for future mask/point hints; `Sam3Wrapper.forward(support=)`
+  stays as a no-op. Inference is unchanged (already text-only).
+- **Note**: resume tolerates pre-removal checkpoints — a stale `box_hint_p`
+  key in an old `training_state.pt` is ignored.
+- **Note**: any config carrying `train.box_hint:` now fails to load with a
+  Pydantic `extra_forbidden` error; delete the block from your YAML.
+
 ---
 
 ## [0.12.0] — 2026-05-23

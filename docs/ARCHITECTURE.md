@@ -3,7 +3,7 @@
 This is the one-page reference for how `custom_sam_peft` is wired together. The
 full design rationale lives in `docs/superpowers/specs/`.
 
-**Prompt invariant:** Text is the only primary prompt — the model takes one or more text (class) prompts and segments all matching instances. Auxiliary localization hints (currently just GT box hints, the `box_hint` curriculum from #14) ride alongside via `SupportPrompts`. They never replace text and are never used at inference. See [#126](https://github.com/NguyenJus/custom-sam-peft/issues/126).
+**Prompt invariant:** Text is the only prompt — the model takes one or more text (class) prompts and segments all matching instances. Training is text-only (the `box_hint` localization-hint curriculum was removed in #88). `SupportPrompts` is retained as a reserved extension seam (see [#126](https://github.com/NguyenJus/custom-sam-peft/issues/126) §12) for future hints (masks / points); it carries no fields today and is never used at inference.
 
 ## Module map
 
