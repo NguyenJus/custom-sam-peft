@@ -553,13 +553,17 @@ class TrainHyperparams(_Strict):
         ),
     )
 
-    @field_validator("time_limit")
+    @field_validator("time_limit", mode="before")
     @classmethod
-    def _validate_time_limit(cls, v: str | int | None) -> str | int | None:
-        """Validate (don't rewrite) the duration. Stored verbatim; parsed in fit()."""
+    def _validate_time_limit(cls, v: object) -> object:
+        """Validate (don't rewrite) the duration. Stored verbatim; parsed in fit().
+
+        mode="before" so a raw bool is rejected by parse_duration_to_seconds
+        before Pydantic's lax bool->int coercion would mask it.
+        """
         if v is None:
             return v
-        parse_duration_to_seconds(v)  # raises ValueError on bad input; Pydantic wraps it
+        parse_duration_to_seconds(v)  # type: ignore[arg-type]  # runtime branches on str|int|bool
         return v
 
     loss: LossConfig = Field(default_factory=LossConfig)
