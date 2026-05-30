@@ -38,26 +38,33 @@ _CUDA_HINT = (
 # These ride with the SAM 3.1 checkpoint identity. If Meta ships a new
 # checkpoint, re-derive via scripts/_derive_preset_constants.py and update.
 
-MODEL_PARAMS = 5_000_000_000  # SAM 3.1 base parameter count — analytic seed for full model stack
+# cite: scripts/_derive_preset_constants.py (SAM 3.1 checkpoint parameter count)
+MODEL_PARAMS = 5_000_000_000  # SAM 3.1 base parameter count — analytic seed
 # (vision encoder ~762M + text encoder ~302M + decoder/neck ~50M,
 #  plus retained activations and optimizer state heuristic; superseded
 #  by calibration cache. Re-derive via scripts/_derive_preset_constants.py)
-LORA_LAYERS = 96  # vision_decoder scope, count of nn.Linear LoRA targets (from _resolve_targets)
+# cite: empirical (#148/#179 VRAM calibration)
+LORA_LAYERS = 96  # vision_decoder scope; nn.Linear LoRA targets (_resolve_targets)
+# cite: empirical (#148/#179 VRAM calibration)
 D_IN = 768  # avg input feature dim across LoRA targets
+# cite: empirical (#148/#179 VRAM calibration)
 D_OUT = 768  # avg output feature dim across LoRA targets
+# cite: empirical (#148/#179 VRAM calibration)
 Q_OVERHEAD = 64 * _MIB  # bnb NF4 per-block scale + zero-point overhead
+# cite: empirical (#148/#179 VRAM calibration)
 WORKSPACE_BYTES = 256 * _MIB  # cuDNN workspace + autograd graph + tmp buffers (spec §3)
+# cite: empirical (#148/#179 VRAM calibration)
 BASE_ACTIVATION_AT_1024 = int(1.5 * _GB)  # seed; superseded by calibration cache.
 
 # Forward-only memory is roughly 1/4 of the train-step probe (train captures
 # forward + backward + retained graph; eval captures only forward, no graph).
 # Spec §8.
-forward_only_factor: float = 0.25
+forward_only_factor: float = 0.25  # cite: empirical (#148/#179 VRAM calibration)
 
 # === CALIBRATION CACHE =====================================================
 
 CACHE_FILENAME = ".custom_sam_peft_calibration.json"
-CACHE_SCHEMA_VERSION = 2
+CACHE_SCHEMA_VERSION = 2  # index-only (internal cache versioning; not trust-bearing)
 
 
 # === PresetDecision ========================================================
@@ -137,14 +144,17 @@ class PresetDecision:
 # _attention_bytes_per_example is the dominant activation term at SAM 3.1's
 # 1008px image; k_eff scales BASE_ACTIVATION_AT_1024 in the train branch
 # (see _activation_bytes).
+# cite: sam3/model_builder.py (hiera-large backbone, patch_size=14 line 82)
 _SAM3_PATCH = 14  # vision backbone patch size
+# cite: sam3/model_builder.py (hiera-large backbone, num_heads=16 line 85)
 _SAM3_HEADS = 16  # vision backbone attention heads
 
 # === Memory model ==========================================================
 
 
 def _bytes_per_param_for_method(method: str) -> float:
-    return 2.0 if method == "lora" else 0.5  # bf16/fp16 (2.0) vs NF4 (0.5)
+    # cite: framework default (bf16/fp16 = 2 B/param; NF4 = 0.5 B/param)
+    return 2.0 if method == "lora" else 0.5
 
 
 def _model_bytes(method: str) -> int:
@@ -158,8 +168,9 @@ def _adapter_bytes(r: int) -> int:
 
 
 def _optimizer_bytes(r: int) -> int:
-    # AdamW state on the bf16 adapter — fp32 m, fp32 v, fp32 master copy.
+    # AdamW state on the bf16 adapter — fp32 m + fp32 v (two fp32 moments).
     # Adapter weights are 2 B/param; state is 8 B/param -> 4x adapter_bytes.
+    # cite: framework default (AdamW fp32 m+v = 8 B/param -> 4x bf16 adapter)
     return _adapter_bytes(r) * 4
 
 
