@@ -25,7 +25,8 @@ def format_time_limit_message(stop: TimeLimitStop, *, subcommand: str, config_pa
     subcommand is "train" or "run"; config_path is the actual --config the user
     passed. The duration label comes from stop.duration_label (format_seconds),
     so a 9000s and a "2h30m" stop render identically. Best lines appear only
-    when stop.best_dir is set.
+    when both stop.best_dir and stop.best_map are set (the trainer sets them
+    together).
     """
     lines = [
         f"⏱  Time limit ({stop.duration_label}) reached at step {stop.stop_step} "
@@ -37,6 +38,6 @@ def format_time_limit_message(stop: TimeLimitStop, *, subcommand: str, config_pa
     lines.append("")
     resume = f"custom-sam-peft {subcommand} --config {config_path} --resume __latest__"
     lines.append(f"   • Resume:            {resume}")
-    if stop.best_dir is not None:
+    if stop.best_dir is not None and stop.best_map is not None:
         lines.append(f"   • Use best as-is:    {_rel(stop.best_dir)}/adapter/")
     return "\n".join(lines)

@@ -123,6 +123,25 @@ def test_run_bad_time_limit_exits_1_without_training(
     assert called["run"] is False
 
 
+def test_run_time_limit_overrides_cfg(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from custom_sam_peft.cli import run_cmd
+
+    seen: dict[str, Any] = {}
+
+    def fake_run_training(cfg: Any, **k: Any) -> Any:
+        seen["time_limit"] = cfg.train.time_limit
+        return _stop_artifacts(tmp_path / "run")
+
+    monkeypatch.setattr(run_cmd, "run_training", fake_run_training)
+    cfg = _write_min_config(tmp_path)
+
+    from custom_sam_peft.cli.main import app
+
+    result = runner.invoke(app, ["run", "--config", str(cfg), "--time-limit", "2h"])
+    assert result.exit_code == 0
+    assert seen["time_limit"] == "2h"
+
+
 def test_run_stop_short_circuits_before_eval_export_bundle(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -152,6 +171,7 @@ def test_run_stop_short_circuits_before_eval_export_bundle(
     assert result.exit_code == 0
     assert "Time limit (2h) reached" in result.output
     # No phase after train ran:
+    assert phase_calls["val"] == 0
     assert phase_calls["load"] == 0
     assert phase_calls["eval"] == 0
     assert phase_calls["merged"] == 0
