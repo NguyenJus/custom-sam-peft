@@ -19,6 +19,7 @@ from typing import Any, cast
 import torch
 from torch import Tensor
 
+from custom_sam_peft import paths
 from custom_sam_peft.cli._progress import progress as P
 from custom_sam_peft.config.schema import TrainConfig
 from custom_sam_peft.data.base import Instance, TextPrompts
@@ -29,6 +30,7 @@ from custom_sam_peft.peft_adapters import PEFTMethod, make_peft_method
 from custom_sam_peft.runtime import Runtime, to_device
 from custom_sam_peft.runtime._runtime import coerce_dtype_for_capability
 from custom_sam_peft.tracking.base import Tracker
+from custom_sam_peft.train.checkpoint import save_full_state
 
 _LOG = logging.getLogger(__name__)
 
@@ -43,6 +45,19 @@ class _MicrobatchExhausted(Exception):
     Caught by train_step to trigger the outer K-rung (halve effective_K and
     replay the whole step). Never escapes train_step. Spec §4.
     """
+
+
+class _TimeLimitReached(Exception):
+    """Internal signal: the wall-clock budget expired. Carries the stop point.
+
+    Graceful (exit 0), in contrast to the nan_abort_after RuntimeError which is
+    a user-facing failure (exit 1). Never propagates past Trainer.fit(). Spec §4.5.
+    """
+
+    def __init__(self, step: int, epoch: int) -> None:
+        super().__init__(f"time limit reached at step {step} (epoch {epoch})")
+        self.step = step
+        self.epoch = epoch
 
 
 def _reset_auto_chunk_log() -> None:
@@ -457,11 +472,18 @@ def run_epoch(
     peft_method: PEFTMethod | None = None,
     runtime: Runtime | None = None,
     oom_state: OomState | None = None,
+    deadline: float | None = None,
 ) -> tuple[int, int]:
     """Drive one epoch. `on_checkpoint(global_step, epoch, nan_streak)`
     is called at every `save_every` boundary; the trainer wires it to the
     checkpoint + image-panel routines. `on_eval(global_step)` is called at
-    every `eval_every` boundary for lite mid-run evaluation."""
+    every `eval_every` boundary for lite mid-run evaluation.
+
+    If ``deadline`` is given (a ``time.monotonic()`` value), the deadline is
+    checked after each micro-step. On expiry, a full-state checkpoint is flushed
+    directly (no image panel) and ``_TimeLimitReached`` is raised. The exception
+    carries the step and epoch at which training stopped. Spec §4.5.
+    """
     _peft_method: PEFTMethod = (
         peft_method if peft_method is not None else make_peft_method(cfg.peft.method)
     )
@@ -500,4 +522,19 @@ def run_epoch(
             and global_step % cfg.train.eval_every == 0
         ):
             on_eval(global_step)
+        if deadline is not None and time.monotonic() >= deadline:
+            state_dir = (
+                paths.checkpoint_path(run_dir, step=global_step).parent / f"step_{global_step}"
+            )
+            save_full_state(
+                state_dir=state_dir,
+                wrapper=model,
+                optimizer=optimizer,
+                scheduler=scheduler,
+                global_step=global_step,
+                epoch=epoch,
+                nan_streak=nan_streak,
+                cfg=cfg,
+            )
+            raise _TimeLimitReached(global_step, epoch)
     return global_step, nan_streak

@@ -115,6 +115,7 @@ def _patch_phases(
         merged_path=None,
         final_metrics=None,
         oom_events=(),
+        time_limit_stop=None,
     )
     run_dir.mkdir(parents=True, exist_ok=True)
     (run_dir / "adapter").mkdir(exist_ok=True)
@@ -351,6 +352,7 @@ def test_run_consumes_train_tuple_verbatim(tmp_path: Path, monkeypatch: pytest.M
             run_dir=run_dir,
             checkpoint_path=run_dir / "adapter",
             oom_events=(),
+            time_limit_stop=None,
         )
 
     # Override the run_training stub _patch_phases already set.

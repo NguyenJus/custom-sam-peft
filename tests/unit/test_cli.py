@@ -75,6 +75,7 @@ def test_train_invokes_runner(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -
         run_dir=tmp_path / "r",
         adapter_path=tmp_path / "r" / "adapter",
         final_metrics=None,
+        time_limit_stop=None,
     )
     called: dict[str, object] = {}
 
@@ -232,6 +233,7 @@ def test_train_resume_no_flag_forwards_none(
         run_dir=tmp_path / "r",
         checkpoint_path=tmp_path / "r" / "adapter",
         final_metrics=None,
+        time_limit_stop=None,
     )
     called: dict[str, object] = {}
 
@@ -261,6 +263,7 @@ def test_train_resume_explicit_path_forwarded(
         run_dir=tmp_path / "r",
         checkpoint_path=tmp_path / "r" / "adapter",
         final_metrics=None,
+        time_limit_stop=None,
     )
     called: dict[str, object] = {}
 
@@ -292,6 +295,7 @@ def test_train_resume_latest_calls_find_latest_checkpoint(
         run_dir=tmp_path / "r",
         checkpoint_path=tmp_path / "r" / "adapter",
         final_metrics=None,
+        time_limit_stop=None,
     )
     resolved_ckpt = _Path(tmp_path / "myrun-2026-01-01T00-00-00" / "checkpoints" / "step_10")
     called: dict[str, object] = {}
@@ -327,6 +331,7 @@ def test_train_resume_latest_no_checkpoint_exits_nonzero(
         run_dir=tmp_path / "r",
         checkpoint_path=tmp_path / "r" / "adapter",
         final_metrics=None,
+        time_limit_stop=None,
     )
 
     monkeypatch.setattr(train_cmd, "run_train", lambda *a, **kw: fake_result)
@@ -348,7 +353,7 @@ def test_run_resume_no_flag_forwards_none(monkeypatch: pytest.MonkeyPatch, tmp_p
     cfg_path = _make_train_cfg_file(tmp_path)
     called: dict[str, object] = {}
 
-    def fake_orchestrate(cfg_obj, resume, mode, *, visualize=None):
+    def fake_orchestrate(cfg_obj, resume, mode, *, visualize=None, config_path=None):
         called["resume"] = resume
         return 0
 
@@ -371,7 +376,7 @@ def test_run_resume_explicit_path_forwarded(
     cfg_path = _make_train_cfg_file(tmp_path)
     called: dict[str, object] = {}
 
-    def fake_orchestrate(cfg_obj, resume, mode, *, visualize=None):
+    def fake_orchestrate(cfg_obj, resume, mode, *, visualize=None, config_path=None):
         called["resume"] = resume
         return 0
 
@@ -397,7 +402,7 @@ def test_run_resume_latest_calls_find_latest_checkpoint(
     resolved_ckpt = _Path(tmp_path / "myrun-2026-01-01T00-00-00" / "checkpoints" / "step_10")
     called: dict[str, object] = {}
 
-    def fake_orchestrate(cfg_obj, resume, mode, *, visualize=None):
+    def fake_orchestrate(cfg_obj, resume, mode, *, visualize=None, config_path=None):
         called["resume"] = resume
         return 0
 

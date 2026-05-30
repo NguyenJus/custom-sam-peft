@@ -133,6 +133,7 @@ Training hyperparameters and schedule.
 | `train.loss` | LossConfig | (internal defaults) | advanced | Loss-mix weights (w_mask, w_obj, w_presence) — see source for sub-fields. Internal-only fields are hardcoded in `_internal.py`. | Audit §E: 2/4 examples reference it; loss weights are rarely tuned; defaults work for all v0 datasets. |
 | `train.nan_abort_after` | int (>0) | `20` | advanced | Abort training if NaN losses appear in more than this many consecutive steps. | Audit §E: 2/4 examples set it; NaN detection is a safety rail; 20 steps is a safe margin. |
 | `train.num_workers` | int (≥0) | min(4, cpu_count) | advanced | Number of DataLoader worker processes; `0` disables multiprocessing. | Audit §E: 2/4 examples set it; auto-selected from CPU count; only tune on memory-limited hosts. |
+| `train.time_limit` | `str \| int \| None` | `None` (unlimited) | advanced | Wall-clock budget for one invocation. Accepts a human duration (`"2h30m"`, `"90m"`, `"3600s"`) or bare seconds (`3600`); `None` (default) = unlimited. On expiry the current micro-step finishes, a resumable checkpoint is flushed under `checkpoints/step_<N>/`, finalization is skipped, and the process exits 0. The budget is per-run: `--resume` restarts the clock. Overridable via `--time-limit` on `train`/`run`. | Opt-in; unset = unlimited, so there is no default value to justify. |
 
 ---
 

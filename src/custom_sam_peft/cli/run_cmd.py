@@ -22,7 +22,9 @@ from rich.console import Console
 from custom_sam_peft._registry import lookup
 from custom_sam_peft.cli._logging import configure_logging
 from custom_sam_peft.cli._progress import ProgressKind, ProgressMode, progress_session, resolve_mode
+from custom_sam_peft.cli._time_limit import format_time_limit_message
 from custom_sam_peft.cli.init_cmd import run_init
+from custom_sam_peft.config._duration import parse_duration_to_seconds
 from custom_sam_peft.config.loader import load_config
 from custom_sam_peft.config.schema import TrainConfig
 from custom_sam_peft.data.base import Dataset
@@ -68,7 +70,7 @@ def _build_val_dataset(cfg: TrainConfig, vs: ValSource) -> Dataset:
 
 
 def _orchestrate(
-    cfg: TrainConfig, resume: Path | None, mode: ProgressMode, *, visualize: bool
+    cfg: TrainConfig, resume: Path | None, mode: ProgressMode, *, visualize: bool, config_path: Path
 ) -> int:
     from custom_sam_peft.data.val_source import load_val_source
 
@@ -86,6 +88,13 @@ def _orchestrate(
     except Exception as exc:
         rprint(f"[red]train failed[/red] {exc}")
         raise typer.Exit(code=1) from exc
+    if train_result.time_limit_stop is not None:
+        rprint(
+            format_time_limit_message(
+                train_result.time_limit_stop, subcommand="run", config_path=config_path
+            )
+        )
+        return 0
     run_dir = train_result.run_dir
     adapter_path = train_result.checkpoint_path
 
@@ -187,6 +196,16 @@ def run(
             "checkpoint matching cfg.run.name."
         ),
     ),
+    time_limit: str | None = typer.Option(
+        None,
+        "--time-limit",
+        help=(
+            'Wall-clock budget for this run (e.g. "2h30m", "90m", "3600s", or bare '
+            "seconds). Overrides train.time_limit. The budget is per-run; --resume "
+            "restarts the clock."
+        ),
+        metavar="DURATION",
+    ),
     verbose: bool = typer.Option(False, "-v", "--verbose", help="Enable DEBUG logging."),
     progress_flag: str = typer.Option(
         "auto",
@@ -212,6 +231,15 @@ def run(
         )
         run_init("coco-text-lora", config, force=False)
     cfg = load_config(config)
+    if time_limit is not None:
+        try:
+            parse_duration_to_seconds(time_limit)
+        except ValueError as e:
+            rprint(f"[red]error[/red] invalid --time-limit: {e}")
+            raise typer.Exit(code=1) from e
+        cfg = cfg.model_copy(
+            update={"train": cfg.train.model_copy(update={"time_limit": time_limit})}
+        )
     mode = resolve_mode(
         progress_flag if progress_flag != "auto" else None,
         os.environ,
@@ -231,4 +259,4 @@ def run(
     else:
         resume_path = None
 
-    _orchestrate(cfg, resume_path, mode, visualize=visualize)
+    _orchestrate(cfg, resume_path, mode, visualize=visualize, config_path=config)

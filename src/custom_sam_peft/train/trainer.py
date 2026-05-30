@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import random
+import time
 from pathlib import Path
 from typing import Any
 
@@ -15,10 +16,11 @@ from torch.utils.data import DataLoader
 
 from custom_sam_peft import paths
 from custom_sam_peft.cli._progress import progress as P
+from custom_sam_peft.config._duration import format_seconds, parse_duration_to_seconds
 from custom_sam_peft.config.schema import Optimizer, TrainConfig
 from custom_sam_peft.data.base import Dataset
 from custom_sam_peft.data.collate import collate_batch
-from custom_sam_peft.eval._artifacts import EvalArtifacts
+from custom_sam_peft.eval._artifacts import EvalArtifacts, TimeLimitStop
 from custom_sam_peft.eval.evaluator import Evaluator
 from custom_sam_peft.eval.metrics import MetricsReport
 from custom_sam_peft.models.sam3 import MULTIPLEX_CAP, Sam3Wrapper
@@ -32,7 +34,7 @@ from custom_sam_peft.train.checkpoint import (
     save_full_state,
     save_merged,
 )
-from custom_sam_peft.train.loop import OomState, run_epoch
+from custom_sam_peft.train.loop import OomState, _TimeLimitReached, run_epoch
 from custom_sam_peft.train.visualize import render_mask_panel
 
 _LOG = logging.getLogger(__name__)
@@ -255,6 +257,7 @@ class Trainer:
         on_checkpoint: Any,
         on_eval: Any,
         oom_state: OomState | None = None,
+        deadline: float | None = None,
     ) -> tuple[int, int]:
         """Run one training epoch; returns (global_step, nan_streak)."""
         return run_epoch(
@@ -274,6 +277,7 @@ class Trainer:
             peft_method=self._peft_method,
             runtime=self.runtime,
             oom_state=oom_state,
+            deadline=deadline,
         )
 
     def _cap_eval_batch_size(self, bs: int, cap: int) -> int:
@@ -357,6 +361,50 @@ class Trainer:
                 )
         except Exception:
             _LOG.warning("failed to save best model at step %d; skipping.", step, exc_info=True)
+
+    def _time_limited_artifacts(
+        self,
+        run_dir: Path,
+        stop: Any,  # _TimeLimitReached
+        budget_seconds: int | None,
+        oom_state: OomState | None,
+    ) -> EvalArtifacts:
+        """Build the EvalArtifacts for a time-limited stop (spec §4.7).
+
+        checkpoint_path points at the flushed step checkpoint's adapter
+        (run_dir/adapter is intentionally NOT written on a stop).
+        """
+        assert budget_seconds is not None  # noqa: S101 — invariant: set whenever a stop fires
+        checkpoint_dir = paths.checkpoint_path(run_dir, step=stop.step).parent / f"step_{stop.step}"
+        best_dir: Path | None = None
+        best_map: float | None = None
+        best_candidate = run_dir / "best"
+        best_json = best_candidate / "best.json"
+        if best_candidate.is_dir() and best_json.is_file():
+            try:
+                data = json.loads(best_json.read_text())
+                best_dir = best_candidate
+                best_map = float(data["value"])
+            except Exception:
+                best_dir = None
+                best_map = None
+        time_limit_stop = TimeLimitStop(
+            stop_step=stop.step,
+            stop_epoch=stop.epoch,
+            total_epochs=self.cfg.train.epochs,
+            checkpoint_dir=checkpoint_dir,
+            duration_label=format_seconds(budget_seconds),
+            best_dir=best_dir,
+            best_map=best_map,
+        )
+        return EvalArtifacts(
+            checkpoint_path=checkpoint_dir / "adapter",
+            peft_method=self.cfg.peft.method,
+            run_dir=run_dir,
+            final_metrics=None,
+            oom_events=tuple(oom_state.pending_oom_events) if oom_state is not None else (),
+            time_limit_stop=time_limit_stop,
+        )
 
     def _maybe_checkpoint(
         self,
@@ -492,70 +540,90 @@ class Trainer:
         def on_eval(step: int) -> None:
             self._eval_epoch(step, run_dir, oom_state)
 
+        deadline: float | None = None
+        budget_seconds: int | None = None
+        if cfg.train.time_limit is not None:
+            budget_seconds = parse_duration_to_seconds(cfg.train.time_limit)
+            deadline = time.monotonic() + budget_seconds
+            _LOG.info(
+                "time limit: %s (%ds) — stops at the first micro-step past the deadline",
+                format_seconds(budget_seconds),
+                budget_seconds,
+            )
+
         merged_path: Path | None = None
         full_report: MetricsReport | None = None
+        stop: _TimeLimitReached | None = None
         try:
-            for epoch in range(start_epoch, cfg.train.epochs):
-                total_batches = max(len(train_loader), 1)
-                P.reset_inner(total=total_batches)
-                global_step, nan_streak = self._train_epoch(
-                    epoch,
-                    train_loader,
-                    optimizer,
-                    scheduler,
-                    run_dir,
-                    global_step,
-                    nan_streak,
-                    class_names,
-                    on_checkpoint,
-                    on_eval,
-                    oom_state=oom_state,
-                )
-                P.advance_outer()
-
-            adapter_path = run_dir / "adapter"
-            save_adapter(self.model, adapter_path)
-            if cfg.export.merge:
-                merged_path = run_dir / "merged"
-                save_merged(self.model, merged_path)
-
-            if self.val_ds is not None:
-                full_eval_cfg = cfg.eval
-                if full_eval_cfg.batch_size == "auto":
-                    from custom_sam_peft.presets import decide_eval_batch_size
-
-                    bs, _, _ = decide_eval_batch_size(classes_per_forward=MULTIPLEX_CAP)
-                    # Cap by the sticky train micro-batch size to avoid eval OOM.
-                    bs = self._cap_eval_batch_size(bs, oom_state.micro_batch_size)
-                    full_eval_cfg = full_eval_cfg.model_copy(update={"batch_size": bs})
-                full_report = Evaluator(full_eval_cfg).evaluate(self.model, self.val_ds)
-            if full_report is not None:
-                (run_dir / "metrics.json").write_text(
-                    json.dumps(
-                        {
-                            "overall": full_report.overall,
-                            "per_class": full_report.per_class,
-                            "n_images": full_report.n_images,
-                            "n_predictions": full_report.n_predictions,
-                            "global_step": global_step,
-                            "epoch": cfg.train.epochs - 1,
-                        },
-                        indent=2,
+            try:
+                for epoch in range(start_epoch, cfg.train.epochs):
+                    total_batches = max(len(train_loader), 1)
+                    P.reset_inner(total=total_batches)
+                    global_step, nan_streak = self._train_epoch(
+                        epoch,
+                        train_loader,
+                        optimizer,
+                        scheduler,
+                        run_dir,
+                        global_step,
+                        nan_streak,
+                        class_names,
+                        on_checkpoint,
+                        on_eval,
+                        oom_state=oom_state,
+                        deadline=deadline,
                     )
-                )
-            else:
-                (run_dir / "metrics.json").write_text(
-                    json.dumps(
-                        {
-                            "note": "no validation set provided",
-                            "global_step": global_step,
-                            "epoch": cfg.train.epochs - 1,
-                        },
-                        indent=2,
+                    P.advance_outer()
+            except _TimeLimitReached as e:
+                stop = e
+                global_step = e.step  # the flushed checkpoint's step
+
+            if stop is None:
+                adapter_path = run_dir / "adapter"
+                save_adapter(self.model, adapter_path)
+                if cfg.export.merge:
+                    merged_path = run_dir / "merged"
+                    save_merged(self.model, merged_path)
+
+                if self.val_ds is not None:
+                    full_eval_cfg = cfg.eval
+                    if full_eval_cfg.batch_size == "auto":
+                        from custom_sam_peft.presets import decide_eval_batch_size
+
+                        bs, _, _ = decide_eval_batch_size(classes_per_forward=MULTIPLEX_CAP)
+                        bs = self._cap_eval_batch_size(bs, oom_state.micro_batch_size)
+                        full_eval_cfg = full_eval_cfg.model_copy(update={"batch_size": bs})
+                    full_report = Evaluator(full_eval_cfg).evaluate(self.model, self.val_ds)
+                if full_report is not None:
+                    (run_dir / "metrics.json").write_text(
+                        json.dumps(
+                            {
+                                "overall": full_report.overall,
+                                "per_class": full_report.per_class,
+                                "n_images": full_report.n_images,
+                                "n_predictions": full_report.n_predictions,
+                                "global_step": global_step,
+                                "epoch": cfg.train.epochs - 1,
+                            },
+                            indent=2,
+                        )
                     )
-                )
+                else:
+                    (run_dir / "metrics.json").write_text(
+                        json.dumps(
+                            {
+                                "note": "no validation set provided",
+                                "global_step": global_step,
+                                "epoch": cfg.train.epochs - 1,
+                            },
+                            indent=2,
+                        )
+                    )
         finally:
             self.tracker.close()
+
+        if stop is not None:
+            return self._time_limited_artifacts(run_dir, stop, budget_seconds, oom_state)
 
         return EvalArtifacts(
             checkpoint_path=run_dir / "adapter",

@@ -21,6 +21,7 @@ def test_orchestrate_threads_visualize_into_eval_run_eval(
     fake_result.run_dir = tmp_path
     fake_result.checkpoint_path = tmp_path / "adapter"
     fake_result.oom_events = []
+    fake_result.time_limit_stop = None
     monkeypatch.setattr(run_cmd, "run_training", lambda cfg, resume_from=None: fake_result)
 
     # Stub load_val_source (imported inside _orchestrate via local import)
@@ -69,6 +70,8 @@ def test_orchestrate_threads_visualize_into_eval_run_eval(
 
     monkeypatch.setattr(run_cmd, "run_eval", _fake_run_eval)
 
-    run_cmd._orchestrate(cfg, None, run_cmd.ProgressMode.OFF, visualize=False)
+    run_cmd._orchestrate(
+        cfg, None, run_cmd.ProgressMode.OFF, visualize=False, config_path=tmp_path / "config.yaml"
+    )
 
     assert captured.get("visualize") is False
