@@ -109,8 +109,41 @@ Row schema (every section uses these six columns):
 
 Legend letters used in the `aug_presets.py` module docstring resolve here.
 
+### Legend
+
+| Letter | Meaning |
+| --- | --- |
+| (a) | Domain convention — flip/rotate90 enabling booleans reflect the symmetry properties of each domain. Domain rationale, not a published source. |
+| (b) | Domain-tuned project magnitude — no published reference and no recorded internal calibration run. `# tbd: #191` |
+| (c) | Ruifrok & Johnston 2001 / Tellez et al. 2018 — H&E stain-jitter rationale; exact sigma magnitudes are domain-tuned project choices with no published reference. `# tbd: #191` |
+| (d) | Laterality-driven locked-off — see `LOCKED_OFF` map; clinically or structurally meaningful orientation; augmentation disabled by design. |
+
+### Augmentation knob values
+
+Rows are grouped by `(knob, distinct-value)`; presets that use the value are listed in the Notes column.
+
 | Location | Value | Tag | Full reference | Verifying quote | Notes |
 | --- | --- | --- | --- | --- | --- |
+| `aug_presets.py:PRESET_TABLE[*].hflip` | `True` | `# (a)` | Domain convention: natural images are horizontally symmetric; satellite imagery has no canonical orientation. | — | Used by: natural×{safe,medium,aggressive}, satellite×{safe,medium,aggressive}. |
+| `aug_presets.py:PRESET_TABLE[*].hflip` | `False` | `# (d)` | See `LOCKED_OFF["medical"]["hflip"]` and `LOCKED_OFF["microscopy"]["hflip"]`. | "laterality (left vs right) is clinically meaningful in most medical modalities (CXR, mammography, derm)" / "horizontal flip can break channel-ordering conventions in multiplexed microscopy" | Used by: medical×{safe,medium,aggressive}, microscopy×{safe,medium,aggressive}. |
+| `aug_presets.py:PRESET_TABLE[*].vflip` | `True` | `# (a)` | Domain convention: microscopy slides and satellite imagery have no canonical vertical orientation. | — | Used by: natural×aggressive, satellite×{safe,medium,aggressive}, microscopy×{safe,medium,aggressive}. |
+| `aug_presets.py:PRESET_TABLE[*].vflip` | `False` | `# (d)` | See `LOCKED_OFF["medical"]["vflip"]`. | "laterality (superior vs inferior) is clinically meaningful in most medical modalities" | Used by: medical×{safe,medium,aggressive}. |
+| `aug_presets.py:PRESET_TABLE[*].rotate90` | `True` | `# (a)` | Domain convention: satellite and microscopy imagery have no canonical orientation, so 90° rotations are valid invariances. | — | Used by: satellite×{safe,medium,aggressive}, microscopy×{safe,medium,aggressive}. |
+| `aug_presets.py:PRESET_TABLE[*].rotate90` | `False` | `# (d)` | See `LOCKED_OFF["medical"]["rotate90"]` and `LOCKED_OFF["natural"]["rotate90"]`. | "laterality is clinically meaningful" / "arbitrary 90° rotation breaks 'up' for natural photography" | Used by: natural×{safe,medium,aggressive}, medical×{safe,medium,aggressive}. |
+| `aug_presets.py:PRESET_TABLE[*].rotate_arbitrary` | `5.0` | `# (b)` | — | — | `# tbd: #191`. Used by: medical×medium. No published reference; project-chosen magnitude. |
+| `aug_presets.py:PRESET_TABLE[*].rotate_arbitrary` | `10.0` | `# (b)` | — | — | `# tbd: #191`. Used by: natural×aggressive, medical×aggressive. No published reference; project-chosen magnitude. |
+| `aug_presets.py:PRESET_TABLE[*].rotate_arbitrary` | `15.0` | `# (b)` | — | — | `# tbd: #191`. Used by: satellite×aggressive, microscopy×aggressive. No published reference; project-chosen magnitude. |
+| `aug_presets.py:PRESET_TABLE[*].color_jitter` | `0.05` | `# (b)` | — | — | `# tbd: #191`. Used by: natural×safe, satellite×medium. Passed as `brightness=contrast=saturation=0.05, hue=0.025` to `A.ColorJitter`; Albumentations 2.0.8 default is `(0.8, 1.2)` — this is a domain-tuned project choice. |
+| `aug_presets.py:PRESET_TABLE[*].color_jitter` | `0.1` | `# (b)` | — | — | `# tbd: #191`. Used by: natural×medium, satellite×aggressive. Same mapping as 0.05 row above. |
+| `aug_presets.py:PRESET_TABLE[*].color_jitter` | `0.2` | `# (b)` | — | — | `# tbd: #191`. Used by: natural×aggressive. Same mapping as 0.05 row above. |
+| `aug_presets.py:PRESET_TABLE[*].color_jitter` | `0.0` | `# (d)` | See `LOCKED_OFF["medical"]["color_jitter"]` and `LOCKED_OFF["microscopy"]["color_jitter"]`. | "color carries diagnostic signal (e.g. melanoma); use stain_jitter for H&E instead" / "color identifies fluorescence channels and must be preserved" | Used by: medical×{safe,medium,aggressive}, microscopy×{safe,medium,aggressive}. |
+| `aug_presets.py:PRESET_TABLE[*].stain_jitter` | `0.03` | `# (c)` | Ruifrok & Johnston 2001, "Quantification of Histochemical Staining by Color Deconvolution", doi:10.1097/00000372-200112000-00001; Tellez et al. 2018, "H&E Stain Augmentation", arXiv:1804.02853. HED basis vectors implemented in `data/transforms.py:_HED_FROM_RGB_MATRIX`. | StainJitter sigma is the per-channel uniform perturbation in HED optical-density space; the H&E rationale cites these two sources. | `# tbd: #191` for exact magnitude. Used by: medical×medium. |
+| `aug_presets.py:PRESET_TABLE[*].stain_jitter` | `0.07` | `# (c)` | Same as 0.03 row above. | Same as 0.03 row above. | `# tbd: #191` for exact magnitude. Used by: medical×aggressive. |
+| `aug_presets.py:PRESET_TABLE[*].blur` | `0.03` | `# (b)` | — | — | `# tbd: #191`. Used by: medical×aggressive. Scalar maps to `sigma_limit=(0, 0.03×_GAUSS_BLUR_MAX_SIGMA)` in `data/transforms.py`. |
+| `aug_presets.py:PRESET_TABLE[*].blur` | `0.05` | `# (b)` | — | — | `# tbd: #191`. Used by: natural×aggressive, satellite×aggressive, microscopy×aggressive. Same mapping as 0.03 row above. |
+| `aug_presets.py:PRESET_TABLE[*].gauss_noise` | `0.01` | `# (b)` | — | — | `# tbd: #191`. Used by: medical×medium. Scalar maps to `std_range=(0, 0.01×_GAUSS_NOISE_MAX_VAR)` in `data/transforms.py`. |
+| `aug_presets.py:PRESET_TABLE[*].gauss_noise` | `0.02` | `# (b)` | — | — | `# tbd: #191`. Used by: natural×aggressive, satellite×aggressive, microscopy×aggressive. Same mapping as 0.01 row above. |
+| `aug_presets.py:PRESET_TABLE[*].gauss_noise` | `0.03` | `# (b)` | — | — | `# tbd: #191`. Used by: medical×aggressive. Same mapping as 0.01 row above. |
 
 ## data/channel_semantics.py
 

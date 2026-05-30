@@ -13,6 +13,22 @@ Public API:
   - dump_augmentation_pipeline(cfg) -> dict  (sidecar helper)
   - _STEP_NAMES_FOR(resolved) -> list[str]   (module-private; consumed by
     trainer + doctor for run-metadata + table display)
+
+Citation legend (full references in docs/defaults-provenance.md §data/aug_presets.py):
+  (a) domain convention — flip/rotate90 enabling booleans reflect the symmetry
+      properties of each domain (natural: left-right symmetric -> hflip; satellite:
+      no canonical orientation → hflip+vflip+rotate90; microscopy: no canonical
+      orientation → vflip+rotate90).  Domain rationale, not a published source.
+  (b) domain-tuned project magnitude — rotate_arbitrary degrees, color_jitter
+      scalar, blur scalar, gauss_noise scalar; no published reference and no
+      recorded internal calibration run.  # tbd: #191
+  (c) Ruifrok & Johnston 2001 (doi:10.1097/00000372-200112000-00001) /
+      Tellez et al. 2018 (arXiv:1804.02853) — H&E stain-jitter rationale: the
+      HED color-deconvolution basis used by StainJitter lives in
+      data/transforms.py:_HED_FROM_RGB_MATRIX.  Exact sigma magnitudes are
+      domain-tuned project choices with no published reference.  # tbd: #191
+  (d) laterality-driven locked-off — see LOCKED_OFF map; clinically or
+      structurally meaningful orientation; augmentation disabled by design.
 """
 
 from __future__ import annotations
@@ -33,69 +49,69 @@ _LOG = logging.getLogger(__name__)
 # Twelve cells for the four real domains. `none` and `custom` are short-circuited.
 PRESET_TABLE: dict[tuple[Preset, Intensity], dict[str, bool | float]] = {
     ("natural", "safe"): {
-        "hflip": True,
+        "hflip": True,  # (a)
         "vflip": False,
         "rotate90": False,
         "rotate_arbitrary": 0.0,
-        "color_jitter": 0.05,
+        "color_jitter": 0.05,  # (b)
         "stain_jitter": 0.0,
         "blur": 0.0,
         "gauss_noise": 0.0,
     },
     ("natural", "medium"): {
-        "hflip": True,
+        "hflip": True,  # (a)
         "vflip": False,
         "rotate90": False,
         "rotate_arbitrary": 0.0,
-        "color_jitter": 0.1,
+        "color_jitter": 0.1,  # (b)
         "stain_jitter": 0.0,
         "blur": 0.0,
         "gauss_noise": 0.0,
     },
     ("natural", "aggressive"): {
-        "hflip": True,
-        "vflip": True,
+        "hflip": True,  # (a)
+        "vflip": True,  # (a)
         "rotate90": False,
-        "rotate_arbitrary": 10.0,
-        "color_jitter": 0.2,
+        "rotate_arbitrary": 10.0,  # (b)
+        "color_jitter": 0.2,  # (b)
         "stain_jitter": 0.0,
-        "blur": 0.05,
-        "gauss_noise": 0.02,
+        "blur": 0.05,  # (b)
+        "gauss_noise": 0.02,  # (b)
     },
     ("medical", "safe"): {
-        "hflip": False,
-        "vflip": False,
-        "rotate90": False,
+        "hflip": False,  # (d)
+        "vflip": False,  # (d)
+        "rotate90": False,  # (d)
         "rotate_arbitrary": 0.0,
-        "color_jitter": 0.0,
+        "color_jitter": 0.0,  # (d)
         "stain_jitter": 0.0,
         "blur": 0.0,
         "gauss_noise": 0.0,
     },
     ("medical", "medium"): {
-        "hflip": False,
-        "vflip": False,
-        "rotate90": False,
-        "rotate_arbitrary": 5.0,
-        "color_jitter": 0.0,
-        "stain_jitter": 0.03,
+        "hflip": False,  # (d)
+        "vflip": False,  # (d)
+        "rotate90": False,  # (d)
+        "rotate_arbitrary": 5.0,  # (b)
+        "color_jitter": 0.0,  # (d)
+        "stain_jitter": 0.03,  # (c)
         "blur": 0.0,
-        "gauss_noise": 0.01,
+        "gauss_noise": 0.01,  # (b)
     },
     ("medical", "aggressive"): {
-        "hflip": False,
-        "vflip": False,
-        "rotate90": False,
-        "rotate_arbitrary": 10.0,
-        "color_jitter": 0.0,
-        "stain_jitter": 0.07,
-        "blur": 0.03,
-        "gauss_noise": 0.03,
+        "hflip": False,  # (d)
+        "vflip": False,  # (d)
+        "rotate90": False,  # (d)
+        "rotate_arbitrary": 10.0,  # (b)
+        "color_jitter": 0.0,  # (d)
+        "stain_jitter": 0.07,  # (c)
+        "blur": 0.03,  # (b)
+        "gauss_noise": 0.03,  # (b)
     },
     ("satellite", "safe"): {
-        "hflip": True,
-        "vflip": True,
-        "rotate90": True,
+        "hflip": True,  # (a)
+        "vflip": True,  # (a)
+        "rotate90": True,  # (a)
         "rotate_arbitrary": 0.0,
         "color_jitter": 0.0,
         "stain_jitter": 0.0,
@@ -103,54 +119,54 @@ PRESET_TABLE: dict[tuple[Preset, Intensity], dict[str, bool | float]] = {
         "gauss_noise": 0.0,
     },
     ("satellite", "medium"): {
-        "hflip": True,
-        "vflip": True,
-        "rotate90": True,
+        "hflip": True,  # (a)
+        "vflip": True,  # (a)
+        "rotate90": True,  # (a)
         "rotate_arbitrary": 0.0,
-        "color_jitter": 0.05,
+        "color_jitter": 0.05,  # (b)
         "stain_jitter": 0.0,
         "blur": 0.0,
         "gauss_noise": 0.0,
     },
     ("satellite", "aggressive"): {
-        "hflip": True,
-        "vflip": True,
-        "rotate90": True,
-        "rotate_arbitrary": 15.0,
-        "color_jitter": 0.1,
+        "hflip": True,  # (a)
+        "vflip": True,  # (a)
+        "rotate90": True,  # (a)
+        "rotate_arbitrary": 15.0,  # (b)
+        "color_jitter": 0.1,  # (b)
         "stain_jitter": 0.0,
-        "blur": 0.05,
-        "gauss_noise": 0.02,
+        "blur": 0.05,  # (b)
+        "gauss_noise": 0.02,  # (b)
     },
     ("microscopy", "safe"): {
-        "hflip": False,
-        "vflip": True,
-        "rotate90": True,
+        "hflip": False,  # (d)
+        "vflip": True,  # (a)
+        "rotate90": True,  # (a)
         "rotate_arbitrary": 0.0,
-        "color_jitter": 0.0,
+        "color_jitter": 0.0,  # (d)
         "stain_jitter": 0.0,
         "blur": 0.0,
         "gauss_noise": 0.0,
     },
     ("microscopy", "medium"): {
-        "hflip": False,
-        "vflip": True,
-        "rotate90": True,
+        "hflip": False,  # (d)
+        "vflip": True,  # (a)
+        "rotate90": True,  # (a)
         "rotate_arbitrary": 0.0,
-        "color_jitter": 0.0,
+        "color_jitter": 0.0,  # (d)
         "stain_jitter": 0.0,
         "blur": 0.0,
         "gauss_noise": 0.0,
     },
     ("microscopy", "aggressive"): {
-        "hflip": False,
-        "vflip": True,
-        "rotate90": True,
-        "rotate_arbitrary": 15.0,
-        "color_jitter": 0.0,
+        "hflip": False,  # (d)
+        "vflip": True,  # (a)
+        "rotate90": True,  # (a)
+        "rotate_arbitrary": 15.0,  # (b)
+        "color_jitter": 0.0,  # (d)
         "stain_jitter": 0.0,
-        "blur": 0.05,
-        "gauss_noise": 0.02,
+        "blur": 0.05,  # (b)
+        "gauss_noise": 0.02,  # (b)
     },
 }
 
