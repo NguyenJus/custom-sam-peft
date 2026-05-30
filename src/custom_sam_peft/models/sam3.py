@@ -21,7 +21,6 @@ if TYPE_CHECKING:
 
 import sam3
 import torch
-from sam3.model.box_ops import box_xyxy_to_cxcywh
 from sam3.model.data_misc import FindStage
 from sam3.model.geometry_encoders import Prompt
 from torch import Tensor, nn
@@ -105,67 +104,6 @@ def _classify_missing_keys(
     return "ok"
 
 
-def _build_geometric_prompt(
-    box_hints: list[Tensor | None],
-    n_cols: int,
-    image_size: int,
-    device: torch.device,
-) -> Prompt | None:
-    """Translate per-image box hints to Meta's ``Prompt`` container.
-
-    Layout pinned by docs/superpowers/plans/2026-05-17-training-loop-notes.md:
-      - ``Prompt.box_embeddings``: ``(N_boxes, B, 4)`` float, normalized cxcywh in ``[0, 1]``.
-      - ``Prompt.box_mask``: ``(B, N_boxes)`` bool, ``True`` = padded (PyTorch key-padding).
-      - ``box_labels`` left ``None`` (defaults to all-positive in the encoder).
-
-    Coordinate space: input boxes are absolute pixel xyxy; output is normalized
-    cxcywh in ``[0, 1]`` relative to ``image_size``.  The wrapper contract
-    assumes square images (``H == W == image_size``).
-
-    Padding is right-padded; pad slots filled with zeros (encoder filters via
-    the mask).  Returns ``None`` when every entry is ``None``; the adapter
-    substitutes Meta's zero-length-seq dummy (``Prompt(box_embeddings=zeros(0,
-    B, 4), box_mask=zeros(B, 0))``) in that case.
-    """
-    if len(box_hints) != n_cols:
-        raise ValueError(f"len(box_hints)={len(box_hints)} must equal n_cols={n_cols}")
-
-    if all(h is None for h in box_hints):
-        return None
-
-    b = n_cols
-    n_max = max((h.shape[0] for h in box_hints if h is not None), default=0)
-    if n_max == 0:
-        # All tensors present but empty (edge case — treat as all-None dummy).
-        return None
-
-    # Normalize scale: pixel xyxy → normalized xyxy → cxcywh.
-    scale = torch.tensor(
-        [image_size, image_size, image_size, image_size], dtype=torch.float32, device=device
-    )
-
-    # box_embeddings: (N_max, B, 4), box_mask: (B, N_max)
-    box_embeddings = torch.zeros(n_max, b, 4, dtype=torch.float32, device=device)
-    box_mask = torch.ones(b, n_max, dtype=torch.bool, device=device)  # True = padded
-
-    for i, h in enumerate(box_hints):
-        if h is None:
-            # Entire row stays masked (all True) and zero-filled.
-            continue
-        if h.ndim != 2 or h.shape[-1] != 4:
-            raise ValueError(f"box_hints[{i}] must have shape (M_i, 4); got {tuple(h.shape)}")
-        n_i = h.shape[0]
-        if n_i == 0:
-            continue
-        h_dev = h.to(device=device, dtype=torch.float32)
-        norm_xyxy = h_dev / scale  # (n_i, 4), normalized xyxy
-        cxcywh = box_xyxy_to_cxcywh(norm_xyxy)  # (n_i, 4), normalized cxcywh
-        box_embeddings[:n_i, i, :] = cxcywh
-        box_mask[i, :n_i] = False  # real hints are NOT padded
-
-    return Prompt(box_embeddings=box_embeddings, box_mask=box_mask, box_labels=None)
-
-
 # SAM 3.1's native input resolution. The model internally rescales every input
 # to 1008x1008, so this is a model property, not a user-configurable knob.
 # All call sites that need this number (transforms, box normalization, calibration
@@ -184,13 +122,8 @@ class Sam3Wrapper(nn.Module):
     Contract:
       - ``forward(images, prompts, support=None)`` accepts a batch of B images
         and a list of B ``Prompts`` objects (always ``TextPrompts`` after #126).
-      - ``support``: optional ``SupportPrompts`` carrying auxiliary localization
-        prompts. Today the only field is ``boxes``: a flat list of length
-        ``B·K``, ordered image-major / class-minor (all K class slots for image
-        0, then all K class slots for image 1, …). Each element is either
-        ``None`` (no geometric hint for that slot) or a ``(M_i, 4)`` float tensor
-        of absolute pixel xyxy boxes. For the common K=1 case the list length
-        equals B and the ordering is trivially image-major.
+      - ``support``: reserved no-op seam. Currently ignored; the forward is
+        text-only. Pass ``None`` or omit it.
       - Each ``TextPrompts`` may contain 1..MULTIPLEX_CAP class names; all
         prompts in a batch must share the same class list in the same order
         (multiplex forward assumes a shared K-prompt vocabulary).
@@ -229,8 +162,7 @@ class Sam3Wrapper(nn.Module):
         support: SupportPrompts | None = None,
     ) -> dict[str, Any]:
         self._validate_inputs(images, prompts, support)
-        box_hints = support.boxes if support is not None else None
-        out: dict[str, Any] = self.model(images, prompts, box_hints=box_hints)
+        out: dict[str, Any] = self.model(images, prompts)
         return out
 
     def _validate_inputs(
@@ -272,24 +204,6 @@ class Sam3Wrapper(nn.Module):
                     "list in the same order (multiplex forward assumes a "
                     "shared K-prompt vocabulary)."
                 )
-
-        boxes = support.boxes if support is not None else None
-        if boxes is not None:
-            # boxes length must be B*K (image-major / class-minor).
-            k = len(prompts[0].classes)
-            expected_len = b * k
-            if len(boxes) != expected_len:
-                raise ValueError(
-                    f"len(support.boxes)={len(boxes)} must equal batch size x classes "
-                    f"({b}x{k}={expected_len})"
-                )
-            for i, h in enumerate(boxes):
-                if h is None:
-                    continue
-                if h.ndim != 2 or h.shape[-1] != 4:
-                    raise ValueError(
-                        f"support.boxes[{i}] must have shape (M_i, 4); got {tuple(h.shape)}"
-                    )
 
 
 def _resolve_checkpoint_path(cfg: ModelConfig) -> Path:
@@ -357,17 +271,15 @@ def _build_channel_adapter(channels: int, channel_semantics: str) -> nn.Conv2d |
 
 
 class _Sam3ImageAdapter(nn.Module):
-    """Adapt raw Sam3Image to the (images, prompts, box_hints) calling convention.
+    """Adapt raw Sam3Image to the (images, prompts) calling convention.
 
     Sam3Image's training-mode forward (``forward_grounding``) expects
     ``(backbone_out, find_input, find_target, geometric_prompt)``, none of which
     are raw image tensors or our ``Prompts`` dataclasses.  This adapter holds the
     inner ``Sam3Image`` and orchestrates the conversion.
 
-    The ``box_hints`` kwarg routes per-image absolute-pixel xyxy box hints
-    through ``_build_geometric_prompt`` into Meta's ``Prompt`` container.  When
-    every entry is ``None`` (or the kwarg itself is ``None``), the builder
-    returns ``None`` and we substitute Meta's zero-length-seq dummy.
+    The backbone is called text-only: geometric_prompt is always the zero-length
+    dummy ``Prompt`` (no box hint routing).
 
     ``image_size`` is fixed to ``SAM3_IMAGE_SIZE``; SAM 3.1 always rescales
     inputs internally and does not expose a configurable resolution.
@@ -399,7 +311,6 @@ class _Sam3ImageAdapter(nn.Module):
         self,
         images: Tensor,
         prompts: list[Prompts],
-        box_hints: list[Tensor | None] | None = None,
     ) -> dict[str, Tensor]:
         if not all(isinstance(p, TextPrompts) for p in prompts):
             raise ValueError("_Sam3ImageAdapter only supports TextPrompts in v0")
@@ -437,19 +348,12 @@ class _Sam3ImageAdapter(nn.Module):
             input_points=None,
             input_points_mask=None,
         )
-        gp = _build_geometric_prompt(
-            box_hints if box_hints is not None else [None] * n_cols,
-            n_cols=n_cols,
-            image_size=self.image_size,
-            device=device,
+        gp = Prompt(
+            box_embeddings=torch.zeros(0, n_cols, 4, device=device, dtype=model_dtype),
+            box_mask=torch.zeros(n_cols, 0, device=device, dtype=torch.bool),
+            point_embeddings=torch.zeros(0, n_cols, 2, device=device, dtype=model_dtype),
+            point_mask=torch.zeros(n_cols, 0, device=device, dtype=torch.bool),
         )
-        if gp is None:
-            gp = Prompt(
-                box_embeddings=torch.zeros(0, n_cols, 4, device=device, dtype=model_dtype),
-                box_mask=torch.zeros(n_cols, 0, device=device, dtype=torch.bool),
-                point_embeddings=torch.zeros(0, n_cols, 2, device=device, dtype=model_dtype),
-                point_mask=torch.zeros(n_cols, 0, device=device, dtype=torch.bool),
-            )
         outputs: dict[str, Tensor] = self.model.forward_grounding(  # type: ignore[operator]
             backbone_out=backbone_out,
             find_input=find_input,

@@ -14,7 +14,6 @@ import random
 from pathlib import Path
 
 import numpy as np
-import pytest
 import torch
 
 from custom_sam_peft.config.schema import (
@@ -99,7 +98,6 @@ def test_save_load_roundtrip_preserves_optimizer_scheduler_rng_state(tmp_path: P
         global_step=3,
         epoch=0,
         nan_streak=0,
-        box_hint_p=cfg.train.box_hint.p_start,
         cfg=cfg,
     )
 
@@ -119,7 +117,6 @@ def test_save_load_roundtrip_preserves_optimizer_scheduler_rng_state(tmp_path: P
     assert rs.start_step == 3
     assert rs.start_epoch == 0
     assert rs.nan_streak == 0
-    assert rs.box_hint_p == pytest.approx(cfg.train.box_hint.p_start)
 
     sd_post = fresh_opt.state_dict()
     ssd_post = fresh_sched.state_dict()

@@ -63,13 +63,6 @@ train:
   # save_every: 1000
   log_every: 50
   nan_abort_after: 20
-  box_hint:
-    p_start: 1.0
-    p_end: 0.0
-    # decay_steps defaults to max(1, round(0.75 * epochs * steps_per_epoch)) when omitted:
-    # the box hint decays over the first 75% of the run, then trains at p=0.
-    # Uncomment and set an explicit integer to override:
-    # decay_steps: 5000
   loss:
     preset: $loss_preset
     class_imbalance: $class_imbalance

@@ -82,7 +82,6 @@ def test_save_full_state_writes_training_state_and_adapter(tmp_path: Path) -> No
         global_step=42,
         epoch=1,
         nan_streak=0,
-        box_hint_p=0.5,
         cfg=cfg,
     )
 
@@ -92,7 +91,6 @@ def test_save_full_state_writes_training_state_and_adapter(tmp_path: Path) -> No
     state = torch.load(state_file, weights_only=False)
     assert state["global_step"] == 42
     assert state["epoch"] == 1
-    assert state["box_hint_p"] == 0.5
     assert state["peft_method"] == "lora"
     assert "optimizer" in state and "scheduler" in state and "rng" in state
     assert "cfg_hash" in state
@@ -110,7 +108,7 @@ def test_load_full_state_restores_optimizer_and_step(tmp_path: Path) -> None:
             p.grad = torch.ones_like(p)
     opt_a.step()
     state_dir = tmp_path / "checkpoints" / "step_5"
-    save_full_state(state_dir, w_a, opt_a, sched_a, 5, 0, 0, 0.8, cfg)
+    save_full_state(state_dir, w_a, opt_a, sched_a, 5, 0, 0, cfg)
 
     w_b = make_stub_wrapper(dim=8)
     apply_lora(w_b, cfg.peft)
@@ -120,7 +118,6 @@ def test_load_full_state_restores_optimizer_and_step(tmp_path: Path) -> None:
     assert isinstance(rs, ResumeState)
     assert rs.start_step == 5
     assert rs.start_epoch == 0
-    assert rs.box_hint_p == 0.8
     assert any(opt_b.state.values())
 
 
@@ -131,7 +128,7 @@ def test_load_full_state_raises_on_peft_method_mismatch(tmp_path: Path) -> None:
     opt_a = _trainable_optimizer(w_a)
     sched_a = torch.optim.lr_scheduler.LambdaLR(opt_a, lr_lambda=lambda s: 1.0)
     state_dir = tmp_path / "checkpoints" / "step_0"
-    save_full_state(state_dir, w_a, opt_a, sched_a, 0, 0, 0, 1.0, cfg)
+    save_full_state(state_dir, w_a, opt_a, sched_a, 0, 0, 0, cfg)
 
     (state_dir / "adapter" / "custom_sam_peft_qlora.json").write_text(
         json.dumps({"format_version": 1, "quant_type": "nf4", "compute_dtype": "bfloat16"})
@@ -161,7 +158,7 @@ def test_rng_state_restored_after_resume(tmp_path: Path) -> None:
     _ = torch.rand(3)
 
     state_dir = tmp_path / "checkpoints" / "step_0"
-    save_full_state(state_dir, w_a, opt_a, sched_a, 0, 0, 0, 1.0, cfg)
+    save_full_state(state_dir, w_a, opt_a, sched_a, 0, 0, 0, cfg)
     expected_py = random.random()
     expected_np = np.random.rand(3).tolist()
     expected_torch = torch.rand(3).tolist()
@@ -519,3 +516,29 @@ def test_load_adapter_uses_discover_lora(tmp_path: Path, monkeypatch: pytest.Mon
     wrapper = MagicMock()
     ckpt_mod.load_adapter(wrapper, tmp_path)
     assert calls == ["lora"]
+
+
+def test_load_full_state_tolerates_legacy_box_hint_p_key(tmp_path: Path) -> None:
+    """Resume must ignore a stale box_hint_p key from a pre-#88 checkpoint."""
+    cfg = _make_cfg(tmp_path)
+    w_a = make_stub_wrapper(dim=8)
+    apply_lora(w_a, cfg.peft)
+    opt_a = _trainable_optimizer(w_a)
+    sched_a = torch.optim.lr_scheduler.LambdaLR(opt_a, lr_lambda=lambda s: 1.0)
+    state_dir = tmp_path / "checkpoints" / "step_7"
+    save_full_state(state_dir, w_a, opt_a, sched_a, 7, 0, 0, cfg)
+
+    # Simulate a pre-#88 checkpoint by re-injecting the legacy key.
+    state_file = state_dir / "training_state.pt"
+    payload = torch.load(state_file, weights_only=False)
+    payload["box_hint_p"] = 0.42
+    torch.save(payload, state_file)
+
+    w_b = make_stub_wrapper(dim=8)
+    apply_lora(w_b, cfg.peft)
+    opt_b = _trainable_optimizer(w_b)
+    sched_b = torch.optim.lr_scheduler.LambdaLR(opt_b, lr_lambda=lambda s: 1.0)
+    rs = load_full_state(state_dir, w_b, opt_b, sched_b, cfg)
+    assert isinstance(rs, ResumeState)
+    assert rs.start_step == 7
+    assert not hasattr(rs, "box_hint_p")

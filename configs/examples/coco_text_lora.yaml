@@ -60,10 +60,6 @@ train:
   save_every: 1000
   log_every: 50
   nan_abort_after: 20
-  box_hint:
-    p_start: 1.0
-    p_end: 0.0
-    decay_steps: 5000
   loss:
     preset: natural
     class_imbalance: balanced

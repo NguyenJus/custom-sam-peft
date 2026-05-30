@@ -58,10 +58,6 @@ train:
   save_every: 50
   log_every: 10
   num_workers: 0
-  box_hint:
-    p_start: 1.0
-    p_end: 0.0
-    decay_steps: 25
 
 tracking:
   backend: none

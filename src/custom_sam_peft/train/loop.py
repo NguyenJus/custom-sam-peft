@@ -1,17 +1,15 @@
 """Inner training step + epoch loop.
 
 `train_step` runs the per-batch class-vocabulary loop with per-class backward
-(O(forward) memory regardless of class count), Bernoulli box-hint sampling,
-and NaN-skip policy. `run_epoch` handles cadence: scalar logging every
-`log_every` micro-steps and full-state checkpoints (plus image panels) every
-`save_every`.
+(O(forward) memory regardless of class count) and NaN-skip policy. `run_epoch`
+handles cadence: scalar logging every `log_every` micro-steps and full-state
+checkpoints (plus image panels) every `save_every`.
 """
 
 from __future__ import annotations
 
 import contextlib
 import logging
-import random
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -22,8 +20,8 @@ import torch
 from torch import Tensor
 
 from custom_sam_peft.cli._progress import progress as P
-from custom_sam_peft.config.schema import BoxHintSchedule, TrainConfig
-from custom_sam_peft.data.base import Instance, SupportPrompts, TextPrompts
+from custom_sam_peft.config.schema import TrainConfig
+from custom_sam_peft.data.base import Instance, TextPrompts
 from custom_sam_peft.models.losses import total_loss
 from custom_sam_peft.models.sam3 import MULTIPLEX_CAP, Sam3Wrapper
 from custom_sam_peft.oom import OomDecision, OomLadder, _halve_microbatch
@@ -126,8 +124,6 @@ def _train_step_with_oom_ladder(
 @dataclass
 class StepResult:
     losses: dict[str, float]
-    p_t: float
-    n_hint_applied: int
     n_classes: int
     grad_norm: float | None
     skipped: bool
@@ -135,29 +131,15 @@ class StepResult:
     images_processed: int
 
     @classmethod
-    def empty(cls, p_t: float, nan_streak: int = 0) -> StepResult:
+    def empty(cls, nan_streak: int = 0) -> StepResult:
         return cls(
             losses={"mask": 0.0, "box": 0.0, "obj": 0.0, "presence": 0.0, "total": 0.0},
-            p_t=p_t,
-            n_hint_applied=0,
             n_classes=0,
             grad_norm=None,
             skipped=True,
             nan_streak=nan_streak,
             images_processed=0,
         )
-
-
-def _box_hint_p(global_step: int, cfg: BoxHintSchedule) -> float:
-    # decay_steps is None when not yet resolved (Trainer.fit resolves it before
-    # the first step; can be None in unit tests that call train_step directly).
-    # Fall back to p_start (no decay applied) so direct callers are not disrupted.
-    if cfg.decay_steps is None:
-        return cfg.p_start
-    if global_step >= cfg.decay_steps:
-        return cfg.p_end
-    frac = global_step / cfg.decay_steps
-    return cfg.p_start + (cfg.p_end - cfg.p_start) * frac
 
 
 def _autocast_ctx(cfg: TrainConfig, peft_method: PEFTMethod) -> Any:
@@ -197,12 +179,11 @@ def train_step(
     prompts = batch["prompts"]
     targets: list[list[Instance]] = batch["instances"]
     B = images.shape[0]
-    p_t = _box_hint_p(global_step, cfg.train.box_hint)
 
     classes_in_batch = sorted({c for p in prompts for c in p.classes})
     if not classes_in_batch:
         _LOG.warning("train_step: batch has no class prompts; skipping (data condition)")
-        return StepResult.empty(p_t=p_t, nan_streak=nan_streak)
+        return StepResult.empty(nan_streak=nan_streak)
 
     if oom_state is not None:
         oom_state.step = global_step
@@ -239,28 +220,19 @@ def train_step(
             "total": 0.0,
         }
         finite_group_count = 0
-        n_hint_applied = 0
 
         try:
             for group in groups:
                 # Build per-group prompts (all B images share the same class list).
                 prompts_g = [TextPrompts(classes=list(group)) for _ in range(B)]
 
-                # Build image-major / class-minor hints and targets.
-                # hints_g[i*K_g + j] covers image i, class group[j].
-                hints_g: list[Tensor | None] = []
+                # Build image-major / class-minor targets.
                 targets_g: list[list[Instance]] = []
                 for i in range(B):
                     for c in group:
                         c_dense = class_names.index(c)
                         row_targets = [inst for inst in targets[i] if inst.class_id == c_dense]
                         targets_g.append(row_targets)
-                        if row_targets and random.random() < p_t:  # noqa: S311 — training sampling probability, not security-sensitive
-                            box_tensor = torch.stack([inst.box for inst in row_targets])
-                            hints_g.append(to_device(box_tensor, runtime))
-                            n_hint_applied += 1
-                        else:
-                            hints_g.append(None)
 
                 group_losses: dict[str, Tensor] | None = None
                 group_scaled: Tensor | None = None
@@ -276,10 +248,10 @@ def train_step(
                         # n_micro in its denominator — doing so would double-scale gradients
                         # whenever n_micro > 1 (i.e., after any OOM halving).
                         #
-                        # The flat hint/target lists are image-major / class-minor with
+                        # The flat target list is image-major / class-minor with
                         # K_g slots per image. When the ladder halves B from mb to mb//2,
                         # we pass micro_indices [0..mb//2-1] and the closure slices the
-                        # flat hint list as hints_g[i*K_g : (i+1)*K_g] for each micro image.
+                        # flat target list for each micro image.
                         # This keeps the flat-row layout correct across all microbatch sizes.
                         K_g = len(group)
                         _last_group_losses: list[dict[str, Tensor]] = []
@@ -289,28 +261,23 @@ def train_step(
                             micro_indices: list[int],
                             _prompts_g: list[Any] = prompts_g,
                             _targets_g: list[list[Instance]] = targets_g,
-                            _hints_g: list[Tensor | None] = hints_g,
                             _K_g: int = K_g,
                             _G: int = G,
                             _grad_accum: int = cfg.train.grad_accum_steps,
                             _losses_out: list[dict[str, Tensor]] = _last_group_losses,
                             _pm: PEFTMethod = _peft_method,
                         ) -> Tensor:
-                            # Slice prompts and flat hint/target rows for this microbatch.
+                            # Slice prompts and flat target rows for this microbatch.
                             micro_prompts = [_prompts_g[i] for i in micro_indices]
                             # For each image i in micro_indices, take its K_g consecutive rows.
                             micro_targets = [
                                 _targets_g[i * _K_g + j] for i in micro_indices for j in range(_K_g)
-                            ]
-                            micro_hints = [
-                                _hints_g[i * _K_g + j] for i in micro_indices for j in range(_K_g)
                             ]
                             micro_imgs = images[micro_indices]
                             with _autocast_ctx(cfg, _pm):
                                 micro_out = _model(
                                     micro_imgs,
                                     micro_prompts,
-                                    support=SupportPrompts(boxes=micro_hints),
                                 )
                                 micro_grp_losses = total_loss(
                                     micro_out, micro_targets, cfg.train.loss
@@ -334,7 +301,7 @@ def train_step(
                             is_finite = bool(torch.isfinite(group_scaled_val))
                     else:
                         with _autocast_ctx(cfg, _peft_method):
-                            out = model(images, prompts_g, support=SupportPrompts(boxes=hints_g))
+                            out = model(images, prompts_g)
                             group_losses = total_loss(out, targets_g, cfg.train.loss)
                         group_scaled = group_losses["total"] / (G * cfg.train.grad_accum_steps)
                         is_finite = bool(torch.isfinite(group_scaled))
@@ -409,8 +376,6 @@ def train_step(
 
     return StepResult(
         losses={k: v / max(finite_group_count, 1) for k, v in accum.items()},
-        p_t=p_t,
-        n_hint_applied=n_hint_applied,
         n_classes=len(classes_in_batch),  # K_total: contract unchanged
         grad_norm=grad_norm,
         skipped=skipped,
@@ -430,13 +395,11 @@ class _ScalarWindow:
             "loss/box": 0.0,
             "loss/obj": 0.0,
             "loss/presence": 0.0,
-            "box_hint/applied": 0.0,
             "throughput/img_s": 0.0,
             "grad_norm": 0.0,
         }
     )
     grad_norm_n: int = 0
-    last_p_t: float = 0.0
     last_lr: float = 0.0
     images_in_window: int = 0
     wall_t0: float = field(default_factory=time.perf_counter)
@@ -451,13 +414,10 @@ class _ScalarWindow:
         self.sums["loss/box"] += r.losses["box"]
         self.sums["loss/obj"] += r.losses["obj"]
         self.sums["loss/presence"] += r.losses["presence"]
-        denom = max(r.n_classes * max(r.images_processed, 1), 1)
-        self.sums["box_hint/applied"] += r.n_hint_applied / denom
         self.images_in_window += r.images_processed
         if r.grad_norm is not None:
             self.sums["grad_norm"] += r.grad_norm
             self.grad_norm_n += 1
-        self.last_p_t = r.p_t
         self.last_lr = lr
 
     def flush(self) -> dict[str, float]:
@@ -470,8 +430,6 @@ class _ScalarWindow:
             "loss/obj": self.sums["loss/obj"] / n,
             "loss/presence": self.sums["loss/presence"] / n,
             "lr": self.last_lr,
-            "box_hint/p": self.last_p_t,
-            "box_hint/applied": self.sums["box_hint/applied"] / n,
             "grad_norm": (self.sums["grad_norm"] / self.grad_norm_n if self.grad_norm_n else 0.0),
             "throughput/img_s": self.images_in_window / elapsed,
             "skipped_steps": float(self.cumulative_skipped),
@@ -494,13 +452,13 @@ def run_epoch(
     global_step: int,
     nan_streak: int,
     class_names: list[str],
-    on_checkpoint: Callable[[int, int, float, int], None],
+    on_checkpoint: Callable[[int, int, int], None],
     on_eval: Callable[[int], None],
     peft_method: PEFTMethod | None = None,
     runtime: Runtime | None = None,
     oom_state: OomState | None = None,
 ) -> tuple[int, int]:
-    """Drive one epoch. `on_checkpoint(global_step, epoch, p_t, nan_streak)`
+    """Drive one epoch. `on_checkpoint(global_step, epoch, nan_streak)`
     is called at every `save_every` boundary; the trainer wires it to the
     checkpoint + image-panel routines. `on_eval(global_step)` is called at
     every `eval_every` boundary for lite mid-run evaluation."""
@@ -535,7 +493,7 @@ def run_epoch(
                 it_s=scalars.get("throughput/img_s", 0.0),
             )
         if cfg.train.save_every is not None and global_step % cfg.train.save_every == 0:
-            on_checkpoint(global_step, epoch, result.p_t, nan_streak)
+            on_checkpoint(global_step, epoch, nan_streak)
         if (
             cfg.train.eval_every is not None
             and global_step > 0

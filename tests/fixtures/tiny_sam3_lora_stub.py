@@ -106,7 +106,7 @@ class _StubAdapter(nn.Module):
         super().__init__()
         self.model = base
 
-    def forward(self, images: Any = None, prompts: Any = None, box_hints: Any = None) -> Any:
+    def forward(self, images: Any = None, prompts: Any = None) -> Any:
         return self.model(images, prompts)  # type: ignore[return-value]
 
 

@@ -32,7 +32,7 @@ from custom_sam_peft.train.checkpoint import (
     save_full_state,
     save_merged,
 )
-from custom_sam_peft.train.loop import OomState, _box_hint_p, run_epoch
+from custom_sam_peft.train.loop import OomState, run_epoch
 from custom_sam_peft.train.visualize import render_mask_panel
 
 _LOG = logging.getLogger(__name__)
@@ -125,10 +125,9 @@ def resolve_schedule_steps(
     *,
     save_every: int | None,
     eval_every: int | None,
-    decay_steps: int | None,
     epochs: int,
     steps_per_epoch: int,
-) -> tuple[int, int, int]:
+) -> tuple[int, int]:
     """Resolve None schedule fields to epoch-relative defaults.
 
     Called once ``steps_per_epoch = max(len(train_loader), 1)`` is known.
@@ -138,18 +137,13 @@ def resolve_schedule_steps(
     Resolution rules:
     - ``save_every``  → ``steps_per_epoch``
     - ``eval_every``  → ``steps_per_epoch``
-    - ``decay_steps`` → ``max(1, round(0.75 * epochs * steps_per_epoch))``
-      (box-hint decays over first 75% of the run; final 25% trains at p=0)
 
     Returns:
-        (save_every, eval_every, decay_steps) as resolved positive ints.
+        (save_every, eval_every) as resolved positive ints.
     """
     resolved_save = save_every if save_every is not None else steps_per_epoch
     resolved_eval = eval_every if eval_every is not None else steps_per_epoch
-    resolved_decay = (
-        decay_steps if decay_steps is not None else max(1, round(0.75 * epochs * steps_per_epoch))
-    )
-    return resolved_save, resolved_eval, resolved_decay
+    return resolved_save, resolved_eval
 
 
 class Trainer:
@@ -368,7 +362,6 @@ class Trainer:
         self,
         step: int,
         epoch: int,
-        p_t: float,
         nan_streak: int,
         run_dir: Path,
         optimizer: torch.optim.Optimizer,
@@ -392,7 +385,6 @@ class Trainer:
             global_step=step,
             epoch=epoch,
             nan_streak=nan_streak,
-            box_hint_p=p_t,
             cfg=self.cfg,
         )
         self._log_image_panel(val_examples, class_names, step)
@@ -430,26 +422,22 @@ class Trainer:
 
         # Resolve epoch-relative schedule defaults now that steps_per_epoch is known.
         steps_per_epoch = max(len(train_loader), 1)
-        resolved_save, resolved_eval, resolved_decay = resolve_schedule_steps(
+        resolved_save, resolved_eval = resolve_schedule_steps(
             save_every=cfg.train.save_every,
             eval_every=cfg.train.eval_every,
-            decay_steps=cfg.train.box_hint.decay_steps,
             epochs=cfg.train.epochs,
             steps_per_epoch=steps_per_epoch,
         )
         _LOG.info(
-            "schedule resolved: save_every=%d eval_every=%d decay_steps=%d (steps_per_epoch=%d)",
+            "schedule resolved: save_every=%d eval_every=%d (steps_per_epoch=%d)",
             resolved_save,
             resolved_eval,
-            resolved_decay,
             steps_per_epoch,
         )
-        resolved_box_hint = cfg.train.box_hint.model_copy(update={"decay_steps": resolved_decay})
         resolved_train = cfg.train.model_copy(
             update={
                 "save_every": resolved_save,
                 "eval_every": resolved_eval,
-                "box_hint": resolved_box_hint,
             }
         )
         cfg = cfg.model_copy(update={"train": resolved_train})
@@ -481,7 +469,6 @@ class Trainer:
             start_step=0,
             start_epoch=0,
             nan_streak=0,
-            box_hint_p=cfg.train.box_hint.p_start,
         )
         if resume_from is not None:
             rs = load_full_state(resume_from, self.model, optimizer, scheduler, cfg)
@@ -497,9 +484,9 @@ class Trainer:
             effective_K=min(cfg.train.multiplex.classes_per_forward, _MULTIPLEX_CAP),
         )
 
-        def on_checkpoint(step: int, epoch: int, p_t: float, streak: int) -> None:
+        def on_checkpoint(step: int, epoch: int, streak: int) -> None:
             self._maybe_checkpoint(
-                step, epoch, p_t, streak, run_dir, optimizer, scheduler, class_names, val_examples
+                step, epoch, streak, run_dir, optimizer, scheduler, class_names, val_examples
             )
 
         def on_eval(step: int) -> None:
@@ -552,7 +539,6 @@ class Trainer:
                             "n_predictions": full_report.n_predictions,
                             "global_step": global_step,
                             "epoch": cfg.train.epochs - 1,
-                            "box_hint_p_final": _box_hint_p(global_step, cfg.train.box_hint),
                         },
                         indent=2,
                     )
@@ -564,7 +550,6 @@ class Trainer:
                             "note": "no validation set provided",
                             "global_step": global_step,
                             "epoch": cfg.train.epochs - 1,
-                            "box_hint_p_final": _box_hint_p(global_step, cfg.train.box_hint),
                         },
                         indent=2,
                     )

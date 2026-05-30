@@ -39,7 +39,6 @@ __all__ = [  # noqa: RUF022
     # User-facing Pydantic models
     "AugmentationOverrides",
     "AugmentationsConfig",
-    "BoxHintSchedule",
     "ClassImbalance",
     "DataConfig",
     "DataSplit",
@@ -502,44 +501,6 @@ class PEFTConfig(_Strict):
     qlora: QLoRAConfig = Field(default_factory=QLoRAConfig)
 
 
-class BoxHintSchedule(_Strict):
-    """Linear-decay schedule for per-image probability of feeding GT boxes
-    as a localization hint alongside the text prompt.
-
-    p(t) = max(p_end, p_start + (p_end - p_start) * t / decay_steps)
-    where t = global_step. Applied per-image via Bernoulli(p(t)) over each
-    image's GT boxes for the currently-prompted class.
-
-    early_stop_p_threshold is consumed by a future early-stopping mechanism
-    (not by the training-loop spec): a run MUST NOT terminate early while
-    current p(t) >= this value. Recorded here so the constraint is
-    co-located with the schedule it gates.
-    """
-
-    p_start: float = Field(default=1.0, ge=0.0, le=1.0)
-    p_end: float = Field(default=0.0, ge=0.0, le=1.0)
-    decay_steps: PositiveInt | None = Field(
-        default=None,
-        description=(
-            "Steps over which box-hint probability decays from p_start to p_end. "
-            "None (default) means auto-resolve at runtime to "
-            "max(1, round(0.75 * epochs * steps_per_epoch)), "
-            "so the schedule decays over the first 75% of the run."
-        ),
-    )
-    # early_stop_p_threshold demoted (audit Section E): no active src consumer;
-    # retained as seam scaffolding for a future early-stopping mechanism.
-    # See follow-up issue (Section J4). Not user-settable from YAML.
-
-    @model_validator(mode="after")
-    def _check_monotone(self) -> BoxHintSchedule:
-        if self.p_end > self.p_start:
-            raise ValueError(
-                f"BoxHintSchedule must decay: p_end ({self.p_end}) > p_start ({self.p_start})"
-            )
-        return self
-
-
 class MultiplexConfig(_Strict):
     """Multiplex forward knobs.
 
@@ -567,7 +528,6 @@ class TrainHyperparams(_Strict):
             "so one checkpoint per epoch."
         ),
     )
-    box_hint: BoxHintSchedule = Field(default_factory=BoxHintSchedule)
     log_every: PositiveInt = 50
     # --- advanced ---
     max_grad_norm: PositiveFloat = 1.0

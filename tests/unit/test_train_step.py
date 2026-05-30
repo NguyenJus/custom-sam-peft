@@ -1,8 +1,7 @@
-"""Step-body unit tests: schedule math, class loop, hint sampling, NaN policy."""
+"""Step-body unit tests: class loop, NaN policy."""
 
 from __future__ import annotations
 
-import random
 from typing import Any
 
 import pytest
@@ -10,7 +9,6 @@ import torch
 from torch import nn
 
 from custom_sam_peft.config.schema import (
-    BoxHintSchedule,
     DataConfig,
     DataSplit,
     MultiplexConfig,
@@ -21,7 +19,7 @@ from custom_sam_peft.config.schema import (
 )
 from custom_sam_peft.data.base import Instance, TextPrompts
 from custom_sam_peft.models.sam3 import Sam3Wrapper
-from custom_sam_peft.train.loop import _box_hint_p, train_step
+from custom_sam_peft.train.loop import train_step
 from tests.fixtures.tiny_sam3_stub import TinySam3Stub
 
 
@@ -64,18 +62,6 @@ def _batch(prompts: list[list[str]], instances: list[list[Instance]]) -> dict[st
     }
 
 
-def test_box_hint_p_endpoints() -> None:
-    s = BoxHintSchedule(p_start=1.0, p_end=0.0, decay_steps=10)
-    assert _box_hint_p(0, s) == 1.0
-    assert _box_hint_p(10, s) == 0.0
-    assert _box_hint_p(20, s) == 0.0
-
-
-def test_box_hint_p_midpoint() -> None:
-    s = BoxHintSchedule(p_start=1.0, p_end=0.0, decay_steps=10)
-    assert abs(_box_hint_p(5, s) - 0.5) < 1e-6
-
-
 def test_train_step_class_loop_visits_union(monkeypatch: pytest.MonkeyPatch) -> None:
     """For a 2-image batch with classes {A,B} and {A}, the wrapper is called once
     with the full union sorted alphabetically as a single multiplex group
@@ -100,7 +86,6 @@ def test_train_step_class_loop_visits_union(monkeypatch: pytest.MonkeyPatch) -> 
     )
     optimizer = torch.optim.AdamW([p for p in wrapper.parameters() if p.requires_grad], lr=1e-4)
     scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda=lambda s: 1.0)
-    monkeypatch.setattr(random, "random", lambda: 1.0)
     result = train_step(
         wrapper,
         batch,
@@ -116,37 +101,6 @@ def test_train_step_class_loop_visits_union(monkeypatch: pytest.MonkeyPatch) -> 
     # That single call should contain all classes from the union (sorted).
     assert sorted(calls[0]) == ["A", "B"]
     assert not result.skipped
-
-
-def test_train_step_box_hint_sampling(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Patched `random.random()` sequence drives Bernoulli sampling."""
-    cfg = _make_cfg()
-    cfg.train.box_hint.p_start = 0.5
-    cfg.train.box_hint.p_end = 0.5
-    wrapper = _make_wrapper()
-
-    hint_records: list[list[bool]] = []
-
-    def spy(images: torch.Tensor, prompts: list[Any], support: Any = None) -> Any:
-        boxes = support.boxes if support is not None else None
-        hint_records.append([h is not None for h in (boxes or [None] * len(prompts))])
-        return TinySam3Stub(num_queries=4, mask_size=8).forward(images, prompts)
-
-    monkeypatch.setattr(wrapper, "forward", spy)
-
-    batch = _batch(
-        prompts=[["A"], ["A"]],
-        instances=[[_instance(0)], [_instance(0)]],
-    )
-    optimizer = torch.optim.AdamW([p for p in wrapper.parameters() if p.requires_grad], lr=1e-4)
-    scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda=lambda s: 1.0)
-    coin_seq = iter([0.1, 0.9])
-    monkeypatch.setattr(random, "random", lambda: next(coin_seq))
-
-    train_step(
-        wrapper, batch, optimizer, scheduler, cfg, class_names=["A"], global_step=0, nan_streak=0
-    )
-    assert hint_records == [[True, False]]
 
 
 def test_train_step_nan_in_one_class_does_not_count_as_skip(
@@ -171,7 +125,6 @@ def test_train_step_nan_in_one_class_does_not_count_as_skip(
     batch = _batch(prompts=[["A", "B"]], instances=[[_instance(0), _instance(1)]])
     optimizer = torch.optim.AdamW([p for p in wrapper.parameters() if p.requires_grad], lr=1e-4)
     scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda=lambda s: 1.0)
-    monkeypatch.setattr(random, "random", lambda: 1.0)
     result = train_step(
         wrapper,
         batch,
@@ -201,7 +154,6 @@ def test_train_step_nan_in_all_classes_increments_streak(
     batch = _batch(prompts=[["A"]], instances=[[_instance(0)]])
     optimizer = torch.optim.AdamW([p for p in wrapper.parameters() if p.requires_grad], lr=1e-4)
     scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda=lambda s: 1.0)
-    monkeypatch.setattr(random, "random", lambda: 1.0)
     result = train_step(
         wrapper, batch, optimizer, scheduler, cfg, class_names=["A"], global_step=0, nan_streak=5
     )
@@ -224,7 +176,6 @@ def test_train_step_aborts_after_nan_abort_after(
     batch = _batch(prompts=[["A"]], instances=[[_instance(0)]])
     optimizer = torch.optim.AdamW([p for p in wrapper.parameters() if p.requires_grad], lr=1e-4)
     scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda=lambda s: 1.0)
-    monkeypatch.setattr(random, "random", lambda: 1.0)
     with pytest.raises(RuntimeError, match="non-finite"):
         train_step(
             wrapper,
@@ -239,7 +190,6 @@ def test_train_step_aborts_after_nan_abort_after(
 
 
 def test_train_step_empty_classes_does_not_bump_streak(
-    monkeypatch: pytest.MonkeyPatch,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     cfg = _make_cfg()
@@ -247,7 +197,6 @@ def test_train_step_empty_classes_does_not_bump_streak(
     batch = _batch(prompts=[[], []], instances=[[], []])
     optimizer = torch.optim.AdamW([p for p in wrapper.parameters() if p.requires_grad], lr=1e-4)
     scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda=lambda s: 1.0)
-    monkeypatch.setattr(random, "random", lambda: 1.0)
     result = train_step(
         wrapper, batch, optimizer, scheduler, cfg, class_names=[], global_step=0, nan_streak=4
     )

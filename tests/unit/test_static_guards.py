@@ -47,19 +47,14 @@ def test_no_peft_method_branches_outside_peft_adapters():
 def test_no_to_device_outside_collator_and_runtime():
     """Spec §3 #3: device-move sites collapse to data collator + runtime/.
 
-    Allowed exceptions beyond runtime/ and data/collate.py:
-      - /models/sam3.py (_build_geometric_prompt): model-internal dtype coercion
-        of caller-supplied box hints to float32 on the model's own device.
-        The device argument is derived from model allocations (not a dataset
-        tensor move), and the call must also cast dtype — runtime.to_device
-        only targets device placement, not dtype coercion. This is not a
-        scattered dataset-to-device move; it belongs to model internals.
+    No allowed exceptions beyond runtime/ and data/collate.py: sam3.py is
+    text-only after #88 (no box-hint coercion).
     """
     hits = _grep(r"\.to\(device", in_dir=SRC)
-    allowed_substrings = ("/runtime/", "/data/collate.py", "/models/sam3.py")
+    allowed_substrings = ("/runtime/", "/data/collate.py")
     offenders = [h for h in hits if not any(allowed in h for allowed in allowed_substrings)]
     assert not offenders, (
-        "`.to(device)` outside runtime/, data/collate.py, and models/sam3.py.\n"
+        "`.to(device)` outside runtime/ and data/collate.py.\n"
         "Route all device moves through runtime.to_device. Offenders:\n  " + "\n  ".join(offenders)
     )
 

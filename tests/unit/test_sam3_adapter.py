@@ -48,7 +48,7 @@ def test_adapter_builds_img_text_ids_image_major(b: int, k: int) -> None:
     classes = [f"c{i}" for i in range(k)]
     prompts = [TextPrompts(classes=classes) for _ in range(b)]
 
-    out = adapter(images, prompts, box_hints=None)
+    out = adapter(images, prompts)
 
     find_input = captured["find_input"]
     # image-major / class-minor: img_ids = arange(B).repeat_interleave(K)
@@ -73,7 +73,7 @@ def test_adapter_calls_forward_text_once_with_k_names(b: int, k: int) -> None:
 
     classes = [f"c{i}" for i in range(k)]
     prompts = [TextPrompts(classes=classes) for _ in range(b)]
-    adapter(torch.zeros(b, 3, 8, 8), prompts, box_hints=None)
+    adapter(torch.zeros(b, 3, 8, 8), prompts)
 
     # forward_text called exactly once with the K class names.
     assert inner.backbone.forward_text.call_count == 1

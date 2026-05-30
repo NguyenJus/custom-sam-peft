@@ -2,7 +2,7 @@
 
 Persists adapter weights via the appropriate PEFT module (LoRA vs QLoRA
 detected by Linear4bit-presence) and a sibling `training_state.pt` carrying
-optimizer / scheduler / RNG / step / epoch / box_hint_p.
+optimizer / scheduler / RNG / step / epoch.
 
 Resume granularity is epoch-boundary: the trainer re-walks the interrupted
 epoch (RNG-restored shuffling replays the same order). See
@@ -79,7 +79,6 @@ class ResumeState:
     start_step: int
     start_epoch: int
     nan_streak: int
-    box_hint_p: float
 
 
 def _has_linear4bit(wrapper: Sam3Wrapper) -> bool:
@@ -153,7 +152,6 @@ def save_full_state(
     global_step: int,
     epoch: int,
     nan_streak: int,
-    box_hint_p: float,
     cfg: TrainConfig,
 ) -> None:
     state_dir.mkdir(parents=True, exist_ok=True)
@@ -170,7 +168,6 @@ def save_full_state(
             "torch_cpu": torch.get_rng_state(),
             "torch_cuda": (torch.cuda.get_rng_state_all() if torch.cuda.is_available() else None),
         },
-        "box_hint_p": float(box_hint_p),
         "nan_streak": int(nan_streak),
         "peft_method": cfg.peft.method,
         "cfg_hash": _hash_cfg(cfg),
@@ -241,7 +238,6 @@ def load_full_state(
         start_step=int(state["global_step"]),
         start_epoch=int(state["epoch"]),
         nan_streak=int(state["nan_streak"]),
-        box_hint_p=float(state["box_hint_p"]),
     )
 
 

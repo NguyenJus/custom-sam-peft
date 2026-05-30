@@ -31,29 +31,17 @@ def test_example_holds_image_prompts_and_instances() -> None:
 
 
 def test_support_prompts_dataclass() -> None:
-    """SupportPrompts is a frozen dataclass with one optional `boxes` field."""
+    """SupportPrompts is a frozen, field-less reserved seam dataclass."""
     import dataclasses
 
-    import pytest
+    # Default (and only) ctor: no fields.
+    s = SupportPrompts()
+    assert dataclasses.is_dataclass(s)
+    assert dataclasses.fields(s) == ()
 
-    # Default ctor: boxes is None.
-    s_default = SupportPrompts()
-    assert s_default.boxes is None
-    assert dataclasses.is_dataclass(s_default)
-
-    # With per-image boxes (some None, some (M_i, 4) tensors).
-    s = SupportPrompts(boxes=[torch.zeros(2, 4), None])
-    assert s.boxes is not None
-    assert s.boxes[0].shape == (2, 4)
-    assert s.boxes[1] is None
-
-    # Frozen: direct field assignment raises FrozenInstanceError.
-    with pytest.raises(dataclasses.FrozenInstanceError):
-        s.boxes = None  # type: ignore[misc]
-
-    # dataclasses.replace works (frozen instances support copy-with-changes).
-    s2 = dataclasses.replace(s, boxes=None)
-    assert s2.boxes is None
+    # dataclasses.replace still works on a field-less frozen instance.
+    s2 = dataclasses.replace(s)
+    assert s2 == s
 
 
 class _FakeDataset:

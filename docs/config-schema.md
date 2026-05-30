@@ -123,9 +123,6 @@ Training hyperparameters and schedule.
 | `train.warmup_steps` | int (≥0) | `100` | common | Number of optimizer steps over which the LR linearly warms up from 0. | Audit §E: 4/4 examples set it; warm-up prevents early-step divergence. |
 | `train.save_every` | int (>0) | `1000` | common | Save a checkpoint every N optimizer steps. | Audit §E: 4/4 examples set it; controls checkpoint frequency and disk usage. |
 | `train.log_every` | int (>0) | `50` | common | Log scalar metrics every N optimizer steps. | Audit §E: 4/4 examples set it; determines monitoring granularity. |
-| `train.box_hint.p_start` | float [0, 1] | `1.0` | common | Starting probability of feeding a GT bounding box hint alongside the text prompt. | Audit §E: 4/4 examples set it; controls how much box supervision the model receives early in training. |
-| `train.box_hint.p_end` | float [0, 1] | `0.0` | common | Ending probability after the linear-decay schedule completes. | Audit §E: 4/4 examples set it; `0.0` means pure text-prompt inference after warm-up. |
-| `train.box_hint.decay_steps` | int (>0) | `5000` | common | Number of global steps over which `p` decays from `p_start` to `p_end`. | Audit §E: 4/4 examples set it; should match or exceed `warmup_steps`. |
 
 ### Advanced fields
 
