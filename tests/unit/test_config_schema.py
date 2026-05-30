@@ -139,7 +139,6 @@ def test_all_public_submodels_are_importable() -> None:
     # User-facing Pydantic models (audit Section G: user-set fields)
     expected_user_facing = {
         "AugmentationsConfig",
-        "BoxHintSchedule",
         "DataConfig",
         "DataSplit",
         "EvalConfig",
@@ -614,3 +613,14 @@ def test_eval_config_visualize_count_must_be_positive() -> None:
 
     with pytest.raises(ValidationError):
         EvalConfig(visualize_count=0)
+
+
+def test_box_hint_field_rejected_by_schema() -> None:
+    """After #88 removal, train.box_hint is no longer a valid field."""
+    import pytest
+    from pydantic import ValidationError
+
+    from custom_sam_peft.config.schema import TrainHyperparams
+
+    with pytest.raises(ValidationError):
+        TrainHyperparams(epochs=1, box_hint={"p_start": 1.0, "p_end": 0.0})
