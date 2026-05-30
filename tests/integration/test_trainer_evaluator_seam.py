@@ -117,6 +117,8 @@ def test_trainer_fit_returns_eval_artifacts(tmp_path: Path) -> None:
     assert result.run_dir.is_dir()
     assert result.checkpoint_path.exists()
     assert result.peft_method in {"lora", "qlora"}
+    # Normal (non-time-limited) path: the new optional field defaults to None.
+    assert result.time_limit_stop is None
 
 
 def test_evaluator_consumes_only_eval_artifacts(tmp_path: Path) -> None:
