@@ -29,9 +29,9 @@ class MatcherWeights:
     constants (audit Section E: YAGNI demote — no config sets them; always 0.0).
     """
 
-    lambda_l1: float = 0.0
-    lambda_giou: float = 0.0
-    lambda_mask: float = 5.0
+    lambda_l1: float = 0.0  # cite: degenerate-case (text-only v0: box terms disabled)
+    lambda_giou: float = 0.0  # cite: degenerate-case (text-only v0: box terms disabled)
+    lambda_mask: float = 5.0  # tbd: #191 (mask-only matcher cost; no verified source)
 
 
 @dataclass

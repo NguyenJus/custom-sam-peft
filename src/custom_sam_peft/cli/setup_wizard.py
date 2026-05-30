@@ -359,7 +359,7 @@ def _ask_epochs(ctx: Ctx) -> dict[str, Any]:
         except ValueError:
             return "epochs must be a positive integer"
 
-    epochs = ask_text("Number of epochs?", default="10", validate=_positive_int)
+    epochs = ask_text("Number of epochs?", default="160", validate=_positive_int)
     return {"train": {"epochs": int(epochs)}}
 
 

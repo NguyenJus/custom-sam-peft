@@ -41,7 +41,7 @@ peft:
   dropout: 0.05
 
 train:
-  epochs: 10
+  epochs: 160
   batch_size: 1
   grad_accum_steps: 8
   optimizer: auto

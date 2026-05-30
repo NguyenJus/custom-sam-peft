@@ -8,11 +8,15 @@ Not in CI by default. Run with:
 
 Phase A trains ~26 grad steps (epochs=13 against 2-image tiny_coco, batch=1,
 just past save_every=25 to land a checkpoint). Phase B resumes from that
-checkpoint and trains the full shipped 50-step budget (epochs=25). Net GPU
-time is roughly one extra `test_qlora_overfits_in_50_steps`; the resume
-seam can only be exercised end-to-end against real bnb 4-bit weights
-(CPU stub at tiny_sam3_lora_stub.py cannot replicate Linear4bit). See
-spec §6.1 T1 and §7.
+checkpoint and completes the test's own 2-image overfit smoke budget
+(epochs=25, i.e. 50 forward steps over the 2-image set) — this is NOT the
+production training default (which is 160 epochs, set in init_cmd.py /
+setup_wizard.py; see also #195 tracking this smoke budget's speed and
+convergence). Net GPU time is roughly one extra
+`test_qlora_overfits_in_50_steps`; the resume seam can only be exercised
+end-to-end against real bnb 4-bit weights (CPU stub at
+tiny_sam3_lora_stub.py cannot replicate Linear4bit). See spec §6.1 T1
+and §7.
 """
 
 from __future__ import annotations

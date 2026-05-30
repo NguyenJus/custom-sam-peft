@@ -58,13 +58,14 @@ def _warn_freeform_augs_once() -> None:
 # 2026-05-21 config-defaults audit (supersedes the 2026-05-16 model-loading
 # spec's [0.5, 0.5, 0.5] claim).
 KNOWN_PROCESSOR_STATS: dict[str, tuple[list[float], list[float]]] = {
+    # cite: ImageNet stats (HF Sam3ImageProcessor)
     "facebook/sam3.1": ([0.485, 0.456, 0.406], [0.229, 0.224, 0.225]),
 }
 
 # Element-wise absolute tolerance for table-vs-processor divergence detection
 # on path 1. Loose enough to absorb float-serialization noise; tight enough
 # to catch a real change (e.g. [0.5, 0.5, 0.5] diverges by >=0.014 per channel).
-_STATS_DIVERGENCE_ATOL = 1e-3
+_STATS_DIVERGENCE_ATOL = 1e-3  # cite: empirical ([0.5,0.5,0.5] drift; rationale above)
 
 # ---------------------------------------------------------------------------
 # StainJitter — HED-space color deconvolution for H&E histopathology
@@ -73,7 +74,7 @@ _STATS_DIVERGENCE_ATOL = 1e-3
 # ---------------------------------------------------------------------------
 
 # Ruifrok & Johnston 2001 HED basis vectors (rows = stains: H, E, DAB).
-_HED_FROM_RGB_MATRIX: NDArray[np.float32] = np.array(
+_HED_FROM_RGB_MATRIX: NDArray[np.float32] = np.array(  # cite: Ruifrok & Johnston 2001
     [
         [0.65, 0.70, 0.29],
         [0.07, 0.99, 0.11],
@@ -84,8 +85,8 @@ _HED_FROM_RGB_MATRIX: NDArray[np.float32] = np.array(
 _HED_FROM_RGB_INV: NDArray[np.float32] = np.linalg.inv(_HED_FROM_RGB_MATRIX).astype(np.float32)
 
 # Magnitude → Albumentations parameter projection constants — spec §8.1.
-_GAUSS_NOISE_MAX_VAR: float = 0.05
-_GAUSS_BLUR_MAX_SIGMA: float = 3.0
+_GAUSS_NOISE_MAX_VAR: float = 0.05  # tbd: #191
+_GAUSS_BLUR_MAX_SIGMA: float = 3.0  # tbd: #191
 
 
 def _stats_diverge(

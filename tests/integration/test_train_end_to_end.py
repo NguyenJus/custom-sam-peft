@@ -61,6 +61,16 @@ def test_fit_end_to_end_on_tiny_coco(backend: str, tmp_path: Path, tiny_coco_dir
     ds_val = _ds(tiny_coco_dir, "eval")
     wrapper = make_stub_wrapper(dim=8, working=True)
 
+    # Default-path guard: the practical optimizer/regularization hyperparameters
+    # (learning_rate, lr_schedule, optimizer, max_grad_norm, peft.r/alpha/dropout)
+    # are left at their schema defaults so this end-to-end run exercises the real
+    # default training path. `epochs` is truncated (to 1) for CI runtime — NOT run
+    # to convergence — and `warmup_steps=0` follows from that truncation (a 100-step
+    # warmup never completes in a 1-epoch tiny-dataset run). `peft.scope="vision"`
+    # (with the matching fixture `target_modules`) is pinned to the stub's vision
+    # subtree, not the shipped `"vision_decoder"` default — the CPU LoRA stub only
+    # models the vision blocks. See docs/defaults-provenance.md "Reference Training
+    # Profile" for the shipped epochs default.
     cfg = TrainConfig(
         run=RunConfig(name="e2e", output_dir=str(tmp_path), seed=0),
         data=DataConfig(
@@ -123,6 +133,16 @@ def test_end_to_end_writes_loss_bundle_json(tmp_path: Path, tiny_coco_dir: Path)
     ds_val = _ds(tiny_coco_dir, "eval")
     wrapper = make_stub_wrapper(dim=8, working=True)
 
+    # Default-path guard: the practical optimizer/regularization hyperparameters
+    # (learning_rate, lr_schedule, optimizer, max_grad_norm, peft.r/alpha/dropout)
+    # are left at their schema defaults so this end-to-end run exercises the real
+    # default training path. `epochs` is truncated (to 1) for CI runtime — NOT run
+    # to convergence — and `warmup_steps=0` follows from that truncation (a 100-step
+    # warmup never completes in a 1-epoch tiny-dataset run). `peft.scope="vision"`
+    # (with the matching fixture `target_modules`) is pinned to the stub's vision
+    # subtree, not the shipped `"vision_decoder"` default — the CPU LoRA stub only
+    # models the vision blocks. See docs/defaults-provenance.md "Reference Training
+    # Profile" for the shipped epochs default.
     cfg = TrainConfig(
         run=RunConfig(name="e2e-loss-sidecar", output_dir=str(tmp_path), seed=0),
         data=DataConfig(
@@ -181,6 +201,11 @@ def _bad_data_cfg(
     images: Path,
 ) -> TrainConfig:
     """Minimal TrainConfig pointing at a (likely-broken) annotations/images pair."""
+    # Error-path fixture (NOT a default-path guard): builds a structurally minimal
+    # LoRA config so the bad-data tests reach the data-loading error they exercise,
+    # rather than failing earlier. `epochs=1` / `warmup_steps=0` and
+    # `peft.scope="vision"` (matching the stub's vision subtree) keep the config
+    # cheap and stub-compatible; training is not run to convergence here.
     return TrainConfig(
         run=RunConfig(name="bad-data", output_dir=str(tmp_path), seed=0),
         data=DataConfig(
@@ -365,6 +390,16 @@ def test_e2e_auto_split_on_tiny_coco(tmp_path: Path, tiny_coco_dir: Path) -> Non
     from custom_sam_peft.config.schema import ValSplitConfig
     from custom_sam_peft.data.val_source import load_val_source
 
+    # Default-path guard: the practical optimizer/regularization hyperparameters
+    # (learning_rate, lr_schedule, optimizer, max_grad_norm, peft.r/alpha/dropout)
+    # are left at their schema defaults so this end-to-end run exercises the real
+    # default training path. `epochs` is truncated (to 1) for CI runtime — NOT run
+    # to convergence — and `warmup_steps=0` follows from that truncation (a 100-step
+    # warmup never completes in a 1-epoch tiny-dataset run). `peft.scope="vision"`
+    # (with the matching fixture `target_modules`) is pinned to the stub's vision
+    # subtree, not the shipped `"vision_decoder"` default — the CPU LoRA stub only
+    # models the vision blocks. See docs/defaults-provenance.md "Reference Training
+    # Profile" for the shipped epochs default.
     cfg = TrainConfig(
         run=RunConfig(name="e2e-auto", output_dir=str(tmp_path), seed=0),
         data=DataConfig(
@@ -414,6 +449,16 @@ def test_e2e_no_val_on_tiny_coco(tmp_path: Path, tiny_coco_dir: Path) -> None:
     import custom_sam_peft.train.runner as runner_mod
     from custom_sam_peft.data.val_source import load_val_source
 
+    # Default-path guard: the practical optimizer/regularization hyperparameters
+    # (learning_rate, lr_schedule, optimizer, max_grad_norm, peft.r/alpha/dropout)
+    # are left at their schema defaults so this end-to-end run exercises the real
+    # default training path. `epochs` is truncated (to 1) for CI runtime — NOT run
+    # to convergence — and `warmup_steps=0` follows from that truncation (a 100-step
+    # warmup never completes in a 1-epoch tiny-dataset run). `peft.scope="vision"`
+    # (with the matching fixture `target_modules`) is pinned to the stub's vision
+    # subtree, not the shipped `"vision_decoder"` default — the CPU LoRA stub only
+    # models the vision blocks. See docs/defaults-provenance.md "Reference Training
+    # Profile" for the shipped epochs default.
     cfg = TrainConfig(
         run=RunConfig(name="e2e-noval", output_dir=str(tmp_path), seed=0),
         data=DataConfig(

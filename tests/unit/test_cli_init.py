@@ -327,7 +327,7 @@ def test_init_other_fields_parse_identically(tmp_path: Path) -> None:
     cfg = load_config(out)
     assert cfg.run.name == "my-run"
     assert cfg.model.name == "facebook/sam3.1"
-    assert cfg.train.epochs == 10
+    assert cfg.train.epochs == 160
 
 
 # ---------------------------------------------------------------------------

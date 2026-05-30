@@ -15,16 +15,18 @@ Citation tags (see spec §5.3):
   (B) preserved pre-#112         — matches today's hardcoded trainer behavior in losses.py
   (C) Lin et al. 2017 (RetinaNet/focal loss)         — γ=2.0, α=0.25 from Table 1
   (D) Abraham & Khan 2019 (focal Tversky)            — γ=0.75 best on ISIC
-  (E) Salehi et al. 2017 (Tversky loss)              — α=0.7 best on MS lesions
+  (E) Salehi et al. 2017 (Tversky loss)              — β=0.7 (FN weight) best on MS lesions
   (F) degenerate-case identity                       — α=0.5 reduces Tversky to Dice;
                                                        γ=1.0 reduces Focal-Tversky to Tversky
-  (G) alias-of-medical                               — microscopy copies medical (citation
-                                                       needed — see #120)
+  (G) alias-of-medical                               — microscopy copies medical (unsourced
+                                                       alias; tbd #191 — see #120)
   (H) Kervadec et al. 2019 (boundary loss)           — blend coefficient ~0.2 representative
 
-Cells lacking a firm cite carry an inline `# citation needed` comment. Per
-issue #112's brainstorming: silent defaults are fine — expert users will spot
-and file issues against the master tracker #120.
+All cells now resolve to a legend letter, `# tbd: #191`, or `# cite: empirical`.
+γ=2.5/3.0 escalations (moderate/severe) have no external literature source and
+no recorded internal run → tagged `# tbd: #191`. `tversky_alpha=0.7` is Salehi
+et al. 2017's best FN-penalization weight (their β=0.7) → `# cite: (A,E)`.
+`tversky_alpha=0.8` has no external source → `# tbd: #191`.
 """
 
 from __future__ import annotations
@@ -113,7 +115,7 @@ PRESET_TABLE: dict[tuple[Preset, ClassImbalance], dict[str, Any]] = {
         "w_box": 0.0,  # cite: (B)
         "w_obj": 1.0,  # cite: (B)
         "w_presence": 1.0,  # cite: (B)
-        "focal_gamma": 2.5,  # cite: (A)  # citation needed
+        "focal_gamma": 2.5,  # tbd: #191
         "focal_alpha": 0.25,  # cite: (A,C)
         "tversky_alpha": 0.5,  # cite: (F)
         "tversky_gamma": 1.0,  # cite: (F)
@@ -128,7 +130,7 @@ PRESET_TABLE: dict[tuple[Preset, ClassImbalance], dict[str, Any]] = {
         "w_box": 0.0,  # cite: (B)
         "w_obj": 1.0,  # cite: (B)
         "w_presence": 1.0,  # cite: (B)
-        "focal_gamma": 3.0,  # cite: (A)  # citation needed
+        "focal_gamma": 3.0,  # tbd: #191
         "focal_alpha": 0.25,  # cite: (A,C)
         "tversky_alpha": 0.6,  # cite: (A,E)
         "tversky_gamma": 0.75,  # cite: (D)
@@ -159,9 +161,9 @@ PRESET_TABLE: dict[tuple[Preset, ClassImbalance], dict[str, Any]] = {
         "w_box": 0.0,  # cite: (B)
         "w_obj": 1.0,  # cite: (B)
         "w_presence": 1.0,  # cite: (B)
-        "focal_gamma": 2.5,  # cite: (A)  # citation needed
+        "focal_gamma": 2.5,  # tbd: #191
         "focal_alpha": 0.25,  # cite: (A,C)
-        "tversky_alpha": 0.7,  # cite: (A,D)  # citation needed for this exact value
+        "tversky_alpha": 0.7,  # cite: (A,E)
         "tversky_gamma": 0.75,  # cite: (D)
         "boundary_weight": 0.0,
     },
@@ -174,9 +176,9 @@ PRESET_TABLE: dict[tuple[Preset, ClassImbalance], dict[str, Any]] = {
         "w_box": 0.0,  # cite: (B)
         "w_obj": 1.0,  # cite: (B)
         "w_presence": 1.0,  # cite: (B)
-        "focal_gamma": 3.0,  # cite: (A)  # citation needed
+        "focal_gamma": 3.0,  # tbd: #191
         "focal_alpha": 0.25,  # cite: (A,C)
-        "tversky_alpha": 0.8,  # cite: (A)  # citation needed
+        "tversky_alpha": 0.8,  # tbd: #191
         "tversky_gamma": 0.75,  # cite: (D)
         "boundary_weight": 0.2,  # cite: (A,H)
     },
@@ -205,7 +207,7 @@ PRESET_TABLE: dict[tuple[Preset, ClassImbalance], dict[str, Any]] = {
         "w_box": 0.0,  # cite: (B)
         "w_obj": 1.0,  # cite: (B)
         "w_presence": 1.0,  # cite: (B)
-        "focal_gamma": 2.5,  # cite: (A)  # citation needed
+        "focal_gamma": 2.5,  # tbd: #191
         "focal_alpha": 0.25,  # cite: (A,C)
         "tversky_alpha": 0.6,  # cite: (A,E)
         "tversky_gamma": 0.75,  # cite: (D)
@@ -220,9 +222,9 @@ PRESET_TABLE: dict[tuple[Preset, ClassImbalance], dict[str, Any]] = {
         "w_box": 0.0,  # cite: (B)
         "w_obj": 1.0,  # cite: (B)
         "w_presence": 1.0,  # cite: (B)
-        "focal_gamma": 3.0,  # cite: (A)  # citation needed
+        "focal_gamma": 3.0,  # tbd: #191
         "focal_alpha": 0.25,  # cite: (A,C)
-        "tversky_alpha": 0.7,  # cite: (A,D)  # citation needed for this exact value
+        "tversky_alpha": 0.7,  # cite: (A,E)
         "tversky_gamma": 0.75,  # cite: (D)
         "boundary_weight": 0.0,
     },

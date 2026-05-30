@@ -159,7 +159,7 @@ def run_init(
     body = string.Template(raw).substitute(
         run_name="my-run",
         peft_method=peft_method,
-        epochs=10,
+        epochs=160,
         aug_preset=preset,
         loss_preset=preset,
         aug_intensity=intensity,

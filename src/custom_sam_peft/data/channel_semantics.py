@@ -12,8 +12,8 @@ from collections.abc import Collection
 from dataclasses import dataclass
 from typing import Literal
 
-_IMAGENET_MEAN = (0.485, 0.456, 0.406)
-_IMAGENET_STD = (0.229, 0.224, 0.225)
+_IMAGENET_MEAN = (0.485, 0.456, 0.406)  # cite: ImageNet-1k stats (torchvision); see provenance doc
+_IMAGENET_STD = (0.229, 0.224, 0.225)  # cite: ImageNet-1k stats (torchvision); see provenance doc
 
 
 @dataclass(frozen=True)
@@ -41,6 +41,7 @@ CHANNEL_SEMANTICS: dict[str, ChannelSemanticsProfile] = {
         use_adapter=True,
         adapter_init="identity_passthrough",
         photometric=True,
+        # cite: degenerate-case (neutral alpha) -- 0.5 mean/std maps alpha in [0,1] to [-1,1]
         normalize_default=((*_IMAGENET_MEAN, 0.5), (*_IMAGENET_STD, 0.5)),
     ),
     "grayscale": ChannelSemanticsProfile(
@@ -48,7 +49,7 @@ CHANNEL_SEMANTICS: dict[str, ChannelSemanticsProfile] = {
         use_adapter=True,
         adapter_init="average_broadcast",
         photometric=True,
-        normalize_default=((0.449,), (0.226,)),
+        normalize_default=((0.449,), (0.226,)),  # cite: torchvision grayscale-ImageNet
     ),
     "freeform": ChannelSemanticsProfile(
         allowed_channels=range(1, 17),

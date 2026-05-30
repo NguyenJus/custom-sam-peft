@@ -47,6 +47,14 @@ class _RecordingTracker:
 
 
 def _make_cfg(tmp_path: Path) -> TrainConfig:
+    # Default-path guard: every practical hyperparameter (learning_rate,
+    # lr_schedule, optimizer, max_grad_norm, peft.r/alpha/dropout/scope) is left
+    # at its schema default so this end-to-end run exercises the real default
+    # training path. `epochs` is truncated (to 1) for CI runtime — NOT run to
+    # convergence — and `warmup_steps=0` follows from that truncation (a 100-step
+    # warmup never completes in a 1-epoch tiny-dataset run). See
+    # docs/defaults-provenance.md "Reference Training Profile" for the shipped
+    # epochs default.
     return TrainConfig(
         run=RunConfig(name="t", output_dir=str(tmp_path / "runs"), seed=0),
         model=ModelConfig(),
