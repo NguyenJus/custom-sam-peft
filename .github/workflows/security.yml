@@ -26,9 +26,9 @@ jobs:
         run: uv python install 3.13
 
       - name: Install deps
-        # cu130 and gpu-pascal are declared-conflicting extras (different torch
-        # builds), so --all-extras can't resolve. Install every extra except
-        # gpu-pascal (the local-Pascal cu118 build).
+        # CI is CPU-only; install the dev + cu130 (the default CUDA wheel,
+        # which covers the Tesla T4 and RTX 5070 Ti) extras plus the optional
+        # feature extras the test suite needs.
         run: uv sync --extra dev --extra cu130 --extra qlora --extra wandb --extra tensorboard --extra jupyter
 
       - name: pip-audit

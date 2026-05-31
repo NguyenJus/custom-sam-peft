@@ -64,11 +64,11 @@ def pytest_configure(config: pytest.Config) -> None:
 def _torch_can_launch_kernel() -> bool:
     """Whether the *installed* torch build can run a kernel on the current CUDA device.
 
-    CC >= 6.0 is necessary but not sufficient: the default cu130 wheel ships no
-    sm_61 cubin/PTX, so on a GTX 1080 a kernel launch raises "no kernel image is
-    available". The opt-in gpu-pascal (cu118) build JITs compute_60 -> sm_61 and
-    runs. Probing an actual launch is the only reliable signal. Separated out so
-    unit tests can monkeypatch it without a real GPU.
+    A reported compute capability is necessary but not sufficient: the installed
+    wheel may ship no matching cubin/PTX for the device (or the driver is too old),
+    so a kernel launch raises "no kernel image is available" even though the device
+    is visible. Probing an actual launch is the only reliable signal. Separated out
+    so unit tests can monkeypatch it without a real GPU.
     """
     try:
         torch.zeros(8, device="cuda").add_(1.0).cpu()
