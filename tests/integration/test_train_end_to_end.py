@@ -171,7 +171,7 @@ def test_end_to_end_writes_loss_bundle_json(tmp_path: Path, tiny_coco_dir: Path)
             warmup_steps=0,
             num_workers=0,
         ),
-        tracking=TrackingConfig(backend="none"),  # tensorboard not in dev deps
+        tracking=TrackingConfig(backend="none"),
     )
     apply_lora(wrapper, cfg.peft)
     run_dir = tmp_path / f"{cfg.run.name}-test"
@@ -227,7 +227,7 @@ def _bad_data_cfg(
             warmup_steps=0,
             num_workers=0,
         ),
-        tracking=TrackingConfig(backend="none"),  # tensorboard not in dev deps
+        tracking=TrackingConfig(backend="none"),
     )
 
 
@@ -423,7 +423,7 @@ def test_e2e_auto_split_on_tiny_coco(tmp_path: Path, tiny_coco_dir: Path) -> Non
             warmup_steps=0,
             num_workers=0,
         ),
-        tracking=TrackingConfig(backend="none"),  # tensorboard not in dev deps
+        tracking=TrackingConfig(backend="none"),
     )
 
     # Stub the model so this runs on CPU.
@@ -482,7 +482,7 @@ def test_e2e_no_val_on_tiny_coco(tmp_path: Path, tiny_coco_dir: Path) -> None:
             warmup_steps=0,
             num_workers=0,
         ),
-        tracking=TrackingConfig(backend="none"),  # tensorboard not in dev deps
+        tracking=TrackingConfig(backend="none"),
     )
 
     orig_load = runner_mod.load_sam31

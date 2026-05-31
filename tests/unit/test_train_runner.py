@@ -138,7 +138,7 @@ def test_run_training_writes_val_source_json_on_auto_split(
             warmup_steps=0,
             num_workers=0,
         ),
-        tracking=TrackingConfig(backend="none"),  # tensorboard not in dev deps
+        tracking=TrackingConfig(backend="none"),
     )
 
     monkeypatch.setattr(
@@ -229,7 +229,7 @@ def test_run_training_resume_reuses_saved_val_source(
                 warmup_steps=0,
                 num_workers=0,
             ),
-            tracking=TrackingConfig(backend="none"),  # tensorboard not in dev deps
+            tracking=TrackingConfig(backend="none"),
         )
 
     monkeypatch.setattr(
