@@ -464,7 +464,8 @@ def test_ctrl_c_writes_nothing(tmp_path, monkeypatch) -> None:
     assert not out.exists()
 
 
-def test_vram_autosize_applies_config_patch(monkeypatch) -> None:
+def test_vram_autosize_runs_calibration_on_consent(monkeypatch) -> None:
+    import custom_sam_peft.cli.setup_wizard as sw
     from custom_sam_peft.presets import PresetDecision
 
     decision = PresetDecision(
@@ -478,11 +479,44 @@ def test_vram_autosize_applies_config_patch(monkeypatch) -> None:
         predicted_bytes=0,
         budget_bytes=0,
         gpu_name="StubGPU",
-        provenance="analytic",
+        provenance="calibrated",
         cache_path=None,
-        calibrated_at=None,
+        calibrated_at="2026-05-31T00:00:00+00:00",
     )
-    monkeypatch.setattr("custom_sam_peft.presets.decide_preset", lambda: decision)
+    monkeypatch.setattr(
+        "custom_sam_peft.cli.calibrate_cmd.run_calibration",
+        lambda **kw: decision,
+    )
+    monkeypatch.setattr(sw, "ask_confirm", lambda *a, **k: True)
+    ctx = sw.Ctx(answers={}, cuda_available=True)
+    frag = sw._ask_peft_sizing(ctx)
+    assert frag == decision.config_patch
+    assert frag["train"]["multiplex"]["classes_per_forward"] == 8
+
+
+def test_vram_autosize_applies_config_patch(monkeypatch) -> None:
+    """Consent path calls run_calibration and the returned patch has no gradient_checkpointing."""
+    from custom_sam_peft.presets import PresetDecision
+
+    decision = PresetDecision(
+        method="qlora",
+        r=16,
+        batch_size=2,
+        grad_accum_steps=8,
+        classes_per_forward=8,
+        dtype="bfloat16",
+        headroom_bytes=0,
+        predicted_bytes=0,
+        budget_bytes=0,
+        gpu_name="StubGPU",
+        provenance="calibrated",
+        cache_path=None,
+        calibrated_at="2026-05-31T00:00:00+00:00",
+    )
+    monkeypatch.setattr(
+        "custom_sam_peft.cli.calibrate_cmd.run_calibration",
+        lambda **kw: decision,
+    )
     monkeypatch.setattr(sw, "ask_confirm", lambda *a, **k: True)
     ctx = sw.Ctx(answers={}, cuda_available=True)
     frag = sw._ask_peft_sizing(ctx)
@@ -490,11 +524,37 @@ def test_vram_autosize_applies_config_patch(monkeypatch) -> None:
     assert "gradient_checkpointing" not in frag["model"]
 
 
-def test_vram_autosize_runtime_error_falls_back_to_manual(monkeypatch) -> None:
-    def _boom():
+def test_vram_autosize_falls_back_to_analytic_then_manual(monkeypatch) -> None:
+    import custom_sam_peft.cli.setup_wizard as sw
+
+    def _boom(**kw):
+        raise RuntimeError("probe failed")
+
+    monkeypatch.setattr("custom_sam_peft.cli.calibrate_cmd.run_calibration", _boom)
+
+    def _boom_analytic(**kw):
         raise RuntimeError("nothing fits")
 
-    monkeypatch.setattr("custom_sam_peft.presets.decide_preset", _boom)
+    # analytic fallback also fails -> manual
+    monkeypatch.setattr("custom_sam_peft.presets.decide_preset", _boom_analytic)
+    monkeypatch.setattr(sw, "ask_confirm", lambda *a, **k: True)
+    monkeypatch.setattr(sw, "ask_choice", lambda *a, **k: "qlora")
+    ctx = sw.Ctx(answers={}, cuda_available=True)
+    frag = sw._ask_peft_sizing(ctx)
+    assert frag == {"peft": {"method": "qlora"}}
+
+
+def test_vram_autosize_runtime_error_falls_back_to_manual(monkeypatch) -> None:
+    """When both run_calibration and analytic decide_preset fail, falls back to manual."""
+
+    def _boom_calibrate(**kw):
+        raise RuntimeError("probe failed")
+
+    def _boom_analytic(**kw):
+        raise RuntimeError("nothing fits")
+
+    monkeypatch.setattr("custom_sam_peft.cli.calibrate_cmd.run_calibration", _boom_calibrate)
+    monkeypatch.setattr("custom_sam_peft.presets.decide_preset", _boom_analytic)
     monkeypatch.setattr(sw, "ask_confirm", lambda *a, **k: True)
     monkeypatch.setattr(sw, "ask_choice", lambda *a, **k: "qlora")
     ctx = sw.Ctx(answers={}, cuda_available=True)
