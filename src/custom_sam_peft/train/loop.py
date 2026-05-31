@@ -30,6 +30,7 @@ from custom_sam_peft.peft_adapters import PEFTMethod, make_peft_method
 from custom_sam_peft.runtime import Runtime, to_device
 from custom_sam_peft.runtime._runtime import coerce_dtype_for_capability
 from custom_sam_peft.tracking.base import Tracker
+from custom_sam_peft.train._scheduler import PlateauOrLambda, step_per_train_step
 from custom_sam_peft.train.checkpoint import save_full_state
 
 _LOG = logging.getLogger(__name__)
@@ -386,7 +387,13 @@ def train_step(
             )
         )
         optimizer.step()
-        scheduler.step()
+        step_per_train_step(
+            scheduler,
+            global_step=global_step,
+            base_lr=cfg.train.learning_rate,
+            warmup_steps=cfg.train.warmup_steps,
+            mode=cfg.train.lr_schedule,
+        )
         optimizer.zero_grad(set_to_none=True)
 
     return StepResult(
@@ -459,7 +466,7 @@ def run_epoch(
     model: Sam3Wrapper,
     loader: Any,
     optimizer: torch.optim.Optimizer,
-    scheduler: torch.optim.lr_scheduler.LRScheduler,
+    scheduler: PlateauOrLambda,
     tracker: Tracker,
     cfg: TrainConfig,
     run_dir: Path,
@@ -504,7 +511,7 @@ def run_epoch(
         )
         nan_streak = result.nan_streak
         global_step += 1
-        window.update(result, lr=float(scheduler.get_last_lr()[0]))
+        window.update(result, lr=float(optimizer.param_groups[0]["lr"]))
         P.advance_inner()
         if global_step % cfg.train.log_every == 0:
             scalars = window.flush()

@@ -27,6 +27,7 @@ from custom_sam_peft.models.sam3 import MULTIPLEX_CAP, Sam3Wrapper
 from custom_sam_peft.peft_adapters import PEFTMethod, make_peft_method
 from custom_sam_peft.runtime import Runtime
 from custom_sam_peft.tracking.base import Tracker
+from custom_sam_peft.train._scheduler import PlateauOrLambda
 from custom_sam_peft.train.checkpoint import (
     ResumeState,
     load_full_state,
@@ -70,16 +71,28 @@ def _build_scheduler(
     optimizer: torch.optim.Optimizer,
     cfg: TrainConfig,
     total_steps: int,
-) -> torch.optim.lr_scheduler.LRScheduler:
+    effective_schedule: str,
+) -> PlateauOrLambda:
+    if effective_schedule == "plateau":
+        return torch.optim.lr_scheduler.ReduceLROnPlateau(
+            optimizer,
+            mode="max",
+            factor=cfg.train.lr_decay_on_plateau.factor,
+            patience=cfg.train.lr_decay_on_plateau.patience,
+            threshold=cfg.train.early_stop.min_delta,
+            threshold_mode="abs",  # absolute mAP units — matches the early-stop test
+            min_lr=cfg.train.lr_decay_on_plateau.min_lr,
+        )
+
     warmup = cfg.train.warmup_steps
 
     def lr_lambda(step: int) -> float:
         if step < warmup:
             return (step + 1) / max(warmup, 1)
         progress = (step - warmup) / max(total_steps - warmup, 1)
-        if cfg.train.lr_schedule == "constant":
+        if effective_schedule == "constant":
             return 1.0
-        if cfg.train.lr_schedule == "linear":
+        if effective_schedule == "linear":
             return max(0.0, 1.0 - progress)
         return 0.5 * (1.0 + float(np.cos(np.pi * min(progress, 1.0))))
 
@@ -249,7 +262,7 @@ class Trainer:
         epoch: int,
         train_loader: Any,
         optimizer: torch.optim.Optimizer,
-        scheduler: torch.optim.lr_scheduler.LRScheduler,
+        scheduler: PlateauOrLambda,
         run_dir: Path,
         global_step: int,
         nan_streak: int,
@@ -511,7 +524,7 @@ class Trainer:
 
         optimizer = self._build_optimizer()
         total_steps = cfg.train.epochs * steps_per_epoch
-        scheduler = _build_scheduler(optimizer, cfg, total_steps)
+        scheduler = _build_scheduler(optimizer, cfg, total_steps, cfg.train.lr_schedule)
 
         rs = ResumeState(
             start_step=0,

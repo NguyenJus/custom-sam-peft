@@ -20,7 +20,7 @@ from typing import TYPE_CHECKING, Any
 import torch
 
 if TYPE_CHECKING:
-    from custom_sam_peft.config.schema import TrainConfig
+    pass
 
 
 @dataclass(frozen=True)
