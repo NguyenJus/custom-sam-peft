@@ -502,6 +502,9 @@ def run_epoch(
     deadline: float | None = None,
     should_stop_early: Callable[[], _EarlyStop | None] | None = None,
     effective_schedule: str | None = None,
+    ladder_state_dict: dict | None = None,
+    best_metric_value: float | None = None,
+    scheduler_kind: str | None = None,
 ) -> tuple[int, int]:
     """Drive one epoch. `on_checkpoint(global_step, epoch, nan_streak)`
     is called at every `save_every` boundary; the trainer wires it to the
@@ -573,6 +576,9 @@ def run_epoch(
                 epoch=epoch,
                 nan_streak=nan_streak,
                 cfg=cfg,
+                ladder=ladder_state_dict,
+                best_metric_value=best_metric_value,
+                scheduler_kind=scheduler_kind,
             )
             raise _TimeLimitReached(global_step, epoch)
     return global_step, nan_streak

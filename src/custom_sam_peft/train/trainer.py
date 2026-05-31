@@ -201,6 +201,7 @@ class Trainer:
         self._ladder_cuts: list[LrCut] = []
         self._early_stop: StopDecision | None = None
         self._scheduler: Any = None  # set in fit() after _build_scheduler
+        self._scheduler_kind: str = ""  # set in fit() after effective_schedule is resolved
         # Runtime injection (§2 seam discipline). If none provided, synthesize
         # one from cfg. Callers that pass runtime= get strict device isolation;
         # callers that don't pass it get a sensible default inferred from model
@@ -303,6 +304,9 @@ class Trainer:
             deadline=deadline,
             should_stop_early=should_stop_early,
             effective_schedule=effective_schedule,
+            ladder_state_dict=self._ladder.state_dict(),
+            best_metric_value=self._best_metric_value,
+            scheduler_kind=self._scheduler_kind,
         )
 
     def _cap_eval_batch_size(self, bs: int, cap: int) -> int:
@@ -479,6 +483,9 @@ class Trainer:
             epoch=epoch,
             nan_streak=nan_streak,
             cfg=self.cfg,
+            ladder=self._ladder.state_dict(),
+            best_metric_value=self._best_metric_value,
+            scheduler_kind=self._scheduler_kind,
         )
         self._log_image_panel(val_examples, class_names, step)
 
@@ -566,6 +573,7 @@ class Trainer:
             effective_schedule = "cosine"
         scheduler = _build_scheduler(optimizer, cfg, total_steps, effective_schedule)
         self._scheduler = scheduler
+        self._scheduler_kind = effective_schedule
         self._ladder = LadderState()
         self._ladder_cuts = []
         self._early_stop = None
