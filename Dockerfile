@@ -21,12 +21,12 @@ WORKDIR /opt/custom-sam-peft
 COPY pyproject.toml uv.lock README.md ./
 RUN --mount=type=cache,target=/root/.cache/uv \
     uv sync --frozen --no-install-project \
-            --extra qlora --extra tensorboard --extra wandb --extra jupyter
+            --extra qlora --extra wandb --extra jupyter
 
 COPY src/ src/
 RUN --mount=type=cache,target=/root/.cache/uv \
     uv sync --frozen \
-            --extra qlora --extra tensorboard --extra wandb --extra jupyter
+            --extra qlora --extra wandb --extra jupyter
 
 ENV PATH="/opt/custom-sam-peft/.venv/bin:$PATH"
 

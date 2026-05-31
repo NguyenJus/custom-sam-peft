@@ -9,7 +9,7 @@ Runs end-to-end in Google Colab (T4 or better) or on a RunPod GPU pod.
 
 | Cell | Purpose |
 | --- | --- |
-| **SETUP** | Installs `custom-sam-peft[qlora,tensorboard]` from GitHub, detects Colab vs RunPod, resolves a HuggingFace token if needed. |
+| **SETUP** | Installs `custom-sam-peft[qlora]` from GitHub, detects Colab vs RunPod, resolves a HuggingFace token if needed. |
 | **FORM** | Colab form widgets for dataset path, data format (`coco` or `hf`), and run name. |
 | **GENERATE** | Picks a VRAM-appropriate LoRA / QLoRA preset, merges it with a template config, writes `config.yaml`, and runs `custom-sam-peft run`. |
 | **RESULTS** | Renders `summary.md` and sample overlays inline; offers a one-click download zip. |
