@@ -53,8 +53,8 @@ Top-level data source and prompt configuration.
 | `data.augmentations.hflip` | bool | `true` | common | Apply random horizontal flip augmentation during training. | Audit §E: 4/4 examples set it; augmentation is standard for object-detection datasets. |
 | `data.augmentations.color_jitter` | float [0, 1] | `0.1` | common | Strength of color-jitter augmentation (brightness, contrast, saturation). | Audit §E: 4/4 examples set it; tuned alongside learning rate for dataset-specific best results. |
 | `data.text_prompt.mode` | `"present"` \| `"all"` \| `"present_plus_negatives"` \| `"sampled_fixed_k"` | `"present"` | common | How the per-image class vocabulary is built for text prompts. | Audit §E: 2/4 examples set it; controls whether negative classes appear in the prompt. |
-| `data.normalize.mean` | list[float] (len=3) | `[0.485, 0.456, 0.406]` | advanced | Per-channel image mean fallback when `AutoImageProcessor` cannot be loaded. | Audit §E: 2/4 examples set it; only needed when the HF processor is unavailable offline. |
-| `data.normalize.std` | list[float] (len=3) | `[0.229, 0.224, 0.225]` | advanced | Per-channel image std fallback when `AutoImageProcessor` cannot be loaded. | Audit §E: 2/4 examples set it; same as above — fallback normalization only. |
+| `data.normalize.mean` | list[float] (len=3) | `[0.5, 0.5, 0.5]` | advanced | Per-channel image mean fallback when `AutoImageProcessor` cannot be loaded. | Matches `facebook/sam3.1`'s `Sam3ImageProcessor` (empirically verified 2026-05-30). |
+| `data.normalize.std` | list[float] (len=3) | `[0.5, 0.5, 0.5]` | advanced | Per-channel image std fallback when `AutoImageProcessor` cannot be loaded. | Same as above — fallback normalization only. |
 
 ### DataSplit sub-fields (used by `data.train`, `data.val`, and `data.test`)
 

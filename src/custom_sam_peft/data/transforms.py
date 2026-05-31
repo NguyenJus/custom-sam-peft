@@ -52,14 +52,14 @@ def _warn_freeform_augs_once() -> None:
 # Known-good (mean, std) per HF model name. Used as the offline fallback
 # AND as a divergence sentinel against AutoImageProcessor on path 1.
 #
-# facebook/sam3.1: ImageNet stats. This matches what
-# AutoImageProcessor.from_pretrained("facebook/sam3.1").image_mean/image_std
-# returns; consistent with SAM/SAM2-class processors. Ratified by the
-# 2026-05-21 config-defaults audit (supersedes the 2026-05-16 model-loading
-# spec's [0.5, 0.5, 0.5] claim).
+# facebook/sam3.1: uniform (0.5, 0.5, 0.5) normalisation — empirically
+# verified 2026-05-30 via AutoImageProcessor.from_pretrained("facebook/sam3.1")
+# → Sam3ImageProcessor, image_mean=(0.5, 0.5, 0.5), image_std=(0.5, 0.5, 0.5).
+# Consistent with SAM/SAM2-class processors. The 2026-05-21 audit's ImageNet
+# claim was wrong; this reverts to the 2026-05-16 spec's original values.
 KNOWN_PROCESSOR_STATS: dict[str, tuple[list[float], list[float]]] = {
-    # cite: ImageNet stats (HF Sam3ImageProcessor)
-    "facebook/sam3.1": ([0.485, 0.456, 0.406], [0.229, 0.224, 0.225]),
+    # cite: empirically verified 2026-05-30 (Sam3ImageProcessor)
+    "facebook/sam3.1": ([0.5, 0.5, 0.5], [0.5, 0.5, 0.5]),
 }
 
 # Element-wise absolute tolerance for table-vs-processor divergence detection

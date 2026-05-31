@@ -37,7 +37,7 @@ from custom_sam_peft.config.schema import HFFieldMap, TextPromptConfig
 
 @contextmanager
 def _patch_imagenet_ctx() -> Iterator[None]:
-    """Patch AutoImageProcessor so resolve_normalization falls back to ImageNet defaults."""
+    """Patch AutoImageProcessor so resolve_normalization falls back to table/config defaults."""
     mock_aip = MagicMock()
     mock_aip.from_pretrained.side_effect = OSError("no cache")
     with mock_patch("transformers.AutoImageProcessor", mock_aip):
