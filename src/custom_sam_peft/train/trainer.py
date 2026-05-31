@@ -28,6 +28,7 @@ from custom_sam_peft.peft_adapters import PEFTMethod, make_peft_method
 from custom_sam_peft.runtime import Runtime
 from custom_sam_peft.tracking.base import Tracker
 from custom_sam_peft.train._scheduler import PlateauOrLambda
+from custom_sam_peft.train.ladder import LadderEvents, LadderState, LrCut, StopDecision
 from custom_sam_peft.train.checkpoint import (
     ResumeState,
     load_full_state,
@@ -193,6 +194,11 @@ class Trainer:
         # Best-model tracking state.
         self._best_metric_value: float = float("-inf")
         self._best_metric_key: str = "mAP"
+        # Ladder state (reset on each fit() call).
+        self._ladder: LadderState = LadderState()
+        self._ladder_cuts: list[LrCut] = []
+        self._early_stop: StopDecision | None = None
+        self._scheduler: Any = None  # set in fit() after _build_scheduler
         # Runtime injection (§2 seam discipline). If none provided, synthesize
         # one from cfg. Callers that pass runtime= get strict device isolation;
         # callers that don't pass it get a sensible default inferred from model
@@ -329,6 +335,26 @@ class Trainer:
             report = Evaluator(lite_cfg).evaluate(self.model, self.val_ds)
             self.tracker.log_scalars(step, report.overall)
             self._maybe_save_best(report, step, run_dir)
+            mAP = report.overall.get(self._best_metric_key)
+            decision = self._ladder.observe(mAP, step, self._scheduler, self.cfg)
+            if self._ladder.last_cut is not None:
+                cut = self._ladder.last_cut
+                self._ladder_cuts.append(cut)
+                _LOG.info(
+                    "LR cut ×%.3g → %.3g at eval step %d (mAP %.4f)",
+                    cut.new_lr / cut.old_lr if cut.old_lr else 0.0,
+                    cut.new_lr,
+                    cut.step,
+                    cut.triggering_map,
+                )
+            if decision.should_stop:
+                self._early_stop = decision
+                _LOG.info(
+                    "early stop signalled: %s (mAP %.4f at step %d)",
+                    decision.reason,
+                    decision.triggering_map,
+                    decision.triggering_step,
+                )
         except RuntimeError as exc:
             if str(exc).startswith("eval OOM"):
                 _LOG.error(
@@ -535,6 +561,10 @@ class Trainer:
             )
             effective_schedule = "cosine"
         scheduler = _build_scheduler(optimizer, cfg, total_steps, effective_schedule)
+        self._scheduler = scheduler
+        self._ladder = LadderState()
+        self._ladder_cuts = []
+        self._early_stop = None
 
         rs = ResumeState(
             start_step=0,
@@ -577,9 +607,19 @@ class Trainer:
         merged_path: Path | None = None
         full_report: MetricsReport | None = None
         stop: _TimeLimitReached | None = None
+        early: _EarlyStop | None = None
+        _current_epoch = [start_epoch]
+
+        def should_stop_early() -> _EarlyStop | None:
+            d = self._early_stop
+            if d is not None and d.should_stop:
+                return _EarlyStop(d.triggering_step, _current_epoch[0], d.reason)
+            return None
+
         try:
             try:
                 for epoch in range(start_epoch, cfg.train.epochs):
+                    _current_epoch[0] = epoch
                     total_batches = max(len(train_loader), 1)
                     P.reset_inner(total=total_batches)
                     global_step, nan_streak = self._train_epoch(
@@ -595,11 +635,15 @@ class Trainer:
                         on_eval,
                         oom_state=oom_state,
                         deadline=deadline,
+                        should_stop_early=should_stop_early,
                     )
                     P.advance_outer()
             except _TimeLimitReached as e:
                 stop = e
                 global_step = e.step  # the flushed checkpoint's step
+            except _EarlyStop as e:
+                early = e
+                global_step = e.step
 
             if stop is None:
                 adapter_path = run_dir / "adapter"
@@ -616,7 +660,10 @@ class Trainer:
                         bs, _, _ = decide_eval_batch_size(classes_per_forward=MULTIPLEX_CAP)
                         bs = self._cap_eval_batch_size(bs, oom_state.micro_batch_size)
                         full_eval_cfg = full_eval_cfg.model_copy(update={"batch_size": bs})
-                    full_report = Evaluator(full_eval_cfg).evaluate(self.model, self.val_ds)
+                    try:
+                        full_report = Evaluator(full_eval_cfg).evaluate(self.model, self.val_ds)
+                    except Exception:
+                        _LOG.warning("end-of-run eval failed; skipping.", exc_info=True)
                 if full_report is not None:
                     (run_dir / "metrics.json").write_text(
                         json.dumps(
