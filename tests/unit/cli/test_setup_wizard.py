@@ -472,6 +472,7 @@ def test_vram_autosize_applies_config_patch(monkeypatch) -> None:
         r=16,
         batch_size=2,
         grad_accum_steps=8,
+        classes_per_forward=8,
         dtype="bfloat16",
         headroom_bytes=0,
         predicted_bytes=0,

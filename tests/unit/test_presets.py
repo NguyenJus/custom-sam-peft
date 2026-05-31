@@ -56,6 +56,7 @@ def test_decide_preset_32gib_sizes_lora(
     _stub_gpu(monkeypatch, int(32 * _GB))
     d = decide_preset()
     assert isinstance(d, PresetDecision)
+    assert d.method == "lora"
     assert d.predicted_bytes <= d.budget_bytes
 
 

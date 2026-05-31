@@ -21,15 +21,21 @@ def _stub_gpu(monkeypatch: pytest.MonkeyPatch, total_bytes: int, name: str = "St
 
 
 def _write_cache(path: Path, **fields: object) -> None:
+    # v3 schema: split activation into A_fixed (encoder, K-invariant) and
+    # A_per_class (decoder, scales with K).  Values chosen so that at
+    # classes_per_forward=16 (the decide_eval_batch_size default) the total
+    # activation per image equals the pre-split 0.5 GiB:
+    #   A_fixed + A_per_class * 16 = 0.35 GiB + 0.009375 GiB * 16 = 0.5 GiB
     base = {
-        "schema_version": 2,
+        "schema_version": 3,
         "calibrated_at": "2026-05-22T00:00:00+00:00",
         "gpu_name": "StubGPU",
         "gpu_total_memory_bytes": int(40 * _GB),
         "sam3_checkpoint_sha": "deadbeef",
         "torch_version": "2.4.0",
         "custom_sam_peft_version": "0.0.0",
-        "activation_bytes_per_example": int(0.5 * _GB),
+        "A_fixed": int(0.35 * _GB),
+        "A_per_class": int(0.009375 * _GB),
         "peak_memory_bytes_at_probe": int(38 * _GB),
     }
     base.update(fields)
@@ -151,7 +157,7 @@ def test_decide_eval_batch_size_sdpa_attention_cap(
     )
     from custom_sam_peft.presets import (
         WORKSPACE_BYTES,
-        _activation_per_example,
+        _activation_bytes,
         _model_bytes,
         decide_eval_batch_size,
         forward_only_factor,
@@ -166,10 +172,12 @@ def test_decide_eval_batch_size_sdpa_attention_cap(
     attn_bytes_for_bs = bs * _H * _N * _N * _dtype_bytes
 
     # Full peak must fit in GPU memory (no headroom subtraction — conservative).
-    image_size = 1008  # SAM3_IMAGE_SIZE
+    # decide_eval_batch_size uses classes_per_forward=16 (default); mirror that here.
+    # activations = (A_FIXED + A_PER_CLASS * k_eff) * batch * forward_only_factor
     model_bytes = _model_bytes("lora")
     workspace = WORKSPACE_BYTES
-    activations_at_bs = int(_activation_per_example(image_size, None) * forward_only_factor) * bs
+    _act_per_img = int(_activation_bytes(batch=1, cache=None, k_eff=16) * forward_only_factor)
+    activations_at_bs = _act_per_img * bs
     full_peak = model_bytes + attn_bytes_for_bs + activations_at_bs + workspace
     assert full_peak <= gpu_total, (
         f"bs={bs} -> full peak = {full_peak / _GB:.2f} GiB "

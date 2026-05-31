@@ -17,6 +17,7 @@ def _make_preset() -> PresetDecision:
         r=32,
         batch_size=2,
         grad_accum_steps=8,
+        classes_per_forward=8,
         dtype="bfloat16",
         headroom_bytes=int(1.6 * 1024**3),
         predicted_bytes=int(38.4 * 1024**3),
