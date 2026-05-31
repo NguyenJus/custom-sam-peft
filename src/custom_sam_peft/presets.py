@@ -57,7 +57,7 @@ WORKSPACE_BYTES = 256 * _MIB  # cuDNN workspace + autograd graph + tmp buffers (
 # (no image-size scale term — image size is constant). Spec §2/§6.
 #   activation(method, batch, K) = (A_FIXED + A_PER_CLASS * K) * batch
 # A_FIXED   — K-invariant vision-encoder (hiera-large) activation, per image.
-# A_PER_CLASS — decoder / mask-head activation, per (image × class).
+# A_PER_CLASS — decoder / mask-head activation, per (image x class).
 # tbd: conservative split of the prior BASE_ACTIVATION_AT_1024 (~1.45 GiB at 1008px),
 #   bulk attributed to the encoder. RE-DERIVE on the dev-env RTX 5070 Ti before merge:
 #   uv run python scripts/_derive_preset_constants.py --method qlora --r 4 --batch 1
@@ -74,7 +74,7 @@ forward_only_factor: float = 0.25  # cite: empirical (#148/#179 VRAM calibration
 # === CALIBRATION CACHE =====================================================
 
 CACHE_FILENAME = ".custom_sam_peft_calibration.json"
-CACHE_SCHEMA_VERSION = 3  # v3: split activation (A_fixed/A_per_class); drops activation_bytes_per_example
+CACHE_SCHEMA_VERSION = 3  # v3: split activation (A_fixed/A_per_class); drops activation_bytes_per_example  # noqa: E501
 
 
 # === PresetDecision ========================================================
@@ -240,9 +240,7 @@ def _predicted_bytes(
     # K is now threaded through the split; decide_eval_batch_size passes its
     # classes_per_forward as k_eff. The SDPA attention cap stays in
     # decide_eval_batch_size. Spec §6.
-    activations = int(
-        _activation_bytes(batch, cache, k_eff=k_eff) * forward_only_factor
-    )
+    activations = int(_activation_bytes(batch, cache, k_eff=k_eff) * forward_only_factor)
     return _model_bytes(method) + activations + WORKSPACE_BYTES
 
 
@@ -434,12 +432,9 @@ def decide_eval_batch_size(
     On CPU: returns (1, 0, "analytic") and logs once.
     Spec: design §8.
 
-    Note: ``classes_per_forward`` is accepted for API stability but does **not**
-    currently affect the returned batch size.  K (classes per forward) is folded
-    into ``forward_only_factor`` empirically (spec §8) rather than computed from
-    this parameter.  It is reserved for a future K-aware tuning pass (spec §12
-    follow-up).  Pass ``MULTIPLEX_CAP`` from ``custom_sam_peft.models.sam3`` so
-    that callsites remain correct when K-awareness is wired in.
+    ``classes_per_forward`` is now threaded through the split activation formula
+    as k_eff, so higher K can only lower (or hold) the returned batch size —
+    never raise it (no regression guarantee). Spec §6.
     """
     from custom_sam_peft.models.sam3 import MULTIPLEX_CAP as _CAP
     from custom_sam_peft.models.sam3 import SAM3_IMAGE_SIZE
@@ -467,11 +462,23 @@ def decide_eval_batch_size(
 
     best_bs = 1
     best_predicted = _predicted_bytes(
-        "lora", r=4, batch=1, image_size=image_size, cache=cache, mode="eval"
+        "lora",
+        r=4,
+        batch=1,
+        image_size=image_size,
+        cache=cache,
+        mode="eval",
+        k_eff=classes_per_forward,
     )
     for batch in range(1, 65):  # B in [1, 64]
         pb = _predicted_bytes(
-            "lora", r=4, batch=batch, image_size=image_size, cache=cache, mode="eval"
+            "lora",
+            r=4,
+            batch=batch,
+            image_size=image_size,
+            cache=cache,
+            mode="eval",
+            k_eff=classes_per_forward,
         )
         if pb <= budget:
             best_bs = batch
@@ -491,7 +498,9 @@ def decide_eval_batch_size(
     # conservative — it can only lower bs, which is safe for OOM prevention
     # (issue #162).
     attn_budget = budget - _model_bytes("lora") - WORKSPACE_BYTES
-    _act_per_example = int(_activation_per_example(image_size, cache) * forward_only_factor)
+    _act_per_example = int(
+        _activation_bytes(batch=1, cache=cache, k_eff=classes_per_forward) * forward_only_factor
+    )
     _per_example = _attn_per_example + _act_per_example
     attn_cap = max(1, attn_budget // _per_example) if attn_budget > 0 else 1
     if attn_cap < best_bs:
@@ -505,7 +514,13 @@ def decide_eval_batch_size(
         )
         best_bs = attn_cap
         best_predicted = _predicted_bytes(
-            "lora", r=4, batch=best_bs, image_size=image_size, cache=cache, mode="eval"
+            "lora",
+            r=4,
+            batch=best_bs,
+            image_size=image_size,
+            cache=cache,
+            mode="eval",
+            k_eff=classes_per_forward,
         )
 
     return best_bs, best_predicted, provenance

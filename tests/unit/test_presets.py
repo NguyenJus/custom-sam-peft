@@ -20,6 +20,7 @@ from custom_sam_peft.presets import (
     _candidates,
     _predicted_bytes,
     _sort_key,
+    decide_eval_batch_size,
     decide_preset,
 )
 
@@ -141,14 +142,15 @@ def test_activation_bytes_scales_with_image_size() -> None:
 
 def _write_cache(path: Path, **fields: object) -> None:
     base = {
-        "schema_version": 2,
+        "schema_version": 3,
         "calibrated_at": "2026-05-22T00:00:00+00:00",
         "gpu_name": "StubGPU",
         "gpu_total_memory_bytes": int(40 * _GB),
         "sam3_checkpoint_sha": "deadbeef",
         "torch_version": "2.4.0",
         "custom_sam_peft_version": "0.0.0",
-        "activation_bytes_per_example": int(0.5 * _GB),
+        "A_fixed": int(1.30 * _GB),
+        "A_per_class": int(0.15 * _GB),
         "peak_memory_bytes_at_probe": int(38 * _GB),
     }
     base.update(fields)
@@ -433,9 +435,7 @@ def test_activation_bytes_split_is_linear_in_k_no_analytic_cache() -> None:
 
 
 def test_activation_bytes_scales_with_batch() -> None:
-    assert _activation_bytes(batch=4, cache=None, k_eff=2) == (
-        (A_FIXED + A_PER_CLASS * 2) * 4
-    )
+    assert _activation_bytes(batch=4, cache=None, k_eff=2) == ((A_FIXED + A_PER_CLASS * 2) * 4)
 
 
 def test_activation_bytes_reads_split_cache() -> None:
@@ -536,3 +536,60 @@ def test_decide_preset_big_card_picks_high_k(
     d = decide_preset()
     assert d.classes_per_forward >= 8
     assert d.batch_size >= 2
+
+
+# ---- decide_eval_batch_size K threading + v3 cache round-trip ---------------
+
+
+def test_decide_eval_batch_size_threads_k_no_regression(
+    monkeypatch: pytest.MonkeyPatch, _force_cuda_available: None
+) -> None:
+    _stub_gpu(monkeypatch, int(24 * _GB))
+    bs1, _, _ = decide_eval_batch_size(classes_per_forward=1)
+    bs16, _, _ = decide_eval_batch_size(classes_per_forward=16)
+    # Higher K can only LOWER (or hold) best_bs — never raise it (no regression).
+    assert bs16 <= bs1
+    assert bs16 >= 1
+
+
+def test_decide_preset_consumes_v3_cache(
+    monkeypatch: pytest.MonkeyPatch, _force_cuda_available: None, tmp_path: Path
+) -> None:
+    _stub_gpu(monkeypatch, int(24 * _GB))
+    monkeypatch.setattr("custom_sam_peft.presets._current_sam3_checkpoint_sha", lambda: "abc")
+    cache_file = tmp_path / "cache.json"
+    cache_file.write_text(
+        json.dumps(
+            {
+                "schema_version": 3,
+                "calibrated_at": "2026-05-31T00:00:00+00:00",
+                "gpu_name": "StubGPU",
+                "sam3_checkpoint_sha": "abc",
+                "A_fixed": 1_000_000_000,
+                "A_per_class": 50_000_000,
+                "peak_memory_bytes_at_probe": 6_000_000_000,
+            }
+        )
+    )
+    d = decide_preset(cache_path=cache_file)
+    assert d.provenance == "calibrated"
+
+
+def test_decide_preset_ignores_v2_cache(
+    monkeypatch: pytest.MonkeyPatch, _force_cuda_available: None, tmp_path: Path
+) -> None:
+    _stub_gpu(monkeypatch, int(24 * _GB))
+    monkeypatch.setattr("custom_sam_peft.presets._current_sam3_checkpoint_sha", lambda: "abc")
+    cache_file = tmp_path / "cache.json"
+    cache_file.write_text(
+        json.dumps(
+            {
+                "schema_version": 2,
+                "gpu_name": "StubGPU",
+                "sam3_checkpoint_sha": "abc",
+                "activation_bytes_per_example": 1_000_000_000,
+            }
+        )
+    )
+    d = decide_preset(cache_path=cache_file)
+    assert d.provenance == "analytic"  # stale v2 dropped
