@@ -294,6 +294,77 @@ def _decision_from_cache(output: Path, k_cap: int) -> PresetDecision | None:
     )
 
 
+def _confirm_and_climb(
+    *, method: str, r: int, batch: int, k: int, budget: int, k_cap: int
+) -> tuple[str, int, int, int, int]:
+    """Stage 3: probe the aim, then climb (K then batch, at the fitting method/r) on
+    headroom, or shrink down the FULL sacrifice order on OOM. Returns the empirical
+    (method, r, batch, k, measured_peak). Bounded by the grid.
+
+    Shrink order on OOM/over-budget, one probe per step (spec §4):
+      1. batch > 1            -> batch -= 1
+      2. else k > ks[0]       -> k = ks[ks.index(k) - 1]
+      3. else r > _RS[0]      -> r = _RS[_RS.index(r) - 1]  (batch/K at their mins)
+      4. else method == lora  -> method = "qlora"; r = _RS[-1]
+         (QLoRA's NF4 base is far cheaper; re-try from the highest r and let the loop
+          shrink r to the best-fitting QLoRA r — preserving accuracy where possible)
+      5. else (qlora, r=_RS[0], batch=1, K=ks[0]) still OOM -> raise _GpuTooSmall.
+
+    Climb-up NEVER raises r and NEVER flips method on a probe — accuracy levers are
+    not raised on the strength of a probe (spec §4). It grows K to the next grid
+    value first, then batch, at the fitting method/r only.
+    """
+    ks = [x for x in _KS if x <= k_cap]
+    # Cover the full walk: batch down, K down, r down, plus the method flip + slack.
+    max_probes = len(_BATCHES) + len(ks) + len(_RS) + 2
+    probes = 0
+
+    def _probe_fits(m: str, rr: int, b: int, kk: int) -> tuple[bool, int]:
+        nonlocal probes
+        probes += 1
+        try:
+            peak = _run_probe(method=m, r=rr, k_eff=kk, batch=b)
+        except torch.cuda.OutOfMemoryError:
+            return False, 0
+        return peak <= budget, peak
+
+    # Confirm the Stage-2 aim; shrink down the full sacrifice order until it fits.
+    fits, peak = _probe_fits(method, r, batch, k)
+    while not fits and probes < max_probes:
+        if batch > 1:
+            batch -= 1
+        elif k > ks[0]:
+            k = ks[ks.index(k) - 1]
+        elif r > _RS[0]:
+            r = _RS[_RS.index(r) - 1]  # batch and K already at their minimums
+        elif method == "lora":
+            method = "qlora"  # cheaper NF4 base; retry from the highest r
+            r = _RS[-1]
+        else:
+            # qlora, r=_RS[0], batch=1, K=ks[0] and still OOM -> GPU too small.
+            raise _GpuTooSmall(
+                "no config fits down to (qlora, r="
+                f"{_RS[0]}, batch=1, K={ks[0]}) — candidate space exhausted"
+            )
+        fits, peak = _probe_fits(method, r, batch, k)
+
+    # Climb: grow K to the next grid value first, then batch, at the fitting
+    # method/r only (never raise r or flip method on a probe).
+    best = (method, r, batch, k, peak)
+    while probes < max_probes:
+        if k < ks[-1]:
+            cand_b, cand_k = batch, ks[ks.index(k) + 1]
+        elif batch < _BATCHES[-1]:
+            cand_b, cand_k = batch + 1, k
+        else:
+            break  # grid max reached
+        fits, peak = _probe_fits(method, r, cand_b, cand_k)
+        if not fits:
+            break
+        batch, k, best = cand_b, cand_k, (method, r, cand_b, cand_k, peak)
+    return best
+
+
 def run_calibration(*, config: Path, output: Path, force: bool) -> PresetDecision:
     """Three-stage model-guided calibration. Returns the chosen PresetDecision.
 
@@ -302,7 +373,7 @@ def run_calibration(*, config: Path, output: Path, force: bool) -> PresetDecisio
     """
     from custom_sam_peft.config.loader import load_config
     from custom_sam_peft.models.sam3 import MULTIPLEX_CAP
-    from custom_sam_peft.presets import decide_preset
+    from custom_sam_peft.presets import PresetDecision, decide_preset
 
     if not config.exists():
         from custom_sam_peft.cli.init_cmd import run_init
@@ -340,16 +411,62 @@ def run_calibration(*, config: Path, output: Path, force: bool) -> PresetDecisio
     except FileNotFoundError as exc:
         raise _CheckpointMissing(str(exc)) from exc
 
-    # Stage 2 + Stage 3 (filled in Tasks 2.2-2.3). Placeholder: write the split
-    # cache from Stage 1 and aim analytically. NOTE: this analytic return is replaced
-    # in Task 2.2 by the EMPIRICAL PresetDecision built from the confirm-and-climb
-    # result (Correction B) — do not keep the analytic decide_preset return here past
-    # Task 2.2.
-    peak = a_fixed + a_per_class  # placeholder; replaced by Stage-3 measured peak
+    # Stage 2 — analytic aim over the full grid using the derived split. This is the
+    # ONLY analytic use in the probe path (the aim that the probe then confirms).
     _write_cache_v3(
-        output, gpu_name=gpu_name, total=total, a_fixed=a_fixed, a_per_class=a_per_class, peak=peak
+        output, gpu_name=gpu_name, total=total, a_fixed=a_fixed, a_per_class=a_per_class, peak=0
     )
-    decision = decide_preset(k=k_cap, cache_path=output)  # placeholder; Task 2.2 makes empirical
+    aim = decide_preset(k=k_cap, cache_path=output)
+    budget = aim.budget_bytes  # decide_preset already computed total - headroom
+
+    # Stage 3 — confirm + climb/shrink down the full sacrifice order (bounded).
+    # Returns the EMPIRICAL config; _GpuTooSmall is raised inside on full exhaustion.
+    method, r, batch, k, peak = _confirm_and_climb(
+        method=aim.method,
+        r=aim.r,
+        batch=aim.batch_size,
+        k=aim.classes_per_forward,
+        budget=budget,
+        k_cap=k_cap,
+    )
+
+    # Persist the measured peak AND the empirically-chosen sizing (Correction B). The
+    # chosen_* keys make this confirmed config authoritative on every later cache-fresh
+    # read, so a re-run never reverts to the analytic aim.
+    _write_cache_v3(
+        output,
+        gpu_name=gpu_name,
+        total=total,
+        a_fixed=a_fixed,
+        a_per_class=a_per_class,
+        peak=peak,
+        method=method,
+        r=r,
+        batch=batch,
+        classes_per_forward=k,
+    )
+
+    # Build the AUTHORITATIVE decision from the empirical tuple (Correction B): the
+    # config rewrite and the returned PresetDecision both use THESE values, not a
+    # re-derived analytic decide_preset.
+    cc = torch.cuda.get_device_capability(0)
+    dtype = "float16" if cc < (8, 0) else "bfloat16"
+    headroom = _headroom_bytes()
+    decision = PresetDecision(
+        method=method,  # type: ignore[arg-type]
+        r=r,
+        batch_size=batch,
+        grad_accum_steps=max(1, 16 // batch),
+        classes_per_forward=k,
+        dtype=dtype,  # type: ignore[arg-type]
+        headroom_bytes=headroom,
+        predicted_bytes=peak,  # the real measured peak
+        budget_bytes=total - headroom,
+        gpu_name=gpu_name,
+        provenance="calibrated",
+        cache_path=output,
+        calibrated_at=_cache_calibrated_at(output),
+    )
     _apply_config_rewrite(config, decision=decision)
     return decision
 

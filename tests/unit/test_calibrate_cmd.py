@@ -306,6 +306,244 @@ def test_run_calibration_stage1_solves_split(
     assert "activation_bytes_per_example" not in data
 
 
+def test_run_calibration_climbs_k_then_batch(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from custom_sam_peft.cli import calibrate_cmd
+
+    # Big card: synthetic peaks fit a wide grid -> climb should grow K then batch.
+    _patch_probe(monkeypatch, tmp_path=tmp_path, gpu_name="BigGPU", total=int(80 * _GB))
+    _write_config(tmp_path / "config.yaml", method="lora", r=16, k=16)
+    monkeypatch.setattr(calibrate_cmd, "_run_probe", lambda **kw: _synthetic_peak(**kw))
+    monkeypatch.chdir(tmp_path)
+    out = tmp_path / ".custom_sam_peft_calibration.json"
+    decision = calibrate_cmd.run_calibration(
+        config=tmp_path / "config.yaml", output=out, force=True
+    )
+    assert decision.classes_per_forward >= 8
+    data = json.loads(out.read_text())
+    # Recorded peak is the final fitting probe's measured value, not the placeholder.
+    assert data["peak_memory_bytes_at_probe"] > 10 * _GB
+
+
+def test_run_calibration_shrinks_on_injected_oom(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from custom_sam_peft.cli import calibrate_cmd
+
+    _patch_probe(monkeypatch, tmp_path=tmp_path, gpu_name="SmallGPU", total=int(16 * _GB))
+    _write_config(tmp_path / "config.yaml", method="lora", r=16, k=16)
+    calls: list[dict] = []
+
+    def _probe(**kw):
+        calls.append(kw)
+        # OOM whenever batch>1 or K>2 (forces shrink batch-first then K).
+        if kw["batch"] > 1 or kw["k_eff"] > 2:
+            raise torch.cuda.OutOfMemoryError("synthetic")
+        return _synthetic_peak(**kw)
+
+    monkeypatch.setattr(calibrate_cmd, "_run_probe", _probe)
+    monkeypatch.chdir(tmp_path)
+    out = tmp_path / ".custom_sam_peft_calibration.json"
+    decision = calibrate_cmd.run_calibration(
+        config=tmp_path / "config.yaml", output=out, force=True
+    )
+    # Empirical (method, r, batch, k, peak) tuple drives the decision.
+    assert decision.batch_size == 1
+    assert decision.classes_per_forward <= 2
+    assert decision.method == "lora"  # r/method not yet sacrificed here
+
+
+def test_run_calibration_reduces_r_on_under_fit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from custom_sam_peft.cli import calibrate_cmd
+
+    _patch_probe(monkeypatch, tmp_path=tmp_path, gpu_name="SmallGPU", total=int(16 * _GB))
+    _write_config(tmp_path / "config.yaml", method="lora", r=64, k=16)
+
+    def _probe(**kw):
+        # OOM for EVERY (batch, K) at the aimed r; fits only at a lower r.
+        if kw["r"] > 16:
+            raise torch.cuda.OutOfMemoryError("synthetic")
+        if kw["batch"] > 1 or kw["k_eff"] > 1:
+            raise torch.cuda.OutOfMemoryError("synthetic")
+        return _synthetic_peak(**kw)
+
+    monkeypatch.setattr(calibrate_cmd, "_run_probe", _probe)
+    monkeypatch.chdir(tmp_path)
+    out = tmp_path / ".custom_sam_peft_calibration.json"
+    decision = calibrate_cmd.run_calibration(
+        config=tmp_path / "config.yaml", output=out, force=True
+    )
+    assert decision.r <= 16  # r reduced to fit (full sacrifice order)
+    import yaml
+
+    cfg = yaml.safe_load((tmp_path / "config.yaml").read_text())
+    assert cfg["peft"]["r"] == decision.r  # written config matches, not the aimed r
+
+
+def test_run_calibration_flips_to_qlora_when_lora_exhausts(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from custom_sam_peft.cli import calibrate_cmd
+
+    _patch_probe(monkeypatch, tmp_path=tmp_path, gpu_name="SmallGPU", total=int(16 * _GB))
+    _write_config(tmp_path / "config.yaml", method="lora", r=16, k=16)
+
+    def _probe(**kw):
+        # Every LoRA config OOMs (even r=_RS[0], batch=1, K=ks[0]); QLoRA fits.
+        if kw["method"] == "lora":
+            raise torch.cuda.OutOfMemoryError("synthetic")
+        return _synthetic_peak(**kw)
+
+    monkeypatch.setattr(calibrate_cmd, "_run_probe", _probe)
+    monkeypatch.chdir(tmp_path)
+    out = tmp_path / ".custom_sam_peft_calibration.json"
+    decision = calibrate_cmd.run_calibration(
+        config=tmp_path / "config.yaml", output=out, force=True
+    )
+    assert decision.method == "qlora"
+
+
+def test_run_calibration_decision_is_empirical_not_analytic(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Direct regression guard for Correction B: when the real probe under-fits the
+    analytic aim, the returned decision AND the written config equal the empirically
+    fitting config, NOT the analytic aim."""
+    from custom_sam_peft.cli import calibrate_cmd
+
+    _patch_probe(monkeypatch, tmp_path=tmp_path, gpu_name="SmallGPU", total=int(16 * _GB))
+    _write_config(tmp_path / "config.yaml", method="lora", r=64, k=16)
+
+    # The analytic aim (config A) over-predicts headroom and picks a high r/K/batch
+    # that the real probe rejects; only a lower config (B) fits empirically.
+    def _probe(**kw):
+        if kw["r"] > 8 or kw["batch"] > 1 or kw["k_eff"] > 1:
+            raise torch.cuda.OutOfMemoryError("synthetic")
+        return _synthetic_peak(**kw)
+
+    monkeypatch.setattr(calibrate_cmd, "_run_probe", _probe)
+    monkeypatch.chdir(tmp_path)
+    out = tmp_path / ".custom_sam_peft_calibration.json"
+    decision = calibrate_cmd.run_calibration(
+        config=tmp_path / "config.yaml", output=out, force=True
+    )
+    # Decision is the empirically-fitting config B, not the analytic aim A.
+    assert decision.r == 8
+    assert decision.batch_size == 1
+    assert decision.classes_per_forward == 1
+    import yaml
+
+    cfg = yaml.safe_load((tmp_path / "config.yaml").read_text())
+    assert cfg["peft"]["r"] == 8
+    assert cfg["train"]["batch_size"] == 1
+    # Recorded peak is the real measured peak of config B.
+    data = json.loads(out.read_text())
+    assert data["peak_memory_bytes_at_probe"] == _synthetic_peak(
+        method="lora", r=8, k_eff=1, batch=1
+    )
+
+
+def test_run_calibration_cache_fresh_returns_empirical(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Cache-fresh re-run preserves the prior probe's empirical config (Correction B
+    for the cached path): it must NOT revert to the OOM-prone analytic aim, and must
+    NOT re-probe."""
+    from custom_sam_peft.cli import calibrate_cmd
+
+    _patch_probe(monkeypatch, tmp_path=tmp_path, gpu_name="SmallGPU", total=int(16 * _GB))
+    _write_config(tmp_path / "config.yaml", method="lora", r=64, k=16)
+
+    # First call (force=True): the probe UNDER-fits the analytic aim, so the empirical
+    # config is lower-r/batch/K than the aim would pick.
+    def _probe(**kw):
+        if kw["r"] > 8 or kw["batch"] > 1 or kw["k_eff"] > 1:
+            raise torch.cuda.OutOfMemoryError("synthetic")
+        return _synthetic_peak(**kw)
+
+    monkeypatch.setattr(calibrate_cmd, "_run_probe", _probe)
+    monkeypatch.chdir(tmp_path)
+    out = tmp_path / ".custom_sam_peft_calibration.json"
+    first = calibrate_cmd.run_calibration(config=tmp_path / "config.yaml", output=out, force=True)
+    data = json.loads(out.read_text())
+    # The confirmed cache persists the empirically-chosen sizing.
+    assert data["chosen_method"] == first.method == "lora"
+    assert data["chosen_r"] == first.r == 8
+    assert data["chosen_batch"] == first.batch_size == 1
+    assert data["chosen_classes_per_forward"] == first.classes_per_forward == 1
+
+    # Second call (force=False, cache fresh): must NOT probe and must return the SAME
+    # empirical config — never the analytic aim (r=64/...).
+    def _raise_if_probed(**kw):
+        raise AssertionError("cache-fresh path must not re-probe")
+
+    monkeypatch.setattr(calibrate_cmd, "_run_probe", _raise_if_probed)
+    monkeypatch.setattr(
+        calibrate_cmd,
+        "_derive_split",
+        lambda *a, **k: (_ for _ in ()).throw(AssertionError("cache-fresh path must not derive")),
+    )
+    second = calibrate_cmd.run_calibration(config=tmp_path / "config.yaml", output=out, force=False)
+    assert (second.method, second.r, second.batch_size, second.classes_per_forward) == (
+        "lora",
+        8,
+        1,
+        1,
+    )
+    assert second.provenance == "calibrated"
+
+
+def test_run_calibration_probe_count_is_bounded(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from custom_sam_peft.cli import calibrate_cmd
+
+    _patch_probe(monkeypatch, tmp_path=tmp_path, gpu_name="BigGPU", total=int(80 * _GB))
+    _write_config(tmp_path / "config.yaml", method="lora", r=16, k=16)
+    count = {"n": 0}
+
+    def _probe(**kw):
+        count["n"] += 1
+        return _synthetic_peak(**kw)
+
+    monkeypatch.setattr(calibrate_cmd, "_run_probe", _probe)
+    monkeypatch.chdir(tmp_path)
+    calibrate_cmd.run_calibration(
+        config=tmp_path / "config.yaml", output=tmp_path / "c.json", force=True
+    )
+    # New bound covers the larger walk (batch + K + r + method flip + the 2 derive
+    # probes); mirror the _confirm_and_climb max_probes formula.
+    assert count["n"] <= (
+        len(calibrate_cmd._BATCHES)
+        + len(calibrate_cmd._KS)
+        + len(calibrate_cmd._RS)
+        + 2  # derive probes
+        + 2  # method flip + slack
+    )
+
+
+def test_run_calibration_k1_oom_raises_gpu_too_small(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from custom_sam_peft.cli import calibrate_cmd
+
+    _patch_probe(monkeypatch, tmp_path=tmp_path)
+    _write_config(tmp_path / "config.yaml", method="lora", r=16, k=16)
+
+    def _probe(**kw):
+        raise torch.cuda.OutOfMemoryError("synthetic")
+
+    monkeypatch.setattr(calibrate_cmd, "_run_probe", _probe)
+    monkeypatch.chdir(tmp_path)
+    with pytest.raises(calibrate_cmd._GpuTooSmall):
+        calibrate_cmd.run_calibration(
+            config=tmp_path / "config.yaml", output=tmp_path / "c.json", force=True
+        )
+
+
 def test_calibrate_non_default_output_uses_calibrated_provenance(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
