@@ -502,9 +502,7 @@ def run_epoch(
     deadline: float | None = None,
     should_stop_early: Callable[[], _EarlyStop | None] | None = None,
     effective_schedule: str | None = None,
-    ladder_state_dict: dict | None = None,
-    best_metric_value: float | None = None,
-    scheduler_kind: str | None = None,
+    flush_extra: Callable[[], dict[str, Any]] | None = None,
 ) -> tuple[int, int]:
     """Drive one epoch. `on_checkpoint(global_step, epoch, nan_streak)`
     is called at every `save_every` boundary; the trainer wires it to the
@@ -567,6 +565,8 @@ def run_epoch(
             state_dir = (
                 paths.checkpoint_path(run_dir, step=global_step).parent / f"step_{global_step}"
             )
+            # Read live values at flush time, not the epoch-start snapshot.
+            extra = flush_extra() if flush_extra is not None else {}
             save_full_state(
                 state_dir=state_dir,
                 wrapper=model,
@@ -576,9 +576,9 @@ def run_epoch(
                 epoch=epoch,
                 nan_streak=nan_streak,
                 cfg=cfg,
-                ladder=ladder_state_dict,
-                best_metric_value=best_metric_value,
-                scheduler_kind=scheduler_kind,
+                ladder=extra.get("ladder"),
+                best_metric_value=extra.get("best_metric_value"),
+                scheduler_kind=extra.get("scheduler_kind"),
             )
             raise _TimeLimitReached(global_step, epoch)
     return global_step, nan_streak

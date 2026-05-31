@@ -304,9 +304,11 @@ class Trainer:
             deadline=deadline,
             should_stop_early=should_stop_early,
             effective_schedule=effective_schedule,
-            ladder_state_dict=self._ladder.state_dict(),
-            best_metric_value=self._best_metric_value,
-            scheduler_kind=self._scheduler_kind,
+            flush_extra=lambda: {
+                "ladder": self._ladder.state_dict(),
+                "best_metric_value": self._best_metric_value,
+                "scheduler_kind": self._scheduler_kind,
+            },
         )
 
     def _cap_eval_batch_size(self, bs: int, cap: int) -> int:
