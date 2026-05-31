@@ -34,6 +34,7 @@ from custom_sam_peft.data.base import Dataset, Example, TextPrompts
 from custom_sam_peft.eval.metrics import MetricsReport
 from custom_sam_peft.peft_adapters import method_pretty_name
 from custom_sam_peft.presets import PresetDecision
+from custom_sam_peft.train.ladder import LadderEvents
 from custom_sam_peft.train.types import OomEvent
 
 _LOG = logging.getLogger(__name__)
@@ -101,6 +102,7 @@ class BundleContext:
     merged_dir: Path | None
     merged_export_error: str | None
     oom_events: tuple[OomEvent, ...]
+    ladder_events: LadderEvents | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -343,6 +345,36 @@ def _oom_edge_note(events: tuple[OomEvent, ...]) -> str | None:
     return note
 
 
+def _best_adapter_line(run_dir: Path) -> str:
+    """Outputs-section adapter line: best checkpoint if best.json exists, else last-step."""
+    best_json = run_dir / "best" / "best.json"
+    if best_json.is_file():
+        try:
+            data = json.loads(best_json.read_text())
+            return (
+                f"- Adapter: adapter/ (best checkpoint, mAP {float(data['value']):.4f} "
+                f"at step {int(data['global_step'])})"
+            )
+        except Exception:
+            _LOG.debug("bundle: could not parse best.json; falling back to last-step line")
+    return "- Adapter: adapter/ (last-step weights — no best/ produced)"
+
+
+def _ladder_event_lines(events: LadderEvents | None) -> list[str]:
+    if events is None:
+        return []
+    lines: list[str] = []
+    for c in events.cuts:
+        ratio = c.new_lr / c.old_lr if c.old_lr else 0.0
+        lines.append(
+            f"- LR cut x{ratio:.3g} -> {c.new_lr:.3g} at eval step {c.step}"
+            f" (mAP {c.triggering_map:.4f})"
+        )
+    if events.stop_reason:
+        lines.append(f"- early stop: {events.stop_reason}")
+    return lines
+
+
 def _write_summary_no_val(ctx: BundleContext) -> None:
     """Spec §7.5: write summary.md only; no samples directory.
 
@@ -350,12 +382,6 @@ def _write_summary_no_val(ctx: BundleContext) -> None:
     """
     gpu_name, vram_gb = _hardware_lines()
     vram_line = f"- VRAM: {vram_gb:.1f} GB" if vram_gb is not None else "- VRAM: (n/a)"
-
-    adapter_path = (ctx.run_dir / "adapter").resolve()
-    try:
-        adapter_rel = adapter_path.relative_to(ctx.run_dir.resolve())
-    except ValueError:
-        adapter_rel = adapter_path
 
     if ctx.merged_export_error is not None:
         merged_line = f"- Merged:  FAILED — {ctx.merged_export_error} — see logs"
@@ -383,13 +409,16 @@ def _write_summary_no_val(ctx: BundleContext) -> None:
         f"## Preset\n"
         f"{_preset_block(ctx.preset)}\n\n"
         f"## Outputs\n"
-        f"- Adapter: {adapter_rel}\n"
+        f"{_best_adapter_line(ctx.run_dir)}\n"
         f"{merged_line}\n"
         f"- Config:  {config_rel}\n\n"
         f"## Validation\n"
         f"No validation set; this run did not produce mAP or per-example IoU.\n"
         f"Tracker scalars and training-loss curve are at the configured TB run dir.\n"
     )
+    training_lines = _ladder_event_lines(ctx.ladder_events)
+    if training_lines:
+        body += "\n## Training\n" + "\n".join(training_lines) + "\n"
     edge_lines: list[str] = []
     if ctx.merged_export_error is not None:
         edge_lines.append(f"- export-merge failed: {ctx.merged_export_error}")
@@ -493,12 +522,6 @@ def _collect_artifacts(
     vram_line = f"- VRAM: {vram_gb:.1f} GB" if vram_gb is not None else "- VRAM: (n/a)"
     preset_block = _preset_block(ctx.preset)
 
-    adapter_path = (ctx.run_dir / "adapter").resolve()
-    try:
-        adapter_rel = adapter_path.relative_to(ctx.run_dir.resolve())
-    except ValueError:
-        adapter_rel = adapter_path
-
     if ctx.merged_export_error is not None:
         merged_line = f"- Merged:  FAILED — {ctx.merged_export_error} — see logs"
     elif ctx.merged_dir is None:
@@ -527,12 +550,15 @@ def _collect_artifacts(
         f"## Preset\n"
         f"{preset_block}\n\n"
         f"## Outputs\n"
-        f"- Adapter: {adapter_rel}\n"
+        f"{_best_adapter_line(ctx.run_dir)}\n"
         f"{merged_line}\n"
         f"- Config:  {config_rel}\n\n"
         f"## Samples\n"
         f"{samples_md}\n"
     )
+    training_lines = _ladder_event_lines(ctx.ladder_events)
+    if training_lines:
+        body += "\n## Training\n" + "\n".join(training_lines) + "\n"
     if edges_md:
         body += f"\n## Edge cases\n{edges_md}\n"
 
