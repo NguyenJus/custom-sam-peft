@@ -526,7 +526,15 @@ class Trainer:
 
         optimizer = self._build_optimizer()
         total_steps = cfg.train.epochs * steps_per_epoch
-        scheduler = _build_scheduler(optimizer, cfg, total_steps, cfg.train.lr_schedule)
+        effective_schedule = cfg.train.lr_schedule
+        if cfg.train.lr_schedule == "plateau" and self.val_ds is None:
+            _LOG.warning(
+                "lr_schedule=plateau requires a validation set for the plateau signal; "
+                "no val set provided — falling back to lr_schedule=cosine. "
+                "Early stop is a no-op."
+            )
+            effective_schedule = "cosine"
+        scheduler = _build_scheduler(optimizer, cfg, total_steps, effective_schedule)
 
         rs = ResumeState(
             start_step=0,
