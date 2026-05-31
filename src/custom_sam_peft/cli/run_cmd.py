@@ -8,6 +8,7 @@ Spec: docs/superpowers/specs/2026-05-18-simplify-ux-design.md §3.
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import sys
@@ -33,6 +34,7 @@ from custom_sam_peft.models.sam3 import load_sam31
 from custom_sam_peft.presets import PresetDecision, decide_preset
 from custom_sam_peft.runs.bundle import BundleContext, write_bundle
 from custom_sam_peft.train.checkpoint import find_latest_checkpoint, load_adapter
+from custom_sam_peft.train.close_out import close_out
 from custom_sam_peft.train.runner import run_training
 
 _LATEST_SENTINEL = "__latest__"
@@ -159,6 +161,111 @@ def _orchestrate(
     return 0
 
 
+def _read_final_step_epoch(run_dir: Path, resume: Path) -> tuple[int, int]:
+    """Read (global_step, epoch) from best.json or the checkpoint's training_state."""
+    best_json = run_dir / "best" / "best.json"
+    if best_json.is_file():
+        try:
+            data = json.loads(best_json.read_text())
+            return int(data["global_step"]), 0
+        except Exception:  # noqa: S110
+            pass
+    state_file = resume / "training_state.pt"
+    if state_file.is_file():
+        import torch
+
+        state = torch.load(state_file, weights_only=False)
+        return int(state.get("global_step", 0)), int(state.get("epoch", 0))
+    return 0, 0
+
+
+def _finalize(
+    cfg: TrainConfig,
+    resume: Path,
+    mode: ProgressMode,
+    *,
+    config_path: Path,
+) -> int:
+    """Productionize a paused run: rebuild + close_out, NO training (spec §11)."""
+    from custom_sam_peft.data.val_source import load_val_source
+
+    start_ts = datetime.now(UTC)
+    run_dir = resume.parent.parent  # checkpoints/step_N -> run_dir
+
+    # The run's OWN config governs model/eval/export shape (spec §11.2, A6).
+    saved_cfg_path = run_dir / "config.yaml"
+    saved_cfg = load_config(saved_cfg_path) if saved_cfg_path.is_file() else cfg
+    if saved_cfg_path.is_file():
+        _LOG.info("finalize: using the run's saved config.yaml (not --config) for fidelity.")
+
+    # Rebuild base model + adapter (prefer best/, else the resumed checkpoint's adapter).
+    wrapper: Any = load_sam31(
+        saved_cfg.model,
+        channels=saved_cfg.data.channels,
+        channel_semantics=saved_cfg.data.channel_semantics,
+    )
+    best_adapter = run_dir / "best" / "adapter"
+    adapter = best_adapter if best_adapter.is_dir() else resume / "adapter"
+    load_adapter(wrapper, adapter)
+
+    # Rebuild val dataset from the saved record.
+    vs = load_val_source(run_dir)
+    val_ds: Dataset | None = (
+        _build_val_dataset(saved_cfg, vs) if (vs is not None and vs.mode != "none") else None
+    )
+
+    final_step, final_epoch = _read_final_step_epoch(run_dir, resume)
+
+    artifacts = close_out(
+        run_dir,
+        wrapper,
+        saved_cfg,
+        evaluator_val_ds=val_ds,
+        oom_state=None,
+        final_step=final_step,
+        final_epoch=final_epoch,
+        ladder_events=None,
+    )
+
+    end_ts = datetime.now(UTC)
+
+    # Thread close_out's soft-fail merge error; set merged_dir from disk
+    # ONLY when there was no merge error (mirror _orchestrate exactly).
+    merged_export_error = artifacts.merged_export_error
+    merged_dir = (
+        (run_dir / "merged")
+        if (
+            saved_cfg.export.merge and merged_export_error is None and (run_dir / "merged").is_dir()
+        )
+        else None
+    )
+
+    ctx = BundleContext(
+        run_dir=run_dir,
+        config_path=run_dir / "config.yaml",
+        start_ts=start_ts,
+        end_ts=end_ts,
+        preset=_load_preset_or_fallback(saved_cfg),
+        per_example_iou=artifacts.per_example_iou or [],
+        merged_dir=merged_dir,
+        merged_export_error=merged_export_error,
+        oom_events=artifacts.oom_events,
+        ladder_events=artifacts.ladder_events,  # None for finalize — expected
+    )
+    write_bundle(ctx, artifacts.final_metrics, val_dataset=val_ds, model_wrapper=wrapper)
+
+    mAP_str = (
+        f"{artifacts.final_metrics.overall.get('mAP', float('nan')):.4f}"
+        if artifacts.final_metrics is not None
+        else "n/a (no val)"
+    )
+    rprint(
+        f"[green]finalized[/green] run_dir={run_dir} adapter={run_dir / 'adapter'} "
+        f"summary={run_dir / 'summary.md'} mAP={mAP_str}"
+    )
+    return 0
+
+
 def run(
     config: Path = typer.Option(..., "--config", help="Path to config YAML."),
     resume: str | None = typer.Option(
@@ -178,6 +285,15 @@ def run(
             "restarts the clock."
         ),
         metavar="DURATION",
+    ),
+    finalize: bool = typer.Option(
+        False,
+        "--finalize",
+        help=(
+            "Finalize a paused (time-limited) run: rebuild the model from --resume's "
+            "checkpoint, restore the best weights, run eval, and write adapter/merged/"
+            "metrics/bundle. Runs NO training. Requires --resume; rejects --time-limit."
+        ),
     ),
     verbose: bool = typer.Option(False, "-v", "--verbose", help="Enable DEBUG logging."),
     progress_flag: str = typer.Option(
@@ -205,6 +321,15 @@ def run(
         run_init("coco-text-lora", config, force=False)
     cfg = load_config(config)
     cfg = cfg.model_copy(update={"eval": cfg.eval.model_copy(update={"visualize": visualize})})
+    if finalize:
+        if resume is None:
+            rprint("[red]error[/red] --finalize requires --resume (a checkpoint or __latest__).")
+            raise typer.Exit(code=1)
+        if time_limit is not None:
+            rprint(
+                "[red]error[/red] --finalize cannot be combined with --time-limit (no training)."
+            )
+            raise typer.Exit(code=1)
     if time_limit is not None:
         try:
             parse_duration_to_seconds(time_limit)
@@ -233,4 +358,7 @@ def run(
     else:
         resume_path = None
 
+    if finalize:
+        assert resume_path is not None  # guaranteed by the validation above (mypy)  # noqa: S101
+        raise typer.Exit(code=_finalize(cfg, resume_path, mode, config_path=config))
     _orchestrate(cfg, resume_path, mode, config_path=config)
