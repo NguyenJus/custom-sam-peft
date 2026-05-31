@@ -12,7 +12,14 @@ from unittest.mock import MagicMock
 import pytest
 import torch
 
-from custom_sam_peft.presets import A_FIXED, A_PER_CLASS, PresetDecision, _activation_bytes, decide_preset
+from custom_sam_peft.presets import (
+    A_FIXED,
+    A_PER_CLASS,
+    PresetDecision,
+    _activation_bytes,
+    _predicted_bytes,
+    decide_preset,
+)
 
 _GB = 1024**3
 
@@ -123,12 +130,11 @@ def test_decide_preset_prefers_lora_over_qlora_when_both_fit(
 
 
 def test_activation_bytes_scales_with_image_size() -> None:
-    """_predicted_bytes scales activation with image_size (no-cache path)."""
-    from custom_sam_peft.presets import _predicted_bytes
-
+    """_predicted_bytes still scales with image_size (attention term) even though
+    activation bytes no longer have an image-size term (split formula). Spec §3.2."""
     small = _predicted_bytes("lora", r=4, batch=1, image_size=512, cache=None)
     big = _predicted_bytes("lora", r=4, batch=1, image_size=2048, cache=None)
-    # At larger image_size the predicted bytes must be larger.
+    # At larger image_size the attention term is larger, so predicted bytes grow.
     assert big > small
 
 
@@ -376,12 +382,10 @@ def test_predicted_bytes_train_includes_attention_term() -> None:
     """
     from custom_sam_peft.presets import (
         WORKSPACE_BYTES,
-        _activation_bytes,
         _adapter_bytes,
         _attention_bytes_per_example,
         _model_bytes,
         _optimizer_bytes,
-        _predicted_bytes,
     )
 
     pb = _predicted_bytes("lora", r=8, batch=1, image_size=1008, cache=None, k_eff=1)
@@ -389,7 +393,7 @@ def test_predicted_bytes_train_includes_attention_term() -> None:
         _model_bytes("lora")
         + _adapter_bytes(8)
         + _optimizer_bytes(8)
-        + _activation_bytes(1008, 1, None, k_eff=1)
+        + _activation_bytes(batch=1, cache=None, k_eff=1)
         + _attention_bytes_per_example(1008)  # batch=1
         + WORKSPACE_BYTES
     )
@@ -436,3 +440,18 @@ def test_activation_bytes_scales_with_batch() -> None:
 def test_activation_bytes_reads_split_cache() -> None:
     cache = {"A_fixed": 1000, "A_per_class": 7}
     assert _activation_bytes(batch=2, cache=cache, k_eff=3) == (1000 + 7 * 3) * 2
+
+
+def test_predicted_bytes_train_threads_k() -> None:
+    # K=16 minus K=1 equals exactly 15 * A_PER_CLASS * batch (encoder unchanged).
+    img = 1008
+    pb_k1 = _predicted_bytes("qlora", 4, 1, img, None, mode="train", k_eff=1)
+    pb_k16 = _predicted_bytes("qlora", 4, 1, img, None, mode="train", k_eff=16)
+    assert pb_k16 - pb_k1 == 15 * A_PER_CLASS * 1
+
+
+def test_predicted_bytes_eval_threads_k() -> None:
+    img = 1008
+    pb_k1 = _predicted_bytes("lora", 4, 1, img, None, mode="eval", k_eff=1)
+    pb_k4 = _predicted_bytes("lora", 4, 1, img, None, mode="eval", k_eff=4)
+    assert pb_k4 > pb_k1  # eval activation now scales with K via the split

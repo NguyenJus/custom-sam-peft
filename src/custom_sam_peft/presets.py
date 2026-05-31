@@ -226,15 +226,20 @@ def _predicted_bytes(
             _model_bytes(method)
             + _adapter_bytes(r)
             + _optimizer_bytes(r)
-            # Per-group activation scales with k_eff; the SDPA attention term is
-            # forward+backward (NOT scaled by forward_only_factor). Spec §3.1/§3.2.
-            + _activation_bytes(image_size, batch, cache, k_eff=k_eff)
+            # Split activation: only A_PER_CLASS scales with k_eff. The SDPA
+            # attention term is forward+backward (NOT scaled by
+            # forward_only_factor). Spec §2/§3.2.
+            + _activation_bytes(batch, cache, k_eff=k_eff)
             + _attention_bytes_per_example(image_size) * batch
             + WORKSPACE_BYTES
         )
     # mode == "eval": no optimizer, no adapter bytes; activations x forward_only_factor.
-    # K and attention are handled by decide_eval_batch_size's own cap, not here.
-    activations = int(_activation_bytes(image_size, batch, cache) * forward_only_factor)
+    # K is now threaded through the split; decide_eval_batch_size passes its
+    # classes_per_forward as k_eff. The SDPA attention cap stays in
+    # decide_eval_batch_size. Spec §6.
+    activations = int(
+        _activation_bytes(batch, cache, k_eff=k_eff) * forward_only_factor
+    )
     return _model_bytes(method) + activations + WORKSPACE_BYTES
 
 
