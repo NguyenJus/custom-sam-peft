@@ -182,7 +182,6 @@ def _read_final_step_epoch(run_dir: Path, resume: Path) -> tuple[int, int]:
 def _finalize(
     cfg: TrainConfig,
     resume: Path,
-    mode: ProgressMode,
     *,
     config_path: Path,
 ) -> int:
@@ -198,7 +197,10 @@ def _finalize(
     if saved_cfg_path.is_file():
         _LOG.info("finalize: using the run's saved config.yaml (not --config) for fidelity.")
 
-    # Rebuild base model + adapter (prefer best/, else the resumed checkpoint's adapter).
+    # Load the adapter into the base model BEFORE close_out: close_out only
+    # restores best/, falling back to these in-memory weights when best/ is
+    # absent — so this pre-load is the no-best fallback (the resumed adapter).
+    # Prefer best/adapter, else the resumed checkpoint's adapter.
     wrapper: Any = load_sam31(
         saved_cfg.model,
         channels=saved_cfg.data.channels,
@@ -252,7 +254,11 @@ def _finalize(
         oom_events=artifacts.oom_events,
         ladder_events=artifacts.ladder_events,  # None for finalize — expected
     )
-    write_bundle(ctx, artifacts.final_metrics, val_dataset=val_ds, model_wrapper=wrapper)
+    try:
+        write_bundle(ctx, artifacts.final_metrics, val_dataset=val_ds, model_wrapper=wrapper)
+    except Exception as exc:
+        rprint(f"[red]bundle failed[/red] run_dir={run_dir} — {exc}")
+        raise typer.Exit(code=1) from exc
 
     mAP_str = (
         f"{artifacts.final_metrics.overall.get('mAP', float('nan')):.4f}"
@@ -261,6 +267,7 @@ def _finalize(
     )
     rprint(
         f"[green]finalized[/green] run_dir={run_dir} adapter={run_dir / 'adapter'} "
+        f"merged={(merged_dir or merged_export_error or 'skipped')} "
         f"summary={run_dir / 'summary.md'} mAP={mAP_str}"
     )
     return 0
@@ -360,5 +367,5 @@ def run(
 
     if finalize:
         assert resume_path is not None  # guaranteed by the validation above (mypy)  # noqa: S101
-        raise typer.Exit(code=_finalize(cfg, resume_path, mode, config_path=config))
+        raise typer.Exit(code=_finalize(cfg, resume_path, config_path=config))
     _orchestrate(cfg, resume_path, mode, config_path=config)

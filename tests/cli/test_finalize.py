@@ -50,7 +50,6 @@ def test_finalize_calls_close_out_no_training(tmp_path: Path, monkeypatch) -> No
     rc = run_cmd._finalize(
         _SavedCfg(),
         resume,
-        run_cmd.ProgressMode.OFF,
         config_path=run_dir / "config.yaml",
     )
     assert rc == 0
@@ -62,7 +61,7 @@ def test_finalize_requires_resume(tmp_path: Path, monkeypatch) -> None:
     cfg_path = tmp_path / "c.yaml"
     cfg_path.write_text("run:\n  name: x\n")
     monkeypatch.setattr(run_cmd, "load_config", lambda p: _SavedCfg())
-    with pytest.raises(typer.Exit):
+    with pytest.raises(typer.Exit) as exc:
         run_cmd.run(
             config=cfg_path,
             resume=None,
@@ -72,13 +71,14 @@ def test_finalize_requires_resume(tmp_path: Path, monkeypatch) -> None:
             progress_flag="off",
             visualize=False,
         )
+    assert exc.value.exit_code == 1
 
 
 def test_finalize_rejects_time_limit(tmp_path: Path, monkeypatch) -> None:
     cfg_path = tmp_path / "c.yaml"
     cfg_path.write_text("run:\n  name: x\n")
     monkeypatch.setattr(run_cmd, "load_config", lambda p: _SavedCfg())
-    with pytest.raises(typer.Exit):
+    with pytest.raises(typer.Exit) as exc:
         run_cmd.run(
             config=cfg_path,
             resume="__latest__",
@@ -88,6 +88,7 @@ def test_finalize_rejects_time_limit(tmp_path: Path, monkeypatch) -> None:
             progress_flag="off",
             visualize=False,
         )
+    assert exc.value.exit_code == 1
 
 
 def test_finalize_resolves_latest(tmp_path: Path, monkeypatch) -> None:
@@ -97,7 +98,7 @@ def test_finalize_resolves_latest(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setattr(run_cmd, "find_latest_checkpoint", lambda cfg: resume)
     captured = {"resume": None}
 
-    def fake_finalize(cfg, resume_path, mode, *, config_path):
+    def fake_finalize(cfg, resume_path, *, config_path):
         captured["resume"] = resume_path
         return 0
 
