@@ -53,18 +53,26 @@ D_OUT = 768  # avg output feature dim across LoRA targets
 Q_OVERHEAD = 64 * _MIB  # bnb NF4 per-block scale + zero-point overhead
 # cite: empirical (#148/#179 VRAM calibration)
 WORKSPACE_BYTES = 256 * _MIB  # cuDNN workspace + autograd graph + tmp buffers (spec §3)
-# Split activation seeds, measured natively at SAM 3.1's fixed SAM3_IMAGE_SIZE=1008
-# (no image-size scale term — image size is constant). Spec §2/§6.
-#   activation(method, batch, K) = (A_FIXED + A_PER_CLASS * K) * batch
+# Split activation seeds — PORTABLE FLASH-BASELINE, measured natively at SAM 3.1's
+# fixed SAM3_IMAGE_SIZE=1008 (no image-size scale term). Spec §2/§2.1/§6.
+#   predicted_peak = STATIC + (A_FIXED + A_PER_CLASS * K) * batch
+#                    + (_attention_bytes_per_example(1008) * batch  if cc < 8.0 else 0)
 # A_FIXED   — K-invariant vision-encoder (hiera-large) activation, per image.
-# A_PER_CLASS — decoder / mask-head activation, per (image x class).
-# tbd: conservative split of the prior BASE_ACTIVATION_AT_1024 (~1.45 GiB at 1008px),
-#   bulk attributed to the encoder. RE-DERIVE on the dev-env RTX 5070 Ti before merge:
+# A_PER_CLASS — decoder / mask-head activation, per (image x class), two-point split.
+# cite: measured on NVIDIA GeForce RTX 5070 Ti (16 GiB, sm_120, cc=12.0 -> FLASH
+#   regime, driver 610.47), commit 1914a6d, 2026-05-31, via:
 #   uv run python scripts/_derive_preset_constants.py --method qlora --r 4 --batch 1
-#   (§9 real-GPU gate enforces this; replace this tag with a GPU+cc / commit SHA /
-#    date / command citation when landing the measured values).
-A_FIXED = int(1.30 * _GB)  # tbd: encoder-dominant share of ~1.45 GiB at 1008px
-A_PER_CLASS = int(0.15 * _GB)  # tbd: decoder per-class share at 1008px
+# PORTABILITY: the derive subtracts the regime-matched overhead (flash card -> STATIC
+#   only), so these seeds are valid for ALL GPUs; _predicted_bytes re-adds the
+#   materialized attention term only when cc < 8.0 (Turing/Pascal math backend). NO
+#   re-derivation on a Pascal/Turing card is needed (Amendment 2, spec §2.1).
+# A_FIXED clamps to 0: the K-invariant encoder activation sits below the analytic
+#   model-weight conservatism margin in STATIC (residual peak_K1 - STATIC -
+#   A_PER_CLASS ≈ -0.76 GiB), so STATIC already absorbs it. Predicted peak stays
+#   conservative — flash (K=1: 3.81 ≥ 3.05; K=4: 7.30 ≥ 6.54 GiB); synthetic no-flash
+#   with the re-added term (K=1: 5.41 ≥ 4.65; K=4: 8.90 ≥ 8.14 GiB). Spec §2.1.
+A_FIXED = 0  # 0.00 GiB encoder activation per image @1008px (clamped flash residual)
+A_PER_CLASS = 1_248_840_021  # 1.163 GiB decoder activation per class @1008px
 
 # Forward-only memory is roughly 1/4 of the train-step probe (train captures
 # forward + backward + retained graph; eval captures only forward, no graph).
