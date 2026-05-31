@@ -87,56 +87,74 @@ def _patch_probe(
         _write_config(tmp_path / "config.yaml", method="lora", r=16, k=16)
 
 
-def test_calibrate_writes_cache_with_schema_v2(
+def test_calibrate_writes_cache_with_schema_v3(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    from custom_sam_peft.cli import calibrate_cmd
+
     _patch_probe(monkeypatch, tmp_path=tmp_path)
+    monkeypatch.setattr(calibrate_cmd, "_run_probe", lambda **kw: _synthetic_peak(**kw))
     monkeypatch.chdir(tmp_path)
     result = runner.invoke(app, ["calibrate"])
     assert result.exit_code == 0, result.output
-    cache = tmp_path / ".custom_sam_peft_calibration.json"
-    assert cache.is_file()
-    data = json.loads(cache.read_text())
-    expected_keys = {
-        "schema_version",
-        "calibrated_at",
-        "gpu_name",
-        "gpu_total_memory_bytes",
-        "sam3_checkpoint_sha",
-        "torch_version",
-        "custom_sam_peft_version",
-        "activation_bytes_per_example",
-        "peak_memory_bytes_at_probe",
-    }
-    assert expected_keys.issubset(data.keys())
-    assert data["schema_version"] == 2
-    assert "image_size" not in data
-    assert data["sam3_checkpoint_sha"] == "deadbeef"
+    data = json.loads((tmp_path / ".custom_sam_peft_calibration.json").read_text())
+    assert data["schema_version"] == 3
+    assert {"A_fixed", "A_per_class"}.issubset(data.keys())
+    assert "activation_bytes_per_example" not in data
+
+
+def test_calibrate_k1_oom_exits_5(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from custom_sam_peft.cli import calibrate_cmd
+
+    _patch_probe(monkeypatch, tmp_path=tmp_path)
+    monkeypatch.setattr(
+        calibrate_cmd,
+        "_run_probe",
+        lambda **kw: (_ for _ in ()).throw(torch.cuda.OutOfMemoryError("x")),
+    )
+    monkeypatch.chdir(tmp_path)
+    result = runner.invoke(app, ["calibrate"])
+    assert result.exit_code == 5
+    assert "GPU too small" in result.output
 
 
 def test_calibrate_cache_fresh_exits_zero(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    # Write a config too: the fresh-cache path now reads load_config before checking
-    # freshness so it can derive k_eff for the config rewrite.
+    """Fresh v3 cache: exits 0, no re-probe, config rewritten from calibrated provenance."""
+    from custom_sam_peft.cli import calibrate_cmd
+
     _patch_probe(monkeypatch, tmp_path=tmp_path)
     # decide_preset validates the cache via presets._current_sam3_checkpoint_sha;
     # _patch_probe only rebinds the calibrate_cmd alias, so patch the presets-side
     # too (in production they are the same function) — otherwise decide_preset
     # rejects the cache on sha mismatch and falls back to analytic provenance.
     monkeypatch.setattr("custom_sam_peft.presets._current_sam3_checkpoint_sha", lambda: "deadbeef")
+    # Guard: no probes should fire on the cache-fresh path.
+    monkeypatch.setattr(
+        calibrate_cmd,
+        "_run_probe",
+        lambda **kw: (_ for _ in ()).throw(AssertionError("cache-fresh path must not probe")),
+    )
     monkeypatch.chdir(tmp_path)
     cache = tmp_path / ".custom_sam_peft_calibration.json"
+    # Seed a confirmed v3 cache with the chosen_* keys so _decision_from_cache
+    # returns the empirical config (provenance="calibrated") on the fresh-cache path.
     cache.write_text(
         json.dumps(
             {
-                "schema_version": 2,
+                "schema_version": 3,
                 "calibrated_at": "2026-05-22T00:00:00+00:00",
                 "gpu_name": "NVIDIA A100-SXM4-40GB",
                 "gpu_total_memory_bytes": int(40 * _GB),
                 "sam3_checkpoint_sha": "deadbeef",
                 "torch_version": "2.4.0",
                 "custom_sam_peft_version": "0.0.0",
-                "activation_bytes_per_example": int(1 * _GB),
+                "A_fixed": int(1 * _GB),
+                "A_per_class": 50 * 1024**2,
                 "peak_memory_bytes_at_probe": int(38 * _GB),
+                "chosen_method": "lora",
+                "chosen_r": 16,
+                "chosen_batch": 4,
+                "chosen_classes_per_forward": 8,
             }
         )
     )
@@ -146,34 +164,33 @@ def test_calibrate_cache_fresh_exits_zero(tmp_path: Path, monkeypatch: pytest.Mo
     assert "cache fresh" in result.output
     # The cache file must NOT be rewritten (mtime unchanged).
     assert cache.stat().st_mtime == mtime_before
-    # The config sizing block MUST be rewritten from the cached values.
+    # The config sizing block MUST be rewritten from the empirical cached values.
     cfg_path = tmp_path / "config.yaml"
     body = cfg_path.read_text()
     assert "# calibrated" in body
     from custom_sam_peft.config.loader import load_config
-    from custom_sam_peft.models.sam3 import MULTIPLEX_CAP
-    from custom_sam_peft.presets import decide_preset
 
     cfg = load_config(cfg_path)  # still a valid config
-    # The rewritten sizing must reflect the *calibrated* decision (cache consumed),
-    # not the analytic formula — otherwise the fresh-cache path silently ignored it.
-    k_eff = min(cfg.train.multiplex.classes_per_forward, MULTIPLEX_CAP)
-    calibrated = decide_preset(k=k_eff, cache_path=cache)
-    assert calibrated.provenance == "calibrated"
-    assert cfg.train.batch_size == calibrated.batch_size
-    assert cfg.peft.r == calibrated.r
-    assert cfg.train.grad_accum_steps == calibrated.grad_accum_steps
+    # The rewritten sizing must reflect the empirical decision (provenance="calibrated"),
+    # not the analytic formula.
+    assert cfg.peft.r == 16
+    assert cfg.train.batch_size == 4
 
 
 def test_calibrate_force_overwrites_cache(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from custom_sam_peft.cli import calibrate_cmd
+
     _patch_probe(monkeypatch, tmp_path=tmp_path)
+    monkeypatch.setattr(calibrate_cmd, "_run_probe", lambda **kw: _synthetic_peak(**kw))
     monkeypatch.chdir(tmp_path)
     cache = tmp_path / ".custom_sam_peft_calibration.json"
     cache.write_text('{"stale": true}')
     result = runner.invoke(app, ["calibrate", "--force"])
     assert result.exit_code == 0, result.output
     data = json.loads(cache.read_text())
-    assert data.get("schema_version") == 2
+    assert data.get("schema_version") == 3
+    assert {"A_fixed", "A_per_class"}.issubset(data.keys())
+    assert "activation_bytes_per_example" not in data
 
 
 def test_calibrate_non_cuda_exits_2(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -187,13 +204,26 @@ def test_calibrate_non_cuda_exits_2(tmp_path: Path, monkeypatch: pytest.MonkeyPa
 def test_calibrate_negative_activation_warns(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    # peak much smaller than model+adapter+opt → negative raw activation.
-    _patch_probe(monkeypatch, peak=10 * 1024**2, tmp_path=tmp_path)  # 10 MiB peak — tiny
+    """A tiny peak (smaller than fixed overhead) makes _derive_split clamp to 0 and warn.
+
+    The negative-activation warning now fires from _derive_split's clamp, not an
+    inline path in calibrate. Verify exit 0, v3 cache with clamped zeros, and the
+    clamp warning text.
+    """
+    from custom_sam_peft.cli import calibrate_cmd
+
+    tiny_peak = 10 * 1024**2  # 10 MiB — much smaller than any overhead estimate
+    _patch_probe(monkeypatch, peak=tiny_peak, tmp_path=tmp_path)
+    # Both Stage-1 probes return the tiny peak; _derive_split will compute negative
+    # a_fixed and a_per_class and clamp both to 0, emitting the WARNING.
+    monkeypatch.setattr(calibrate_cmd, "_run_probe", lambda **kw: tiny_peak)
     monkeypatch.chdir(tmp_path)
     result = runner.invoke(app, ["calibrate"])
-    assert result.exit_code == 0
+    assert result.exit_code == 0, result.output
     data = json.loads((tmp_path / ".custom_sam_peft_calibration.json").read_text())
-    assert data["activation_bytes_per_example"] == 0
+    assert data["schema_version"] == 3
+    assert data["A_fixed"] == 0
+    assert data["A_per_class"] == 0
     # The warning lands on stderr; CliRunner merges it into .output when mix_stderr=True (default).
     assert "negative" in result.output.lower() or "clamp" in result.output.lower()
 
@@ -217,21 +247,29 @@ def test_calibrate_atomic_write(tmp_path: Path, monkeypatch: pytest.MonkeyPatch)
 def test_calibrate_probes_at_config_r_and_k(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """calibrate reads cfg.peft.r/method and cfg.train.multiplex.classes_per_forward
-    and passes them to the probe. Spec §5.1."""
+    """Stage-3 confirm probe runs at the decision's (method, r, batch, K).
+
+    The config's k_cap is respected as an upper bound: classes_per_forward from the
+    config caps K throughout the analytic aim and Stage-3 confirm. Stage 1 always
+    probes at qlora/r4/K=1,4 regardless of the config.
+    """
     _patch_probe(monkeypatch)
     monkeypatch.chdir(tmp_path)
     _write_config(tmp_path / "config.yaml", method="qlora", r=32, k=8)
-    captured: dict[str, object] = {}
+    calls: list[dict] = []
 
     def _fake_probe(*, method: str, r: int, k_eff: int, batch: int) -> int:
-        captured.update(method=method, r=r, k_eff=k_eff, batch=batch)
-        return int(38 * _GB)
+        calls.append({"method": method, "r": r, "k_eff": k_eff, "batch": batch})
+        return _synthetic_peak(method=method, r=r, k_eff=k_eff, batch=batch)
 
     monkeypatch.setattr("custom_sam_peft.cli.calibrate_cmd._run_probe", _fake_probe)
     result = runner.invoke(app, ["calibrate", "--config", "config.yaml"])
     assert result.exit_code == 0, result.output
-    assert captured == {"method": "qlora", "r": 32, "k_eff": 8, "batch": 1}
+    # Stage 1 probes at qlora/r4 (fixed); Stage 3 probes at the analytic aim.
+    stage1_calls = [c for c in calls if c["method"] == "qlora" and c["r"] == 4]
+    assert len(stage1_calls) >= 1  # at least K=1 derive probe ran
+    # The Stage-3 probe(s) must respect k_cap=8 (never exceed the config's k).
+    assert all(c["k_eff"] <= 8 for c in calls), f"k_eff exceeded k_cap=8: {calls}"
 
 
 def test_calibrate_rewrites_config_in_place_annotated(
@@ -239,7 +277,10 @@ def test_calibrate_rewrites_config_in_place_annotated(
 ) -> None:
     """After a successful probe, the config's sizing block is re-annotated
     '# calibrated <date>' and re-loads via load_config. Spec §5.3."""
+    from custom_sam_peft.cli import calibrate_cmd
+
     _patch_probe(monkeypatch)
+    monkeypatch.setattr(calibrate_cmd, "_run_probe", lambda **kw: _synthetic_peak(**kw))
     monkeypatch.chdir(tmp_path)
     cfg_path = tmp_path / "config.yaml"
     _write_config(cfg_path, method="lora", r=16, k=16)
@@ -256,7 +297,10 @@ def test_calibrate_auto_inits_when_no_config(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """No config -> warn + auto-init (formula, no probe) then probe it. Spec §5.4."""
+    from custom_sam_peft.cli import calibrate_cmd
+
     _patch_probe(monkeypatch)
+    monkeypatch.setattr(calibrate_cmd, "_run_probe", lambda **kw: _synthetic_peak(**kw))
     monkeypatch.chdir(tmp_path)
     assert not (tmp_path / "config.yaml").exists()
     result = runner.invoke(app, ["calibrate", "--config", "config.yaml"])
@@ -548,14 +592,16 @@ def test_run_calibration_k1_oom_raises_gpu_too_small(
 def test_calibrate_non_default_output_uses_calibrated_provenance(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """I2: calibrate --output <non-default> threads the path to decide_preset.
+    """I2: calibrate --output <non-default> writes cache at the custom path.
 
-    When --output points to a non-default path, decide_preset must receive that path
-    as cache_path so provenance reflects the just-written probe rather than falling
-    back to an absent default cache.
+    When --output points to a non-default path, run_calibration must write the v3
+    cache there and the returned decision must have provenance="calibrated".
     """
+    from custom_sam_peft.cli import calibrate_cmd
+
     custom_cache = tmp_path / "my_custom_cache.json"
     _patch_probe(monkeypatch, tmp_path=tmp_path)
+    monkeypatch.setattr(calibrate_cmd, "_run_probe", lambda **kw: _synthetic_peak(**kw))
     monkeypatch.chdir(tmp_path)
 
     # Intercept _load_cache (called from inside decide_preset) to capture which
@@ -576,6 +622,8 @@ def test_calibrate_non_default_output_uses_calibrated_provenance(
     )
     assert result.exit_code == 0, result.output
     assert custom_cache.is_file(), "cache was not written to custom path"
+    data = json.loads(custom_cache.read_text())
+    assert data["schema_version"] == 3
     # _load_cache (and therefore decide_preset) must have received the non-default path.
     assert captured_cache_path.get("path") == custom_cache, (
         f"_load_cache received cache_path={captured_cache_path.get('path')!r}, "

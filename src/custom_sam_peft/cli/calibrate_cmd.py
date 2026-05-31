@@ -480,96 +480,25 @@ def calibrate(
     config: Path = typer.Option(Path("config.yaml"), "--config", help="Training config YAML path."),
 ) -> None:
     """Probe peak VRAM at the config's (method, r, k, batch) and cache the result."""
-    from custom_sam_peft.config.loader import load_config
-    from custom_sam_peft.models.sam3 import MULTIPLEX_CAP, SAM3_IMAGE_SIZE
-
     if not torch.cuda.is_available():
         typer.echo(f"ERROR: {_CUDA_HINT}", err=True)
         raise typer.Exit(code=2)
-
-    gpu_name = torch.cuda.get_device_name(0)
-    total = int(torch.cuda.get_device_properties(0).total_memory)
-
-    if not config.exists():
-        typer.echo(
-            f"WARNING: {config} not initialized — auto-init (formula, no probe) then probe.",
-            err=True,
-        )
-        from custom_sam_peft.cli.init_cmd import run_init
-
-        run_init("coco-text-lora", config, force=False)
-
-    cfg = load_config(config)
-    method = cfg.peft.method
-    r = cfg.peft.r
-    k_eff = min(cfg.train.multiplex.classes_per_forward, MULTIPLEX_CAP)
-    batch = cfg.train.batch_size
-
-    if not force and _cache_is_fresh(output, gpu_name):
-        typer.echo("cache fresh — exiting")
-        _apply_config_rewrite(config, k_eff=k_eff, cache_path=output)
-        raise typer.Exit(code=0)
-
     try:
-        peak = _run_probe(method=method, r=r, k_eff=k_eff, batch=batch)
-    except FileNotFoundError as exc:
+        decision = run_calibration(config=config, output=output, force=force)
+    except _GpuTooSmall as exc:
+        typer.echo(f"ERROR: {exc} — calibration probe OOMed; GPU too small", err=True)
+        raise typer.Exit(code=5) from exc
+    except _CheckpointMissing as exc:
         typer.echo(f"ERROR: SAM 3.1 checkpoint not found: {exc}", err=True)
         raise typer.Exit(code=3) from exc
-    except torch.cuda.OutOfMemoryError as exc:
-        typer.echo(
-            "ERROR: calibration probe OOMed at config's sizing — GPU too small",
-            err=True,
-        )
-        raise typer.Exit(code=5) from exc
+    except _CacheWriteFailed as exc:
+        typer.echo(f"ERROR: cache write failed: {exc}", err=True)
+        raise typer.Exit(code=6) from exc
+    except _CalibrationError as exc:
+        typer.echo(f"ERROR: probe failed: {exc}", err=True)
+        raise typer.Exit(code=4) from exc
     except (RuntimeError, ValueError) as exc:
         typer.echo(f"ERROR: probe failed: {exc}", err=True)
         raise typer.Exit(code=4) from exc
 
-    overhead = (
-        _model_bytes(method)
-        + _adapter_bytes(r)
-        + _optimizer_bytes(r)
-        + WORKSPACE_BYTES
-        + _attention_bytes_per_example(SAM3_IMAGE_SIZE) * batch
-    )
-    activation = peak - overhead
-    if activation < 0:
-        typer.echo(
-            f"WARNING: negative activation ({activation} bytes); "
-            "clamping to 0 — constants may need recalibration",
-            err=True,
-        )
-        activation = 0
-
-    # Store per-(example*K_eff) so _activation_per_example * k_eff reconstructs it.
-    activation_per_example = int(activation / max(1, batch * k_eff))
-
-    payload = {
-        "schema_version": CACHE_SCHEMA_VERSION,
-        "calibrated_at": datetime.now(UTC).isoformat(),
-        "gpu_name": gpu_name,
-        "gpu_total_memory_bytes": total,
-        "sam3_checkpoint_sha": _sam3_checkpoint_sha(),
-        "torch_version": torch.__version__,
-        "custom_sam_peft_version": _PKG_VERSION,
-        "activation_bytes_per_example": int(activation_per_example),
-        "peak_memory_bytes_at_probe": int(peak),
-    }
-    try:
-        _atomic_write_json(output, payload)
-    except OSError as exc:
-        typer.echo(f"ERROR: cache write failed: {exc}", err=True)
-        raise typer.Exit(code=6) from exc
-
-    # Rewrite the config's sizing block in place with calibrated values.
-    # Pass cache_path=output so decide_preset reads the freshly-written cache
-    # (provenance="calibrated") even when --output is non-default.
-    _apply_config_rewrite(config, k_eff=k_eff, cache_path=output)
-
-    def _gib(b: int) -> float:
-        return b / (1024**3)
-
-    typer.echo(f"GPU:        {gpu_name} (SAM3_IMAGE_SIZE={SAM3_IMAGE_SIZE})")
-    typer.echo(f"Peak:       {_gib(peak):.1f} GiB")
-    typer.echo(f"Activation: {_gib(activation_per_example):.2f} GiB/example")
-    typer.echo(f"Cache:      {output}")
+    typer.echo(decision.label())
