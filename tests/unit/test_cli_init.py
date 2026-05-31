@@ -37,7 +37,11 @@ def test_init_writes_lora_template(tmp_path: Path) -> None:
     assert cfg.peft.method == "lora"
 
 
-def test_init_writes_qlora_template(tmp_path: Path) -> None:
+def test_init_writes_qlora_template(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    # Pin CPU so this exercises template RENDERING (qlora method + nf4 block), not
+    # GPU auto-sizing — which on a card where LoRA fits would bake `method: lora`
+    # over the template (that bake path is covered by the *_on_gpu test). Spec §6.1.
+    monkeypatch.setattr("custom_sam_peft.cli.init_cmd.torch.cuda.is_available", lambda: False)
     _make_data_paths(tmp_path)
     out = tmp_path / "config.yaml"
     result = runner.invoke(
@@ -442,6 +446,7 @@ def test_init_bakes_formula_sizing_with_annotation_on_gpu(
         r=24,
         batch_size=2,
         grad_accum_steps=8,
+        classes_per_forward=8,
         dtype="bfloat16",
         headroom_bytes=0,
         predicted_bytes=0,

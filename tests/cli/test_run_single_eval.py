@@ -75,6 +75,7 @@ def test_orchestrate_does_not_call_run_eval(
         r=4,
         batch_size=1,
         grad_accum_steps=1,
+        classes_per_forward=1,
         dtype="bfloat16",
         headroom_bytes=0,
         predicted_bytes=0,

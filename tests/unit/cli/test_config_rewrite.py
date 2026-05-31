@@ -66,6 +66,7 @@ def test_rewrite_sizing_block_annotation_present(tmp_path: Path) -> None:
         r=8,
         batch_size=2,
         grad_accum_steps=4,
+        classes_per_forward=16,
         dtype="float16",
         annotation="# calibrated 2026-05-28",
     )
@@ -85,6 +86,7 @@ def test_rewrite_sizing_block_values_changed(tmp_path: Path) -> None:
         r=8,
         batch_size=2,
         grad_accum_steps=4,
+        classes_per_forward=16,
         dtype="float16",
         annotation="# calibrated 2026-05-28",
     )
@@ -108,6 +110,7 @@ def test_rewrite_sizing_block_unrelated_lines_survive(tmp_path: Path) -> None:
         r=8,
         batch_size=2,
         grad_accum_steps=4,
+        classes_per_forward=16,
         dtype="float16",
         annotation="# calibrated 2026-05-28",
     )
@@ -137,6 +140,7 @@ def test_rewrite_sizing_block_still_parses_via_load_config(tmp_path: Path) -> No
         r=8,
         batch_size=2,
         grad_accum_steps=4,
+        classes_per_forward=16,
         dtype="float16",
         annotation="# calibrated 2026-05-28",
     )
@@ -213,6 +217,7 @@ def test_rewrite_depth_aware_nested_key_untouched(tmp_path: Path) -> None:
         r=8,
         batch_size=2,
         grad_accum_steps=4,
+        classes_per_forward=16,
         dtype="float16",
         annotation="# calibrated 2026-05-28",
     )
@@ -284,6 +289,7 @@ def test_rewrite_missing_key_raises_value_error(tmp_path: Path) -> None:
             r=8,
             batch_size=2,
             grad_accum_steps=4,
+            classes_per_forward=16,
             dtype="float16",
             annotation="# calibrated 2026-05-28",
         )
@@ -306,6 +312,7 @@ def test_rewrite_annotation_idempotent(tmp_path: Path) -> None:
             r=8,
             batch_size=2,
             grad_accum_steps=4,
+            classes_per_forward=16,
             dtype="float16",
             annotation="# calibrated 2026-05-28",
         )
@@ -333,6 +340,7 @@ def test_rewrite_against_real_rendered_template(tmp_path: Path) -> None:
         r=32,
         batch_size=4,
         grad_accum_steps=2,
+        classes_per_forward=16,
         dtype="float16",
         annotation="# formula-derived",
     )
@@ -352,6 +360,7 @@ def test_rewrite_against_real_rendered_template(tmp_path: Path) -> None:
         r=8,
         batch_size=1,
         grad_accum_steps=8,
+        classes_per_forward=16,
         dtype="bfloat16",
         annotation="# calibrated",
     )
@@ -363,3 +372,83 @@ def test_rewrite_against_real_rendered_template(tmp_path: Path) -> None:
     assert cfg2.peft.r == 8
     assert cfg2.train.batch_size == 1
     assert cfg2.model.dtype == "bfloat16"
+
+
+# ---------------------------------------------------------------------------
+# N1: nested train.multiplex.classes_per_forward rewrite
+# ---------------------------------------------------------------------------
+
+_CFG = """\
+model:
+  dtype: float16
+peft:
+  method: lora
+  r: 8
+train:
+  batch_size: 1
+  grad_accum_steps: 16
+  multiplex:
+    classes_per_forward: 16
+"""
+
+
+def test_rewrite_writes_classes_per_forward(tmp_path: Path) -> None:
+    """N1: rewrite updates the nested train.multiplex.classes_per_forward value."""
+    p = tmp_path / "config.yaml"
+    p.write_text(_CFG)
+    _rewrite_sizing_block(
+        p,
+        method="qlora",
+        r=16,
+        batch_size=4,
+        grad_accum_steps=4,
+        classes_per_forward=8,
+        dtype="bfloat16",
+        annotation="# calibrated 2026-05-31",
+    )
+
+    data = yaml.safe_load(p.read_text())
+    assert data["train"]["multiplex"]["classes_per_forward"] == 8
+    assert data["peft"]["r"] == 16
+    assert data["train"]["batch_size"] == 4
+
+
+def test_rewritten_config_validates_within_bounds(tmp_path: Path) -> None:
+    """A rewrite of K=16 (grid max) still load_configs cleanly (MultiplexConfig le=16)."""
+    cfg_path = tmp_path / "config.yaml"
+    _write_config_with_comments(cfg_path)
+
+    _rewrite_sizing_block(
+        cfg_path,
+        method="lora",
+        r=16,
+        batch_size=2,
+        grad_accum_steps=8,
+        classes_per_forward=16,
+        dtype="bfloat16",
+        annotation="# calibrated 2026-05-31",
+    )
+
+    cfg = load_config(cfg_path)
+    assert cfg.train.multiplex.classes_per_forward == 16
+
+
+def test_rewrite_missing_multiplex_block_raises(tmp_path: Path) -> None:
+    """A config predating the multiplex block (all 5 direct keys present) raises."""
+    p = tmp_path / "config.yaml"
+    p.write_text(
+        "model:\n  dtype: float16\n"
+        "peft:\n  method: lora\n  r: 8\n"
+        "train:\n  batch_size: 1\n  grad_accum_steps: 16\n"
+    )
+    with pytest.raises(ValueError, match="classes_per_forward"):
+        _rewrite_sizing_block(
+            p,
+            method="qlora",
+            r=16,
+            batch_size=4,
+            grad_accum_steps=4,
+            classes_per_forward=8,
+            dtype="bfloat16",
+            annotation="# calibrated 2026-05-31",
+        )

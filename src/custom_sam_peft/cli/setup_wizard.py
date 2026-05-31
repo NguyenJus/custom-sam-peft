@@ -336,20 +336,100 @@ def _ask_class_imbalance(ctx: Ctx) -> dict[str, Any]:
 
 
 def _ask_peft_sizing(ctx: Ctx) -> dict[str, Any]:
-    from custom_sam_peft.presets import decide_preset
-
     if ctx.cuda_available and ask_confirm(
         "Auto-size the PEFT config to your GPU's VRAM?", default=True
     ):
-        try:
-            decision = decide_preset()
-        except RuntimeError as exc:
-            typer.echo(f"could not auto-size: {exc}; falling back to manual")
-        else:
-            typer.echo(decision.label())
-            return decision.config_patch
+        patch = _calibrate_or_analytic(ctx)
+        if patch is not None:
+            return patch
     method = ask_choice("PEFT method?", ["lora", "qlora"], default="lora")
     return {"peft": {"method": method}}
+
+
+def _calibrate_or_analytic(ctx: Ctx) -> dict[str, Any] | None:
+    """Consent path: run the calibrate confirm-and-climb flow; on any probe failure
+    degrade to analytic decide_preset; return None to fall through to manual.
+    Spec §5."""
+    import tempfile
+
+    # deferred: avoid the torch import cost on CPU-only / declined wizard paths.
+    import torch
+
+    from custom_sam_peft.cli.calibrate_cmd import run_calibration
+    from custom_sam_peft.presets import CACHE_FILENAME, decide_preset
+
+    answers = ctx.answers
+    k_cap = answers.get("train", {}).get("multiplex", {}).get("classes_per_forward")
+
+    try:
+        with tempfile.TemporaryDirectory() as td:
+            cfg_path = Path(td) / "config.yaml"
+            cfg_path.write_text(_wizard_probe_config(answers))
+            decision = run_calibration(
+                config=cfg_path, output=Path(td) / CACHE_FILENAME, force=True
+            )
+        typer.echo(decision.label())
+        return decision.config_patch
+    except (
+        FileNotFoundError,
+        torch.cuda.OutOfMemoryError,
+        # broad: torch raises RuntimeError for OOM, device mismatch, driver
+        # failures. The fallback echo includes {exc} so the cause stays visible.
+        RuntimeError,
+        ValueError,
+    ) as exc:
+        typer.echo(f"live GPU probe unavailable ({exc}); using analytic estimate")
+
+    try:
+        decision = decide_preset(k=k_cap)
+    except (RuntimeError, ValueError) as exc:
+        typer.echo(f"could not auto-size: {exc}; falling back to manual")
+        return None
+    typer.echo(decision.label())
+    return decision.config_patch
+
+
+def _wizard_probe_config(answers: dict[str, Any]) -> str:
+    """Render a minimal valid TrainConfig YAML for the GPU probe.
+
+    Mirrors the shape of tests/unit/test_calibrate_cmd.py::_write_config so that
+    load_config accepts it. Only peft/train/model are read by run_calibration; the
+    other sections (run/data/tracking) are stubs.
+    """
+    k_cap = answers.get("train", {}).get("multiplex", {}).get("classes_per_forward") or 16
+    model_block = _model_block(answers)
+    return f"""\
+run:
+  name: wizard-probe
+  output_dir: ./runs
+  seed: 42
+
+model:
+{model_block}
+  dtype: bfloat16
+
+data:
+  format: coco
+  train:
+    annotations: data/placeholder/annotations.json
+    images: data/placeholder/images
+
+peft:
+  method: lora
+  # r is overwritten by run_calibration's confirm-and-climb; the starting value
+  # only needs to be schema-valid.
+  r: 64
+
+train:
+  epochs: 1
+  batch_size: 1
+  grad_accum_steps: 8
+  multiplex:
+    classes_per_forward: {k_cap}
+
+tracking:
+  backend: none
+"""
 
 
 def _ask_epochs(ctx: Ctx) -> dict[str, Any]:

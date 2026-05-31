@@ -12,7 +12,23 @@ from unittest.mock import MagicMock
 import pytest
 import torch
 
-from custom_sam_peft.presets import PresetDecision, decide_preset
+from custom_sam_peft.presets import (
+    A_FIXED,
+    A_PER_CLASS,
+    WORKSPACE_BYTES,
+    PresetDecision,
+    _activation_bytes,
+    _adapter_bytes,
+    _attention_bytes_per_example,
+    _candidates,
+    _flash_attention_available,
+    _model_bytes,
+    _optimizer_bytes,
+    _predicted_bytes,
+    _sort_key,
+    decide_eval_batch_size,
+    decide_preset,
+)
 
 _GB = 1024**3
 
@@ -38,41 +54,38 @@ def _stub_gpu(
 # ---- decide_preset: per-tier behavior --------------------------------------
 
 
-def test_decide_preset_32gib_chooses_qlora(
+def test_decide_preset_32gib_sizes_lora(
     monkeypatch: pytest.MonkeyPatch, _force_cuda_available: None
 ) -> None:
-    # With K_eff=MULTIPLEX_CAP (16) as default, the train activation term is
-    # ~23 GiB/example, so LoRA (10 GiB weights) needs ~35 GiB minimum budget.
-    # A 32 GiB card (budget=31 GiB) fits QLoRA (~28 GiB) but not LoRA.
+    # With the split formula (A_FIXED dominant), a 32 GiB card can fit LoRA at
+    # conservative K. Assert a valid PresetDecision is returned (no RuntimeError).
     _stub_gpu(monkeypatch, int(32 * _GB))
     d = decide_preset()
-    assert d.method == "qlora"
-    # QLoRA is chosen at the highest rank that fits (analytic seed, superseded by
-    # calibration cache).
+    assert isinstance(d, PresetDecision)
+    assert d.method == "lora"
     assert d.predicted_bytes <= d.budget_bytes
 
 
 def test_decide_preset_40gib_chooses_lora_low_rank(
     monkeypatch: pytest.MonkeyPatch, _force_cuda_available: None
 ) -> None:
-    # At 40 GiB (budget=39 GiB), LoRA r=8 batch=1 (~35 GiB) fits; lora is
-    # preferred over qlora by the sort key.  Exact rank depends on analytic seed.
+    # At 40 GiB (budget=39 GiB), LoRA fits; lora is preferred over qlora by the
+    # sort key. Exact rank/K/batch depend on the analytic seed.
     _stub_gpu(monkeypatch, int(40 * _GB))
     d = decide_preset()
     assert d.method == "lora"
-    assert d.r <= 64
-    assert d.batch_size >= 1
+    assert d.predicted_bytes <= d.budget_bytes
 
 
 def test_decide_preset_65gib_chooses_lora_high_rank(
     monkeypatch: pytest.MonkeyPatch, _force_cuda_available: None
 ) -> None:
-    # At 65 GiB (budget=64 GiB), LoRA r=64 batch=2 (~60 GiB) fits.
+    # At 65 GiB (budget=64 GiB), LoRA at high rank fits (split formula is more
+    # generous than the old lumped K=16 model). Exact rank/K/batch per seed.
     _stub_gpu(monkeypatch, int(65 * _GB))
     d = decide_preset()
     assert d.method == "lora"
-    assert d.r >= 32
-    assert d.batch_size >= 2
+    assert d.predicted_bytes <= d.budget_bytes
 
 
 def test_decide_preset_80gib_chooses_max_rank_batch(
@@ -122,29 +135,20 @@ def test_decide_preset_prefers_lora_over_qlora_when_both_fit(
     assert d.method == "lora"
 
 
-def test_activation_bytes_scales_with_image_size() -> None:
-    """_predicted_bytes scales activation with image_size (no-cache path)."""
-    from custom_sam_peft.presets import _predicted_bytes
-
-    small = _predicted_bytes("lora", r=4, batch=1, image_size=512, cache=None)
-    big = _predicted_bytes("lora", r=4, batch=1, image_size=2048, cache=None)
-    # At larger image_size the predicted bytes must be larger.
-    assert big > small
-
-
 # ---- calibration cache provenance ------------------------------------------
 
 
 def _write_cache(path: Path, **fields: object) -> None:
     base = {
-        "schema_version": 2,
+        "schema_version": 3,
         "calibrated_at": "2026-05-22T00:00:00+00:00",
         "gpu_name": "StubGPU",
         "gpu_total_memory_bytes": int(40 * _GB),
         "sam3_checkpoint_sha": "deadbeef",
         "torch_version": "2.4.0",
         "custom_sam_peft_version": "0.0.0",
-        "activation_bytes_per_example": int(0.5 * _GB),
+        "A_fixed": int(1.30 * _GB),
+        "A_per_class": int(0.15 * _GB),
         "peak_memory_bytes_at_probe": int(38 * _GB),
     }
     base.update(fields)
@@ -220,21 +224,24 @@ def test_decide_preset_headroom_env_negative_raises(
 # ---- PresetDecision.label / to_json / config_patch -------------------------
 
 
-def _make_decision(provenance: str = "calibrated") -> PresetDecision:
-    return PresetDecision(
+def _make_decision(provenance: str = "calibrated", **over: object) -> PresetDecision:
+    base: dict[str, object] = dict(
         method="lora",
         r=32,
         batch_size=2,
         grad_accum_steps=8,
+        classes_per_forward=8,
         dtype="bfloat16",
         headroom_bytes=int(1.6 * _GB),
         predicted_bytes=int(38.4 * _GB),
         budget_bytes=int(39 * _GB),
         gpu_name="NVIDIA A100-SXM4-40GB",
-        provenance=provenance,  # type: ignore[arg-type]
+        provenance=provenance,
         cache_path=Path(".custom_sam_peft_calibration.json"),
         calibrated_at="2026-05-22T00:00:00+00:00" if provenance == "calibrated" else None,
     )
+    base.update(over)
+    return PresetDecision(**base)  # type: ignore[arg-type]
 
 
 def test_preset_decision_label_calibrated() -> None:
@@ -349,6 +356,18 @@ def test_decide_preset_selects_bfloat16_at_cc80(
 # ---- K_eff activation + shared attention helper ----------------------------
 
 
+def test_flash_attention_available_by_cc() -> None:
+    # cc >= (8, 0): flash / mem-efficient SDPA -> no materialized attention term.
+    assert _flash_attention_available((8, 0)) is True
+    assert _flash_attention_available((9, 0)) is True
+    assert _flash_attention_available((12, 0)) is True  # 5070 Ti dev box
+    # cc < (8, 0): assume math backend materializes -> include the attention term.
+    assert _flash_attention_available((7, 5)) is False  # Turing (conservative)
+    assert _flash_attention_available((6, 1)) is False  # Pascal (GTX 1080)
+    # Unknown / unreadable cc -> conservative False (safe over-estimate).
+    assert _flash_attention_available(None) is False
+
+
 def test_attention_bytes_helper_matches_sdpa_model() -> None:
     """The shared helper reproduces the inline SDPA model: H * N^2 * 4 bytes."""
     from custom_sam_peft.presets import _attention_bytes_per_example
@@ -368,36 +387,6 @@ def test_predicted_bytes_train_grows_with_k_eff() -> None:
     assert big_k > small_k
 
 
-def test_predicted_bytes_train_includes_attention_term() -> None:
-    """Train-mode prediction includes the (dominant) SDPA attention term.
-
-    Asserts additive equality so that any omitted or doubled term causes a
-    failure (near-tautological comparisons would miss those bugs).
-    """
-    from custom_sam_peft.presets import (
-        WORKSPACE_BYTES,
-        _activation_bytes,
-        _adapter_bytes,
-        _attention_bytes_per_example,
-        _model_bytes,
-        _optimizer_bytes,
-        _predicted_bytes,
-    )
-
-    pb = _predicted_bytes("lora", r=8, batch=1, image_size=1008, cache=None, k_eff=1)
-    expected = (
-        _model_bytes("lora")
-        + _adapter_bytes(8)
-        + _optimizer_bytes(8)
-        + _activation_bytes(1008, 1, None, k_eff=1)
-        + _attention_bytes_per_example(1008)  # batch=1
-        + WORKSPACE_BYTES
-    )
-    assert pb == expected
-    # Sanity: the attention term is positive (guards against a zero constant).
-    assert _attention_bytes_per_example(1008) > 0
-
-
 def test_decide_preset_threads_k_into_formula(monkeypatch: pytest.MonkeyPatch) -> None:
     """decide_preset(k=...) feeds K_eff into the train formula; larger k -> larger
     predicted_bytes for the chosen preset (monotone), all else equal."""
@@ -415,3 +404,260 @@ def test_decide_preset_defaults_k_to_cap_when_none(monkeypatch: pytest.MonkeyPat
     monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
     _stub_gpu(monkeypatch, int(80 * _GB))
     assert decide_preset().predicted_bytes == decide_preset(k=MULTIPLEX_CAP).predicted_bytes
+
+
+def test_activation_bytes_split_is_linear_in_k_no_analytic_cache() -> None:
+    # Encoder term (A_FIXED) does NOT scale with K; only A_PER_CLASS * K does.
+    at_k1 = _activation_bytes(batch=1, cache=None, k_eff=1)
+    at_k16 = _activation_bytes(batch=1, cache=None, k_eff=16)
+    assert at_k1 == A_FIXED + A_PER_CLASS * 1
+    assert at_k16 == A_FIXED + A_PER_CLASS * 16
+    # The #203 regression guard: K=1 vs K=16 differ by exactly 15 * A_PER_CLASS.
+    assert at_k16 - at_k1 == 15 * A_PER_CLASS
+
+
+def test_activation_bytes_scales_with_batch() -> None:
+    assert _activation_bytes(batch=4, cache=None, k_eff=2) == ((A_FIXED + A_PER_CLASS * 2) * 4)
+
+
+def test_activation_bytes_reads_split_cache() -> None:
+    cache = {"A_fixed": 1000, "A_per_class": 7}
+    assert _activation_bytes(batch=2, cache=cache, k_eff=3) == (1000 + 7 * 3) * 2
+
+
+def test_predicted_bytes_train_threads_k() -> None:
+    # K-invariance holds in BOTH regimes: K=16 minus K=1 equals exactly
+    # 15 * A_PER_CLASS * batch (encoder + attention both unchanged by K).
+    img = 1008
+    for flash in (True, False):
+        pb_k1 = _predicted_bytes(
+            "qlora", 4, 1, img, None, mode="train", k_eff=1, flash_available=flash
+        )
+        pb_k16 = _predicted_bytes(
+            "qlora", 4, 1, img, None, mode="train", k_eff=16, flash_available=flash
+        )
+        assert pb_k16 - pb_k1 == 15 * A_PER_CLASS * 1
+
+
+def test_predicted_bytes_train_no_attention_when_flash() -> None:
+    # cc >= 8.0 (flash): train branch is STATIC + split, NO attention term.
+    img = 1008
+    static = _model_bytes("qlora") + _adapter_bytes(4) + _optimizer_bytes(4) + WORKSPACE_BYTES
+    pb = _predicted_bytes("qlora", 4, 1, img, None, mode="train", k_eff=1, flash_available=True)
+    assert pb == static + (A_FIXED + A_PER_CLASS * 1)
+
+
+def test_predicted_bytes_train_adds_attention_when_no_flash() -> None:
+    # cc < 8.0 (math backend): train branch re-adds the materialized
+    # _attention_bytes_per_example(img) * batch term (K-invariant).
+    img = 1008
+    static = _model_bytes("qlora") + _adapter_bytes(4) + _optimizer_bytes(4) + WORKSPACE_BYTES
+    attn = _attention_bytes_per_example(img) * 1  # batch=1
+    pb = _predicted_bytes("qlora", 4, 1, img, None, mode="train", k_eff=1, flash_available=False)
+    assert pb == static + (A_FIXED + A_PER_CLASS * 1) + attn
+    assert attn > 0  # the term is genuinely re-added
+
+
+def test_predicted_bytes_scales_with_image_size_only_when_no_flash() -> None:
+    small = _predicted_bytes("qlora", 4, 1, 512, None, mode="train", k_eff=1, flash_available=False)
+    big = _predicted_bytes("qlora", 4, 1, 1008, None, mode="train", k_eff=1, flash_available=False)
+    assert big > small  # attention term grows with image_size on no-flash cards
+    # flash: no image-size dependence (attention folded into the split)
+    fl_small = _predicted_bytes(
+        "qlora", 4, 1, 512, None, mode="train", k_eff=1, flash_available=True
+    )
+    fl_big = _predicted_bytes(
+        "qlora", 4, 1, 1008, None, mode="train", k_eff=1, flash_available=True
+    )
+    assert fl_small == fl_big
+
+
+def test_predicted_bytes_eval_threads_k() -> None:
+    img = 1008
+    pb_k1 = _predicted_bytes("lora", 4, 1, img, None, mode="eval", k_eff=1, flash_available=True)
+    pb_k4 = _predicted_bytes("lora", 4, 1, img, None, mode="eval", k_eff=4, flash_available=True)
+    assert pb_k4 > pb_k1  # eval activation scales with K via the split
+
+
+def test_predicted_bytes_eval_adds_attention_when_no_flash() -> None:
+    # eval stays SAFE on no-flash cards: it adds the same materialized term so it
+    # never under-predicts vs. the math backend.
+    img = 1008
+    pb_flash = _predicted_bytes("lora", 4, 1, img, None, mode="eval", k_eff=1, flash_available=True)
+    pb_noflash = _predicted_bytes(
+        "lora", 4, 1, img, None, mode="eval", k_eff=1, flash_available=False
+    )
+    assert pb_noflash - pb_flash == _attention_bytes_per_example(img) * 1
+
+
+def test_preset_decision_config_patch_carries_classes_per_forward() -> None:
+    d = _make_decision(classes_per_forward=8)
+    patch = d.config_patch
+    assert patch["train"]["multiplex"]["classes_per_forward"] == 8
+    assert patch["train"]["batch_size"] == 2
+    assert patch["train"]["grad_accum_steps"] == 8
+
+
+def test_preset_decision_label_surfaces_k() -> None:
+    d = _make_decision(classes_per_forward=8)
+    assert "K=8" in d.label()
+
+
+def test_preset_decision_json_round_trip_carries_k() -> None:
+    d = _make_decision(classes_per_forward=8)
+    back = PresetDecision.from_json(d.to_json())
+    assert back.classes_per_forward == 8
+    assert back == d
+
+
+# ---- candidate grid + sort key + k upper bound ----------------------------
+
+
+def test_candidates_are_4_tuples_with_ks() -> None:
+    cands = _candidates()
+    assert all(len(c) == 4 for c in cands)
+    ks = {c[3] for c in cands}
+    assert ks == {1, 2, 4, 8, 16}
+
+
+def test_sort_key_protects_k_over_batch() -> None:
+    # At fixed method/r, (K=8, batch=1) sorts ahead of (K=1, batch=8).
+    assert _sort_key(("lora", 16, 1, 8)) < _sort_key(("lora", 16, 8, 1))
+
+
+def test_sort_key_protects_r_over_k_and_batch() -> None:
+    assert _sort_key(("lora", 32, 1, 1)) < _sort_key(("lora", 16, 16, 16))
+
+
+def test_sort_key_prefers_lora_over_qlora() -> None:
+    assert _sort_key(("lora", 16, 1, 1)) < _sort_key(("qlora", 16, 1, 1))
+
+
+def test_decide_preset_k_is_upper_bound(
+    monkeypatch: pytest.MonkeyPatch, _force_cuda_available: None
+) -> None:
+    _stub_gpu(monkeypatch, int(80 * _GB))
+    d = decide_preset(k=4)
+    assert d.classes_per_forward <= 4
+
+
+def test_decide_preset_k_zero_and_negative_raise(
+    monkeypatch: pytest.MonkeyPatch, _force_cuda_available: None
+) -> None:
+    _stub_gpu(monkeypatch, int(80 * _GB))
+    with pytest.raises(ValueError):
+        decide_preset(k=0)
+    with pytest.raises(ValueError):
+        decide_preset(k=-1)
+
+
+def test_decide_preset_24gib_sizes_successfully(
+    monkeypatch: pytest.MonkeyPatch, _force_cuda_available: None
+) -> None:
+    # #203 regression: a 24 GiB card must size successfully, not raise.
+    _stub_gpu(monkeypatch, int(24 * _GB))
+    d = decide_preset()
+    assert isinstance(d, PresetDecision)
+    assert d.predicted_bytes <= d.budget_bytes
+
+
+def test_decide_preset_big_card_picks_high_k(
+    monkeypatch: pytest.MonkeyPatch, _force_cuda_available: None
+) -> None:
+    _stub_gpu(monkeypatch, int(80 * _GB))
+    d = decide_preset()
+    assert d.classes_per_forward >= 8
+    assert d.batch_size >= 2
+
+
+# ---- decide_eval_batch_size K threading + v3 cache round-trip ---------------
+
+
+def test_decide_eval_batch_size_threads_k_no_regression(
+    monkeypatch: pytest.MonkeyPatch, _force_cuda_available: None
+) -> None:
+    _stub_gpu(monkeypatch, int(24 * _GB))
+    bs1, _, _ = decide_eval_batch_size(classes_per_forward=1)
+    bs16, _, _ = decide_eval_batch_size(classes_per_forward=16)
+    # Higher K can only LOWER (or hold) best_bs — never raise it (no regression).
+    assert bs16 <= bs1
+    assert bs16 >= 1
+
+
+def test_decide_eval_batch_size_no_flash_adds_attention(
+    monkeypatch: pytest.MonkeyPatch, _force_cuda_available: None
+) -> None:
+    # On a no-flash card (cc < 8.0) the eval predictor adds the materialized
+    # attention term, so best_bs is <= the flash-regime best_bs (never under-fits).
+    _stub_gpu(monkeypatch, int(24 * _GB), cc=(8, 0))
+    bs_flash, _, _ = decide_eval_batch_size(classes_per_forward=1)
+    _stub_gpu(monkeypatch, int(24 * _GB), cc=(7, 5))
+    bs_noflash, _, _ = decide_eval_batch_size(classes_per_forward=1)
+    assert bs_noflash <= bs_flash
+    assert bs_noflash >= 1
+
+
+def test_decide_preset_consumes_v3_cache(
+    monkeypatch: pytest.MonkeyPatch, _force_cuda_available: None, tmp_path: Path
+) -> None:
+    _stub_gpu(monkeypatch, int(24 * _GB))
+    monkeypatch.setattr("custom_sam_peft.presets._current_sam3_checkpoint_sha", lambda: "abc")
+    cache_file = tmp_path / "cache.json"
+    cache_file.write_text(
+        json.dumps(
+            {
+                "schema_version": 3,
+                "calibrated_at": "2026-05-31T00:00:00+00:00",
+                "gpu_name": "StubGPU",
+                "sam3_checkpoint_sha": "abc",
+                "A_fixed": 1_000_000_000,
+                "A_per_class": 50_000_000,
+                "peak_memory_bytes_at_probe": 6_000_000_000,
+            }
+        )
+    )
+    d = decide_preset(cache_path=cache_file)
+    assert d.provenance == "calibrated"
+
+
+def test_decide_preset_ignores_v2_cache(
+    monkeypatch: pytest.MonkeyPatch, _force_cuda_available: None, tmp_path: Path
+) -> None:
+    _stub_gpu(monkeypatch, int(24 * _GB))
+    monkeypatch.setattr("custom_sam_peft.presets._current_sam3_checkpoint_sha", lambda: "abc")
+    cache_file = tmp_path / "cache.json"
+    cache_file.write_text(
+        json.dumps(
+            {
+                "schema_version": 2,
+                "gpu_name": "StubGPU",
+                "sam3_checkpoint_sha": "abc",
+                "activation_bytes_per_example": 1_000_000_000,
+            }
+        )
+    )
+    d = decide_preset(cache_path=cache_file)
+    assert d.provenance == "analytic"  # stale v2 dropped
+
+
+def test_decide_preset_ignores_v3_cache_missing_split_keys(
+    monkeypatch: pytest.MonkeyPatch, _force_cuda_available: None, tmp_path: Path
+) -> None:
+    """A v3-tagged cache missing A_fixed/A_per_class must be ignored (graceful
+    fallback to analytic), not crash with a KeyError."""
+    _stub_gpu(monkeypatch, int(24 * _GB))
+    monkeypatch.setattr("custom_sam_peft.presets._current_sam3_checkpoint_sha", lambda: "abc")
+    cache_file = tmp_path / "cache.json"
+    cache_file.write_text(
+        json.dumps(
+            {
+                "schema_version": 3,
+                "gpu_name": "StubGPU",
+                "sam3_checkpoint_sha": "abc",
+                # A_fixed and A_per_class intentionally omitted (malformed cache)
+                "peak_memory_bytes_at_probe": 6_000_000_000,
+            }
+        )
+    )
+    d = decide_preset(cache_path=cache_file)
+    assert d.provenance == "analytic"  # malformed v3 dropped, no crash
