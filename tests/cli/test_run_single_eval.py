@@ -104,7 +104,6 @@ def test_orchestrate_does_not_call_run_eval(
         cfg=cfg,
         resume=None,
         mode=ProgressMode.OFF,
-        visualize=False,
         config_path=cfg_path,
     )
 

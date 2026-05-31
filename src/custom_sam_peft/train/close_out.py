@@ -104,6 +104,25 @@ def close_out(
         }
     (run_dir / "metrics.json").write_text(json.dumps(metrics, indent=2))
 
+    # 6. Optional visualization pass (soft-fail — metrics.json is already written).
+    if evaluator_val_ds is not None and cfg.eval.visualize and per_example_iou is not None:
+        try:
+            from custom_sam_peft.eval.visualize import write_eval_visualizations
+
+            write_eval_visualizations(
+                model,
+                evaluator_val_ds,
+                run_dir,
+                per_example_iou=per_example_iou,
+                count=cfg.eval.visualize_count,
+                mask_threshold=cfg.eval.mask_threshold,
+                model_name=cfg.model.name,
+                normalize=cfg.data.normalize,
+                channel_semantics=cfg.data.channel_semantics,
+            )
+        except Exception:
+            _LOG.warning("close_out visualize pass failed; metrics are persisted.", exc_info=True)
+
     return EvalArtifacts(
         checkpoint_path=run_dir / "adapter",
         peft_method=cfg.peft.method,

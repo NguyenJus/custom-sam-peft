@@ -69,7 +69,7 @@ def _build_val_dataset(cfg: TrainConfig, vs: ValSource) -> Dataset:
 
 
 def _orchestrate(
-    cfg: TrainConfig, resume: Path | None, mode: ProgressMode, *, visualize: bool, config_path: Path
+    cfg: TrainConfig, resume: Path | None, mode: ProgressMode, *, config_path: Path
 ) -> int:
     from custom_sam_peft.data.val_source import load_val_source
 
@@ -201,6 +201,7 @@ def run(
         )
         run_init("coco-text-lora", config, force=False)
     cfg = load_config(config)
+    cfg = cfg.model_copy(update={"eval": cfg.eval.model_copy(update={"visualize": visualize})})
     if time_limit is not None:
         try:
             parse_duration_to_seconds(time_limit)
@@ -229,4 +230,4 @@ def run(
     else:
         resume_path = None
 
-    _orchestrate(cfg, resume_path, mode, visualize=visualize, config_path=config)
+    _orchestrate(cfg, resume_path, mode, config_path=config)
