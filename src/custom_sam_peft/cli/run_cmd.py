@@ -29,11 +29,10 @@ from custom_sam_peft.config.loader import load_config
 from custom_sam_peft.config.schema import TrainConfig
 from custom_sam_peft.data.base import Dataset
 from custom_sam_peft.errors import CheckpointError
-from custom_sam_peft.eval.runner import run_eval
 from custom_sam_peft.models.sam3 import load_sam31
 from custom_sam_peft.presets import PresetDecision, decide_preset
 from custom_sam_peft.runs.bundle import BundleContext, write_bundle
-from custom_sam_peft.train.checkpoint import find_latest_checkpoint, load_adapter, save_merged
+from custom_sam_peft.train.checkpoint import find_latest_checkpoint, load_adapter
 from custom_sam_peft.train.runner import run_training
 
 _LATEST_SENTINEL = "__latest__"
@@ -96,65 +95,35 @@ def _orchestrate(
         )
         return 0
     run_dir = train_result.run_dir
-    adapter_path = train_result.checkpoint_path
+    adapter_path = train_result.checkpoint_path  # run_dir/adapter (best weights)
 
     # Decide val mode from the saved record — same source of truth the trainer used.
     vs = load_val_source(run_dir)
     if vs is None:
         raise RuntimeError(f"runner did not save val_source.json in {run_dir}")
 
-    wrapper: Any = load_sam31(
-        cfg.model, channels=cfg.data.channels, channel_semantics=cfg.data.channel_semantics
-    )
-    load_adapter(wrapper, adapter_path)
+    # close_out (inside fit()) already ran the single eval + export-merge on the
+    # best weights; reuse its results — no second eval, no second merge.
+    report = train_result.final_metrics
+    per_example_iou = train_result.per_example_iou or []
 
     val_dataset: Dataset | None = None
-    report: Any = None
-    per_example_iou: list[float] = []
+    wrapper: Any = None
     if vs.mode != "none":
+        # Rebuild the model + val dataset only for bundle re-inference (sample panels).
+        wrapper = load_sam31(
+            cfg.model, channels=cfg.data.channels, channel_semantics=cfg.data.channel_semantics
+        )
+        load_adapter(wrapper, adapter_path)
         val_dataset = _build_val_dataset(cfg, vs)
-
-        # Phase: eval.
-        try:
-            with progress_session(
-                kind=ProgressKind.EVAL,
-                total_batches_per_epoch=0,  # Evaluator owns its progress via push_subtask
-                mode=mode,
-            ):
-                report, per_example_iou = cast(
-                    tuple[Any, list[float]],
-                    run_eval(
-                        cfg,
-                        checkpoint=adapter_path,
-                        output_dir=run_dir,
-                        val_dataset=val_dataset,
-                        model=wrapper,
-                        return_per_example_iou=True,
-                        visualize=visualize,
-                    ),
-                )
-        except Exception as exc:
-            rprint(f"[red]eval failed[/red] run_dir={run_dir} — {exc}")
-            raise typer.Exit(code=1) from exc
 
     end_ts = datetime.now(UTC)
 
-    # Phase: export-merge (conditional, soft-fail).
-    merged_dir: Path | None = None
+    # merged/ was written by close_out when cfg.export.merge; reflect it.
+    merged_dir = (
+        (run_dir / "merged") if (cfg.export.merge and (run_dir / "merged").is_dir()) else None
+    )
     merged_export_error: str | None = None
-    if cfg.export.merge:
-        target = run_dir / "merged"
-        try:
-            with progress_session(
-                kind=ProgressKind.EXPORT_MERGE,
-                total_batches_per_epoch=0,
-                mode=mode,
-            ):
-                save_merged(wrapper, target)
-            merged_dir = target
-        except Exception as exc:
-            _LOG.warning("export-merge failed: %s", exc)
-            merged_export_error = str(exc)
 
     # Phase: bundle.
     preset = _load_preset_or_fallback(cfg)
@@ -168,6 +137,7 @@ def _orchestrate(
         merged_dir=merged_dir,
         merged_export_error=merged_export_error,
         oom_events=train_result.oom_events,
+        ladder_events=train_result.ladder_events,  # from EvalArtifacts, not metrics.json
     )
     try:
         write_bundle(ctx, report, val_dataset=val_dataset, model_wrapper=wrapper)

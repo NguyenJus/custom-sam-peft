@@ -150,16 +150,14 @@ def test_run_stop_short_circuits_before_eval_export_bundle(
     run_dir = tmp_path / "run"
     (run_dir).mkdir(parents=True, exist_ok=True)
     monkeypatch.setattr(run_cmd, "run_training", lambda *a, **k: _stop_artifacts(run_dir))
-    phase_calls = {"val": 0, "load": 0, "eval": 0, "merged": 0, "bundle": 0}
+    # run_eval and save_merged are no longer imported in run_cmd (dropped in Task 15);
+    # only track the phases that remain: val_source, load_sam31, write_bundle.
+    phase_calls = {"val": 0, "load": 0, "bundle": 0}
     monkeypatch.setattr(
         "custom_sam_peft.data.val_source.load_val_source",
         lambda *a, **k: phase_calls.__setitem__("val", 1),
     )
     monkeypatch.setattr(run_cmd, "load_sam31", lambda *a, **k: phase_calls.__setitem__("load", 1))
-    monkeypatch.setattr(run_cmd, "run_eval", lambda *a, **k: phase_calls.__setitem__("eval", 1))
-    monkeypatch.setattr(
-        run_cmd, "save_merged", lambda *a, **k: phase_calls.__setitem__("merged", 1)
-    )
     monkeypatch.setattr(
         run_cmd, "write_bundle", lambda *a, **k: phase_calls.__setitem__("bundle", 1)
     )
@@ -173,6 +171,4 @@ def test_run_stop_short_circuits_before_eval_export_bundle(
     # No phase after train ran:
     assert phase_calls["val"] == 0
     assert phase_calls["load"] == 0
-    assert phase_calls["eval"] == 0
-    assert phase_calls["merged"] == 0
     assert phase_calls["bundle"] == 0
