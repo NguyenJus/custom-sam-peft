@@ -35,7 +35,7 @@ from custom_sam_peft.train.checkpoint import (
     save_full_state,
     save_merged,
 )
-from custom_sam_peft.train.loop import OomState, _TimeLimitReached, run_epoch
+from custom_sam_peft.train.loop import OomState, _EarlyStop, _TimeLimitReached, run_epoch
 from custom_sam_peft.train.visualize import render_mask_panel
 
 _LOG = logging.getLogger(__name__)
@@ -271,6 +271,7 @@ class Trainer:
         on_eval: Any,
         oom_state: OomState | None = None,
         deadline: float | None = None,
+        should_stop_early: Any = None,
     ) -> tuple[int, int]:
         """Run one training epoch; returns (global_step, nan_streak)."""
         return run_epoch(
@@ -291,6 +292,7 @@ class Trainer:
             runtime=self.runtime,
             oom_state=oom_state,
             deadline=deadline,
+            should_stop_early=should_stop_early,
         )
 
     def _cap_eval_batch_size(self, bs: int, cap: int) -> int:

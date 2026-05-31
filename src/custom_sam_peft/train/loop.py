@@ -61,6 +61,18 @@ class _TimeLimitReached(Exception):
         self.epoch = epoch
 
 
+class _EarlyStop(Exception):
+    """Internal signal: the plateau ladder requested an early stop. Graceful —
+    proceeds to close-out (NOT a pause). Carries the stop point + reason. Never
+    propagates past Trainer.fit(). Spec §4.2."""
+
+    def __init__(self, step: int, epoch: int, reason: str) -> None:
+        super().__init__(f"early stop at step {step} (epoch {epoch}): {reason}")
+        self.step = step
+        self.epoch = epoch
+        self.reason = reason
+
+
 def _reset_auto_chunk_log() -> None:
     """Test helper: reset the _AUTO_CHUNK_LOGGED flag between test cases."""
     global _AUTO_CHUNK_LOGGED
@@ -480,6 +492,7 @@ def run_epoch(
     runtime: Runtime | None = None,
     oom_state: OomState | None = None,
     deadline: float | None = None,
+    should_stop_early: Callable[[], "_EarlyStop | None"] | None = None,
 ) -> tuple[int, int]:
     """Drive one epoch. `on_checkpoint(global_step, epoch, nan_streak)`
     is called at every `save_every` boundary; the trainer wires it to the
@@ -490,6 +503,10 @@ def run_epoch(
     checked after each micro-step. On expiry, a full-state checkpoint is flushed
     directly (no image panel) and ``_TimeLimitReached`` is raised. The exception
     carries the step and epoch at which training stopped. Spec §4.5.
+
+    If ``should_stop_early`` is given, it is called right after each
+    ``on_eval`` call. When it returns a non-None ``_EarlyStop`` that exception
+    is raised immediately, unwinding the epoch loop. Spec §4.2.
     """
     _peft_method: PEFTMethod = (
         peft_method if peft_method is not None else make_peft_method(cfg.peft.method)
@@ -529,6 +546,10 @@ def run_epoch(
             and global_step % cfg.train.eval_every == 0
         ):
             on_eval(global_step)
+            if should_stop_early is not None:
+                stop = should_stop_early()
+                if stop is not None:
+                    raise stop
         if deadline is not None and time.monotonic() >= deadline:
             state_dir = (
                 paths.checkpoint_path(run_dir, step=global_step).parent / f"step_{global_step}"
