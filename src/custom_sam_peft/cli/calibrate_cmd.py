@@ -315,8 +315,11 @@ def _confirm_and_climb(
     value first, then batch, at the fitting method/r only.
     """
     ks = [x for x in _KS if x <= k_cap]
-    # Cover the full walk: batch down, K down, r down, plus the method flip + slack.
-    max_probes = len(_BATCHES) + len(ks) + len(_RS) + 2
+    # Worst-case shrink-to-raise walk: confirm + batch down + K down + r down (LoRA)
+    # + method flip + r down again (QLoRA), then one more iteration to hit the raise.
+    # Two full r-descents -> 2*len(_RS). Slack +2 keeps the raise reachable (>=32).
+    # Use len(_KS) — the unfiltered grid — as a safe upper bound on len(ks).
+    max_probes = len(_BATCHES) + len(_KS) + 2 * len(_RS) + 2
     probes = 0
 
     def _probe_fits(m: str, rr: int, b: int, kk: int) -> tuple[bool, int]:

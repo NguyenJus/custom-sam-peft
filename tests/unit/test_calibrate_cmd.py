@@ -514,14 +514,15 @@ def test_run_calibration_probe_count_is_bounded(
     calibrate_cmd.run_calibration(
         config=tmp_path / "config.yaml", output=tmp_path / "c.json", force=True
     )
-    # New bound covers the larger walk (batch + K + r + method flip + the 2 derive
-    # probes); mirror the _confirm_and_climb max_probes formula.
+    # New bound covers the larger walk: batch down + K down + two full r-descents
+    # (LoRA then QLoRA after the method flip), plus the 2 derive probes.
+    # Mirrors the _confirm_and_climb max_probes formula + 2 for _derive_split.
     assert count["n"] <= (
         len(calibrate_cmd._BATCHES)
         + len(calibrate_cmd._KS)
-        + len(calibrate_cmd._RS)
-        + 2  # derive probes
-        + 2  # method flip + slack
+        + 2 * len(calibrate_cmd._RS)  # two r-descents: LoRA + QLoRA
+        + 2  # _confirm_and_climb slack
+        + 2  # derive probes (_derive_split runs 2 probes before Stage 3)
     )
 
 
@@ -580,3 +581,41 @@ def test_calibrate_non_default_output_uses_calibrated_provenance(
         f"_load_cache received cache_path={captured_cache_path.get('path')!r}, "
         f"expected {custom_cache}"
     )
+
+
+def test_run_calibration_large_aim_all_probes_oom_raises(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Regression: big GPU -> high analytic aim (batch=16) -> every Stage-3 probe OOMs
+    -> must raise _GpuTooSmall, NOT silently return a non-fitting config (peak=0).
+
+    With total=100*_GB the analytic aim is (lora, r=64, batch=16, k=16). The shrink
+    walk requires 31 probes before the else:raise branch is reachable.
+
+    Buggy bound (max_probes=29): loop exits at probes=29 with fits=False, returns a
+    config with peak=0 instead of raising. Fixed bound (max_probes=35>=32): loop stays
+    open at probes=31, the else:raise fires.
+    """
+    from custom_sam_peft.cli import calibrate_cmd
+
+    # 100 GiB GPU: analytic aim lands at (lora, r=64, batch=16, k=16), forcing the
+    # full 31-probe shrink walk before the else:raise is reachable.
+    _patch_probe(monkeypatch, tmp_path=tmp_path, gpu_name="BigGPU", total=int(100 * _GB))
+    _write_config(tmp_path / "config.yaml", method="lora", r=64, k=16)
+
+    def _probe(**kw):
+        # Let the two _derive_split probes succeed (qlora/r=4/K=1 and qlora/r=4/K=4).
+        # OOM everything else so the Stage-3 shrink must walk the full ladder to
+        # exhaustion and hit the else:raise branch.
+        if kw["method"] == "qlora" and kw["r"] == 4:
+            return _synthetic_peak(**kw)
+        raise torch.cuda.OutOfMemoryError("synthetic")
+
+    monkeypatch.setattr(calibrate_cmd, "_run_probe", _probe)
+    monkeypatch.chdir(tmp_path)
+    with pytest.raises(calibrate_cmd._GpuTooSmall):
+        calibrate_cmd.run_calibration(
+            config=tmp_path / "config.yaml",
+            output=tmp_path / "c.json",
+            force=True,
+        )
