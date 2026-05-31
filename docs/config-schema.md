@@ -119,7 +119,7 @@ Training hyperparameters and schedule.
 | `train.grad_accum_steps` | int (>0) | `8` | common | Gradient accumulation steps before one optimizer step; effective batch = `batch_size × grad_accum_steps`. | Audit §E: 4/4 examples + notebook (via preset) set it; used to simulate large batches with limited VRAM. |
 | `train.optimizer` | `"adamw"` \| `"adamw8bit"` \| `"auto"` | `"auto"` | common | Optimizer; `"auto"` selects `adamw8bit` for QLoRA and `adamw` for LoRA. | Audit §E: 4/4 examples set it; `"auto"` is almost always correct. |
 | `train.learning_rate` | float (>0) | `1.0e-4` | common | Peak learning rate after warm-up. | Audit §E: 4/4 examples set it; the primary training quality knob. |
-| `train.lr_schedule` | `"constant"` \| `"cosine"` \| `"linear"` | `"cosine"` | common | Learning-rate decay schedule applied after warm-up. | Audit §E: 2/4 examples set it; cosine is the recommended default. |
+| `train.lr_schedule` | `"constant"` \| `"cosine"` \| `"linear"` \| `"plateau"` | `"plateau"` | common | Learning-rate decay schedule. `plateau` (default) reduces LR on a validation-mAP plateau (rung 1) and is paired with early stop (rung 2); `cosine`/`linear`/`constant` keep the per-step schedule. `plateau` requires a val set and falls back to `cosine` (with a warning) when none is present. | #197: plateau pairs reduce-on-plateau with early stopping (research §2–§4). |
 | `train.warmup_steps` | int (≥0) | `100` | common | Number of optimizer steps over which the LR linearly warms up from 0. | Audit §E: 4/4 examples set it; warm-up prevents early-step divergence. |
 | `train.save_every` | int (>0) | `1000` | common | Save a checkpoint every N optimizer steps. | Audit §E: 4/4 examples set it; controls checkpoint frequency and disk usage. |
 | `train.log_every` | int (>0) | `50` | common | Log scalar metrics every N optimizer steps. | Audit §E: 4/4 examples set it; determines monitoring granularity. |
@@ -134,6 +134,15 @@ Training hyperparameters and schedule.
 | `train.nan_abort_after` | int (>0) | `20` | advanced | Abort training if NaN losses appear in more than this many consecutive steps. | Audit §E: 2/4 examples set it; NaN detection is a safety rail; 20 steps is a safe margin. |
 | `train.num_workers` | int (≥0) | min(4, cpu_count) | advanced | Number of DataLoader worker processes; `0` disables multiprocessing. | Audit §E: 2/4 examples set it; auto-selected from CPU count; only tune on memory-limited hosts. |
 | `train.time_limit` | `str \| int \| None` | `None` (unlimited) | advanced | Wall-clock budget for one invocation. Accepts a human duration (`"2h30m"`, `"90m"`, `"3600s"`) or bare seconds (`3600`); `None` (default) = unlimited. On expiry the current micro-step finishes, a resumable checkpoint is flushed under `checkpoints/step_<N>/`, finalization is skipped, and the process exits 0. The budget is per-run: `--resume` restarts the clock. Overridable via `--time-limit` on `train`/`run`. | Opt-in; unset = unlimited, so there is no default value to justify. |
+| `train.lr_decay_on_plateau.patience` | int (>0) | `5` | advanced | Non-improving evals before one LR cut (rung 1; plateau mode only). | Keras example 5 (research §2,§7). |
+| `train.lr_decay_on_plateau.factor` | float (<1) | `0.1` | advanced | LR multiplier on a cut. | PyTorch default 0.1 (research §2,§7). |
+| `train.lr_decay_on_plateau.min_lr` | float (>0) | `1e-6` | advanced | LR floor; cuts never go below it. | `# tbd:` learning_rate/100 (research §7). |
+| `train.early_stop.enabled` | bool | `true` | advanced | Stop after `stop_patience` non-improving evals (rung 2). | Issue #197: on by default. |
+| `train.early_stop.monitor` | `"mAP"` | `"mAP"` | advanced | Monitored metric (seam; only mAP wired). | Existing best-metric key. |
+| `train.early_stop.min_delta` | float (>0) | `0.001` | advanced | Shared improvement threshold for BOTH rungs (see wart note below). | Keras/practitioner 0.001–0.01 (research §5,§7). |
+| `train.early_stop.stop_patience` | int (>0) | `10` | advanced | Non-improving evals before early stop. | PyTorch default 10 / Prechelt (research §5,§7). |
+
+**§5.4 wart — shared `monitor`/`min_delta` across both rungs:** `early_stop.monitor` and `early_stop.min_delta` live under the `early_stop` sub-block but configure the definition of "improvement" for **both** rung 1 (LR decay) and rung 2 (early stop). Even when `early_stop.enabled=false`, these two fields still drive the rung-1 LR-decay threshold: `monitor` selects the metric fed to `ReduceLROnPlateau` and `min_delta` sets its `threshold` argument. This coupling is a known design wart (#197, §5.4) — the fields are named after the early-stop rung but have cross-rung effect.
 
 ---
 
