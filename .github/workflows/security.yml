@@ -29,7 +29,7 @@ jobs:
         # cu130 and gpu-pascal are declared-conflicting extras (different torch
         # builds), so --all-extras can't resolve. Install every extra except
         # gpu-pascal (the local-Pascal cu118 build).
-        run: uv sync --extra dev --extra cu130 --extra qlora --extra wandb --extra tensorboard --extra jupyter
+        run: uv sync --extra dev --extra cu130 --extra qlora --extra wandb --extra jupyter
 
       - name: pip-audit
         # Ignored advisories have no fix version available as of 2026-05-21

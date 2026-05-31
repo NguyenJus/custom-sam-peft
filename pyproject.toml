@@ -24,6 +24,7 @@ dependencies = [
   "scipy>=1.10",
   "einops>=0.7",
   "huggingface-hub>=0.30",
+  "tensorboard>=2.18",
   "sam3 @ git+https://github.com/facebookresearch/sam3@2814fa619404a722d03e9a012e083e4f293a4e53",
 ]
 
@@ -32,7 +33,6 @@ wandb = ["wandb>=0.18"]
 qlora = ["bitsandbytes>=0.43"]
 cu130 = ["torch"]
 gpu-pascal = ["torch", "torchvision", "bitsandbytes>=0.43"]
-tensorboard = ["tensorboard>=2.18"]
 jupyter = ["jupyterlab>=4"]
 dev = [
   "ruff>=0.7",

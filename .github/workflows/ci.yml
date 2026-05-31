@@ -32,7 +32,7 @@ jobs:
         # cu130 and gpu-pascal are declared-conflicting extras (different torch
         # builds), so --all-extras can't resolve. CI is CPU-only: install every
         # extra except gpu-pascal (the local-Pascal cu118 build).
-        run: uv sync --extra dev --extra cu130 --extra qlora --extra wandb --extra tensorboard --extra jupyter
+        run: uv sync --extra dev --extra cu130 --extra qlora --extra wandb --extra jupyter
 
       - name: Lint
         run: uv run ruff check
