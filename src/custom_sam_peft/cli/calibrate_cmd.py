@@ -14,7 +14,7 @@ import os
 import tempfile
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal, cast
 
 if TYPE_CHECKING:
     from custom_sam_peft.presets import PresetDecision
@@ -70,7 +70,7 @@ class _CacheWriteFailed(_CalibrationError):
 
 def _cache_calibrated_at(output: Path) -> str | None:
     try:
-        return json.loads(output.read_text()).get("calibrated_at")
+        return cast("str | None", json.loads(output.read_text()).get("calibrated_at"))
     except (OSError, json.JSONDecodeError):
         return None
 
@@ -290,7 +290,7 @@ def _decision_from_cache(output: Path, k_cap: int) -> PresetDecision | None:
     dtype = "float16" if cc < (8, 0) else "bfloat16"
     headroom = _headroom_bytes()
     return PresetDecision(
-        method=method,  # type: ignore[arg-type]
+        method=method,
         r=r,
         batch_size=batch,
         grad_accum_steps=max(1, 16 // batch),
@@ -307,8 +307,8 @@ def _decision_from_cache(output: Path, k_cap: int) -> PresetDecision | None:
 
 
 def _confirm_and_climb(
-    *, method: str, r: int, batch: int, k: int, budget: int, k_cap: int
-) -> tuple[str, int, int, int, int]:
+    *, method: Literal["lora", "qlora"], r: int, batch: int, k: int, budget: int, k_cap: int
+) -> tuple[Literal["lora", "qlora"], int, int, int, int]:
     """Stage 3: probe the aim, then climb (K then batch, at the fitting method/r) on
     headroom, or shrink down the FULL sacrifice order on OOM. Returns the empirical
     (method, r, batch, k, measured_peak). Bounded by the grid.
@@ -468,7 +468,7 @@ def run_calibration(*, config: Path, output: Path, force: bool) -> PresetDecisio
     dtype = "float16" if cc < (8, 0) else "bfloat16"
     headroom = _headroom_bytes()
     decision = PresetDecision(
-        method=method,  # type: ignore[arg-type]
+        method=method,
         r=r,
         batch_size=batch,
         grad_accum_steps=max(1, 16 // batch),
