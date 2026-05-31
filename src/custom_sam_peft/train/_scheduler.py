@@ -34,6 +34,9 @@ def step_per_train_step(
     if mode != "plateau":
         scheduler.step()
         return
+    # When warmup_steps == 0 the guard below is never true, so plateau mode holds
+    # the LR at base_lr from step 0 (no ramp).  This is intentional and distinct
+    # from the LambdaLR path's (step+1)/max(warmup,1) formula.
     if global_step < warmup_steps:
         factor = (global_step + 1) / max(warmup_steps, 1)
         lr = base_lr * factor

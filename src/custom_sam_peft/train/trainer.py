@@ -81,6 +81,8 @@ def _build_scheduler(
             factor=cfg.train.lr_decay_on_plateau.factor,
             patience=cfg.train.lr_decay_on_plateau.patience,
             threshold=cfg.train.early_stop.min_delta,
+            # threshold_mode="abs" + threshold=min_delta must stay in sync with
+            # the rung-2 improvement test in LadderState.observe (mAP > best + min_delta).
             threshold_mode="abs",  # absolute mAP units — matches the early-stop test
             min_lr=cfg.train.lr_decay_on_plateau.min_lr,
         )
@@ -608,6 +610,8 @@ class Trainer:
         full_report: MetricsReport | None = None
         stop: _TimeLimitReached | None = None
         _early: _EarlyStop | None = None  # set on early stop; Phase 2 wires into close_out
+        # Mutable single-element list so the closure below sees the live epoch
+        # value; the epoch loop keeps it current via `_current_epoch[0] = epoch`.
         _current_epoch = [start_epoch]
 
         def should_stop_early() -> _EarlyStop | None:

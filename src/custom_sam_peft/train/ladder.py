@@ -15,12 +15,9 @@ meaningfully-better one.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 import torch
-
-if TYPE_CHECKING:
-    pass
 
 
 @dataclass(frozen=True)
@@ -67,6 +64,9 @@ class LadderState:
             return StopDecision(False, "", step, float("nan"))
 
         min_delta = float(cfg.train.early_stop.min_delta)
+        # Rung-1 (ReduceLROnPlateau) is built with threshold=min_delta,
+        # threshold_mode="abs" (see trainer._build_scheduler) — both rungs must
+        # stay in sync: "improvement" means strictly +min_delta absolute mAP.
         improved = mAP > self.best + min_delta
         if improved:
             self.best = mAP
