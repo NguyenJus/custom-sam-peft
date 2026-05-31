@@ -118,6 +118,23 @@ def test_calibrate_k1_oom_exits_5(tmp_path: Path, monkeypatch: pytest.MonkeyPatc
     assert "GPU too small" in result.output
 
 
+def test_calibrate_checkpoint_missing_exits_3(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from custom_sam_peft.cli import calibrate_cmd
+
+    _patch_probe(monkeypatch, tmp_path=tmp_path)
+    monkeypatch.setattr(
+        calibrate_cmd,
+        "_run_probe",
+        lambda **kw: (_ for _ in ()).throw(FileNotFoundError("checkpoint missing")),
+    )
+    monkeypatch.chdir(tmp_path)
+    result = runner.invoke(app, ["calibrate"])
+    assert result.exit_code == 3
+    assert "SAM 3.1 checkpoint not found" in result.output
+
+
 def test_calibrate_cache_fresh_exits_zero(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """Fresh v3 cache: exits 0, no re-probe, config rewritten from calibrated provenance."""
     from custom_sam_peft.cli import calibrate_cmd

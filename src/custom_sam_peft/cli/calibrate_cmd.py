@@ -1,8 +1,8 @@
-"""`custom-sam-peft calibrate` — probe peak VRAM at the config's (method, r, k, batch).
+"""`custom-sam-peft calibrate` — thin wrapper over `run_calibration`.
 
-Writes `./.custom_sam_peft_calibration.json` (schema_version=2). Read by
-`custom_sam_peft.presets._load_cache` so `decide_preset()` produces a tight,
-GPU-accurate config instead of an analytic estimate.
+Three-stage probe: (1) derive split (two probes → `A_fixed`/`A_per_class`),
+(2) analytic aim via `decide_preset`, (3) confirm-and-climb. Writes a v3 cache
+(schema_version=3) at `./.custom_sam_peft_calibration.json`.
 
 Spec: docs/superpowers/specs/2026-05-28-vram-calibration-reassess-design.md §4-§5.
 """
