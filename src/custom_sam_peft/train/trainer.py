@@ -7,7 +7,7 @@ import logging
 import random
 import time
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import numpy as np
 import torch
@@ -17,7 +17,7 @@ from torch.utils.data import DataLoader
 from custom_sam_peft import paths
 from custom_sam_peft.cli._progress import progress as P
 from custom_sam_peft.config._duration import format_seconds, parse_duration_to_seconds
-from custom_sam_peft.config.schema import Optimizer, TrainConfig
+from custom_sam_peft.config.schema import LRSchedule, Optimizer, TrainConfig
 from custom_sam_peft.data.base import Dataset
 from custom_sam_peft.data.collate import collate_batch
 from custom_sam_peft.eval._artifacts import EvalArtifacts, TimeLimitStop
@@ -573,6 +573,21 @@ class Trainer:
                 "Early stop is a no-op."
             )
             effective_schedule = "cosine"
+        # On resume, the persisted scheduler_kind governs construction so the
+        # rebuilt scheduler type matches the persisted state_dict (spec §8.3).
+        resume_kind: str | None = None
+        if resume_from is not None:
+            peek = torch.load(resume_from / "training_state.pt", weights_only=False)
+            resume_kind = peek.get("scheduler_kind")
+        if resume_kind is not None and resume_kind != effective_schedule:
+            _LOG.warning(
+                "resume: persisted scheduler_kind=%s overrides cfg lr_schedule=%s "
+                "(persisted kind wins).",
+                resume_kind,
+                effective_schedule,
+            )
+        if resume_kind is not None:
+            effective_schedule = cast(LRSchedule, resume_kind)
         scheduler = _build_scheduler(optimizer, cfg, total_steps, effective_schedule)
         self._scheduler = scheduler
         self._scheduler_kind = effective_schedule
@@ -587,6 +602,19 @@ class Trainer:
         )
         if resume_from is not None:
             rs = load_full_state(resume_from, self.model, optimizer, scheduler, cfg)
+            if rs.best_metric_value is not None:
+                self._best_metric_value = rs.best_metric_value
+            resume_run_dir = resume_from.parent.parent
+            best_json = resume_run_dir / "best" / "best.json"
+            if best_json.is_file():
+                try:
+                    disk_best = float(json.loads(best_json.read_text())["value"])
+                    self._best_metric_value = max(self._best_metric_value, disk_best)
+                except Exception:
+                    _LOG.warning("resume: could not read %s; keeping in-memory best.", best_json)
+            self._ladder.best = self._best_metric_value
+            if rs.ladder is not None:
+                self._ladder.load_state_dict(rs.ladder)
         global_step = rs.start_step
         nan_streak = rs.nan_streak
         start_epoch = rs.start_epoch
