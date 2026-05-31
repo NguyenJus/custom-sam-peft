@@ -46,8 +46,11 @@ _LOG = logging.getLogger(__name__)
 
 
 def _fallback_preset(cfg: TrainConfig) -> PresetDecision:
-    """No sidecar — synthesize one from cfg + decide_preset(). Spec §11.4."""
-    return decide_preset()
+    """No sidecar — synthesize one from cfg + decide_preset(). Spec §11.4.
+
+    Passes the config's classes_per_forward as the K upper bound (spec §3).
+    """
+    return decide_preset(k=cfg.train.multiplex.classes_per_forward)
 
 
 def _load_preset_or_fallback(cfg: TrainConfig) -> PresetDecision:

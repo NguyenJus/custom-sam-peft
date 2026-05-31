@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import contextlib
 from pathlib import Path
 
 import pytest
 
 import custom_sam_peft.cli.run_cmd as run_cmd
+from custom_sam_peft.config.loader import load_config
 
 
 def test_run_folds_visualize_into_cfg(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
@@ -51,3 +53,36 @@ export: {{merge: false}}
     result = runner.invoke(app, ["run", "--config", str(cfg_path), "--visualize"])
     assert result.exit_code == 0, result.output
     assert captured.get("visualize") is True
+
+
+def test_fallback_preset_passes_k_cap(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """_fallback_preset passes cfg.train.multiplex.classes_per_forward as the k kwarg."""
+    captured: dict[str, object] = {}
+
+    def _fake_decide_preset(k=None, cache_path=None):  # type: ignore[no-untyped-def]
+        captured["k"] = k
+        raise RuntimeError("stop after capture")
+
+    monkeypatch.setattr(run_cmd, "decide_preset", _fake_decide_preset)
+
+    cfg_path = tmp_path / "config.yaml"
+    cfg_path.write_text(
+        f"""
+run: {{name: t, output_dir: {tmp_path / "runs"}, seed: 0}}
+data:
+  format: coco
+  train: {{annotations: t.json, images: t/}}
+  val: {{annotations: v.json, images: v/}}
+peft: {{method: lora}}
+train:
+  epochs: 1
+  multiplex:
+    classes_per_forward: 4
+export: {{merge: false}}
+"""
+    )
+
+    cfg = load_config(cfg_path)
+    with contextlib.suppress(RuntimeError):
+        run_cmd._fallback_preset(cfg)
+    assert captured["k"] == 4

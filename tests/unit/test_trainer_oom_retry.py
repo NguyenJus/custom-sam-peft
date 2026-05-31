@@ -197,6 +197,7 @@ def test_oom_events_serialise_into_bundle_edge_cases() -> None:
             r=16,
             batch_size=1,
             grad_accum_steps=16,
+            classes_per_forward=8,
             dtype="bfloat16",
             headroom_bytes=0,
             predicted_bytes=0,

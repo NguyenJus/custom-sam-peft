@@ -53,8 +53,26 @@ D_OUT = 768  # avg output feature dim across LoRA targets
 Q_OVERHEAD = 64 * _MIB  # bnb NF4 per-block scale + zero-point overhead
 # cite: empirical (#148/#179 VRAM calibration)
 WORKSPACE_BYTES = 256 * _MIB  # cuDNN workspace + autograd graph + tmp buffers (spec §3)
-# cite: empirical (#148/#179 VRAM calibration)
-BASE_ACTIVATION_AT_1024 = int(1.5 * _GB)  # seed; superseded by calibration cache.
+# Split activation seeds — PORTABLE FLASH-BASELINE, measured natively at SAM 3.1's
+# fixed SAM3_IMAGE_SIZE=1008 (no image-size scale term). Spec §2/§2.1/§6.
+#   predicted_peak = STATIC + (A_FIXED + A_PER_CLASS * K) * batch
+#                    + (_attention_bytes_per_example(1008) * batch  if cc < 8.0 else 0)
+# A_FIXED   — K-invariant vision-encoder (hiera-large) activation, per image.
+# A_PER_CLASS — decoder / mask-head activation, per (image x class), two-point split.
+# cite: measured on NVIDIA GeForce RTX 5070 Ti (16 GiB, sm_120, cc=12.0 -> FLASH
+#   regime, driver 610.47), commit 1914a6d, 2026-05-31, via:
+#   uv run python scripts/_derive_preset_constants.py --method qlora --r 4 --batch 1
+# PORTABILITY: the derive subtracts the regime-matched overhead (flash card -> STATIC
+#   only), so these seeds are valid for ALL GPUs; _predicted_bytes re-adds the
+#   materialized attention term only when cc < 8.0 (Turing/Pascal math backend). NO
+#   re-derivation on a Pascal/Turing card is needed (Amendment 2, spec §2.1).
+# A_FIXED clamps to 0: the K-invariant encoder activation sits below the analytic
+#   model-weight conservatism margin in STATIC (residual peak_K1 - STATIC -
+#   A_PER_CLASS ≈ -0.76 GiB), so STATIC already absorbs it. Predicted peak stays
+#   conservative — flash (K=1: 3.81 ≥ 3.05; K=4: 7.30 ≥ 6.54 GiB); synthetic no-flash
+#   with the re-added term (K=1: 5.41 ≥ 4.65; K=4: 8.90 ≥ 8.14 GiB). Spec §2.1.
+A_FIXED = 0  # 0.00 GiB encoder activation per image @1008px (clamped flash residual)
+A_PER_CLASS = 1_248_840_021  # 1.163 GiB decoder activation per class @1008px
 
 # Forward-only memory is roughly 1/4 of the train-step probe (train captures
 # forward + backward + retained graph; eval captures only forward, no graph).
@@ -64,7 +82,7 @@ forward_only_factor: float = 0.25  # cite: empirical (#148/#179 VRAM calibration
 # === CALIBRATION CACHE =====================================================
 
 CACHE_FILENAME = ".custom_sam_peft_calibration.json"
-CACHE_SCHEMA_VERSION = 2  # index-only (internal cache versioning; not trust-bearing)
+CACHE_SCHEMA_VERSION = 3  # v3: split activation (A_fixed/A_per_class); drops activation_bytes_per_example  # noqa: E501
 
 
 # === PresetDecision ========================================================
@@ -84,6 +102,7 @@ class PresetDecision:
     r: int
     batch_size: int
     grad_accum_steps: int
+    classes_per_forward: int
     dtype: Literal["bfloat16", "float16"]
     headroom_bytes: int
     predicted_bytes: int
@@ -102,6 +121,7 @@ class PresetDecision:
             "train": {
                 "batch_size": self.batch_size,
                 "grad_accum_steps": self.grad_accum_steps,
+                "multiplex": {"classes_per_forward": self.classes_per_forward},
             },
         }
 
@@ -117,7 +137,8 @@ class PresetDecision:
         dtype_token = "fp16" if self.dtype == "float16" else "bf16"
         return (
             f"auto: {method} r={self.r} batch={self.batch_size} "
-            f"grad_accum={self.grad_accum_steps} {dtype_token} — "
+            f"K={self.classes_per_forward} grad_accum={self.grad_accum_steps} "
+            f"{dtype_token} — "
             f"fits in {used_gib:.1f}/{total_gib:.1f} GiB on {self.gpu_name} {suffix}"
         )
 
@@ -142,8 +163,8 @@ class PresetDecision:
 # the train-branch formula and decide_eval_batch_size's SDPA ceiling so both
 # cite one definition (spec §3.2).
 # _attention_bytes_per_example is the dominant activation term at SAM 3.1's
-# 1008px image; k_eff scales BASE_ACTIVATION_AT_1024 in the train branch
-# (see _activation_bytes).
+# 1008px image; only the A_PER_CLASS term scales with k_eff in the train branch
+# (see _activation_bytes). Spec §2.
 # cite: sam3/model_builder.py (hiera-large backbone, patch_size=14 line 82)
 _SAM3_PATCH = 14  # vision backbone patch size
 # cite: sam3/model_builder.py (hiera-large backbone, num_heads=16 line 85)
@@ -185,20 +206,40 @@ def _attention_bytes_per_example(image_size: int) -> int:
     return _SAM3_HEADS * n_tokens * n_tokens * 4
 
 
-def _activation_per_example(image_size: int, cache: dict[str, Any] | None) -> int:
+def _flash_attention_available(cc: tuple[int, int] | None) -> bool:
+    """True iff the GPU's compute capability gets FlashAttention-2 / mem-efficient
+    SDPA (cc >= 8.0), so the encoder self-attention never materializes the N*N score
+    matrix.
+
+    cc < 8.0 (Turing 7.5, Pascal 6.1) commonly falls back to the SDPA math backend,
+    which materializes the full H*N^2 fp32 score matrix; on those cards the predictor
+    re-adds _attention_bytes_per_example for safety (Amendment 2, spec §2.1).
+
+    Conservative default: an unknown / unreadable cc returns False (assume no flash ->
+    include the attention term -> safe over-estimate). Turing (7.5) is deliberately
+    treated as no-flash even though it usually gets mem-efficient SDPA — over-
+    estimating is always safe, and Pascal genuinely needs the term.
+    """
+    if cc is None:
+        return False
+    return cc >= (8, 0)
+
+
+def _activation_bytes(batch: int, cache: dict[str, Any] | None, k_eff: int = 1) -> int:
+    """Split activation bytes: (A_FIXED + A_PER_CLASS * K) * batch.
+
+    A_FIXED (K-invariant vision-encoder activation) does NOT scale with K; only the
+    A_PER_CLASS decoder term does. Measured natively at SAM 3.1's fixed 1008px, so
+    there is no image-size scale term. Reads the split from a v3 cache when present.
+    Spec §2.
+    """
     if cache is not None:
-        return int(cache["activation_bytes_per_example"])
-    return int(BASE_ACTIVATION_AT_1024 * (image_size / 1024) ** 2)
-
-
-def _activation_bytes(
-    image_size: int, batch: int, cache: dict[str, Any] | None, k_eff: int = 1
-) -> int:
-    # The SAM 3.1 multiplex forward materializes per-class mask/box decoder
-    # activations within a group, so per-example activation scales with k_eff
-    # (the per-group class count). Spec §3.1.
-    per = _activation_per_example(image_size, cache)
-    return int(per * batch * k_eff)
+        a_fixed = int(cache["A_fixed"])
+        a_per_class = int(cache["A_per_class"])
+    else:
+        a_fixed = A_FIXED
+        a_per_class = A_PER_CLASS
+    return int((a_fixed + a_per_class * k_eff) * batch)
 
 
 def _predicted_bytes(
@@ -209,22 +250,32 @@ def _predicted_bytes(
     cache: dict[str, Any] | None,
     mode: Literal["train", "eval"] = "train",
     k_eff: int = 1,
+    flash_available: bool = True,
 ) -> int:
+    # cc-aware attention term (Amendment 2, spec §2.1). On a flash card
+    # (cc >= 8.0) the forward attention is folded into the empirical split, so no
+    # separate term. On a no-flash card (cc < 8.0) SDPA commonly falls back to the
+    # math backend, which materializes the full H*N^2 fp32 score matrix; that worst
+    # case is NOT in the flash-baseline split, so it is re-added for safety. The term
+    # is K-INVARIANT (* batch, never * k_eff), so it cannot re-trigger #203.
+    attn = 0 if flash_available else _attention_bytes_per_example(image_size) * batch
     if mode == "train":
+        # STATIC + split + conditional attention.
         return (
             _model_bytes(method)
             + _adapter_bytes(r)
             + _optimizer_bytes(r)
-            # Per-group activation scales with k_eff; the SDPA attention term is
-            # forward+backward (NOT scaled by forward_only_factor). Spec §3.1/§3.2.
-            + _activation_bytes(image_size, batch, cache, k_eff=k_eff)
-            + _attention_bytes_per_example(image_size) * batch
+            + _activation_bytes(batch, cache, k_eff=k_eff)
             + WORKSPACE_BYTES
+            + attn
         )
     # mode == "eval": no optimizer, no adapter bytes; activations x forward_only_factor.
-    # K and attention are handled by decide_eval_batch_size's own cap, not here.
-    activations = int(_activation_bytes(image_size, batch, cache) * forward_only_factor)
-    return _model_bytes(method) + activations + WORKSPACE_BYTES
+    # K is threaded through the split; decide_eval_batch_size passes its
+    # classes_per_forward as k_eff and the regime flag as flash_available. The
+    # conditional attention term keeps eval SAFE on no-flash cards. The independent
+    # SDPA CAP stays in decide_eval_batch_size (always-on ceiling). Spec §2.1/§6.
+    activations = int(_activation_bytes(batch, cache, k_eff=k_eff) * forward_only_factor)
+    return _model_bytes(method) + activations + WORKSPACE_BYTES + attn
 
 
 # === Calibration cache I/O =================================================
@@ -277,6 +328,9 @@ def _load_cache(
         or data.get("sam3_checkpoint_sha") != _current_sam3_checkpoint_sha()
     ):
         return None, None
+    if "A_fixed" not in data or "A_per_class" not in data:
+        _LOG.warning("calibration cache missing split keys (A_fixed/A_per_class); ignoring")
+        return None, None
     return data, cache_path
 
 
@@ -301,20 +355,22 @@ def _headroom_bytes() -> int:
 # === Search space =========================================================
 
 
-def _candidates() -> list[tuple[str, int, int]]:
+def _candidates() -> list[tuple[str, int, int, int]]:
     methods = ("lora", "qlora")
     rs = (8, 16, 24, 32, 48, 64)
     batches = tuple(range(1, 17))
-    return [(m, r, b) for m in methods for r in rs for b in batches]
+    ks = (1, 2, 4, 8, 16)
+    return [(m, r, b, k) for m in methods for r in rs for b in batches for k in ks]
 
 
-def _sort_key(c: tuple[str, int, int]) -> tuple[int, int, int]:
-    method, r, batch = c
-    return (
-        0 if method == "lora" else 1,
-        -r,
-        -batch,
-    )
+def _sort_key(c: tuple[str, int, int, int]) -> tuple[int, int, int, int]:
+    # Priority highest-first: LoRA over QLoRA -> highest r -> highest K -> highest
+    # batch. Tail-to-head = sacrifice order (give up batch, then K, then r, then
+    # LoRA->QLoRA). Matches the runtime ladder and design priority (protect
+    # accuracy levers method/r; spend throughput-only K and memory-only batch
+    # first). Spec §3.
+    method, r, batch, k = c
+    return (0 if method == "lora" else 1, -r, -k, -batch)
 
 
 # === Public entry point ====================================================
@@ -324,9 +380,9 @@ def decide_preset(k: int | None = None, cache_path: Path | None = None) -> Prese
     """Pick the largest configuration that fits within the VRAM budget.
 
     Args:
-      k: representative classes-per-forward for the train activation term. When
-         None, uses the conservative worst case MULTIPLEX_CAP. Callers with a
-         config in scope pass cfg.train.multiplex.classes_per_forward. Spec §3.1.
+      k: upper bound on the K (classes-per-forward) search. When None, uses
+         MULTIPLEX_CAP. Callers with a config in scope pass
+         cfg.train.multiplex.classes_per_forward as the cap. Spec §3.
       cache_path: path to the calibration cache file. Defaults to
          ``Path(CACHE_FILENAME).resolve()`` (the fixed default location). Pass an
          explicit path when the calibration cache was written to a non-default
@@ -341,8 +397,10 @@ def decide_preset(k: int | None = None, cache_path: Path | None = None) -> Prese
     from custom_sam_peft.models.sam3 import MULTIPLEX_CAP, SAM3_IMAGE_SIZE
 
     image_size = SAM3_IMAGE_SIZE
-    k_eff = MULTIPLEX_CAP if k is None else min(k, MULTIPLEX_CAP)
-    if k_eff < 1:
+    # `k` is the UPPER BOUND on the K search (default MULTIPLEX_CAP). A user who
+    # pins a lower classes_per_forward is respected as a cap. Spec §3.
+    k_cap = MULTIPLEX_CAP if k is None else min(k, MULTIPLEX_CAP)
+    if k_cap < 1:
         raise ValueError(f"k must be >= 1 when provided; got {k}")
     if not torch.cuda.is_available():
         raise RuntimeError(_CUDA_HINT)
@@ -352,6 +410,7 @@ def decide_preset(k: int | None = None, cache_path: Path | None = None) -> Prese
     gpu_name = torch.cuda.get_device_name(0)
     cc = torch.cuda.get_device_capability(0)
     decided_dtype: Literal["bfloat16", "float16"] = "float16" if cc < (8, 0) else "bfloat16"
+    flash = _flash_attention_available(cc)
 
     headroom = _headroom_bytes()
     budget = total - headroom
@@ -363,30 +422,37 @@ def decide_preset(k: int | None = None, cache_path: Path | None = None) -> Prese
     calibrated_at: str | None = str(cache["calibrated_at"]) if cache is not None else None
 
     feasible = []
-    for method, r, batch in _candidates():
-        pb = _predicted_bytes(method, r, batch, image_size, cache, k_eff=k_eff)
+    for method, r, batch, k_cand in _candidates():
+        if k_cand > k_cap:
+            continue
+        pb = _predicted_bytes(
+            method, r, batch, image_size, cache, k_eff=k_cand, flash_available=flash
+        )
         if pb <= budget:
-            feasible.append((method, r, batch, pb))
+            feasible.append((method, r, batch, k_cand, pb))
 
     if not feasible:
         budget_gib = budget / _GB
         headroom_gib = headroom / _GB
-        min_needed = _predicted_bytes("qlora", 4, 1, image_size, cache, k_eff=k_eff)
+        min_needed = _predicted_bytes(
+            "qlora", 4, 1, image_size, cache, k_eff=1, flash_available=flash
+        )
         raise RuntimeError(
             f"pick_preset(): GPU has {budget_gib:.1f} GiB after {headroom_gib:.1f} GiB "
             f"headroom — SAM 3.1 needs ≈{min_needed / _GB:.1f} GiB even at QLoRA r=4 "
-            f"batch=1. Use a larger GPU."
+            f"batch=1 K=1. Use a larger GPU."
         )
 
-    feasible.sort(key=lambda t: _sort_key(t[:3]))
-    method, r, batch, predicted = feasible[0]
-    grad_accum = max(1, 16 // batch)
+    feasible.sort(key=lambda t: _sort_key(t[:4]))
+    method, r, batch, k_chosen, predicted = feasible[0]
+    grad_accum = max(1, math.ceil(16 / batch))
 
     return PresetDecision(
         method=method,  # type: ignore[arg-type]
         r=r,
         batch_size=batch,
         grad_accum_steps=grad_accum,
+        classes_per_forward=k_chosen,
         dtype=decided_dtype,
         headroom_bytes=headroom,
         predicted_bytes=predicted,
@@ -408,12 +474,9 @@ def decide_eval_batch_size(
     On CPU: returns (1, 0, "analytic") and logs once.
     Spec: design §8.
 
-    Note: ``classes_per_forward`` is accepted for API stability but does **not**
-    currently affect the returned batch size.  K (classes per forward) is folded
-    into ``forward_only_factor`` empirically (spec §8) rather than computed from
-    this parameter.  It is reserved for a future K-aware tuning pass (spec §12
-    follow-up).  Pass ``MULTIPLEX_CAP`` from ``custom_sam_peft.models.sam3`` so
-    that callsites remain correct when K-awareness is wired in.
+    ``classes_per_forward`` is now threaded through the split activation formula
+    as k_eff, so higher K can only lower (or hold) the returned batch size —
+    never raise it (no regression guarantee). Spec §6.
     """
     from custom_sam_peft.models.sam3 import MULTIPLEX_CAP as _CAP
     from custom_sam_peft.models.sam3 import SAM3_IMAGE_SIZE
@@ -430,6 +493,8 @@ def decide_eval_batch_size(
     props = torch.cuda.get_device_properties(0)
     total = int(props.total_memory)
     gpu_name = torch.cuda.get_device_name(0)
+    cc = torch.cuda.get_device_capability(0)
+    flash = _flash_attention_available(cc)
 
     headroom = _headroom_bytes()
     budget = total - headroom
@@ -441,11 +506,25 @@ def decide_eval_batch_size(
 
     best_bs = 1
     best_predicted = _predicted_bytes(
-        "lora", r=4, batch=1, image_size=image_size, cache=cache, mode="eval"
+        "lora",
+        r=4,
+        batch=1,
+        image_size=image_size,
+        cache=cache,
+        mode="eval",
+        k_eff=classes_per_forward,
+        flash_available=flash,
     )
     for batch in range(1, 65):  # B in [1, 64]
         pb = _predicted_bytes(
-            "lora", r=4, batch=batch, image_size=image_size, cache=cache, mode="eval"
+            "lora",
+            r=4,
+            batch=batch,
+            image_size=image_size,
+            cache=cache,
+            mode="eval",
+            k_eff=classes_per_forward,
+            flash_available=flash,
         )
         if pb <= budget:
             best_bs = batch
@@ -457,6 +536,9 @@ def decide_eval_batch_size(
     # model can return bs~35 on a 24 GiB card, causing a 56 GiB allocation (OOM).
     # Attention-memory ceiling via the shared helper so the train term and this
     # eval cap cite one definition (spec §3.2 / issue #162).
+    # This SDPA ceiling is UNCONDITIONAL (always-on, cc-unaware): it is a conservative
+    # cap that can only lower best_bs (the safe direction). Making it cc-aware would
+    # only raise best_bs on flash cards — the unsafe direction. Spec §2.1/§7.
     _attn_per_example = _attention_bytes_per_example(image_size)
     # Model weights and CUDA workspace are fixed overhead, independent of batch
     # size; subtract them from the budget once. Attention scores AND forward
@@ -465,7 +547,9 @@ def decide_eval_batch_size(
     # conservative — it can only lower bs, which is safe for OOM prevention
     # (issue #162).
     attn_budget = budget - _model_bytes("lora") - WORKSPACE_BYTES
-    _act_per_example = int(_activation_per_example(image_size, cache) * forward_only_factor)
+    _act_per_example = int(
+        _activation_bytes(batch=1, cache=cache, k_eff=classes_per_forward) * forward_only_factor
+    )
     _per_example = _attn_per_example + _act_per_example
     attn_cap = max(1, attn_budget // _per_example) if attn_budget > 0 else 1
     if attn_cap < best_bs:
@@ -479,7 +563,14 @@ def decide_eval_batch_size(
         )
         best_bs = attn_cap
         best_predicted = _predicted_bytes(
-            "lora", r=4, batch=best_bs, image_size=image_size, cache=cache, mode="eval"
+            "lora",
+            r=4,
+            batch=best_bs,
+            image_size=image_size,
+            cache=cache,
+            mode="eval",
+            k_eff=classes_per_forward,
+            flash_available=flash,
         )
 
     return best_bs, best_predicted, provenance
