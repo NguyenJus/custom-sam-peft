@@ -181,3 +181,34 @@ Export options (adapter merge).
 | Field | Type | Default | Layer | Description | YAGNI rationale |
 | --- | --- | --- | --- | --- | --- |
 | `export.merge` | bool | `false` | advanced | Merge LoRA weights into the base model and save full weights on export. | Audit §E: 0 non-test hits; merged weights are larger but self-contained; only needed for deployment. |
+
+---
+
+## CLI flags
+
+### `run` / `train` close-out behaviour
+
+The normal `run` and `train` paths close out on the **best** checkpoint (not the last step):
+`close_out` restores `best/adapter` into the model before running the final eval and writing
+`run_dir/adapter`, so the exported adapter always holds the best weights seen during training.
+
+### `run --finalize`
+
+Productionize a **paused** (time-limited) run with **no training**:
+
+- Rebuilds the model from the checkpoint specified by `--resume` (a path or `__latest__`).
+- Restores the best weights from `run_dir/best/adapter` (falls back to the checkpoint's own
+  adapter when `best/` does not exist).
+- Runs one full eval via `close_out` and writes all artifacts: `adapter/`, optional `merged/`,
+  `metrics.json`, and the run bundle (`summary.md`, `bundle.json`).
+- **Requires `--resume`** (a checkpoint path or `__latest__`); rejects `--time-limit` (no
+  training happens).
+- Uses the run's **saved `config.yaml`** (inside `run_dir/`) for fidelity — not the `--config`
+  file passed to `run`. This means `eval.visualize` (and all other eval/export settings) are
+  governed by the original run config, not the invoking config.
+
+```shell
+csp run --config cfg.yaml --resume runs/my-run/checkpoints/step_1000 --finalize
+# or resolve the latest checkpoint automatically:
+csp run --config cfg.yaml --resume __latest__ --finalize
+```
