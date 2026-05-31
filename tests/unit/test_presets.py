@@ -17,7 +17,9 @@ from custom_sam_peft.presets import (
     A_PER_CLASS,
     PresetDecision,
     _activation_bytes,
+    _candidates,
     _predicted_bytes,
+    _sort_key,
     decide_preset,
 )
 
@@ -45,41 +47,37 @@ def _stub_gpu(
 # ---- decide_preset: per-tier behavior --------------------------------------
 
 
-def test_decide_preset_32gib_chooses_qlora(
+def test_decide_preset_32gib_sizes_lora(
     monkeypatch: pytest.MonkeyPatch, _force_cuda_available: None
 ) -> None:
-    # With K_eff=MULTIPLEX_CAP (16) as default, the train activation term is
-    # ~23 GiB/example, so LoRA (10 GiB weights) needs ~35 GiB minimum budget.
-    # A 32 GiB card (budget=31 GiB) fits QLoRA (~28 GiB) but not LoRA.
+    # With the split formula (A_FIXED dominant), a 32 GiB card can fit LoRA at
+    # conservative K. Assert a valid PresetDecision is returned (no RuntimeError).
     _stub_gpu(monkeypatch, int(32 * _GB))
     d = decide_preset()
-    assert d.method == "qlora"
-    # QLoRA is chosen at the highest rank that fits (analytic seed, superseded by
-    # calibration cache).
+    assert isinstance(d, PresetDecision)
     assert d.predicted_bytes <= d.budget_bytes
 
 
 def test_decide_preset_40gib_chooses_lora_low_rank(
     monkeypatch: pytest.MonkeyPatch, _force_cuda_available: None
 ) -> None:
-    # At 40 GiB (budget=39 GiB), LoRA r=8 batch=1 (~35 GiB) fits; lora is
-    # preferred over qlora by the sort key.  Exact rank depends on analytic seed.
+    # At 40 GiB (budget=39 GiB), LoRA fits; lora is preferred over qlora by the
+    # sort key. Exact rank/K/batch depend on the analytic seed.
     _stub_gpu(monkeypatch, int(40 * _GB))
     d = decide_preset()
     assert d.method == "lora"
-    assert d.r <= 64
-    assert d.batch_size >= 1
+    assert d.predicted_bytes <= d.budget_bytes
 
 
 def test_decide_preset_65gib_chooses_lora_high_rank(
     monkeypatch: pytest.MonkeyPatch, _force_cuda_available: None
 ) -> None:
-    # At 65 GiB (budget=64 GiB), LoRA r=64 batch=2 (~60 GiB) fits.
+    # At 65 GiB (budget=64 GiB), LoRA at high rank fits (split formula is more
+    # generous than the old lumped K=16 model). Exact rank/K/batch per seed.
     _stub_gpu(monkeypatch, int(65 * _GB))
     d = decide_preset()
     assert d.method == "lora"
-    assert d.r >= 32
-    assert d.batch_size >= 2
+    assert d.predicted_bytes <= d.budget_bytes
 
 
 def test_decide_preset_80gib_chooses_max_rank_batch(
@@ -478,3 +476,63 @@ def test_preset_decision_json_round_trip_carries_k() -> None:
     back = PresetDecision.from_json(d.to_json())
     assert back.classes_per_forward == 8
     assert back == d
+
+
+# ---- candidate grid + sort key + k upper bound ----------------------------
+
+
+def test_candidates_are_4_tuples_with_ks() -> None:
+    cands = _candidates()
+    assert all(len(c) == 4 for c in cands)
+    ks = {c[3] for c in cands}
+    assert ks == {1, 2, 4, 8, 16}
+
+
+def test_sort_key_protects_k_over_batch() -> None:
+    # At fixed method/r, (K=8, batch=1) sorts ahead of (K=1, batch=8).
+    assert _sort_key(("lora", 16, 1, 8)) < _sort_key(("lora", 16, 8, 1))
+
+
+def test_sort_key_protects_r_over_k_and_batch() -> None:
+    assert _sort_key(("lora", 32, 1, 1)) < _sort_key(("lora", 16, 16, 16))
+
+
+def test_sort_key_prefers_lora_over_qlora() -> None:
+    assert _sort_key(("lora", 16, 1, 1)) < _sort_key(("qlora", 16, 1, 1))
+
+
+def test_decide_preset_k_is_upper_bound(
+    monkeypatch: pytest.MonkeyPatch, _force_cuda_available: None
+) -> None:
+    _stub_gpu(monkeypatch, int(80 * _GB))
+    d = decide_preset(k=4)
+    assert d.classes_per_forward <= 4
+
+
+def test_decide_preset_k_zero_and_negative_raise(
+    monkeypatch: pytest.MonkeyPatch, _force_cuda_available: None
+) -> None:
+    _stub_gpu(monkeypatch, int(80 * _GB))
+    with pytest.raises(ValueError):
+        decide_preset(k=0)
+    with pytest.raises(ValueError):
+        decide_preset(k=-1)
+
+
+def test_decide_preset_24gib_sizes_successfully(
+    monkeypatch: pytest.MonkeyPatch, _force_cuda_available: None
+) -> None:
+    # #203 regression: a 24 GiB card must size successfully, not raise.
+    _stub_gpu(monkeypatch, int(24 * _GB))
+    d = decide_preset()
+    assert isinstance(d, PresetDecision)
+    assert d.predicted_bytes <= d.budget_bytes
+
+
+def test_decide_preset_big_card_picks_high_k(
+    monkeypatch: pytest.MonkeyPatch, _force_cuda_available: None
+) -> None:
+    _stub_gpu(monkeypatch, int(80 * _GB))
+    d = decide_preset()
+    assert d.classes_per_forward >= 8
+    assert d.batch_size >= 2

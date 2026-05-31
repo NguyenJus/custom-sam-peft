@@ -320,20 +320,22 @@ def _headroom_bytes() -> int:
 # === Search space =========================================================
 
 
-def _candidates() -> list[tuple[str, int, int]]:
+def _candidates() -> list[tuple[str, int, int, int]]:
     methods = ("lora", "qlora")
     rs = (8, 16, 24, 32, 48, 64)
     batches = tuple(range(1, 17))
-    return [(m, r, b) for m in methods for r in rs for b in batches]
+    ks = (1, 2, 4, 8, 16)
+    return [(m, r, b, k) for m in methods for r in rs for b in batches for k in ks]
 
 
-def _sort_key(c: tuple[str, int, int]) -> tuple[int, int, int]:
-    method, r, batch = c
-    return (
-        0 if method == "lora" else 1,
-        -r,
-        -batch,
-    )
+def _sort_key(c: tuple[str, int, int, int]) -> tuple[int, int, int, int]:
+    # Priority highest-first: LoRA over QLoRA -> highest r -> highest K -> highest
+    # batch. Tail-to-head = sacrifice order (give up batch, then K, then r, then
+    # LoRA->QLoRA). Matches the runtime ladder and design priority (protect
+    # accuracy levers method/r; spend throughput-only K and memory-only batch
+    # first). Spec §3.
+    method, r, batch, k = c
+    return (0 if method == "lora" else 1, -r, -k, -batch)
 
 
 # === Public entry point ====================================================
@@ -343,9 +345,9 @@ def decide_preset(k: int | None = None, cache_path: Path | None = None) -> Prese
     """Pick the largest configuration that fits within the VRAM budget.
 
     Args:
-      k: representative classes-per-forward for the train activation term. When
-         None, uses the conservative worst case MULTIPLEX_CAP. Callers with a
-         config in scope pass cfg.train.multiplex.classes_per_forward. Spec §3.1.
+      k: upper bound on the K (classes-per-forward) search. When None, uses
+         MULTIPLEX_CAP. Callers with a config in scope pass
+         cfg.train.multiplex.classes_per_forward as the cap. Spec §3.
       cache_path: path to the calibration cache file. Defaults to
          ``Path(CACHE_FILENAME).resolve()`` (the fixed default location). Pass an
          explicit path when the calibration cache was written to a non-default
@@ -360,8 +362,10 @@ def decide_preset(k: int | None = None, cache_path: Path | None = None) -> Prese
     from custom_sam_peft.models.sam3 import MULTIPLEX_CAP, SAM3_IMAGE_SIZE
 
     image_size = SAM3_IMAGE_SIZE
-    k_eff = MULTIPLEX_CAP if k is None else min(k, MULTIPLEX_CAP)
-    if k_eff < 1:
+    # `k` is the UPPER BOUND on the K search (default MULTIPLEX_CAP). A user who
+    # pins a lower classes_per_forward is respected as a cap. Spec §3.
+    k_cap = MULTIPLEX_CAP if k is None else min(k, MULTIPLEX_CAP)
+    if k_cap < 1:
         raise ValueError(f"k must be >= 1 when provided; got {k}")
     if not torch.cuda.is_available():
         raise RuntimeError(_CUDA_HINT)
@@ -382,31 +386,33 @@ def decide_preset(k: int | None = None, cache_path: Path | None = None) -> Prese
     calibrated_at: str | None = str(cache["calibrated_at"]) if cache is not None else None
 
     feasible = []
-    for method, r, batch in _candidates():
-        pb = _predicted_bytes(method, r, batch, image_size, cache, k_eff=k_eff)
+    for method, r, batch, k_cand in _candidates():
+        if k_cand > k_cap:
+            continue
+        pb = _predicted_bytes(method, r, batch, image_size, cache, k_eff=k_cand)
         if pb <= budget:
-            feasible.append((method, r, batch, pb))
+            feasible.append((method, r, batch, k_cand, pb))
 
     if not feasible:
         budget_gib = budget / _GB
         headroom_gib = headroom / _GB
-        min_needed = _predicted_bytes("qlora", 4, 1, image_size, cache, k_eff=k_eff)
+        min_needed = _predicted_bytes("qlora", 4, 1, image_size, cache, k_eff=1)
         raise RuntimeError(
             f"pick_preset(): GPU has {budget_gib:.1f} GiB after {headroom_gib:.1f} GiB "
             f"headroom — SAM 3.1 needs ≈{min_needed / _GB:.1f} GiB even at QLoRA r=4 "
-            f"batch=1. Use a larger GPU."
+            f"batch=1 K=1. Use a larger GPU."
         )
 
-    feasible.sort(key=lambda t: _sort_key(t[:3]))
-    method, r, batch, predicted = feasible[0]
-    grad_accum = max(1, 16 // batch)
+    feasible.sort(key=lambda t: _sort_key(t[:4]))
+    method, r, batch, k_chosen, predicted = feasible[0]
+    grad_accum = max(1, math.ceil(16 / batch))
 
     return PresetDecision(
         method=method,  # type: ignore[arg-type]
         r=r,
         batch_size=batch,
         grad_accum_steps=grad_accum,
-        classes_per_forward=k_eff,
+        classes_per_forward=k_chosen,
         dtype=decided_dtype,
         headroom_bytes=headroom,
         predicted_bytes=predicted,
