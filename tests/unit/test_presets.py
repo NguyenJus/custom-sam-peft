@@ -15,9 +15,15 @@ import torch
 from custom_sam_peft.presets import (
     A_FIXED,
     A_PER_CLASS,
+    WORKSPACE_BYTES,
     PresetDecision,
     _activation_bytes,
+    _adapter_bytes,
+    _attention_bytes_per_example,
     _candidates,
+    _flash_attention_available,
+    _model_bytes,
+    _optimizer_bytes,
     _predicted_bytes,
     _sort_key,
     decide_eval_batch_size,
@@ -127,15 +133,6 @@ def test_decide_preset_prefers_lora_over_qlora_when_both_fit(
     _stub_gpu(monkeypatch, int(40 * _GB))
     d = decide_preset()
     assert d.method == "lora"
-
-
-def test_activation_bytes_scales_with_image_size() -> None:
-    """_predicted_bytes still scales with image_size (attention term) even though
-    activation bytes no longer have an image-size term (split formula). Spec §3.2."""
-    small = _predicted_bytes("lora", r=4, batch=1, image_size=512, cache=None)
-    big = _predicted_bytes("lora", r=4, batch=1, image_size=2048, cache=None)
-    # At larger image_size the attention term is larger, so predicted bytes grow.
-    assert big > small
 
 
 # ---- calibration cache provenance ------------------------------------------
@@ -359,6 +356,18 @@ def test_decide_preset_selects_bfloat16_at_cc80(
 # ---- K_eff activation + shared attention helper ----------------------------
 
 
+def test_flash_attention_available_by_cc() -> None:
+    # cc >= (8, 0): flash / mem-efficient SDPA -> no materialized attention term.
+    assert _flash_attention_available((8, 0)) is True
+    assert _flash_attention_available((9, 0)) is True
+    assert _flash_attention_available((12, 0)) is True  # 5070 Ti dev box
+    # cc < (8, 0): assume math backend materializes -> include the attention term.
+    assert _flash_attention_available((7, 5)) is False  # Turing (conservative)
+    assert _flash_attention_available((6, 1)) is False  # Pascal (GTX 1080)
+    # Unknown / unreadable cc -> conservative False (safe over-estimate).
+    assert _flash_attention_available(None) is False
+
+
 def test_attention_bytes_helper_matches_sdpa_model() -> None:
     """The shared helper reproduces the inline SDPA model: H * N^2 * 4 bytes."""
     from custom_sam_peft.presets import _attention_bytes_per_example
@@ -376,34 +385,6 @@ def test_predicted_bytes_train_grows_with_k_eff() -> None:
     small_k = _predicted_bytes("lora", r=8, batch=1, image_size=1008, cache=None, k_eff=1)
     big_k = _predicted_bytes("lora", r=8, batch=1, image_size=1008, cache=None, k_eff=16)
     assert big_k > small_k
-
-
-def test_predicted_bytes_train_includes_attention_term() -> None:
-    """Train-mode prediction includes the (dominant) SDPA attention term.
-
-    Asserts additive equality so that any omitted or doubled term causes a
-    failure (near-tautological comparisons would miss those bugs).
-    """
-    from custom_sam_peft.presets import (
-        WORKSPACE_BYTES,
-        _adapter_bytes,
-        _attention_bytes_per_example,
-        _model_bytes,
-        _optimizer_bytes,
-    )
-
-    pb = _predicted_bytes("lora", r=8, batch=1, image_size=1008, cache=None, k_eff=1)
-    expected = (
-        _model_bytes("lora")
-        + _adapter_bytes(8)
-        + _optimizer_bytes(8)
-        + _activation_bytes(batch=1, cache=None, k_eff=1)
-        + _attention_bytes_per_example(1008)  # batch=1
-        + WORKSPACE_BYTES
-    )
-    assert pb == expected
-    # Sanity: the attention term is positive (guards against a zero constant).
-    assert _attention_bytes_per_example(1008) > 0
 
 
 def test_decide_preset_threads_k_into_formula(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -445,18 +426,68 @@ def test_activation_bytes_reads_split_cache() -> None:
 
 
 def test_predicted_bytes_train_threads_k() -> None:
-    # K=16 minus K=1 equals exactly 15 * A_PER_CLASS * batch (encoder unchanged).
+    # K-invariance holds in BOTH regimes: K=16 minus K=1 equals exactly
+    # 15 * A_PER_CLASS * batch (encoder + attention both unchanged by K).
     img = 1008
-    pb_k1 = _predicted_bytes("qlora", 4, 1, img, None, mode="train", k_eff=1)
-    pb_k16 = _predicted_bytes("qlora", 4, 1, img, None, mode="train", k_eff=16)
-    assert pb_k16 - pb_k1 == 15 * A_PER_CLASS * 1
+    for flash in (True, False):
+        pb_k1 = _predicted_bytes(
+            "qlora", 4, 1, img, None, mode="train", k_eff=1, flash_available=flash
+        )
+        pb_k16 = _predicted_bytes(
+            "qlora", 4, 1, img, None, mode="train", k_eff=16, flash_available=flash
+        )
+        assert pb_k16 - pb_k1 == 15 * A_PER_CLASS * 1
+
+
+def test_predicted_bytes_train_no_attention_when_flash() -> None:
+    # cc >= 8.0 (flash): train branch is STATIC + split, NO attention term.
+    img = 1008
+    static = _model_bytes("qlora") + _adapter_bytes(4) + _optimizer_bytes(4) + WORKSPACE_BYTES
+    pb = _predicted_bytes("qlora", 4, 1, img, None, mode="train", k_eff=1, flash_available=True)
+    assert pb == static + (A_FIXED + A_PER_CLASS * 1)
+
+
+def test_predicted_bytes_train_adds_attention_when_no_flash() -> None:
+    # cc < 8.0 (math backend): train branch re-adds the materialized
+    # _attention_bytes_per_example(img) * batch term (K-invariant).
+    img = 1008
+    static = _model_bytes("qlora") + _adapter_bytes(4) + _optimizer_bytes(4) + WORKSPACE_BYTES
+    attn = _attention_bytes_per_example(img) * 1  # batch=1
+    pb = _predicted_bytes("qlora", 4, 1, img, None, mode="train", k_eff=1, flash_available=False)
+    assert pb == static + (A_FIXED + A_PER_CLASS * 1) + attn
+    assert attn > 0  # the term is genuinely re-added
+
+
+def test_predicted_bytes_scales_with_image_size_only_when_no_flash() -> None:
+    small = _predicted_bytes("qlora", 4, 1, 512, None, mode="train", k_eff=1, flash_available=False)
+    big = _predicted_bytes("qlora", 4, 1, 1008, None, mode="train", k_eff=1, flash_available=False)
+    assert big > small  # attention term grows with image_size on no-flash cards
+    # flash: no image-size dependence (attention folded into the split)
+    fl_small = _predicted_bytes(
+        "qlora", 4, 1, 512, None, mode="train", k_eff=1, flash_available=True
+    )
+    fl_big = _predicted_bytes(
+        "qlora", 4, 1, 1008, None, mode="train", k_eff=1, flash_available=True
+    )
+    assert fl_small == fl_big
 
 
 def test_predicted_bytes_eval_threads_k() -> None:
     img = 1008
-    pb_k1 = _predicted_bytes("lora", 4, 1, img, None, mode="eval", k_eff=1)
-    pb_k4 = _predicted_bytes("lora", 4, 1, img, None, mode="eval", k_eff=4)
-    assert pb_k4 > pb_k1  # eval activation now scales with K via the split
+    pb_k1 = _predicted_bytes("lora", 4, 1, img, None, mode="eval", k_eff=1, flash_available=True)
+    pb_k4 = _predicted_bytes("lora", 4, 1, img, None, mode="eval", k_eff=4, flash_available=True)
+    assert pb_k4 > pb_k1  # eval activation scales with K via the split
+
+
+def test_predicted_bytes_eval_adds_attention_when_no_flash() -> None:
+    # eval stays SAFE on no-flash cards: it adds the same materialized term so it
+    # never under-predicts vs. the math backend.
+    img = 1008
+    pb_flash = _predicted_bytes("lora", 4, 1, img, None, mode="eval", k_eff=1, flash_available=True)
+    pb_noflash = _predicted_bytes(
+        "lora", 4, 1, img, None, mode="eval", k_eff=1, flash_available=False
+    )
+    assert pb_noflash - pb_flash == _attention_bytes_per_example(img) * 1
 
 
 def test_preset_decision_config_patch_carries_classes_per_forward() -> None:
@@ -551,6 +582,19 @@ def test_decide_eval_batch_size_threads_k_no_regression(
     # Higher K can only LOWER (or hold) best_bs — never raise it (no regression).
     assert bs16 <= bs1
     assert bs16 >= 1
+
+
+def test_decide_eval_batch_size_no_flash_adds_attention(
+    monkeypatch: pytest.MonkeyPatch, _force_cuda_available: None
+) -> None:
+    # On a no-flash card (cc < 8.0) the eval predictor adds the materialized
+    # attention term, so best_bs is <= the flash-regime best_bs (never under-fits).
+    _stub_gpu(monkeypatch, int(24 * _GB), cc=(8, 0))
+    bs_flash, _, _ = decide_eval_batch_size(classes_per_forward=1)
+    _stub_gpu(monkeypatch, int(24 * _GB), cc=(7, 5))
+    bs_noflash, _, _ = decide_eval_batch_size(classes_per_forward=1)
+    assert bs_noflash <= bs_flash
+    assert bs_noflash >= 1
 
 
 def test_decide_preset_consumes_v3_cache(

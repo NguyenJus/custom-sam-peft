@@ -13,11 +13,17 @@ import torch
 _GB = 1024**3
 
 
-def _stub_gpu(monkeypatch: pytest.MonkeyPatch, total_bytes: int, name: str = "StubGPU") -> None:
+def _stub_gpu(
+    monkeypatch: pytest.MonkeyPatch,
+    total_bytes: int,
+    name: str = "StubGPU",
+    cc: tuple[int, int] = (8, 0),
+) -> None:
     props = MagicMock(total_memory=total_bytes)
     props.name = name
     monkeypatch.setattr(torch.cuda, "get_device_properties", lambda _idx: props)
     monkeypatch.setattr(torch.cuda, "get_device_name", lambda _idx: name)
+    monkeypatch.setattr(torch.cuda, "get_device_capability", lambda _idx: cc)
 
 
 def _write_cache(path: Path, **fields: object) -> None:

@@ -198,6 +198,25 @@ def _attention_bytes_per_example(image_size: int) -> int:
     return _SAM3_HEADS * n_tokens * n_tokens * 4
 
 
+def _flash_attention_available(cc: tuple[int, int] | None) -> bool:
+    """True iff the GPU's compute capability gets FlashAttention-2 / mem-efficient
+    SDPA (cc >= 8.0), so the encoder self-attention never materializes the N*N score
+    matrix.
+
+    cc < 8.0 (Turing 7.5, Pascal 6.1) commonly falls back to the SDPA math backend,
+    which materializes the full H*N^2 fp32 score matrix; on those cards the predictor
+    re-adds _attention_bytes_per_example for safety (Amendment 2, spec §2.1).
+
+    Conservative default: an unknown / unreadable cc returns False (assume no flash ->
+    include the attention term -> safe over-estimate). Turing (7.5) is deliberately
+    treated as no-flash even though it usually gets mem-efficient SDPA — over-
+    estimating is always safe, and Pascal genuinely needs the term.
+    """
+    if cc is None:
+        return False
+    return cc >= (8, 0)
+
+
 def _activation_bytes(batch: int, cache: dict[str, Any] | None, k_eff: int = 1) -> int:
     """Split activation bytes: (A_FIXED + A_PER_CLASS * K) * batch.
 
@@ -223,25 +242,32 @@ def _predicted_bytes(
     cache: dict[str, Any] | None,
     mode: Literal["train", "eval"] = "train",
     k_eff: int = 1,
+    flash_available: bool = True,
 ) -> int:
+    # cc-aware attention term (Amendment 2, spec §2.1). On a flash card
+    # (cc >= 8.0) the forward attention is folded into the empirical split, so no
+    # separate term. On a no-flash card (cc < 8.0) SDPA commonly falls back to the
+    # math backend, which materializes the full H*N^2 fp32 score matrix; that worst
+    # case is NOT in the flash-baseline split, so it is re-added for safety. The term
+    # is K-INVARIANT (* batch, never * k_eff), so it cannot re-trigger #203.
+    attn = 0 if flash_available else _attention_bytes_per_example(image_size) * batch
     if mode == "train":
+        # STATIC + split + conditional attention.
         return (
             _model_bytes(method)
             + _adapter_bytes(r)
             + _optimizer_bytes(r)
-            # Split activation: only A_PER_CLASS scales with k_eff. The SDPA
-            # attention term is forward+backward (NOT scaled by
-            # forward_only_factor). Spec §2/§3.2.
             + _activation_bytes(batch, cache, k_eff=k_eff)
-            + _attention_bytes_per_example(image_size) * batch
             + WORKSPACE_BYTES
+            + attn
         )
     # mode == "eval": no optimizer, no adapter bytes; activations x forward_only_factor.
-    # K is now threaded through the split; decide_eval_batch_size passes its
-    # classes_per_forward as k_eff. The SDPA attention cap stays in
-    # decide_eval_batch_size. Spec §6.
+    # K is threaded through the split; decide_eval_batch_size passes its
+    # classes_per_forward as k_eff and the regime flag as flash_available. The
+    # conditional attention term keeps eval SAFE on no-flash cards. The independent
+    # SDPA CAP stays in decide_eval_batch_size (always-on ceiling). Spec §2.1/§6.
     activations = int(_activation_bytes(batch, cache, k_eff=k_eff) * forward_only_factor)
-    return _model_bytes(method) + activations + WORKSPACE_BYTES
+    return _model_bytes(method) + activations + WORKSPACE_BYTES + attn
 
 
 # === Calibration cache I/O =================================================
@@ -376,6 +402,7 @@ def decide_preset(k: int | None = None, cache_path: Path | None = None) -> Prese
     gpu_name = torch.cuda.get_device_name(0)
     cc = torch.cuda.get_device_capability(0)
     decided_dtype: Literal["bfloat16", "float16"] = "float16" if cc < (8, 0) else "bfloat16"
+    flash = _flash_attention_available(cc)
 
     headroom = _headroom_bytes()
     budget = total - headroom
@@ -390,14 +417,18 @@ def decide_preset(k: int | None = None, cache_path: Path | None = None) -> Prese
     for method, r, batch, k_cand in _candidates():
         if k_cand > k_cap:
             continue
-        pb = _predicted_bytes(method, r, batch, image_size, cache, k_eff=k_cand)
+        pb = _predicted_bytes(
+            method, r, batch, image_size, cache, k_eff=k_cand, flash_available=flash
+        )
         if pb <= budget:
             feasible.append((method, r, batch, k_cand, pb))
 
     if not feasible:
         budget_gib = budget / _GB
         headroom_gib = headroom / _GB
-        min_needed = _predicted_bytes("qlora", 4, 1, image_size, cache, k_eff=1)
+        min_needed = _predicted_bytes(
+            "qlora", 4, 1, image_size, cache, k_eff=1, flash_available=flash
+        )
         raise RuntimeError(
             f"pick_preset(): GPU has {budget_gib:.1f} GiB after {headroom_gib:.1f} GiB "
             f"headroom — SAM 3.1 needs ≈{min_needed / _GB:.1f} GiB even at QLoRA r=4 "
@@ -454,6 +485,8 @@ def decide_eval_batch_size(
     props = torch.cuda.get_device_properties(0)
     total = int(props.total_memory)
     gpu_name = torch.cuda.get_device_name(0)
+    cc = torch.cuda.get_device_capability(0)
+    flash = _flash_attention_available(cc)
 
     headroom = _headroom_bytes()
     budget = total - headroom
@@ -472,6 +505,7 @@ def decide_eval_batch_size(
         cache=cache,
         mode="eval",
         k_eff=classes_per_forward,
+        flash_available=flash,
     )
     for batch in range(1, 65):  # B in [1, 64]
         pb = _predicted_bytes(
@@ -482,6 +516,7 @@ def decide_eval_batch_size(
             cache=cache,
             mode="eval",
             k_eff=classes_per_forward,
+            flash_available=flash,
         )
         if pb <= budget:
             best_bs = batch
@@ -493,6 +528,9 @@ def decide_eval_batch_size(
     # model can return bs~35 on a 24 GiB card, causing a 56 GiB allocation (OOM).
     # Attention-memory ceiling via the shared helper so the train term and this
     # eval cap cite one definition (spec §3.2 / issue #162).
+    # This SDPA ceiling is UNCONDITIONAL (always-on, cc-unaware): it is a conservative
+    # cap that can only lower best_bs (the safe direction). Making it cc-aware would
+    # only raise best_bs on flash cards — the unsafe direction. Spec §2.1/§7.
     _attn_per_example = _attention_bytes_per_example(image_size)
     # Model weights and CUDA workspace are fixed overhead, independent of batch
     # size; subtract them from the budget once. Attention scores AND forward
@@ -524,6 +562,7 @@ def decide_eval_batch_size(
             cache=cache,
             mode="eval",
             k_eff=classes_per_forward,
+            flash_available=flash,
         )
 
     return best_bs, best_predicted, provenance
