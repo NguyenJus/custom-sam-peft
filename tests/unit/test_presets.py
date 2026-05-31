@@ -226,21 +226,24 @@ def test_decide_preset_headroom_env_negative_raises(
 # ---- PresetDecision.label / to_json / config_patch -------------------------
 
 
-def _make_decision(provenance: str = "calibrated") -> PresetDecision:
-    return PresetDecision(
+def _make_decision(provenance: str = "calibrated", **over: object) -> PresetDecision:
+    base: dict[str, object] = dict(
         method="lora",
         r=32,
         batch_size=2,
         grad_accum_steps=8,
+        classes_per_forward=8,
         dtype="bfloat16",
         headroom_bytes=int(1.6 * _GB),
         predicted_bytes=int(38.4 * _GB),
         budget_bytes=int(39 * _GB),
         gpu_name="NVIDIA A100-SXM4-40GB",
-        provenance=provenance,  # type: ignore[arg-type]
+        provenance=provenance,
         cache_path=Path(".custom_sam_peft_calibration.json"),
         calibrated_at="2026-05-22T00:00:00+00:00" if provenance == "calibrated" else None,
     )
+    base.update(over)
+    return PresetDecision(**base)  # type: ignore[arg-type]
 
 
 def test_preset_decision_label_calibrated() -> None:
@@ -455,3 +458,23 @@ def test_predicted_bytes_eval_threads_k() -> None:
     pb_k1 = _predicted_bytes("lora", 4, 1, img, None, mode="eval", k_eff=1)
     pb_k4 = _predicted_bytes("lora", 4, 1, img, None, mode="eval", k_eff=4)
     assert pb_k4 > pb_k1  # eval activation now scales with K via the split
+
+
+def test_preset_decision_config_patch_carries_classes_per_forward() -> None:
+    d = _make_decision(classes_per_forward=8)
+    patch = d.config_patch
+    assert patch["train"]["multiplex"]["classes_per_forward"] == 8
+    assert patch["train"]["batch_size"] == 2
+    assert patch["train"]["grad_accum_steps"] == 8
+
+
+def test_preset_decision_label_surfaces_k() -> None:
+    d = _make_decision(classes_per_forward=8)
+    assert "K=8" in d.label()
+
+
+def test_preset_decision_json_round_trip_carries_k() -> None:
+    d = _make_decision(classes_per_forward=8)
+    back = PresetDecision.from_json(d.to_json())
+    assert back.classes_per_forward == 8
+    assert back == d

@@ -94,6 +94,7 @@ class PresetDecision:
     r: int
     batch_size: int
     grad_accum_steps: int
+    classes_per_forward: int
     dtype: Literal["bfloat16", "float16"]
     headroom_bytes: int
     predicted_bytes: int
@@ -112,6 +113,7 @@ class PresetDecision:
             "train": {
                 "batch_size": self.batch_size,
                 "grad_accum_steps": self.grad_accum_steps,
+                "multiplex": {"classes_per_forward": self.classes_per_forward},
             },
         }
 
@@ -127,7 +129,8 @@ class PresetDecision:
         dtype_token = "fp16" if self.dtype == "float16" else "bf16"
         return (
             f"auto: {method} r={self.r} batch={self.batch_size} "
-            f"grad_accum={self.grad_accum_steps} {dtype_token} — "
+            f"K={self.classes_per_forward} grad_accum={self.grad_accum_steps} "
+            f"{dtype_token} — "
             f"fits in {used_gib:.1f}/{total_gib:.1f} GiB on {self.gpu_name} {suffix}"
         )
 
@@ -403,6 +406,7 @@ def decide_preset(k: int | None = None, cache_path: Path | None = None) -> Prese
         r=r,
         batch_size=batch,
         grad_accum_steps=grad_accum,
+        classes_per_forward=k_eff,
         dtype=decided_dtype,
         headroom_bytes=headroom,
         predicted_bytes=predicted,
