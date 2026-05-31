@@ -10,6 +10,7 @@ import pytest
 from typer.testing import CliRunner
 
 from custom_sam_peft.cli.main import app
+from custom_sam_peft.eval._artifacts import EvalArtifacts
 from custom_sam_peft.presets import PresetDecision
 
 runner = CliRunner()
@@ -97,35 +98,63 @@ def _write_preset_sidecar(tmp_path: Path) -> PresetDecision:
     return d
 
 
-def _patch_phases(
-    monkeypatch: pytest.MonkeyPatch,
-    *,
+def _make_train_result(
     run_dir: Path,
-    train_raises: Exception | None = None,
-    eval_raises: Exception | None = None,
-    merge_raises: Exception | None = None,
-    bundle_raises: Exception | None = None,
-) -> dict[str, object]:
-    """Patch every phase entry point. Return a dict that records calls."""
-    captured: dict[str, object] = {"order": []}
-
-    fake_result = MagicMock(
-        run_dir=run_dir,
-        adapter_path=run_dir / "adapter",
-        merged_path=None,
-        final_metrics=None,
-        oom_events=(),
-        time_limit_stop=None,
-    )
+    *,
+    final_metrics: object = None,
+    per_example_iou: list[float] | None = None,
+    merged_export_error: str | None = None,
+) -> EvalArtifacts:
+    """Build a minimal EvalArtifacts that satisfies _orchestrate's expectations."""
     run_dir.mkdir(parents=True, exist_ok=True)
     (run_dir / "adapter").mkdir(exist_ok=True)
-    # cli/run_cmd.py reads <run_dir>/val_source.json post-train to pick the val mode.
+    # _orchestrate reads val_source.json after training to decide val mode.
     (run_dir / "val_source.json").write_text(
         '{"mode": "explicit", "fraction_requested": null, "seed_used": null, '
         '"realized_fraction": null, "n_train": null, "n_val": null, '
         '"per_class_counts": null, "missing_in_val": null, '
         '"train_ids": null, "val_ids": null}'
     )
+    return EvalArtifacts(
+        checkpoint_path=run_dir / "adapter",
+        peft_method="lora",
+        run_dir=run_dir,
+        final_metrics=final_metrics,  # type: ignore[arg-type]
+        per_example_iou=per_example_iou,
+        oom_events=(),
+        time_limit_stop=None,
+        final_weights="best",
+        ladder_events=None,
+        merged_export_error=merged_export_error,
+    )
+
+
+def _patch_phases(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    run_dir: Path,
+    train_raises: Exception | None = None,
+    bundle_raises: Exception | None = None,
+    train_result: EvalArtifacts | None = None,
+) -> dict[str, object]:
+    """Patch every phase entry point. Return a dict that records calls.
+
+    The new architecture: run_training returns EvalArtifacts (which already
+    contains final_metrics, per_example_iou, and merged_export_error from
+    close_out). _orchestrate reuses those results — no second eval, no separate
+    merge phase.
+    """
+    captured: dict[str, object] = {"order": []}
+
+    fake_report = MagicMock(overall={"mAP": 0.42})
+    fake_per_ex = [0.1, 0.5, 0.9]
+
+    if train_result is None:
+        train_result = _make_train_result(
+            run_dir,
+            final_metrics=fake_report,
+            per_example_iou=fake_per_ex,
+        )
 
     # Stub _load_preset_or_fallback so tests that don't write a sidecar don't hit CUDA.
     fake_preset = _make_preset_decision()
@@ -134,36 +163,12 @@ def _patch_phases(
         lambda _cfg: fake_preset,
     )
 
-    fake_report = MagicMock(overall={"mAP": 0.42})
-    fake_per_ex = [0.1, 0.5, 0.9]
-
     def _train(cfg: object, *, resume_from: object = None) -> object:
         captured["order"].append("train")  # type: ignore[union-attr]
         captured["resume_from"] = resume_from
         if train_raises is not None:
             raise train_raises
-        return fake_result
-
-    def _eval(
-        cfg: object,
-        *,
-        checkpoint: object,
-        output_dir: object,
-        val_dataset: object,
-        model: object,
-        return_per_example_iou: bool,
-        **_kw: object,
-    ) -> object:
-        captured["order"].append("eval")  # type: ignore[union-attr]
-        captured["return_per_example_iou"] = return_per_example_iou
-        if eval_raises is not None:
-            raise eval_raises
-        return fake_report, fake_per_ex
-
-    def _save_merged(_wrapper: object, _path: object) -> None:
-        captured["order"].append("merge")  # type: ignore[union-attr]
-        if merge_raises is not None:
-            raise merge_raises
+        return train_result
 
     def _write_bundle(
         ctx: object, report: object, *, val_dataset: object, model_wrapper: object
@@ -174,8 +179,6 @@ def _patch_phases(
             raise bundle_raises
 
     monkeypatch.setattr("custom_sam_peft.cli.run_cmd.run_training", _train)
-    monkeypatch.setattr("custom_sam_peft.cli.run_cmd.run_eval", _eval)
-    monkeypatch.setattr("custom_sam_peft.cli.run_cmd.save_merged", _save_merged)
     monkeypatch.setattr("custom_sam_peft.cli.run_cmd.write_bundle", _write_bundle)
     monkeypatch.setattr("custom_sam_peft.cli.run_cmd.load_sam31", lambda _m, **_kw: MagicMock())
     monkeypatch.setattr("custom_sam_peft.cli.run_cmd.load_adapter", lambda *_a, **_kw: None)
@@ -197,20 +200,25 @@ def test_run_help_exits_zero() -> None:
 
 
 def test_run_full_success(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    captured = _patch_phases(monkeypatch, run_dir=tmp_path / "runs" / "r")
+    """Full pipeline: training succeeds, bundle is written, exit 0.
+
+    close_out (inside run_training) already ran the eval; _orchestrate must
+    NOT run a second eval — it reuses train_result.final_metrics/per_example_iou.
+    """
+    run_dir = tmp_path / "runs" / "r"
+    captured = _patch_phases(monkeypatch, run_dir=run_dir)
     cfg = _make_cfg_yaml(tmp_path)
     result = runner.invoke(app, ["run", "--config", str(cfg)])
     assert result.exit_code == 0, result.output
-    # Every phase called in order.
     order = captured["order"]
     assert order[0] == "train"
-    # build_val may run before or after train depending on impl, but bundle is last.
     assert order[-1] == "bundle"
-    assert "eval" in order
-    assert captured["return_per_example_iou"] is True
+    # No separate "eval" phase — eval happened inside run_training/close_out.
+    assert "eval" not in order
     ctx = captured["bundle_ctx"]
     assert ctx.merged_dir is None
     assert ctx.merged_export_error is None
+    # per_example_iou comes verbatim from EvalArtifacts — no second eval.
     assert ctx.per_example_iou == [0.1, 0.5, 0.9]
 
 
@@ -225,34 +233,40 @@ def test_run_train_failure_skips_rest(tmp_path: Path, monkeypatch: pytest.Monkey
     assert result.exit_code != 0
     assert "kaboom" in _plain(result.output) or "kaboom" in (result.stderr or "")
     order = captured["order"]
-    assert "eval" not in order
-    assert "merge" not in order
     assert "bundle" not in order
 
 
 def test_run_eval_failure_skips_bundle(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Eval now happens inside run_training (close_out). An eval/training exception
+    makes run_training raise, which exits 1 and skips the bundle phase."""
     captured = _patch_phases(
         monkeypatch,
         run_dir=tmp_path / "runs" / "r",
-        eval_raises=RuntimeError("eval-boom"),
+        train_raises=RuntimeError("eval-boom"),
     )
     cfg = _make_cfg_yaml(tmp_path)
     result = runner.invoke(app, ["run", "--config", str(cfg)])
     assert result.exit_code != 0
-    assert "merge" not in captured["order"]
     assert "bundle" not in captured["order"]
 
 
 def test_run_merge_failure_still_bundles(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    captured = _patch_phases(
-        monkeypatch,
-        run_dir=tmp_path / "runs" / "r",
-        merge_raises=ValueError("rank mismatch"),
+    """Merge failure is soft-failed INSIDE close_out (Part 1 fix) and surfaced via
+    EvalArtifacts.merged_export_error.  _orchestrate must still build the bundle
+    (exit 0) and surface the merge error through BundleContext."""
+    run_dir = tmp_path / "runs" / "r"
+    # Simulate close_out having soft-failed the merge: no merged/ dir on disk,
+    # merged_export_error set to the error string.
+    train_result = _make_train_result(
+        run_dir,
+        final_metrics=MagicMock(overall={"mAP": 0.42}),
+        per_example_iou=[0.1, 0.5, 0.9],
+        merged_export_error="rank mismatch",
     )
+    captured = _patch_phases(monkeypatch, run_dir=run_dir, train_result=train_result)
     cfg = _make_cfg_yaml(tmp_path, merge=True)
     result = runner.invoke(app, ["run", "--config", str(cfg)])
     assert result.exit_code == 0, result.output
-    assert "merge" in captured["order"]
     assert "bundle" in captured["order"]
     ctx = captured["bundle_ctx"]
     assert ctx.merged_dir is None
@@ -321,42 +335,20 @@ def test_run_synthesizes_analytic_preset_when_sidecar_absent(
 
 
 def test_run_consumes_train_tuple_verbatim(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """run passes cfg's peft.method/r, train.batch_size/grad_accum, model.dtype to
-    run_training unchanged — no run-time resolution. Spec §6.1."""
+    """_orchestrate reuses EvalArtifacts.final_metrics and .per_example_iou verbatim —
+    no second eval is triggered. The per_example_iou in BundleContext must be exactly
+    what run_training returned."""
     run_dir = tmp_path / "runs" / "r"
-    _patch_phases(monkeypatch, run_dir=run_dir)
 
-    seen: dict[str, object] = {}
-
-    def _capturing_train(cfg: object, *, resume_from: object = None) -> object:
-        import typing
-
-        cfg_ = typing.cast(object, cfg)
-        seen["method"] = cfg_.peft.method  # type: ignore[union-attr]
-        seen["r"] = cfg_.peft.r  # type: ignore[union-attr]
-        seen["bs"] = cfg_.train.batch_size  # type: ignore[union-attr]
-        seen["ga"] = cfg_.train.grad_accum_steps  # type: ignore[union-attr]
-        seen["dtype"] = cfg_.model.dtype  # type: ignore[union-attr]
-        # Return a result compatible with _orchestrate expectations.
-        from unittest.mock import MagicMock
-
-        run_dir.mkdir(parents=True, exist_ok=True)
-        (run_dir / "adapter").mkdir(exist_ok=True)
-        (run_dir / "val_source.json").write_text(
-            '{"mode": "explicit", "fraction_requested": null, "seed_used": null, '
-            '"realized_fraction": null, "n_train": null, "n_val": null, '
-            '"per_class_counts": null, "missing_in_val": null, '
-            '"train_ids": null, "val_ids": null}'
-        )
-        return MagicMock(
-            run_dir=run_dir,
-            checkpoint_path=run_dir / "adapter",
-            oom_events=(),
-            time_limit_stop=None,
-        )
-
-    # Override the run_training stub _patch_phases already set.
-    monkeypatch.setattr("custom_sam_peft.cli.run_cmd.run_training", _capturing_train)
+    # Use a distinctive per_example_iou list to verify verbatim pass-through.
+    sentinel_iou = [0.11, 0.22, 0.33]
+    fake_report = MagicMock(overall={"mAP": 0.77})
+    train_result = _make_train_result(
+        run_dir,
+        final_metrics=fake_report,
+        per_example_iou=sentinel_iou,
+    )
+    captured = _patch_phases(monkeypatch, run_dir=run_dir, train_result=train_result)
 
     cfg_path = tmp_path / "config.yaml"
     cfg_path.write_text(
@@ -376,11 +368,11 @@ export: {{merge: false}}
     result = runner.invoke(app, ["run", "--config", str(cfg_path)])
     assert result.exit_code == 0, result.output
 
-    assert seen["method"] == "qlora"
-    assert seen["r"] == 32
-    assert seen["bs"] == 4
-    assert seen["ga"] == 4
-    assert seen["dtype"] == "float16"
+    # No second eval — only "train" and "bundle" phases ran.
+    assert "eval" not in captured["order"]
+    # Bundle receives the exact iou list from EvalArtifacts (verbatim, no re-eval).
+    ctx = captured["bundle_ctx"]
+    assert ctx.per_example_iou == sentinel_iou
 
 
 def test_run_skip_init_guard_warns_and_autoinits(

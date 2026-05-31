@@ -7,7 +7,7 @@ import logging
 import random
 import time
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import numpy as np
 import torch
@@ -17,24 +17,25 @@ from torch.utils.data import DataLoader
 from custom_sam_peft import paths
 from custom_sam_peft.cli._progress import progress as P
 from custom_sam_peft.config._duration import format_seconds, parse_duration_to_seconds
-from custom_sam_peft.config.schema import Optimizer, TrainConfig
+from custom_sam_peft.config.schema import LRSchedule, Optimizer, TrainConfig
 from custom_sam_peft.data.base import Dataset
 from custom_sam_peft.data.collate import collate_batch
 from custom_sam_peft.eval._artifacts import EvalArtifacts, TimeLimitStop
 from custom_sam_peft.eval.evaluator import Evaluator
-from custom_sam_peft.eval.metrics import MetricsReport
 from custom_sam_peft.models.sam3 import MULTIPLEX_CAP, Sam3Wrapper
 from custom_sam_peft.peft_adapters import PEFTMethod, make_peft_method
 from custom_sam_peft.runtime import Runtime
 from custom_sam_peft.tracking.base import Tracker
+from custom_sam_peft.train._scheduler import PlateauOrLambda
 from custom_sam_peft.train.checkpoint import (
     ResumeState,
     load_full_state,
     save_adapter,
     save_full_state,
-    save_merged,
 )
-from custom_sam_peft.train.loop import OomState, _TimeLimitReached, run_epoch
+from custom_sam_peft.train.close_out import close_out
+from custom_sam_peft.train.ladder import LadderEvents, LadderState, LrCut, StopDecision
+from custom_sam_peft.train.loop import OomState, _EarlyStop, _TimeLimitReached, run_epoch
 from custom_sam_peft.train.visualize import render_mask_panel
 
 _LOG = logging.getLogger(__name__)
@@ -70,16 +71,30 @@ def _build_scheduler(
     optimizer: torch.optim.Optimizer,
     cfg: TrainConfig,
     total_steps: int,
-) -> torch.optim.lr_scheduler.LRScheduler:
+    effective_schedule: str,
+) -> PlateauOrLambda:
+    if effective_schedule == "plateau":
+        return torch.optim.lr_scheduler.ReduceLROnPlateau(
+            optimizer,
+            mode="max",
+            factor=cfg.train.lr_decay_on_plateau.factor,
+            patience=cfg.train.lr_decay_on_plateau.patience,
+            threshold=cfg.train.early_stop.min_delta,
+            # threshold_mode="abs" + threshold=min_delta must stay in sync with
+            # the rung-2 improvement test in LadderState.observe (mAP > best + min_delta).
+            threshold_mode="abs",  # absolute mAP units — matches the early-stop test
+            min_lr=cfg.train.lr_decay_on_plateau.min_lr,
+        )
+
     warmup = cfg.train.warmup_steps
 
     def lr_lambda(step: int) -> float:
         if step < warmup:
             return (step + 1) / max(warmup, 1)
         progress = (step - warmup) / max(total_steps - warmup, 1)
-        if cfg.train.lr_schedule == "constant":
+        if effective_schedule == "constant":
             return 1.0
-        if cfg.train.lr_schedule == "linear":
+        if effective_schedule == "linear":
             return max(0.0, 1.0 - progress)
         return 0.5 * (1.0 + float(np.cos(np.pi * min(progress, 1.0))))
 
@@ -180,6 +195,12 @@ class Trainer:
         # Best-model tracking state.
         self._best_metric_value: float = float("-inf")
         self._best_metric_key: str = "mAP"
+        # Ladder state (reset on each fit() call).
+        self._ladder: LadderState = LadderState()
+        self._ladder_cuts: list[LrCut] = []
+        self._early_stop: StopDecision | None = None
+        self._scheduler: Any = None  # set in fit() after _build_scheduler
+        self._scheduler_kind: str = ""  # set in fit() after effective_schedule is resolved
         # Runtime injection (§2 seam discipline). If none provided, synthesize
         # one from cfg. Callers that pass runtime= get strict device isolation;
         # callers that don't pass it get a sensible default inferred from model
@@ -249,7 +270,7 @@ class Trainer:
         epoch: int,
         train_loader: Any,
         optimizer: torch.optim.Optimizer,
-        scheduler: torch.optim.lr_scheduler.LRScheduler,
+        scheduler: PlateauOrLambda,
         run_dir: Path,
         global_step: int,
         nan_streak: int,
@@ -258,6 +279,8 @@ class Trainer:
         on_eval: Any,
         oom_state: OomState | None = None,
         deadline: float | None = None,
+        should_stop_early: Any = None,
+        effective_schedule: str | None = None,
     ) -> tuple[int, int]:
         """Run one training epoch; returns (global_step, nan_streak)."""
         return run_epoch(
@@ -278,6 +301,13 @@ class Trainer:
             runtime=self.runtime,
             oom_state=oom_state,
             deadline=deadline,
+            should_stop_early=should_stop_early,
+            effective_schedule=effective_schedule,
+            flush_extra=lambda: {
+                "ladder": self._ladder.state_dict(),
+                "best_metric_value": self._best_metric_value,
+                "scheduler_kind": self._scheduler_kind,
+            },
         )
 
     def _cap_eval_batch_size(self, bs: int, cap: int) -> int:
@@ -314,6 +344,26 @@ class Trainer:
             report = Evaluator(lite_cfg).evaluate(self.model, self.val_ds)
             self.tracker.log_scalars(step, report.overall)
             self._maybe_save_best(report, step, run_dir)
+            mAP = report.overall.get(self._best_metric_key)
+            decision = self._ladder.observe(mAP, step, self._scheduler, self.cfg)
+            if self._ladder.last_cut is not None:
+                cut = self._ladder.last_cut
+                self._ladder_cuts.append(cut)
+                _LOG.info(
+                    "LR cut x%.3g -> %.3g at eval step %d (mAP %.4f)",
+                    cut.new_lr / cut.old_lr if cut.old_lr else 0.0,
+                    cut.new_lr,
+                    cut.step,
+                    cut.triggering_map,
+                )
+            if decision.should_stop:
+                self._early_stop = decision
+                _LOG.info(
+                    "early stop signalled: %s (mAP %.4f at step %d)",
+                    decision.reason,
+                    decision.triggering_map,
+                    decision.triggering_step,
+                )
         except RuntimeError as exc:
             if str(exc).startswith("eval OOM"):
                 _LOG.error(
@@ -434,6 +484,9 @@ class Trainer:
             epoch=epoch,
             nan_streak=nan_streak,
             cfg=self.cfg,
+            ladder=self._ladder.state_dict(),
+            best_metric_value=self._best_metric_value,
+            scheduler_kind=self._scheduler_kind,
         )
         self._log_image_panel(val_examples, class_names, step)
 
@@ -511,7 +564,35 @@ class Trainer:
 
         optimizer = self._build_optimizer()
         total_steps = cfg.train.epochs * steps_per_epoch
-        scheduler = _build_scheduler(optimizer, cfg, total_steps)
+        effective_schedule = cfg.train.lr_schedule
+        if cfg.train.lr_schedule == "plateau" and self.val_ds is None:
+            _LOG.warning(
+                "lr_schedule=plateau requires a validation set for the plateau signal; "
+                "no val set provided — falling back to lr_schedule=cosine. "
+                "Early stop is a no-op."
+            )
+            effective_schedule = "cosine"
+        # On resume, the persisted scheduler_kind governs construction so the
+        # rebuilt scheduler type matches the persisted state_dict (spec §8.3).
+        resume_kind: str | None = None
+        if resume_from is not None:
+            peek = torch.load(resume_from / "training_state.pt", weights_only=False)
+            resume_kind = peek.get("scheduler_kind")
+        if resume_kind is not None and resume_kind != effective_schedule:
+            _LOG.warning(
+                "resume: persisted scheduler_kind=%s overrides cfg lr_schedule=%s "
+                "(persisted kind wins).",
+                resume_kind,
+                effective_schedule,
+            )
+        if resume_kind is not None:
+            effective_schedule = cast(LRSchedule, resume_kind)
+        scheduler = _build_scheduler(optimizer, cfg, total_steps, effective_schedule)
+        self._scheduler = scheduler
+        self._scheduler_kind = effective_schedule
+        self._ladder = LadderState()
+        self._ladder_cuts = []
+        self._early_stop = None
 
         rs = ResumeState(
             start_step=0,
@@ -520,6 +601,19 @@ class Trainer:
         )
         if resume_from is not None:
             rs = load_full_state(resume_from, self.model, optimizer, scheduler, cfg)
+            if rs.best_metric_value is not None:
+                self._best_metric_value = rs.best_metric_value
+            resume_run_dir = resume_from.parent.parent
+            best_json = resume_run_dir / "best" / "best.json"
+            if best_json.is_file():
+                try:
+                    disk_best = float(json.loads(best_json.read_text())["value"])
+                    self._best_metric_value = max(self._best_metric_value, disk_best)
+                except Exception:
+                    _LOG.warning("resume: could not read %s; keeping in-memory best.", best_json)
+            self._ladder.best = self._best_metric_value
+            if rs.ladder is not None:
+                self._ladder.load_state_dict(rs.ladder)
         global_step = rs.start_step
         nan_streak = rs.nan_streak
         start_epoch = rs.start_epoch
@@ -551,12 +645,23 @@ class Trainer:
                 budget_seconds,
             )
 
-        merged_path: Path | None = None
-        full_report: MetricsReport | None = None
         stop: _TimeLimitReached | None = None
+        _early: _EarlyStop | None = None  # set on early stop; Phase 2 wires into close_out
+        close_out_result: EvalArtifacts | None = None
+        # Mutable single-element list so the closure below sees the live epoch
+        # value; the epoch loop keeps it current via `_current_epoch[0] = epoch`.
+        _current_epoch = [start_epoch]
+
+        def should_stop_early() -> _EarlyStop | None:
+            d = self._early_stop
+            if d is not None and d.should_stop:
+                return _EarlyStop(d.triggering_step, _current_epoch[0], d.reason)
+            return None
+
         try:
             try:
                 for epoch in range(start_epoch, cfg.train.epochs):
+                    _current_epoch[0] = epoch
                     total_batches = max(len(train_loader), 1)
                     P.reset_inner(total=total_batches)
                     global_step, nan_streak = self._train_epoch(
@@ -572,66 +677,45 @@ class Trainer:
                         on_eval,
                         oom_state=oom_state,
                         deadline=deadline,
+                        should_stop_early=should_stop_early,
+                        effective_schedule=effective_schedule,
                     )
                     P.advance_outer()
             except _TimeLimitReached as e:
                 stop = e
                 global_step = e.step  # the flushed checkpoint's step
+            except _EarlyStop as e:
+                _early = e
+                global_step = e.step
 
             if stop is None:
-                adapter_path = run_dir / "adapter"
-                save_adapter(self.model, adapter_path)
-                if cfg.export.merge:
-                    merged_path = run_dir / "merged"
-                    save_merged(self.model, merged_path)
-
-                if self.val_ds is not None:
-                    full_eval_cfg = cfg.eval
-                    if full_eval_cfg.batch_size == "auto":
-                        from custom_sam_peft.presets import decide_eval_batch_size
-
-                        bs, _, _ = decide_eval_batch_size(classes_per_forward=MULTIPLEX_CAP)
-                        bs = self._cap_eval_batch_size(bs, oom_state.micro_batch_size)
-                        full_eval_cfg = full_eval_cfg.model_copy(update={"batch_size": bs})
-                    full_report = Evaluator(full_eval_cfg).evaluate(self.model, self.val_ds)
-                if full_report is not None:
-                    (run_dir / "metrics.json").write_text(
-                        json.dumps(
-                            {
-                                "overall": full_report.overall,
-                                "per_class": full_report.per_class,
-                                "n_images": full_report.n_images,
-                                "n_predictions": full_report.n_predictions,
-                                "global_step": global_step,
-                                "epoch": cfg.train.epochs - 1,
-                            },
-                            indent=2,
-                        )
-                    )
-                else:
-                    (run_dir / "metrics.json").write_text(
-                        json.dumps(
-                            {
-                                "note": "no validation set provided",
-                                "global_step": global_step,
-                                "epoch": cfg.train.epochs - 1,
-                            },
-                            indent=2,
-                        )
-                    )
+                final_epoch = _early.epoch if _early is not None else cfg.train.epochs - 1
+                _cuts = tuple(self._ladder_cuts)
+                _stop_reason = _early.reason if _early is not None else None
+                ladder_events = (
+                    LadderEvents(cuts=_cuts, stop_reason=_stop_reason)
+                    if (_cuts or _stop_reason is not None)
+                    else None
+                )
+                close_out_result = close_out(
+                    run_dir,
+                    self.model,
+                    cfg,
+                    evaluator_val_ds=self.val_ds,
+                    oom_state=oom_state,
+                    final_step=global_step,
+                    final_epoch=final_epoch,
+                    ladder_events=ladder_events,
+                )
         finally:
             self.tracker.close()
 
         if stop is not None:
             return self._time_limited_artifacts(run_dir, stop, budget_seconds, oom_state)
 
-        return EvalArtifacts(
-            checkpoint_path=run_dir / "adapter",
-            peft_method=self.cfg.peft.method,
-            run_dir=run_dir,
-            final_metrics=full_report,
-            oom_events=tuple(oom_state.pending_oom_events),
-        )
+        if close_out_result is None:  # set whenever stop is None; guard for the type checker
+            raise RuntimeError("close_out did not run despite normal completion")
+        return close_out_result
 
     def _log_image_panel(
         self,

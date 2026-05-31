@@ -119,6 +119,11 @@ def test_trainer_fit_returns_eval_artifacts(tmp_path: Path) -> None:
     assert result.peft_method in {"lora", "qlora"}
     # Normal (non-time-limited) path: the new optional field defaults to None.
     assert result.time_limit_stop is None
+    # Best-as-final close-out: new optional fields exist (default-safe).
+    assert hasattr(result, "per_example_iou")
+    assert result.final_weights in {"best", "last_step", None}
+    # ladder_events field defaults to None (no early stop in this 1-epoch run).
+    assert result.ladder_events is None
 
 
 def test_evaluator_consumes_only_eval_artifacts(tmp_path: Path) -> None:

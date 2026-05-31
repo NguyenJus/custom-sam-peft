@@ -79,6 +79,9 @@ class ResumeState:
     start_step: int
     start_epoch: int
     nan_streak: int
+    ladder: dict[str, Any] | None = None  # None for pre-#197 checkpoints
+    best_metric_value: float | None = None
+    scheduler_kind: str | None = None  # effective LR schedule; governs resume rebuild
 
 
 def _has_linear4bit(wrapper: Sam3Wrapper) -> bool:
@@ -148,11 +151,14 @@ def save_full_state(
     state_dir: Path,
     wrapper: Sam3Wrapper,
     optimizer: torch.optim.Optimizer,
-    scheduler: torch.optim.lr_scheduler.LRScheduler,
+    scheduler: Any,
     global_step: int,
     epoch: int,
     nan_streak: int,
     cfg: TrainConfig,
+    ladder: dict[str, Any] | None = None,
+    best_metric_value: float | None = None,
+    scheduler_kind: str | None = None,
 ) -> None:
     state_dir.mkdir(parents=True, exist_ok=True)
     save_adapter(wrapper, state_dir / "adapter")
@@ -171,6 +177,9 @@ def save_full_state(
         "nan_streak": int(nan_streak),
         "peft_method": cfg.peft.method,
         "cfg_hash": _hash_cfg(cfg),
+        "ladder": ladder,
+        "best_metric_value": best_metric_value,
+        "scheduler_kind": scheduler_kind,
     }
     torch.save(payload, state_dir / _TRAINING_STATE_FILENAME)
 
@@ -179,7 +188,7 @@ def load_full_state(
     state_dir: Path,
     wrapper: Sam3Wrapper,
     optimizer: torch.optim.Optimizer,
-    scheduler: torch.optim.lr_scheduler.LRScheduler,
+    scheduler: Any,
     cfg: TrainConfig,
 ) -> ResumeState:
     state_file = state_dir / _TRAINING_STATE_FILENAME
@@ -238,6 +247,9 @@ def load_full_state(
         start_step=int(state["global_step"]),
         start_epoch=int(state["epoch"]),
         nan_streak=int(state["nan_streak"]),
+        ladder=state.get("ladder"),
+        best_metric_value=state.get("best_metric_value"),
+        scheduler_kind=state.get("scheduler_kind"),
     )
 
 
