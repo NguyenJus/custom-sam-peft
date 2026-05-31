@@ -1,4 +1,13 @@
-"""Project-level pytest hooks (markers, autoskips) and shared fixtures."""
+"""Project-level pytest hooks (markers, autoskips) and shared fixtures.
+
+GPU tier taxonomy (Tesla T4 floor, CC 7.5 / RTX 5070 Ti primary dev card):
+- gpu_t4:   CC >= 7.5 AND total VRAM <= 16 GB (fp16 band; bf16 coerced below CC 8.0)
+- gpu_bf16: CC >= 8.0 AND total VRAM <= 16 GB (native bf16, RTX 5070 Ti)
+- gpu_xl:   total VRAM > 16 GB (deferred — no tests assigned yet)
+
+Bands are NOT linearly ordered; the skip predicate is a capability-subset check.
+See docs/testing/gpu-test-policy.md for the full policy.
+"""
 
 from __future__ import annotations
 
@@ -24,9 +33,9 @@ def pytest_configure(config: pytest.Config) -> None:
     )
     config.addinivalue_line(
         "markers",
-        "requires_compatible_gpu: skip unless a CUDA device with compute "
-        "capability >= 6.0 is available (NF4 QLoRA + LoRA work from CC 6.0 / "
-        "Pascal; only LLM.int8() needs CC 7.5 and is unused here)",
+        "requires_compatible_gpu: skip unless a CUDA GPU with CC >= 7.5 is available "
+        "(Tesla T4 floor; RTX 5070 Ti primary dev card). "
+        "See docs/testing/gpu-test-policy.md.",
     )
     config.addinivalue_line(
         "markers",
@@ -34,16 +43,21 @@ def pytest_configure(config: pytest.Config) -> None:
     )
     config.addinivalue_line(
         "markers",
-        "gpu_local: GPU test that fits the GTX 1080 (<=~7 GB, CC 6.0+, NF4+float16); "
-        "run via run_gpu_tests.sh local",
+        "gpu_t4: requires a CUDA GPU with CC >= 7.5 AND total VRAM <= 16 GB "
+        "(Tesla T4 floor and RTX 5070 Ti). fp16 band (bf16 is coerced below CC 8.0). "
+        "See docs/testing/gpu-test-policy.md.",
     )
     config.addinivalue_line(
         "markers",
-        "gpu_t4: GPU test needing >8 GB and <=16 GB, or bf16-representative numerics; Colab T4",
+        "gpu_bf16: requires a CUDA GPU with CC >= 8.0 AND total VRAM <= 16 GB "
+        "(RTX 5070 Ti). Native, non-coerced bf16 numerics. "
+        "See docs/testing/gpu-test-policy.md.",
     )
     config.addinivalue_line(
         "markers",
-        "gpu_xl: GPU test beyond a T4 (>16 GB / larger arch); cloud auto-provision (needs #124)",
+        "gpu_xl: requires a CUDA GPU with total VRAM > 16 GB. "
+        "Empty in this PR; populated only via the gpu_xl follow-up issue. "
+        "See docs/testing/gpu-test-policy.md.",
     )
 
 

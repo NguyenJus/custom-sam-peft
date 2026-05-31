@@ -128,10 +128,10 @@ testpaths = ["tests"]
 markers = [
   "integration: end-to-end tests using the stub model (CPU)",
   "requires_checkpoint: skip unless real checkpoint is present",
-  "requires_compatible_gpu: skip unless CUDA compute capability >= 6.0 (NF4 QLoRA + LoRA work from Pascal; LLM.int8() unused)",
-  "gpu_local: GPU test that fits the GTX 1080 (<=~7 GB, CC 6.0+, NF4+float16); run via run_gpu_tests.sh local",
-  "gpu_t4: GPU test needing >8 GB and <=16 GB, or bf16-representative numerics; Colab T4",
-  "gpu_xl: GPU test beyond a T4 (>16 GB / larger arch); cloud auto-provision (needs #124)",
+  "requires_compatible_gpu: skip unless a CUDA GPU with CC >= 7.5 is available (Tesla T4 floor; RTX 5070 Ti primary dev card). See docs/testing/gpu-test-policy.md.",
+  "gpu_t4: requires a CUDA GPU with CC >= 7.5 AND total VRAM <= 16 GB (Tesla T4 floor and RTX 5070 Ti). fp16 band (bf16 is coerced below CC 8.0). See docs/testing/gpu-test-policy.md.",
+  "gpu_bf16: requires a CUDA GPU with CC >= 8.0 AND total VRAM <= 16 GB (RTX 5070 Ti). Native, non-coerced bf16 numerics. See docs/testing/gpu-test-policy.md.",
+  "gpu_xl: requires a CUDA GPU with total VRAM > 16 GB. Empty in this PR; populated only via the gpu_xl follow-up issue. See docs/testing/gpu-test-policy.md.",
 ]
 addopts = "-ra --strict-markers --cov=custom_sam_peft --cov-report=term-missing --cov-report=html --cov-fail-under=80"
 
