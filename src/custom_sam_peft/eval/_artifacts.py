@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from custom_sam_peft.eval.metrics import MetricsReport
+    from custom_sam_peft.train.ladder import LadderEvents
     from custom_sam_peft.train.types import OomEvent
 
 
@@ -48,3 +49,11 @@ class EvalArtifacts:
     # Set when training stopped early on a wall-clock budget; None on the
     # normal path. The evaluator never reads it (seam-safe optional field).
     time_limit_stop: TimeLimitStop | None = field(default=None)
+    # close_out's single eval's per-example IoU (return_per_example_iou=True),
+    # so the run/finalize bundle reuses it with no second eval. None no-val.
+    per_example_iou: list[float] | None = field(default=None)
+    # "best" | "last_step" | None — which weights the final adapter holds.
+    # None on the normal pre-close_out / time-limit paths.
+    final_weights: str | None = field(default=None)
+    # Ladder telemetry threaded out of close_out (mirroring oom_events).
+    ladder_events: LadderEvents | None = field(default=None)
