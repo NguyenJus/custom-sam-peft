@@ -77,9 +77,6 @@ def _torch_can_launch_kernel() -> bool:
         return False
 
 
-_TIER_ORDER = {"gpu_local": 0, "gpu_t4": 1, "gpu_xl": 2}
-
-
 def _has_compatible_gpu() -> bool:
     if not torch.cuda.is_available():
         return False
@@ -87,54 +84,81 @@ def _has_compatible_gpu() -> bool:
         major, minor = torch.cuda.get_device_capability()
     except RuntimeError:
         return False
-    if (major, minor) < (6, 0):
+    if (major, minor) < (7, 5):
         return False
     return _torch_can_launch_kernel()
 
 
-def _current_tier() -> str | None:
-    """The highest tier the current runner's live hardware can satisfy.
+_GB = 1024**3
 
-    The 1080 (and any usable CC>=6.0 card <=~7 GB) is the local tier. We cannot
-    reliably auto-detect >8 GB / bf16-faithful capability here, so a t4/xl runner
-    asserts its own tier out-of-band; on the dev box this returns 'gpu_local'.
-    Returns None on CPU-only / no usable GPU.
+
+def _satisfied_tiers() -> set[str]:
+    """Return the SET of GPU tiers the live card satisfies.
+
+    Bands are NOT linearly ordered: gpu_t4/gpu_bf16 are <=16 GB; gpu_xl is >16 GB.
+    The 16 GB band is a CLOSED upper bound (<= 16 * _GB) so a card reporting
+    slightly under a marketing "16 GB" (driver-reserved) still counts as gpu_t4/gpu_bf16.
+    A >16 GB card satisfies only gpu_xl and is intentionally NOT auto-run for the
+    <=16 GB ceiling assertions (running them on a bigger card could mask a small-card OOM).
     """
+    import torch
+
     if not _has_compatible_gpu():
+        return set()
+    cc = torch.cuda.get_device_capability()
+    total = torch.cuda.get_device_properties(0).total_memory
+    tiers: set[str] = set()
+    if cc >= (7, 5) and total <= 16 * _GB:
+        tiers.add("gpu_t4")
+    if cc >= (8, 0) and total <= 16 * _GB:
+        tiers.add("gpu_bf16")
+    if total > 16 * _GB:
+        tiers.add("gpu_xl")
+    return tiers
+
+
+_KNOWN_TIERS = frozenset({"gpu_t4", "gpu_bf16", "gpu_xl"})
+
+# Human-readable gate descriptions for skip reasons — one per tier.
+_TIER_GATES = {
+    "gpu_t4": "CC >= 7.5 AND total VRAM <= 16 GB",
+    "gpu_bf16": "CC >= 8.0 AND total VRAM <= 16 GB",
+    "gpu_xl": "total VRAM > 16 GB",
+}
+
+
+def _should_skip(marker_tier: str, satisfied: set[str]) -> str | None:
+    """Return a skip-reason string if *marker_tier* is not in *satisfied*, else None.
+
+    Pure function — no I/O.  The caller (pytest_collection_modifyitems) supplies
+    the live *satisfied* set so unit tests can monkeypatch just the probe.
+    """
+    if marker_tier in satisfied:
         return None
-    return "gpu_local"
+    gate = _TIER_GATES.get(marker_tier, marker_tier)
+    return f"requires {marker_tier} ({gate}); not satisfied on this runner"
 
 
 def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item]) -> None:
     ckpt = pathlib.Path("models/sam3.1/sam3.1_multiplex.pt")
     skip_no_ckpt = pytest.mark.skip(reason="real SAM 3.1 checkpoint not present locally")
     skip_no_gpu = pytest.mark.skip(
-        reason="requires a CUDA GPU with CC >= 6.0 (NF4 QLoRA + LoRA; "
-        "LLM.int8() would need CC 7.5 but is unused here)"
+        reason="requires a CUDA GPU with CC >= 7.5 (Tesla T4 floor; RTX 5070 Ti primary)"
     )
     have_gpu = _has_compatible_gpu()
+    active_tiers = _satisfied_tiers()
     for item in items:
         if "requires_checkpoint" in item.keywords and not ckpt.exists():
             item.add_marker(skip_no_ckpt)
         if "requires_compatible_gpu" in item.keywords and not have_gpu:
             item.add_marker(skip_no_gpu)
 
-    runner_tier = _current_tier()
     for item in items:
-        item_tier = next((t for t in _TIER_ORDER if t in item.keywords), None)
+        item_tier = next((t for t in _KNOWN_TIERS if t in item.keywords), None)
         if item_tier is None:
             continue
-        if runner_tier is None:
-            # CPU-only / unusable GPU: already skipped via requires_compatible_gpu above.
-            continue
-        if _TIER_ORDER[item_tier] > _TIER_ORDER[runner_tier]:
-            if item_tier == "gpu_xl":
-                reason = (
-                    "gpu_xl tier needs a >16 GB / larger-arch runner via cloud "
-                    "auto-provision (#124); not available on this runner"
-                )
-            else:
-                reason = f"{item_tier} tier needs hardware beyond this runner ({runner_tier})"
+        reason = _should_skip(item_tier, active_tiers)
+        if reason is not None:
             item.add_marker(pytest.mark.skip(reason=reason))
 
 
