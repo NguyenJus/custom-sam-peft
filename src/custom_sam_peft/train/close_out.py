@@ -60,9 +60,14 @@ def close_out(
     # 2. Write the (best, or last-step) adapter.
     save_adapter(model, run_dir / "adapter")
 
-    # 3. Optional merged.
+    # 3. Optional merged (soft-fail — mirrors the old orchestrator behaviour).
+    merged_export_error: str | None = None
     if cfg.export.merge:
-        save_merged(model, run_dir / "merged")
+        try:
+            save_merged(model, run_dir / "merged")
+        except Exception as exc:
+            _LOG.warning("close_out: export-merge failed: %s", exc, exc_info=True)
+            merged_export_error = str(exc)
 
     # 4. Single full eval on the restored weights (return_per_example_iou=True).
     report: Any = None
@@ -132,4 +137,5 @@ def close_out(
         per_example_iou=per_example_iou,
         final_weights=final_weights,
         ladder_events=ladder_events,
+        merged_export_error=merged_export_error,
     )

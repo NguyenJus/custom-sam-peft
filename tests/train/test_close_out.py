@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+from custom_sam_peft.config._internal import ExportConfig
 from custom_sam_peft.eval._artifacts import EvalArtifacts
 from custom_sam_peft.peft_adapters.lora import apply_lora
 from custom_sam_peft.train.checkpoint import save_adapter
@@ -190,6 +191,41 @@ def test_close_out_skips_viz_when_no_val(tmp_path: Path) -> None:
         )
 
     recorder.assert_not_called()
+
+
+def test_close_out_merge_failure_soft_fails(tmp_path: Path) -> None:
+    """When cfg.export.merge=True and save_merged raises, close_out must:
+    - set art.merged_export_error to the error string,
+    - still write metrics.json,
+    - not re-raise (no exception escapes close_out).
+    """
+    ds = _TinyDataset()
+    wrapper = make_stub_wrapper(dim=8, working=True)
+    base_cfg = _cfg_no_viz(tmp_path)
+    cfg = base_cfg.model_copy(update={"export": ExportConfig(merge=True)})
+    apply_lora(wrapper, cfg.peft)
+    run_dir = tmp_path / "run-merge-fail"
+    run_dir.mkdir(parents=True)
+
+    def _boom(model: object, path: object) -> None:
+        raise RuntimeError("simulated merge failure")
+
+    with patch("custom_sam_peft.train.close_out.save_merged", _boom):
+        art = close_out(
+            run_dir,
+            wrapper,
+            cfg,
+            evaluator_val_ds=ds,
+            oom_state=None,
+            final_step=1,
+            final_epoch=0,
+            ladder_events=None,
+        )
+
+    assert isinstance(art, EvalArtifacts)
+    assert art.merged_export_error == "simulated merge failure"
+    assert not (run_dir / "merged").exists(), "merged/ must not exist after failed merge"
+    assert (run_dir / "metrics.json").is_file(), "metrics.json must be written even if merge fails"
 
 
 def test_close_out_viz_failure_does_not_block_metrics(tmp_path: Path) -> None:

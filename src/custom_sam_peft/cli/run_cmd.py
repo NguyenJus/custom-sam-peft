@@ -119,11 +119,14 @@ def _orchestrate(
 
     end_ts = datetime.now(UTC)
 
-    # merged/ was written by close_out when cfg.export.merge; reflect it.
+    # merged/ was written by close_out when cfg.export.merge (soft-fail: error
+    # is surfaced via EvalArtifacts.merged_export_error, run still continues).
+    merged_export_error = train_result.merged_export_error
     merged_dir = (
-        (run_dir / "merged") if (cfg.export.merge and (run_dir / "merged").is_dir()) else None
+        (run_dir / "merged")
+        if (cfg.export.merge and merged_export_error is None and (run_dir / "merged").is_dir())
+        else None
     )
-    merged_export_error: str | None = None
 
     # Phase: bundle.
     preset = _load_preset_or_fallback(cfg)

@@ -57,3 +57,6 @@ class EvalArtifacts:
     final_weights: str | None = field(default=None)
     # Ladder telemetry threaded out of close_out (mirroring oom_events).
     ladder_events: LadderEvents | None = field(default=None)
+    # Soft-fail merge: set to the error string when cfg.export.merge save_merged
+    # raised; the run still finalizes + bundles. None when merge succeeded or was off.
+    merged_export_error: str | None = field(default=None)

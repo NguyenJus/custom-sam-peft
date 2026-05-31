@@ -9,6 +9,7 @@ from unittest.mock import MagicMock
 import pytest
 import torch
 
+import custom_sam_peft.train.close_out as close_out_mod
 import custom_sam_peft.train.trainer as trainer_mod
 from custom_sam_peft.config.schema import (
     AugmentationsConfig,
@@ -67,19 +68,27 @@ def test_fit_uses_caller_provided_run_dir(tmp_path: Path, monkeypatch: pytest.Mo
     val_ds = MagicMock(__len__=lambda self: 0, class_names=[])
     tracker = MagicMock()
 
-    # Patch Evaluator and save_adapter where trainer.py imports them (module-level names).
-    monkeypatch.setattr(
-        trainer_mod,
-        "Evaluator",
-        lambda _cfg: MagicMock(
-            evaluate=MagicMock(
-                return_value=MagicMock(overall={}, per_class={}, n_images=0, n_predictions=0)
+    _fake_evaluator = lambda _cfg: MagicMock(  # noqa: E731
+        evaluate=MagicMock(
+            return_value=(
+                MagicMock(overall={}, per_class={}, n_images=0, n_predictions=0),
+                [],
             )
-        ),
+        )
     )
-    monkeypatch.setattr(
-        trainer_mod, "save_adapter", lambda model, path: path.mkdir(parents=True, exist_ok=True)
-    )
+    # Patch Evaluator in both trainer_mod and close_out_mod — close_out imports its own.
+    monkeypatch.setattr(trainer_mod, "Evaluator", _fake_evaluator)
+    monkeypatch.setattr(close_out_mod, "Evaluator", _fake_evaluator)
+    # save_adapter is used in both trainer_mod (periodic checkpoints) and close_out_mod
+    # (final adapter write). Patch both so the MagicMock model is never pickled/serialized.
+    _noop_save = lambda model, path: path.mkdir(parents=True, exist_ok=True)  # noqa: E731
+    monkeypatch.setattr(trainer_mod, "save_adapter", _noop_save)
+    monkeypatch.setattr(close_out_mod, "save_adapter", _noop_save)
+    # load_adapter is called by close_out when best/ exists; use a no-op so the
+    # MagicMock model is never passed to the real PEFT loader.
+    monkeypatch.setattr(close_out_mod, "load_adapter", lambda model, path: None)
+    # save_merged is guarded by cfg.export.merge=False above, but patch defensively.
+    monkeypatch.setattr(close_out_mod, "save_merged", lambda model, path: None)
 
     chosen = tmp_path / "explicit-run"
     trainer = Trainer(model, train_ds, val_ds, tracker, cfg)
