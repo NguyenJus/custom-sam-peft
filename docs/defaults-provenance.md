@@ -248,6 +248,12 @@ same symbol. This section cross-links the template slot to its schema row.
 | `models/losses/presets.py:PRESET_TABLE[("satellite","severe")].tversky_alpha` | `0.7` | `# cite: (A,E)` | Salehi et al. 2017, arXiv:1706.05721 (same as above). | Experiments: "the best results were obtained from the FCN trained with β=0.7 ...". | Same as medical/moderate row above; microscopy/moderate and microscopy/severe inherit this via alias (legend G). |
 | `models/losses/presets.py:PRESET_TABLE[("medical","severe")].tversky_alpha` | `0.8` | `# tbd: #191` | — | — | Further FN-bias escalation from the issue #112 design table (legend A); no external paper specifies α=0.8 as an FN-penalization weight and no internal calibration run has been recorded. |
 
+## predict/budget.py
+
+| Location | Value | Tag | Full reference | Verifying quote | Notes |
+| --- | --- | --- | --- | --- | --- |
+| `predict/budget.py:PREDICT_8GB_BUDGET_GB` | `7.0` | `# cite: empirical (8 GB nominal − ~1.0 GB reservation)` | 8 GB nominal − ~1.0 GB driver/CUDA-context reservation; consistent with `presets.py::_headroom_bytes` convention. `# tbd: #142` — replace reservation with a measured figure from a real 8 GB card. | — | CC 7.5 / 8 GB predict footprint budget. The ~1.0 GB reservation matches the headroom convention already in use in `presets.py`. |
+
 ## Reference Training Profile
 
 The shipped training defaults form the following reference profile:
