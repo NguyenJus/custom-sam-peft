@@ -594,3 +594,26 @@ def test_decide_preset_ignores_v2_cache(
     )
     d = decide_preset(cache_path=cache_file)
     assert d.provenance == "analytic"  # stale v2 dropped
+
+
+def test_decide_preset_ignores_v3_cache_missing_split_keys(
+    monkeypatch: pytest.MonkeyPatch, _force_cuda_available: None, tmp_path: Path
+) -> None:
+    """A v3-tagged cache missing A_fixed/A_per_class must be ignored (graceful
+    fallback to analytic), not crash with a KeyError."""
+    _stub_gpu(monkeypatch, int(24 * _GB))
+    monkeypatch.setattr("custom_sam_peft.presets._current_sam3_checkpoint_sha", lambda: "abc")
+    cache_file = tmp_path / "cache.json"
+    cache_file.write_text(
+        json.dumps(
+            {
+                "schema_version": 3,
+                "gpu_name": "StubGPU",
+                "sam3_checkpoint_sha": "abc",
+                # A_fixed and A_per_class intentionally omitted (malformed cache)
+                "peak_memory_bytes_at_probe": 6_000_000_000,
+            }
+        )
+    )
+    d = decide_preset(cache_path=cache_file)
+    assert d.provenance == "analytic"  # malformed v3 dropped, no crash

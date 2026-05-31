@@ -294,6 +294,9 @@ def _load_cache(
         or data.get("sam3_checkpoint_sha") != _current_sam3_checkpoint_sha()
     ):
         return None, None
+    if "A_fixed" not in data or "A_per_class" not in data:
+        _LOG.warning("calibration cache missing split keys (A_fixed/A_per_class); ignoring")
+        return None, None
     return data, cache_path
 
 

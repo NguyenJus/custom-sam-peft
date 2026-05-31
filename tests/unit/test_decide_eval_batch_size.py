@@ -58,7 +58,8 @@ def test_decide_eval_batch_size_cpu_fallback(caplog, monkeypatch) -> None:
 def test_decide_eval_batch_size_analytic_no_cache(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    """Without a calibration cache, the analytic estimate runs at BASE_ACTIVATION_AT_1024."""
+    """Without a calibration cache, the analytic estimate uses the split model
+    (A_FIXED + A_PER_CLASS * k_eff)."""
     monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
     _stub_gpu(monkeypatch, int(40 * _GB))
     # Ensure no calibration cache is found by setting cwd to a location without one.
@@ -96,7 +97,8 @@ def test_decide_eval_batch_size_uses_calibrated_cache(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     """With a matching calibration cache, provenance='calibrated' and the cached
-    activation_bytes_per_example is multiplied by forward_only_factor=0.25."""
+    A_fixed/A_per_class split is used to compute activation bytes, scaled by
+    forward_only_factor=0.25."""
     monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
     _stub_gpu(monkeypatch, int(40 * _GB), name="StubGPU")
     cache = tmp_path / ".custom_sam_peft_calibration.json"
