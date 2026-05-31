@@ -22,7 +22,6 @@ from custom_sam_peft.data.base import Dataset
 from custom_sam_peft.data.collate import collate_batch
 from custom_sam_peft.eval._artifacts import EvalArtifacts, TimeLimitStop
 from custom_sam_peft.eval.evaluator import Evaluator
-from custom_sam_peft.eval.metrics import MetricsReport
 from custom_sam_peft.models.sam3 import MULTIPLEX_CAP, Sam3Wrapper
 from custom_sam_peft.peft_adapters import PEFTMethod, make_peft_method
 from custom_sam_peft.runtime import Runtime
@@ -33,9 +32,9 @@ from custom_sam_peft.train.checkpoint import (
     load_full_state,
     save_adapter,
     save_full_state,
-    save_merged,
 )
-from custom_sam_peft.train.ladder import LadderState, LrCut, StopDecision
+from custom_sam_peft.train.close_out import close_out
+from custom_sam_peft.train.ladder import LadderEvents, LadderState, LrCut, StopDecision
 from custom_sam_peft.train.loop import OomState, _EarlyStop, _TimeLimitReached, run_epoch
 from custom_sam_peft.train.visualize import render_mask_panel
 
@@ -646,10 +645,9 @@ class Trainer:
                 budget_seconds,
             )
 
-        merged_path: Path | None = None
-        full_report: MetricsReport | None = None
         stop: _TimeLimitReached | None = None
         _early: _EarlyStop | None = None  # set on early stop; Phase 2 wires into close_out
+        close_out_result: EvalArtifacts | None = None
         # Mutable single-element list so the closure below sees the live epoch
         # value; the epoch loop keeps it current via `_current_epoch[0] = epoch`.
         _current_epoch = [start_epoch]
@@ -691,59 +689,33 @@ class Trainer:
                 global_step = e.step
 
             if stop is None:
-                adapter_path = run_dir / "adapter"
-                save_adapter(self.model, adapter_path)
-                if cfg.export.merge:
-                    merged_path = run_dir / "merged"
-                    save_merged(self.model, merged_path)
-
-                if self.val_ds is not None:
-                    full_eval_cfg = cfg.eval
-                    if full_eval_cfg.batch_size == "auto":
-                        from custom_sam_peft.presets import decide_eval_batch_size
-
-                        bs, _, _ = decide_eval_batch_size(classes_per_forward=MULTIPLEX_CAP)
-                        bs = self._cap_eval_batch_size(bs, oom_state.micro_batch_size)
-                        full_eval_cfg = full_eval_cfg.model_copy(update={"batch_size": bs})
-                    full_report = Evaluator(full_eval_cfg).evaluate(self.model, self.val_ds)
-                if full_report is not None:
-                    (run_dir / "metrics.json").write_text(
-                        json.dumps(
-                            {
-                                "overall": full_report.overall,
-                                "per_class": full_report.per_class,
-                                "n_images": full_report.n_images,
-                                "n_predictions": full_report.n_predictions,
-                                "global_step": global_step,
-                                "epoch": cfg.train.epochs - 1,
-                            },
-                            indent=2,
-                        )
-                    )
-                else:
-                    (run_dir / "metrics.json").write_text(
-                        json.dumps(
-                            {
-                                "note": "no validation set provided",
-                                "global_step": global_step,
-                                "epoch": cfg.train.epochs - 1,
-                            },
-                            indent=2,
-                        )
-                    )
+                final_epoch = _early.epoch if _early is not None else cfg.train.epochs - 1
+                _cuts = tuple(self._ladder_cuts)
+                _stop_reason = _early.reason if _early is not None else None
+                ladder_events = (
+                    LadderEvents(cuts=_cuts, stop_reason=_stop_reason)
+                    if (_cuts or _stop_reason is not None)
+                    else None
+                )
+                close_out_result = close_out(
+                    run_dir,
+                    self.model,
+                    cfg,
+                    evaluator_val_ds=self.val_ds,
+                    oom_state=oom_state,
+                    final_step=global_step,
+                    final_epoch=final_epoch,
+                    ladder_events=ladder_events,
+                )
         finally:
             self.tracker.close()
 
         if stop is not None:
             return self._time_limited_artifacts(run_dir, stop, budget_seconds, oom_state)
 
-        return EvalArtifacts(
-            checkpoint_path=run_dir / "adapter",
-            peft_method=self.cfg.peft.method,
-            run_dir=run_dir,
-            final_metrics=full_report,
-            oom_events=tuple(oom_state.pending_oom_events),
-        )
+        if close_out_result is None:  # set whenever stop is None; guard for the type checker
+            raise RuntimeError("close_out did not run despite normal completion")
+        return close_out_result
 
     def _log_image_panel(
         self,
