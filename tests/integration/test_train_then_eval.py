@@ -114,34 +114,26 @@ def test_trainer_fit_runs_lite_eval_and_final_full_eval(
     )
 
 
-def test_trainer_fit_swallows_evaluator_exception_and_completes(tiny_text_dataset, tmp_path: Path):
-    """Phase-1 contract: RuntimeError from Evaluator.evaluate is swallowed and
-    logged (not re-raised); Trainer.fit() completes normally and writes
-    metrics.json.  Pre-Phase-1 this test verified the opposite (propagation);
-    spec §10 and the _eval_epoch / end-of-run-eval exception handlers now
-    intentionally swallow all non-OOM eval failures so a flaky eval cannot
-    abort a long training run."""
+def test_trainer_fit_propagates_evaluator_exception(tiny_text_dataset, tmp_path: Path):
+    """C1 regression: RuntimeError from Evaluator.evaluate must propagate as-is,
+    not be shadowed by UnboundLocalError on full_report/merged_path."""
     wrapper = make_stub_wrapper(dim=8, working=True)
     cfg = _make_cfg(tmp_path)
     apply_lora(wrapper, cfg.peft)
 
-    run_dir = tmp_path / "fit-swallows"
-    tracker = _RecordingTracker()
     trainer = Trainer(
         model=wrapper,
         train_ds=tiny_text_dataset,
         val_ds=tiny_text_dataset,
-        tracker=tracker,
+        tracker=_RecordingTracker(),
         cfg=cfg,
     )
 
-    with patch(
-        "custom_sam_peft.train.trainer.Evaluator.evaluate",
-        side_effect=RuntimeError("injected eval failure"),
+    with (
+        patch(
+            "custom_sam_peft.train.trainer.Evaluator.evaluate",
+            side_effect=RuntimeError("injected eval failure"),
+        ),
+        pytest.raises(RuntimeError, match="injected eval failure"),
     ):
-        # Must NOT raise — eval failures are swallowed; fit() returns normally.
-        result = trainer.fit(run_dir=run_dir)
-
-    # Training completed and wrote output artifacts.
-    assert result is not None
-    assert result.run_dir.exists()
+        trainer.fit(run_dir=tmp_path / "fit-propagates")
