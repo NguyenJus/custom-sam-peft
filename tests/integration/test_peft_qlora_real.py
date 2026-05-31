@@ -2,13 +2,13 @@
 
 Skipped automatically unless:
   * the Meta checkpoint is present at models/sam3.1/sam3.1_multiplex.pt
-  * a CUDA GPU with compute capability >= 6.0 is available (bnb NF4 4-bit +
-    LoRA work from Pascal; only LLM.int8() needs Turing 7.5 and is unused);
+  * a CUDA GPU with compute capability >= 7.5 is available (gpu_t4 tier:
+    Tesla T4 / RTX 5070 Ti); bf16 is coerced to fp16 below CC 8.0.
     SAM 3.1's PositionEmbeddingSine also hardcodes device="cuda".
   * bitsandbytes is importable.
 
 The Colab notebook in notebooks/colab_gpu_tests.ipynb is the primary
-trigger for this suite. Local Turing+ machines can also run it directly
+trigger for this suite. gpu_t4 machines can also run it directly
 via scripts/run_gpu_tests.sh.
 """
 
@@ -35,7 +35,7 @@ from tests.helpers.lora_predicates import has_plain_nn_linear as _has_plain_nn_l
 pytestmark = [
     pytest.mark.requires_checkpoint,
     pytest.mark.requires_compatible_gpu,
-    pytest.mark.gpu_local,
+    pytest.mark.gpu_t4,
 ]
 
 
@@ -88,8 +88,8 @@ def test_save_qlora_writes_adapter_and_metadata(tmp_path: Path) -> None:
 
     # custom_sam_peft_qlora.json present with the expected fields (format v2).
     # compute_dtype reflects the *effective* quantization dtype: bfloat16 is
-    # coerced to float16 on pre-Ampere cards (e.g. the GTX 1080 gpu_local
-    # runner), so derive it from the wrapper rather than hardcoding.
+    # coerced to float16 below CC 8.0 (bf16 is not faithfully supported there),
+    # so derive it from the wrapper rather than hardcoding.
     meta_path = tmp_path / "custom_sam_peft_qlora.json"
     assert meta_path.exists()
     meta = json.loads(meta_path.read_text())
@@ -144,8 +144,8 @@ def test_save_load_qlora_roundtrip(tmp_path: Path) -> None:
 
     # Forward-output parity: w2 must produce the same outputs as w1 on the same input.
     # atol=1e-4, rtol=1e-4 accommodates 4-bit dequant rounding after the
-    # quantize→save→reload cycle; verify/adjust on the GTX 1080 (sm_61, float16
-    # compute_dtype) at GPU-tier run.
+    # quantize→save→reload cycle; on CC < 8.0 bfloat16 is coerced to float16
+    # compute_dtype so tolerances apply to fp16 arithmetic.
     torch.manual_seed(0)
     w2.eval()
     _images2 = torch.zeros(1, 3, 1024, 1024, device="cuda", dtype=torch.float32)

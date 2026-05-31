@@ -1,11 +1,12 @@
-"""GPU integration tests for ``csp predict`` — mixed gpu_local / gpu_t4 tiers.
+"""GPU integration tests for ``csp predict`` — all gpu_t4 tier.
 
 All four tests require:
-  - A CUDA device with compute capability >= 6.0 (requires_compatible_gpu)
+  - A CUDA device with compute capability >= 7.5 (requires_compatible_gpu)
   - The real SAM 3.1 checkpoint at models/sam3.1/sam3.1_multiplex.pt (requires_checkpoint)
 
 These tests are excluded from default pytest collection / CI and are intended
-to be run explicitly via scripts/run_gpu_tests.sh (local or t4 tier).
+to be run explicitly on a gpu_t4-capable device (CC 7.5 floor: Tesla T4 /
+RTX 5070 Ti). bf16 is coerced to fp16 below CC 8.0.
 
 Mirrors the module-level mark pattern from tests/gpu/test_real_train_overfits.py.
 """
@@ -150,7 +151,7 @@ def _train_and_get_adapter(
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.gpu_local
+@pytest.mark.gpu_t4
 def test_predict_base_model_cuda(tmp_path: Path) -> None:
     """Real facebook/sam3.1 load + warmup + one synthetic 1024x1024 image + two text prompts.
 
@@ -227,7 +228,7 @@ def test_predict_qlora_no_merge_cuda(
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.gpu_local
+@pytest.mark.gpu_t4
 def test_predict_vram_hint_log(
     tmp_path: Path,
     caplog: pytest.LogCaptureFixture,

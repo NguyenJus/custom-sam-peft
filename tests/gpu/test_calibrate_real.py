@@ -1,9 +1,9 @@
 """GPU smoke test for `custom_sam_peft calibrate` — real activation byte range.
 
-Marked `gpu_t4` so it is skipped on CPU CI and on the local (GTX 1080) tier.
-Runs the full probe and asserts the measured `activation_bytes_per_example`
-lands in a sane order-of-magnitude bracket — 0.5 GiB to 10 GiB per example
-at image_size=1008 on a compatible GPU (CC >= 6.0).
+Marked `gpu_t4` (CC 7.5 floor: Tesla T4 / RTX 5070 Ti) so it is skipped on
+CPU CI. Runs the full probe and asserts the measured
+`activation_bytes_per_example` lands in a sane order-of-magnitude bracket —
+0.5 GiB to 10 GiB per example at image_size=1008 on a compatible GPU.
 """
 
 from __future__ import annotations
