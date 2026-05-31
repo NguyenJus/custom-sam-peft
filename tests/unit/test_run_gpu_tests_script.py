@@ -6,6 +6,8 @@ import stat
 import subprocess
 from pathlib import Path
 
+import pytest
+
 SCRIPT = Path(__file__).resolve().parents[2] / "scripts" / "run_gpu_tests.sh"
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
@@ -20,8 +22,15 @@ def test_accepts_three_tiers_and_rejects_legacy() -> None:
     assert "inspection)" not in src and "release)" not in src
 
 
+@pytest.mark.xfail(
+    reason="selector rewrite lands in Phase E E1 — script still references gpu_local",
+    strict=False,
+)
 def test_local_maps_to_gpu_local_marker() -> None:
-    assert "gpu_local" in _src()
+    # NOTE: remove this xfail in Phase E once run_gpu_tests.sh is updated to
+    # drop 'local'/'gpu_local' and map selectors to the new capability-named
+    # markers (gpu_t4, gpu_bf16, gpu_xl).
+    assert "gpu_local" not in _src()
 
 
 def test_collects_predict_path() -> None:
