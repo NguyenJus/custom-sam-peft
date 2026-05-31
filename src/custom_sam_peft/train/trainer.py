@@ -280,6 +280,7 @@ class Trainer:
         oom_state: OomState | None = None,
         deadline: float | None = None,
         should_stop_early: Any = None,
+        effective_schedule: str | None = None,
     ) -> tuple[int, int]:
         """Run one training epoch; returns (global_step, nan_streak)."""
         return run_epoch(
@@ -301,6 +302,7 @@ class Trainer:
             oom_state=oom_state,
             deadline=deadline,
             should_stop_early=should_stop_early,
+            effective_schedule=effective_schedule,
         )
 
     def _cap_eval_batch_size(self, bs: int, cap: int) -> int:
@@ -640,6 +642,7 @@ class Trainer:
                         oom_state=oom_state,
                         deadline=deadline,
                         should_stop_early=should_stop_early,
+                        effective_schedule=effective_schedule,
                     )
                     P.advance_outer()
             except _TimeLimitReached as e:
@@ -664,10 +667,7 @@ class Trainer:
                         bs, _, _ = decide_eval_batch_size(classes_per_forward=MULTIPLEX_CAP)
                         bs = self._cap_eval_batch_size(bs, oom_state.micro_batch_size)
                         full_eval_cfg = full_eval_cfg.model_copy(update={"batch_size": bs})
-                    try:
-                        full_report = Evaluator(full_eval_cfg).evaluate(self.model, self.val_ds)
-                    except Exception:
-                        _LOG.warning("end-of-run eval failed; skipping.", exc_info=True)
+                    full_report = Evaluator(full_eval_cfg).evaluate(self.model, self.val_ds)
                 if full_report is not None:
                     (run_dir / "metrics.json").write_text(
                         json.dumps(

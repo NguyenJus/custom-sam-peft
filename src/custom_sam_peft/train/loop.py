@@ -194,6 +194,7 @@ def train_step(
     peft_method: PEFTMethod | None = None,
     runtime: Runtime | None = None,
     oom_state: OomState | None = None,
+    effective_schedule: str | None = None,
 ) -> StepResult:
     _peft_method: PEFTMethod = (
         peft_method if peft_method is not None else make_peft_method(cfg.peft.method)
@@ -404,7 +405,14 @@ def train_step(
             global_step=global_step,
             base_lr=cfg.train.learning_rate,
             warmup_steps=cfg.train.warmup_steps,
-            mode=cfg.train.lr_schedule,
+            # Use the post-fallback effective schedule (not the requested one from
+            # cfg.train.lr_schedule).  When plateau falls back to cosine (no val set),
+            # cfg.train.lr_schedule is still "plateau" but the built scheduler is a
+            # LambdaLR; passing "plateau" here would take the plateau no-op branch and
+            # the cosine decay would silently never fire.  effective_schedule carries
+            # the resolved value from fit() via run_epoch -> train_step.  Default falls
+            # back to cfg.train.lr_schedule so callers that omit the param are unchanged.
+            mode=effective_schedule if effective_schedule is not None else cfg.train.lr_schedule,
         )
         optimizer.zero_grad(set_to_none=True)
 
@@ -493,6 +501,7 @@ def run_epoch(
     oom_state: OomState | None = None,
     deadline: float | None = None,
     should_stop_early: Callable[[], _EarlyStop | None] | None = None,
+    effective_schedule: str | None = None,
 ) -> tuple[int, int]:
     """Drive one epoch. `on_checkpoint(global_step, epoch, nan_streak)`
     is called at every `save_every` boundary; the trainer wires it to the
@@ -525,6 +534,7 @@ def run_epoch(
             peft_method=_peft_method,
             runtime=runtime,
             oom_state=oom_state,
+            effective_schedule=effective_schedule,
         )
         nan_streak = result.nan_streak
         global_step += 1
