@@ -12,7 +12,7 @@ from custom_sam_peft.peft_adapters.lora import apply_lora
 from custom_sam_peft.tracking.noop import NoopTracker
 from custom_sam_peft.train.loop import _EarlyStop, run_epoch
 from tests.fixtures.tiny_sam3_lora_stub import make_stub_wrapper
-from tests.integration.test_trainer_evaluator_seam import _TinyDataset, _make_cfg
+from tests.integration.test_trainer_evaluator_seam import _make_cfg, _TinyDataset
 
 
 def _loader(ds: _TinyDataset) -> list[dict[str, object]]:
@@ -40,9 +40,19 @@ def test_run_epoch_raises_early_stop_after_eval(tmp_path: Path) -> None:
 
     with pytest.raises(_EarlyStop) as exc:
         run_epoch(
-            wrapper, _loader(ds), opt, sched, NoopTracker(), cfg, run_dir,
-            epoch=0, global_step=0, nan_streak=0, class_names=ds.class_names,
-            on_checkpoint=lambda *a: None, on_eval=lambda *a: None,
+            wrapper,
+            _loader(ds),
+            opt,
+            sched,
+            NoopTracker(),
+            cfg,
+            run_dir,
+            epoch=0,
+            global_step=0,
+            nan_streak=0,
+            class_names=ds.class_names,
+            on_checkpoint=lambda *a: None,
+            on_eval=lambda *a: None,
             should_stop_early=should_stop_early,
         )
     assert exc.value.reason == "test stop"
@@ -60,9 +70,19 @@ def test_run_epoch_no_stop_when_predicate_returns_none(tmp_path: Path) -> None:
     sched = torch.optim.lr_scheduler.LambdaLR(opt, lr_lambda=lambda s: 1.0)
     # No predicate (None) → runs to the end of the epoch without raising.
     gs, _ = run_epoch(
-        wrapper, _loader(ds), opt, sched, NoopTracker(), cfg, run_dir,
-        epoch=0, global_step=0, nan_streak=0, class_names=ds.class_names,
-        on_checkpoint=lambda *a: None, on_eval=lambda *a: None,
+        wrapper,
+        _loader(ds),
+        opt,
+        sched,
+        NoopTracker(),
+        cfg,
+        run_dir,
+        epoch=0,
+        global_step=0,
+        nan_streak=0,
+        class_names=ds.class_names,
+        on_checkpoint=lambda *a: None,
+        on_eval=lambda *a: None,
         should_stop_early=None,
     )
     assert gs == len(ds)

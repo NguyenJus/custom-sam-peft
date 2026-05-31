@@ -6,7 +6,6 @@ import torch
 
 from custom_sam_peft.config.schema import (
     EarlyStopConfig,
-    LrDecayOnPlateauConfig,
     TrainHyperparams,
 )
 from custom_sam_peft.train.ladder import LadderState
@@ -21,12 +20,23 @@ def _cfg(**train_kw: object):
     return _Cfg()
 
 
-def _plateau_scheduler(lr: float = 1e-4, *, patience: int = 5, factor: float = 0.1,
-                       min_lr: float = 1e-6, min_delta: float = 0.001):
+def _plateau_scheduler(
+    lr: float = 1e-4,
+    *,
+    patience: int = 5,
+    factor: float = 0.1,
+    min_lr: float = 1e-6,
+    min_delta: float = 0.001,
+):
     opt = torch.optim.SGD([torch.nn.Parameter(torch.zeros(1))], lr=lr)
     return torch.optim.lr_scheduler.ReduceLROnPlateau(
-        opt, mode="max", factor=factor, patience=patience,
-        threshold=min_delta, threshold_mode="abs", min_lr=min_lr,
+        opt,
+        mode="max",
+        factor=factor,
+        patience=patience,
+        threshold=min_delta,
+        threshold_mode="abs",
+        min_lr=min_lr,
     ), opt
 
 
@@ -46,14 +56,15 @@ def test_rung1_staircase_one_cut_at_patience() -> None:
     sched, opt = _plateau_scheduler(patience=5)
     ladder = LadderState()
     ladder.observe(0.5, step=1, scheduler=sched, cfg=cfg)  # establishes best
-    for i in range(2, 8):  # six more non-improving evals (steps 2..7): patience=5 → fires after patience+1
+    # six more non-improving evals (steps 2..7): patience=5 fires after patience+1
+    for i in range(2, 8):
         ladder.observe(0.5, step=i, scheduler=sched, cfg=cfg)
-    assert opt.param_groups[0]["lr"] == 1e-5  # one ×0.1 cut
+    assert opt.param_groups[0]["lr"] == 1e-5  # one x0.1 cut
 
 
 def test_rung2_independent_of_cut_stops_at_stop_patience() -> None:
     cfg = _cfg(early_stop=EarlyStopConfig(stop_patience=10))
-    sched, opt = _plateau_scheduler(patience=5)
+    sched, _opt = _plateau_scheduler(patience=5)
     ladder = LadderState()
     ladder.observe(0.5, step=1, scheduler=sched, cfg=cfg)  # best
     stop = None
@@ -80,8 +91,9 @@ def test_one_cut_before_stop_with_shipped_defaults() -> None:
         if d.should_stop:
             stopped_at = i
             break
-    assert cut_lr == 7        # cut after 6 non-improving ReduceLROnPlateau steps (patience=5 → fires at patience+1)
-    assert stopped_at == 11   # stop after 10 non-improving rung-2 evals (independent counter)
+    # cut after 6 non-improving ReduceLROnPlateau steps (patience=5 fires at patience+1)
+    assert cut_lr == 7
+    assert stopped_at == 11  # stop after 10 non-improving rung-2 evals (independent counter)
     assert opt.param_groups[0]["lr"] == 1e-5  # exactly one cut
 
 
@@ -110,7 +122,7 @@ def test_min_delta_boundary_is_strict() -> None:
 
 
 def test_shared_improvement_when_early_stop_disabled() -> None:
-    """early_stop.enabled=False but plateau mode → rung-1 still cuts on min_delta/mAP (wart §5.4)."""
+    """early_stop.enabled=False but plateau mode: rung-1 still cuts on min_delta/mAP (wart §5.4)."""
     cfg = _cfg(early_stop=EarlyStopConfig(enabled=False))
     sched, opt = _plateau_scheduler(patience=5)
     ladder = LadderState()

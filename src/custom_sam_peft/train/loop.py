@@ -492,7 +492,7 @@ def run_epoch(
     runtime: Runtime | None = None,
     oom_state: OomState | None = None,
     deadline: float | None = None,
-    should_stop_early: Callable[[], "_EarlyStop | None"] | None = None,
+    should_stop_early: Callable[[], _EarlyStop | None] | None = None,
 ) -> tuple[int, int]:
     """Drive one epoch. `on_checkpoint(global_step, epoch, nan_streak)`
     is called at every `save_every` boundary; the trainer wires it to the

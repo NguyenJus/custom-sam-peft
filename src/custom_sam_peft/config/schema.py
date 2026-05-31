@@ -521,7 +521,7 @@ class LrDecayOnPlateauConfig(_Strict):
     """Rung-1 reduce-on-plateau knobs. Active only when lr_schedule == "plateau"."""
 
     patience: PositiveInt = 5
-    # cite: Keras ReduceLROnPlateau example 5 (low end of cited 5–10 range);
+    # cite: Keras ReduceLROnPlateau example 5 (low end of cited 5-10 range);
     #       research §2, §7.
     factor: PositiveFloat = 0.1
     # cite: PyTorch ReduceLROnPlateau default 0.1; research §2, §7.
@@ -550,10 +550,10 @@ class EarlyStopConfig(_Strict):
     # existing best-metric key (trainer.py _best_metric_key). Exposed as a seam;
     # only mAP is validated/wired for now.
     min_delta: PositiveFloat = 0.001
-    # cite: early-stop min_delta range 0.001–0.01 (Keras/practitioner);
+    # cite: early-stop min_delta range 0.001-0.01 (Keras/practitioner);
     #       # tbd: low end chosen for a noisy mAP; research §5, §7.
     stop_patience: PositiveInt = 10
-    # cite: patience 5–10 (PyTorch ReduceLROnPlateau default 10 / Prechelt 1998);
+    # cite: patience 5-10 (PyTorch ReduceLROnPlateau default 10 / Prechelt 1998);
     #       # tbd: high end chosen — accuracy ≫ speed; research §5, §7.
 
 
@@ -565,7 +565,7 @@ class TrainHyperparams(_Strict):
     learning_rate: PositiveFloat = 1.0e-4  # tbd: #191 (repo-chosen; see issue #87)
     lr_schedule: LRSchedule = "plateau"
     # cite: ReduceLROnPlateau (PyTorch/Keras) + the canonical early-stop pairing
-    #       (research §2–§4); # tbd: #197 — the cosine→plateau default flip.
+    #       (research §2-§4); # tbd: #197 — the cosine->plateau default flip.
     warmup_steps: int = Field(default=100, ge=0)  # tbd: #191 (repo-chosen)
     save_every: PositiveInt | None = Field(
         default=None,

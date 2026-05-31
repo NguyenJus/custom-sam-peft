@@ -28,7 +28,6 @@ from custom_sam_peft.peft_adapters import PEFTMethod, make_peft_method
 from custom_sam_peft.runtime import Runtime
 from custom_sam_peft.tracking.base import Tracker
 from custom_sam_peft.train._scheduler import PlateauOrLambda
-from custom_sam_peft.train.ladder import LadderEvents, LadderState, LrCut, StopDecision
 from custom_sam_peft.train.checkpoint import (
     ResumeState,
     load_full_state,
@@ -36,6 +35,7 @@ from custom_sam_peft.train.checkpoint import (
     save_full_state,
     save_merged,
 )
+from custom_sam_peft.train.ladder import LadderState, LrCut, StopDecision
 from custom_sam_peft.train.loop import OomState, _EarlyStop, _TimeLimitReached, run_epoch
 from custom_sam_peft.train.visualize import render_mask_panel
 
@@ -341,7 +341,7 @@ class Trainer:
                 cut = self._ladder.last_cut
                 self._ladder_cuts.append(cut)
                 _LOG.info(
-                    "LR cut ×%.3g → %.3g at eval step %d (mAP %.4f)",
+                    "LR cut x%.3g -> %.3g at eval step %d (mAP %.4f)",
                     cut.new_lr / cut.old_lr if cut.old_lr else 0.0,
                     cut.new_lr,
                     cut.step,
@@ -607,7 +607,7 @@ class Trainer:
         merged_path: Path | None = None
         full_report: MetricsReport | None = None
         stop: _TimeLimitReached | None = None
-        early: _EarlyStop | None = None
+        _early: _EarlyStop | None = None  # set on early stop; Phase 2 wires into close_out
         _current_epoch = [start_epoch]
 
         def should_stop_early() -> _EarlyStop | None:
@@ -642,7 +642,7 @@ class Trainer:
                 stop = e
                 global_step = e.step  # the flushed checkpoint's step
             except _EarlyStop as e:
-                early = e
+                _early = e
                 global_step = e.step
 
             if stop is None:

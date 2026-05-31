@@ -5,13 +5,11 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 
-import torch
-
 from custom_sam_peft.peft_adapters.lora import apply_lora
 from custom_sam_peft.tracking.noop import NoopTracker
 from custom_sam_peft.train.trainer import Trainer
 from tests.fixtures.tiny_sam3_lora_stub import make_stub_wrapper
-from tests.integration.test_trainer_evaluator_seam import _TinyDataset, _make_cfg
+from tests.integration.test_trainer_evaluator_seam import _make_cfg, _TinyDataset
 
 
 def test_plateau_no_val_falls_back_to_cosine(tmp_path: Path, caplog) -> None:
