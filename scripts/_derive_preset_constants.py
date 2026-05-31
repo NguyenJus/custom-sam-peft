@@ -6,10 +6,16 @@ Maintainer-only. Run on the 16 GB dev card:
 
 Runs two cheap probes (K=1, K=4) and prints the two-point split:
     A_per_class = (peak_K4 - peak_K1) / (4 - 1)
-    A_fixed     = peak_K1 - fixed_overhead - A_per_class
-measured natively at SAM 3.1's fixed 1008px (no image-size scale term). Prints
-copy-paste-ready `A_FIXED = ...` / `A_PER_CLASS = ...` lines for presets.py.
-Not imported by the package or the test suite. Spec §6.
+    A_fixed     = clamp(peak_K1 - overhead - A_per_class, min=0)
+where overhead = STATIC + (attn(1) if not flash else 0) is REGIME-MATCHED
+(Amendment 2): STATIC = model + adapter + optimizer + workspace, flash =
+_flash_attention_available(cc) from the live card, attn(1) =
+_attention_bytes_per_example(1008). This is the SAME overhead the predictor adds, so
+the printed seeds reproduce the measured peak and are a portable flash-baseline (on a
+cc>=8.0 card flash=True -> subtract STATIC only). Measured natively at SAM 3.1's fixed
+1008px (no image-size scale term). A clamped A_FIXED=0 is the expected dev-GPU result.
+Prints copy-paste-ready `A_FIXED = ...` / `A_PER_CLASS = ...` lines for presets.py.
+Not imported by the package or the test suite. Spec §2.1/§6.
 """
 
 from __future__ import annotations
@@ -24,6 +30,7 @@ from custom_sam_peft.presets import (
     WORKSPACE_BYTES,
     _adapter_bytes,
     _attention_bytes_per_example,
+    _flash_attention_available,
     _model_bytes,
     _optimizer_bytes,
 )
@@ -70,24 +77,48 @@ def main() -> None:
     peak_k1 = _probe_peak(min(1, MULTIPLEX_CAP))
     peak_k4 = _probe_peak(min(4, MULTIPLEX_CAP))
 
-    fixed_overhead = (
+    # Regime-matched overhead (Amendment 2 / spec §2.1): STATIC + conditional
+    # materialized attention, the SAME quantity the predictor adds for this card. On
+    # a cc>=8.0 (flash) card the attention is folded into the empirical split -> no
+    # term; on cc<8.0 the math-backend score matrix is subtracted off so the seeds
+    # normalize to the portable flash-baseline. Inverting it makes the printed seeds
+    # reproduce the measured peak.
+    cc = torch.cuda.get_device_capability(0)
+    flash = _flash_attention_available(cc)
+    static = (
         _model_bytes(args.method)
         + _adapter_bytes(args.r)
         + _optimizer_bytes(args.r)
         + WORKSPACE_BYTES
-        + _attention_bytes_per_example(image_size) * args.batch
     )
+    overhead = static + (0 if flash else _attention_bytes_per_example(image_size))
     a_per_class = int((peak_k4 - peak_k1) / (4 - 1))
-    a_fixed = int(peak_k1 - fixed_overhead - a_per_class)
+    a_fixed = int(peak_k1 - overhead - a_per_class)
 
     if args.batch != 1:
-        # Split is per-image; normalize the activation delta by batch.
+        # Split is per-image; normalize the activation by batch before clamping.
+        # attn() is also per-image, so divide the (per-image) attention into overhead.
+        per_img_overhead = static / args.batch + (
+            0 if flash else _attention_bytes_per_example(image_size)
+        )
         a_per_class = int(a_per_class / args.batch)
-        a_fixed = int((peak_k1 - fixed_overhead) / args.batch - a_per_class)
+        a_fixed = int((peak_k1) / args.batch - per_img_overhead - a_per_class)
 
-    print(f"peak K=1:        {peak_k1 / _GB:.2f} GiB")  # noqa: T201
-    print(f"peak K=4:        {peak_k4 / _GB:.2f} GiB")  # noqa: T201
-    print(f"fixed overhead:  {fixed_overhead / _GB:.2f} GiB")  # noqa: T201
+    # Clamp A_FIXED to >=0. A negative residual (encoder activation below the
+    # model-weight conservatism margin in STATIC) clamps to 0 — the expected,
+    # cited dev-GPU outcome (spec §2.1/§6), not an error.
+    clamped = a_fixed < 0
+    a_fixed = max(0, a_fixed)
+
+    print(f"peak K=1:          {peak_k1 / _GB:.2f} GiB")  # noqa: T201
+    print(f"peak K=4:          {peak_k4 / _GB:.2f} GiB")  # noqa: T201
+    print(f"flash regime:      {flash} (cc={cc})")  # noqa: T201
+    print(f"overhead (subtr.): {overhead / _GB:.2f} GiB")  # noqa: T201
+    if clamped:
+        print(  # noqa: T201
+            "note: A_FIXED residual was negative -> clamped to 0 (encoder activation "
+            "below STATIC model-weight margin; expected, spec §2.1)"
+        )
     print(  # noqa: T201
         f"A_FIXED = {a_fixed}  # {a_fixed / _GB:.3f} GiB (encoder, per image @1008px)"
     )
