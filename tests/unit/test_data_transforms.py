@@ -148,9 +148,7 @@ def test_resolve_normalization_processor_loads_diverges_from_table(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     """Path 1, in-table divergence > 1e-3: returns proc values + one WARN naming both vectors."""
-    fake_proc = SimpleNamespace(
-        image_mean=[0.485, 0.456, 0.406], image_std=[0.229, 0.224, 0.225]
-    )
+    fake_proc = SimpleNamespace(image_mean=[0.485, 0.456, 0.406], image_std=[0.229, 0.224, 0.225])
     mock_aip = MagicMock()
     mock_aip.from_pretrained.return_value = fake_proc
 
