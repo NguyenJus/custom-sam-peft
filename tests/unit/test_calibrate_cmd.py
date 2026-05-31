@@ -221,18 +221,20 @@ def test_calibrate_non_cuda_exits_2(tmp_path: Path, monkeypatch: pytest.MonkeyPa
 def test_calibrate_negative_activation_warns(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A tiny peak (smaller than fixed overhead) makes _derive_split clamp to 0 and warn.
+    """A tiny peak (smaller than fixed overhead) makes _derive_split clamp A_fixed to 0.
 
-    The negative-activation warning now fires from _derive_split's clamp, not an
-    inline path in calibrate. Verify exit 0, v3 cache with clamped zeros, and the
-    clamp warning text.
+    Under Amendment 2: a negative A_fixed clamps SILENTLY (no warning) — it is the
+    expected dev-GPU outcome. Only a negative A_per_class (broken differential) emits
+    a WARNING. With a constant tiny_peak both K=1 and K=4 probes return the same
+    value, so a_per_class = 0 (no warning). Verify exit 0 and v3 cache with clamped
+    zeros (spec §2.1).
     """
     from custom_sam_peft.cli import calibrate_cmd
 
     tiny_peak = 10 * 1024**2  # 10 MiB — much smaller than any overhead estimate
     _patch_probe(monkeypatch, peak=tiny_peak, tmp_path=tmp_path)
-    # Both Stage-1 probes return the tiny peak; _derive_split will compute negative
-    # a_fixed and a_per_class and clamp both to 0, emitting the WARNING.
+    # Both Stage-1 probes return the tiny peak; _derive_split computes a_per_class=0
+    # (differential is 0) and a_fixed<0 -> clamped to 0 SILENTLY (Amendment 2).
     monkeypatch.setattr(calibrate_cmd, "_run_probe", lambda **kw: tiny_peak)
     monkeypatch.chdir(tmp_path)
     result = runner.invoke(app, ["calibrate"])
@@ -241,8 +243,6 @@ def test_calibrate_negative_activation_warns(
     assert data["schema_version"] == 3
     assert data["A_fixed"] == 0
     assert data["A_per_class"] == 0
-    # The warning lands on stderr; CliRunner merges it into .output when mix_stderr=True (default).
-    assert "negative" in result.output.lower() or "clamp" in result.output.lower()
 
 
 def test_calibrate_atomic_write(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -327,25 +327,23 @@ def test_calibrate_auto_inits_when_no_config(
 
 
 def _synthetic_peak(*, method: str, r: int, k_eff: int, batch: int) -> int:
-    """Deterministic peak following the split model, for confirm-and-climb tests."""
-    from custom_sam_peft.models.sam3 import SAM3_IMAGE_SIZE
+    """Deterministic peak following the split model, for confirm-and-climb tests.
+
+    Overhead is the FLASH-BASELINE STATIC with NO attention term, matching the
+    predictor / _derive_split in the FLASH regime (Amendment 2 / spec §2.1). The
+    Stage-1 derive test therefore runs under a flash cc stub (cc=(8,0) set by
+    _patch_probe) so _derive_split subtracts STATIC only and the solve is exact.
+    """
     from custom_sam_peft.presets import (
         WORKSPACE_BYTES,
         _adapter_bytes,
-        _attention_bytes_per_example,
         _model_bytes,
         _optimizer_bytes,
     )
 
     a_fixed = 1_000_000_000
     a_per_class = 50_000_000
-    overhead = (
-        _model_bytes(method)
-        + _adapter_bytes(r)
-        + _optimizer_bytes(r)
-        + WORKSPACE_BYTES
-        + _attention_bytes_per_example(SAM3_IMAGE_SIZE) * batch
-    )
+    overhead = _model_bytes(method) + _adapter_bytes(r) + _optimizer_bytes(r) + WORKSPACE_BYTES
     activation = (a_fixed + a_per_class * k_eff) * batch
     return int(overhead + activation)
 

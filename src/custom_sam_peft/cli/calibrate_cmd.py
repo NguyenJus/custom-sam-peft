@@ -32,6 +32,7 @@ from custom_sam_peft.presets import (
     WORKSPACE_BYTES,
     _adapter_bytes,
     _attention_bytes_per_example,
+    _flash_attention_available,
     _headroom_bytes,
     _model_bytes,
     _optimizer_bytes,
@@ -169,21 +170,28 @@ def _derive_split(method: str, r: int, batch: int) -> tuple[int, int]:
 
     Raises _GpuTooSmall iff the K=1 probe OOMs. A K=4-probe OOM degrades to the
     analytic A_PER_CLASS seed (single-point A_fixed from peak_K1). Spec §4 Stage 1.
-    """
-    from custom_sam_peft.models.sam3 import SAM3_IMAGE_SIZE
 
+    The inverted overhead is REGIME-MATCHED (Amendment 2, spec §2.1): it must equal
+    exactly what the _predicted_bytes branch adds for THIS card's SDPA regime, so the
+    split reproduces the measured peak. overhead = STATIC + (attn(1) if not flash else
+    0), flash = _flash_attention_available(cc). On the cc=12.0 dev box flash=True ->
+    subtract STATIC only -> portable flash-baseline seeds. A_fixed clamps to >=0; a
+    clamped-to-zero A_fixed is the EXPECTED dev-GPU outcome (encoder activation <
+    model-weight conservatism margin), not an error.
+    """
     try:
         peak_k1 = _run_probe(method="qlora", r=4, k_eff=1, batch=1)
     except torch.cuda.OutOfMemoryError as exc:
         raise _GpuTooSmall("K=1 probe OOMed — GPU too small") from exc
 
-    fixed_overhead = (
-        _model_bytes("qlora")
-        + _adapter_bytes(4)
-        + _optimizer_bytes(4)
-        + WORKSPACE_BYTES
-        + _attention_bytes_per_example(SAM3_IMAGE_SIZE) * 1
-    )
+    from custom_sam_peft.models.sam3 import SAM3_IMAGE_SIZE
+
+    # Regime-matched overhead (Amendment 2 / spec §2.1): STATIC + conditional
+    # materialized attention, the SAME quantity the predictor adds for this card.
+    cc = torch.cuda.get_device_capability(0)
+    flash = _flash_attention_available(cc)
+    static = _model_bytes("qlora") + _adapter_bytes(4) + _optimizer_bytes(4) + WORKSPACE_BYTES
+    overhead = static + (0 if flash else _attention_bytes_per_example(SAM3_IMAGE_SIZE))
     try:
         peak_k4 = _run_probe(method="qlora", r=4, k_eff=4, batch=1)
         a_per_class = int((peak_k4 - peak_k1) / (4 - 1))
@@ -193,16 +201,19 @@ def _derive_split(method: str, r: int, batch: int) -> tuple[int, int]:
             err=True,
         )
         a_per_class = A_PER_CLASS
-    a_fixed = int(peak_k1 - fixed_overhead - a_per_class)
+    a_fixed = int(peak_k1 - overhead - a_per_class)
 
-    if a_fixed < 0 or a_per_class < 0:
+    # Warn ONLY on a negative A_per_class (a genuinely broken differential). A
+    # negative A_fixed clamps to 0 silently — it is the expected outcome and must NOT
+    # block the cache write (Amendment 2 / spec §2.1).
+    if a_per_class < 0:
         typer.echo(
-            f"WARNING: clamped negative split (A_fixed={a_fixed}, "
-            f"A_per_class={a_per_class}); overhead model may need re-derivation",
+            f"WARNING: clamped negative A_per_class={a_per_class}; "
+            "two-point differential looks broken — re-derive on a real GPU",
             err=True,
         )
-        a_fixed = max(0, a_fixed)
         a_per_class = max(0, a_per_class)
+    a_fixed = max(0, a_fixed)
     return a_fixed, a_per_class
 
 
