@@ -117,14 +117,32 @@ def test_peft_extensibility_stub_adapter(tiny_text_dataset, tmp_path: Path) -> N
         """No-op stub checkpoint writer: create the directory as a stand-in."""
         path.mkdir(parents=True, exist_ok=True)
 
+    # cfg.eval.visualize defaults False; confirm it is so the viz pass won't run
+    # against the stub model (which has no real PEFT weights).
+    cfg = cfg.model_copy(update={"eval": cfg.eval.model_copy(update={"visualize": False})})
+
     with (
         patch(
             "custom_sam_peft.train.trainer.make_peft_method",
             side_effect=_patched_make_peft_method,
         ),
+        # trainer.py uses save_adapter for periodic checkpoints.
         patch(
             "custom_sam_peft.train.trainer.save_adapter",
             side_effect=_stub_save_adapter,
+        ),
+        # close_out uses its own imports of save_adapter/load_adapter/save_merged.
+        patch(
+            "custom_sam_peft.train.close_out.save_adapter",
+            side_effect=_stub_save_adapter,
+        ),
+        patch(
+            "custom_sam_peft.train.close_out.load_adapter",
+            side_effect=lambda model, path: None,
+        ),
+        patch(
+            "custom_sam_peft.train.close_out.save_merged",
+            side_effect=lambda model, path: None,
         ),
     ):
         trainer = Trainer(

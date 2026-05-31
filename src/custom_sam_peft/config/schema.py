@@ -93,7 +93,7 @@ QuantType = Literal["nf4", "fp4"]
 # "auto" resolves at trainer construction via peft_method.recommended_optimizer()
 # (src/custom_sam_peft/train/trainer.py): adamw8bit for QLoRA, adamw for LoRA.
 Optimizer = Literal["adamw", "adamw8bit", "auto"]
-LRSchedule = Literal["constant", "cosine", "linear"]
+LRSchedule = Literal["constant", "cosine", "linear", "plateau"]
 TrackerBackend = Literal["tensorboard", "wandb", "none"]
 TextPromptMode = Literal["present", "all", "present_plus_negatives", "sampled_fixed_k"]
 LoraScope = Literal["vision", "vision_decoder", "all"]
@@ -517,13 +517,55 @@ class MultiplexConfig(_Strict):
     classes_per_forward: int = Field(default=16, ge=1, le=16)  # cite: models/sam3.py:MULTIPLEX_CAP
 
 
+class LrDecayOnPlateauConfig(_Strict):
+    """Rung-1 reduce-on-plateau knobs. Active only when lr_schedule == "plateau"."""
+
+    patience: PositiveInt = 5
+    # cite: Keras ReduceLROnPlateau example 5 (low end of cited 5-10 range);
+    #       research §2, §7.
+    factor: PositiveFloat = 0.1
+    # cite: PyTorch ReduceLROnPlateau default 0.1; research §2, §7.
+    min_lr: PositiveFloat = 1.0e-6
+    # cite: PyTorch default 0; # tbd: floored at learning_rate/100 to avoid a dead LR;
+    #       research §7.
+
+    @field_validator("factor")
+    @classmethod
+    def _factor_must_shrink(cls, v: float) -> float:
+        if v >= 1.0:
+            raise ValueError(f"lr_decay_on_plateau.factor must be < 1.0 (got {v})")
+        return v
+
+
+class EarlyStopConfig(_Strict):
+    """Rung-2 early-stop knobs. monitor/min_delta are the SHARED improvement
+    definition consumed by rung 1 too: when early_stop.enabled is false while
+    lr_schedule is plateau, these two fields still configure the rung-1 LR-decay
+    threshold (they feed ReduceLROnPlateau's threshold and the monitored metric).
+    Documented wart, spec §5.4 / docs/config-schema.md."""
+
+    enabled: bool = True
+    # issue: on by default (research §7, issue acceptance criteria).
+    monitor: Literal["mAP"] = "mAP"
+    # existing best-metric key (trainer.py _best_metric_key). Exposed as a seam;
+    # only mAP is validated/wired for now.
+    min_delta: PositiveFloat = 0.001
+    # cite: early-stop min_delta range 0.001-0.01 (Keras/practitioner);
+    #       # tbd: low end chosen for a noisy mAP; research §5, §7.
+    stop_patience: PositiveInt = 10
+    # cite: patience 5-10 (PyTorch ReduceLROnPlateau default 10 / Prechelt 1998);
+    #       # tbd: high end chosen — accuracy ≫ speed; research §5, §7.
+
+
 class TrainHyperparams(_Strict):
     epochs: PositiveInt
     batch_size: PositiveInt = 1  # tbd: #191 (VRAM-driven; see presets.py memory model)
     grad_accum_steps: PositiveInt = 8  # tbd: #191 (VRAM-driven; see presets.py)
     optimizer: Optimizer = "auto"  # cite: AdamW (Loshchilov 2019) arXiv:1711.05101
     learning_rate: PositiveFloat = 1.0e-4  # tbd: #191 (repo-chosen; see issue #87)
-    lr_schedule: LRSchedule = "cosine"  # cite: SGDR (Loshchilov 2017) arXiv:1608.03983 §3
+    lr_schedule: LRSchedule = "plateau"
+    # cite: ReduceLROnPlateau (PyTorch/Keras) + the canonical early-stop pairing
+    #       (research §2-§4); # tbd: #197 — the cosine->plateau default flip.
     warmup_steps: int = Field(default=100, ge=0)  # tbd: #191 (repo-chosen)
     save_every: PositiveInt | None = Field(
         default=None,
@@ -565,6 +607,9 @@ class TrainHyperparams(_Strict):
             return v
         parse_duration_to_seconds(v)  # type: ignore[arg-type]  # runtime branches on str|int|bool
         return v
+
+    lr_decay_on_plateau: LrDecayOnPlateauConfig = Field(default_factory=LrDecayOnPlateauConfig)
+    early_stop: EarlyStopConfig = Field(default_factory=EarlyStopConfig)
 
     loss: LossConfig = Field(default_factory=LossConfig)
     nan_abort_after: PositiveInt = 20  # tbd: #191 (repo-chosen)

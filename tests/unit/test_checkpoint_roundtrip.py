@@ -70,7 +70,11 @@ def test_save_load_roundtrip_preserves_optimizer_scheduler_rng_state(tmp_path: P
     assert trainable, "stub LoRA wrapper has no trainable params"
 
     optimizer = _build_optimizer("adamw", trainable, cfg.train.learning_rate)
-    scheduler = _build_scheduler(optimizer, cfg, total_steps=10)
+    # Use "cosine" so _build_scheduler returns a LambdaLR (scheduler.step() takes
+    # no metric arg). "plateau" returns a ReduceLROnPlateau, which requires a
+    # metric — incompatible with the step-counting loop below. The roundtrip test
+    # exercises save/load mechanics, not schedule selection.
+    scheduler = _build_scheduler(optimizer, cfg, total_steps=10, effective_schedule="cosine")
 
     # Drive a few real optimizer steps so exp_avg / exp_avg_sq / step are
     # populated. The quadratic loss sum(p.pow(2).sum() for p in trainable)
@@ -109,7 +113,7 @@ def test_save_load_roundtrip_preserves_optimizer_scheduler_rng_state(tmp_path: P
 
     # Fresh optimizer + scheduler (load_full_state mutates in-place).
     fresh_opt = _build_optimizer("adamw", trainable, cfg.train.learning_rate)
-    fresh_sched = _build_scheduler(fresh_opt, cfg, total_steps=10)
+    fresh_sched = _build_scheduler(fresh_opt, cfg, total_steps=10, effective_schedule="cosine")
     rs = load_full_state(state_dir, wrapper, fresh_opt, fresh_sched, cfg)
 
     # ResumeState fields.

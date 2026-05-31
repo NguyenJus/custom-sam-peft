@@ -30,6 +30,7 @@ from custom_sam_peft.peft_adapters import PEFTMethod, make_peft_method
 from custom_sam_peft.runtime import Runtime, to_device
 from custom_sam_peft.runtime._runtime import coerce_dtype_for_capability
 from custom_sam_peft.tracking.base import Tracker
+from custom_sam_peft.train._scheduler import PlateauOrLambda, step_per_train_step
 from custom_sam_peft.train.checkpoint import save_full_state
 
 _LOG = logging.getLogger(__name__)
@@ -58,6 +59,18 @@ class _TimeLimitReached(Exception):
         super().__init__(f"time limit reached at step {step} (epoch {epoch})")
         self.step = step
         self.epoch = epoch
+
+
+class _EarlyStop(Exception):
+    """Internal signal: the plateau ladder requested an early stop. Graceful —
+    proceeds to close-out (NOT a pause). Carries the stop point + reason. Never
+    propagates past Trainer.fit(). Spec §4.2."""
+
+    def __init__(self, step: int, epoch: int, reason: str) -> None:
+        super().__init__(f"early stop at step {step} (epoch {epoch}): {reason}")
+        self.step = step
+        self.epoch = epoch
+        self.reason = reason
 
 
 def _reset_auto_chunk_log() -> None:
@@ -181,6 +194,7 @@ def train_step(
     peft_method: PEFTMethod | None = None,
     runtime: Runtime | None = None,
     oom_state: OomState | None = None,
+    effective_schedule: str | None = None,
 ) -> StepResult:
     _peft_method: PEFTMethod = (
         peft_method if peft_method is not None else make_peft_method(cfg.peft.method)
@@ -386,7 +400,20 @@ def train_step(
             )
         )
         optimizer.step()
-        scheduler.step()
+        step_per_train_step(
+            scheduler,
+            global_step=global_step,
+            base_lr=cfg.train.learning_rate,
+            warmup_steps=cfg.train.warmup_steps,
+            # Use the post-fallback effective schedule (not the requested one from
+            # cfg.train.lr_schedule).  When plateau falls back to cosine (no val set),
+            # cfg.train.lr_schedule is still "plateau" but the built scheduler is a
+            # LambdaLR; passing "plateau" here would take the plateau no-op branch and
+            # the cosine decay would silently never fire.  effective_schedule carries
+            # the resolved value from fit() via run_epoch -> train_step.  Default falls
+            # back to cfg.train.lr_schedule so callers that omit the param are unchanged.
+            mode=effective_schedule if effective_schedule is not None else cfg.train.lr_schedule,
+        )
         optimizer.zero_grad(set_to_none=True)
 
     return StepResult(
@@ -459,7 +486,7 @@ def run_epoch(
     model: Sam3Wrapper,
     loader: Any,
     optimizer: torch.optim.Optimizer,
-    scheduler: torch.optim.lr_scheduler.LRScheduler,
+    scheduler: PlateauOrLambda,
     tracker: Tracker,
     cfg: TrainConfig,
     run_dir: Path,
@@ -473,6 +500,9 @@ def run_epoch(
     runtime: Runtime | None = None,
     oom_state: OomState | None = None,
     deadline: float | None = None,
+    should_stop_early: Callable[[], _EarlyStop | None] | None = None,
+    effective_schedule: str | None = None,
+    flush_extra: Callable[[], dict[str, Any]] | None = None,
 ) -> tuple[int, int]:
     """Drive one epoch. `on_checkpoint(global_step, epoch, nan_streak)`
     is called at every `save_every` boundary; the trainer wires it to the
@@ -483,6 +513,10 @@ def run_epoch(
     checked after each micro-step. On expiry, a full-state checkpoint is flushed
     directly (no image panel) and ``_TimeLimitReached`` is raised. The exception
     carries the step and epoch at which training stopped. Spec §4.5.
+
+    If ``should_stop_early`` is given, it is called right after each
+    ``on_eval`` call. When it returns a non-None ``_EarlyStop`` that exception
+    is raised immediately, unwinding the epoch loop. Spec §4.2.
     """
     _peft_method: PEFTMethod = (
         peft_method if peft_method is not None else make_peft_method(cfg.peft.method)
@@ -501,10 +535,11 @@ def run_epoch(
             peft_method=_peft_method,
             runtime=runtime,
             oom_state=oom_state,
+            effective_schedule=effective_schedule,
         )
         nan_streak = result.nan_streak
         global_step += 1
-        window.update(result, lr=float(scheduler.get_last_lr()[0]))
+        window.update(result, lr=float(optimizer.param_groups[0]["lr"]))
         P.advance_inner()
         if global_step % cfg.train.log_every == 0:
             scalars = window.flush()
@@ -522,10 +557,16 @@ def run_epoch(
             and global_step % cfg.train.eval_every == 0
         ):
             on_eval(global_step)
+            if should_stop_early is not None:
+                stop = should_stop_early()
+                if stop is not None:
+                    raise stop
         if deadline is not None and time.monotonic() >= deadline:
             state_dir = (
                 paths.checkpoint_path(run_dir, step=global_step).parent / f"step_{global_step}"
             )
+            # Read live values at flush time, not the epoch-start snapshot.
+            extra = flush_extra() if flush_extra is not None else {}
             save_full_state(
                 state_dir=state_dir,
                 wrapper=model,
@@ -535,6 +576,9 @@ def run_epoch(
                 epoch=epoch,
                 nan_streak=nan_streak,
                 cfg=cfg,
+                ladder=extra.get("ladder"),
+                best_metric_value=extra.get("best_metric_value"),
+                scheduler_kind=extra.get("scheduler_kind"),
             )
             raise _TimeLimitReached(global_step, epoch)
     return global_step, nan_streak

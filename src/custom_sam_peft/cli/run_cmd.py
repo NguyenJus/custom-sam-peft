@@ -8,6 +8,7 @@ Spec: docs/superpowers/specs/2026-05-18-simplify-ux-design.md §3.
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import sys
@@ -29,11 +30,11 @@ from custom_sam_peft.config.loader import load_config
 from custom_sam_peft.config.schema import TrainConfig
 from custom_sam_peft.data.base import Dataset
 from custom_sam_peft.errors import CheckpointError
-from custom_sam_peft.eval.runner import run_eval
 from custom_sam_peft.models.sam3 import load_sam31
 from custom_sam_peft.presets import PresetDecision, decide_preset
 from custom_sam_peft.runs.bundle import BundleContext, write_bundle
-from custom_sam_peft.train.checkpoint import find_latest_checkpoint, load_adapter, save_merged
+from custom_sam_peft.train.checkpoint import find_latest_checkpoint, load_adapter
+from custom_sam_peft.train.close_out import close_out
 from custom_sam_peft.train.runner import run_training
 
 _LATEST_SENTINEL = "__latest__"
@@ -70,7 +71,7 @@ def _build_val_dataset(cfg: TrainConfig, vs: ValSource) -> Dataset:
 
 
 def _orchestrate(
-    cfg: TrainConfig, resume: Path | None, mode: ProgressMode, *, visualize: bool, config_path: Path
+    cfg: TrainConfig, resume: Path | None, mode: ProgressMode, *, config_path: Path
 ) -> int:
     from custom_sam_peft.data.val_source import load_val_source
 
@@ -96,65 +97,38 @@ def _orchestrate(
         )
         return 0
     run_dir = train_result.run_dir
-    adapter_path = train_result.checkpoint_path
+    adapter_path = train_result.checkpoint_path  # run_dir/adapter (best weights)
 
     # Decide val mode from the saved record — same source of truth the trainer used.
     vs = load_val_source(run_dir)
     if vs is None:
         raise RuntimeError(f"runner did not save val_source.json in {run_dir}")
 
-    wrapper: Any = load_sam31(
-        cfg.model, channels=cfg.data.channels, channel_semantics=cfg.data.channel_semantics
-    )
-    load_adapter(wrapper, adapter_path)
+    # close_out (inside fit()) already ran the single eval + export-merge on the
+    # best weights; reuse its results — no second eval, no second merge.
+    report = train_result.final_metrics
+    per_example_iou = train_result.per_example_iou or []
 
     val_dataset: Dataset | None = None
-    report: Any = None
-    per_example_iou: list[float] = []
+    wrapper: Any = None
     if vs.mode != "none":
+        # Rebuild the model + val dataset only for bundle re-inference (sample panels).
+        wrapper = load_sam31(
+            cfg.model, channels=cfg.data.channels, channel_semantics=cfg.data.channel_semantics
+        )
+        load_adapter(wrapper, adapter_path)
         val_dataset = _build_val_dataset(cfg, vs)
-
-        # Phase: eval.
-        try:
-            with progress_session(
-                kind=ProgressKind.EVAL,
-                total_batches_per_epoch=0,  # Evaluator owns its progress via push_subtask
-                mode=mode,
-            ):
-                report, per_example_iou = cast(
-                    tuple[Any, list[float]],
-                    run_eval(
-                        cfg,
-                        checkpoint=adapter_path,
-                        output_dir=run_dir,
-                        val_dataset=val_dataset,
-                        model=wrapper,
-                        return_per_example_iou=True,
-                        visualize=visualize,
-                    ),
-                )
-        except Exception as exc:
-            rprint(f"[red]eval failed[/red] run_dir={run_dir} — {exc}")
-            raise typer.Exit(code=1) from exc
 
     end_ts = datetime.now(UTC)
 
-    # Phase: export-merge (conditional, soft-fail).
-    merged_dir: Path | None = None
-    merged_export_error: str | None = None
-    if cfg.export.merge:
-        target = run_dir / "merged"
-        try:
-            with progress_session(
-                kind=ProgressKind.EXPORT_MERGE,
-                total_batches_per_epoch=0,
-                mode=mode,
-            ):
-                save_merged(wrapper, target)
-            merged_dir = target
-        except Exception as exc:
-            _LOG.warning("export-merge failed: %s", exc)
-            merged_export_error = str(exc)
+    # merged/ was written by close_out when cfg.export.merge (soft-fail: error
+    # is surfaced via EvalArtifacts.merged_export_error, run still continues).
+    merged_export_error = train_result.merged_export_error
+    merged_dir = (
+        (run_dir / "merged")
+        if (cfg.export.merge and merged_export_error is None and (run_dir / "merged").is_dir())
+        else None
+    )
 
     # Phase: bundle.
     preset = _load_preset_or_fallback(cfg)
@@ -168,6 +142,7 @@ def _orchestrate(
         merged_dir=merged_dir,
         merged_export_error=merged_export_error,
         oom_events=train_result.oom_events,
+        ladder_events=train_result.ladder_events,  # from EvalArtifacts, not metrics.json
     )
     try:
         write_bundle(ctx, report, val_dataset=val_dataset, model_wrapper=wrapper)
@@ -180,6 +155,118 @@ def _orchestrate(
     )
     rprint(
         f"[green]done[/green] run_dir={run_dir} adapter={adapter_path} "
+        f"merged={(merged_dir or merged_export_error or 'skipped')} "
+        f"summary={run_dir / 'summary.md'} mAP={mAP_str}"
+    )
+    return 0
+
+
+def _read_final_step_epoch(run_dir: Path, resume: Path) -> tuple[int, int]:
+    """Read (global_step, epoch) from best.json or the checkpoint's training_state."""
+    best_json = run_dir / "best" / "best.json"
+    if best_json.is_file():
+        try:
+            data = json.loads(best_json.read_text())
+            return int(data["global_step"]), 0
+        except Exception:  # noqa: S110
+            pass
+    state_file = resume / "training_state.pt"
+    if state_file.is_file():
+        import torch
+
+        state = torch.load(state_file, weights_only=False)
+        return int(state.get("global_step", 0)), int(state.get("epoch", 0))
+    return 0, 0
+
+
+def _finalize(
+    cfg: TrainConfig,
+    resume: Path,
+    *,
+    config_path: Path,
+) -> int:
+    """Productionize a paused run: rebuild + close_out, NO training (spec §11)."""
+    from custom_sam_peft.data.val_source import load_val_source
+
+    start_ts = datetime.now(UTC)
+    run_dir = resume.parent.parent  # checkpoints/step_N -> run_dir
+
+    # The run's OWN config governs model/eval/export shape (spec §11.2, A6).
+    saved_cfg_path = run_dir / "config.yaml"
+    saved_cfg = load_config(saved_cfg_path) if saved_cfg_path.is_file() else cfg
+    if saved_cfg_path.is_file():
+        _LOG.info("finalize: using the run's saved config.yaml (not --config) for fidelity.")
+
+    # Load the adapter into the base model BEFORE close_out: close_out only
+    # restores best/, falling back to these in-memory weights when best/ is
+    # absent — so this pre-load is the no-best fallback (the resumed adapter).
+    # Prefer best/adapter, else the resumed checkpoint's adapter.
+    wrapper: Any = load_sam31(
+        saved_cfg.model,
+        channels=saved_cfg.data.channels,
+        channel_semantics=saved_cfg.data.channel_semantics,
+    )
+    best_adapter = run_dir / "best" / "adapter"
+    adapter = best_adapter if best_adapter.is_dir() else resume / "adapter"
+    load_adapter(wrapper, adapter)
+
+    # Rebuild val dataset from the saved record.
+    vs = load_val_source(run_dir)
+    val_ds: Dataset | None = (
+        _build_val_dataset(saved_cfg, vs) if (vs is not None and vs.mode != "none") else None
+    )
+
+    final_step, final_epoch = _read_final_step_epoch(run_dir, resume)
+
+    artifacts = close_out(
+        run_dir,
+        wrapper,
+        saved_cfg,
+        evaluator_val_ds=val_ds,
+        oom_state=None,
+        final_step=final_step,
+        final_epoch=final_epoch,
+        ladder_events=None,
+    )
+
+    end_ts = datetime.now(UTC)
+
+    # Thread close_out's soft-fail merge error; set merged_dir from disk
+    # ONLY when there was no merge error (mirror _orchestrate exactly).
+    merged_export_error = artifacts.merged_export_error
+    merged_dir = (
+        (run_dir / "merged")
+        if (
+            saved_cfg.export.merge and merged_export_error is None and (run_dir / "merged").is_dir()
+        )
+        else None
+    )
+
+    ctx = BundleContext(
+        run_dir=run_dir,
+        config_path=run_dir / "config.yaml",
+        start_ts=start_ts,
+        end_ts=end_ts,
+        preset=_load_preset_or_fallback(saved_cfg),
+        per_example_iou=artifacts.per_example_iou or [],
+        merged_dir=merged_dir,
+        merged_export_error=merged_export_error,
+        oom_events=artifacts.oom_events,
+        ladder_events=artifacts.ladder_events,  # None for finalize — expected
+    )
+    try:
+        write_bundle(ctx, artifacts.final_metrics, val_dataset=val_ds, model_wrapper=wrapper)
+    except Exception as exc:
+        rprint(f"[red]bundle failed[/red] run_dir={run_dir} — {exc}")
+        raise typer.Exit(code=1) from exc
+
+    mAP_str = (
+        f"{artifacts.final_metrics.overall.get('mAP', float('nan')):.4f}"
+        if artifacts.final_metrics is not None
+        else "n/a (no val)"
+    )
+    rprint(
+        f"[green]finalized[/green] run_dir={run_dir} adapter={run_dir / 'adapter'} "
         f"merged={(merged_dir or merged_export_error or 'skipped')} "
         f"summary={run_dir / 'summary.md'} mAP={mAP_str}"
     )
@@ -206,6 +293,15 @@ def run(
         ),
         metavar="DURATION",
     ),
+    finalize: bool = typer.Option(
+        False,
+        "--finalize",
+        help=(
+            "Finalize a paused (time-limited) run: rebuild the model from --resume's "
+            "checkpoint, restore the best weights, run eval, and write adapter/merged/"
+            "metrics/bundle. Runs NO training. Requires --resume; rejects --time-limit."
+        ),
+    ),
     verbose: bool = typer.Option(False, "-v", "--verbose", help="Enable DEBUG logging."),
     progress_flag: str = typer.Option(
         "auto",
@@ -231,6 +327,16 @@ def run(
         )
         run_init("coco-text-lora", config, force=False)
     cfg = load_config(config)
+    cfg = cfg.model_copy(update={"eval": cfg.eval.model_copy(update={"visualize": visualize})})
+    if finalize:
+        if resume is None:
+            rprint("[red]error[/red] --finalize requires --resume (a checkpoint or __latest__).")
+            raise typer.Exit(code=1)
+        if time_limit is not None:
+            rprint(
+                "[red]error[/red] --finalize cannot be combined with --time-limit (no training)."
+            )
+            raise typer.Exit(code=1)
     if time_limit is not None:
         try:
             parse_duration_to_seconds(time_limit)
@@ -259,4 +365,7 @@ def run(
     else:
         resume_path = None
 
-    _orchestrate(cfg, resume_path, mode, visualize=visualize, config_path=config)
+    if finalize:
+        assert resume_path is not None  # guaranteed by the validation above (mypy)  # noqa: S101
+        raise typer.Exit(code=_finalize(cfg, resume_path, config_path=config))
+    _orchestrate(cfg, resume_path, mode, config_path=config)
