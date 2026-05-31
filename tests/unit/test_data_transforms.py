@@ -40,7 +40,7 @@ def _reset_aug_warning_guards() -> Iterator[None]:
 
 @contextmanager
 def _patch_proc_to_imagenet() -> Iterator[None]:
-    """Patch AutoImageProcessor so resolve_normalization falls back to ImageNet defaults."""
+    """Patch AutoImageProcessor so resolve_normalization falls back to table/config defaults."""
     mock_aip = MagicMock()
     mock_aip.from_pretrained.side_effect = OSError("no cache")
     with patch("transformers.AutoImageProcessor", mock_aip):
@@ -81,8 +81,8 @@ def test_resolve_normalization_falls_back_on_oserror(
         caplog.set_level(logging.WARNING, logger="custom_sam_peft.data.transforms")
         mean, std = resolve_normalization("facebook/sam3.1", NormalizeConfig())
 
-    assert mean == [0.485, 0.456, 0.406]
-    assert std == [0.229, 0.224, 0.225]
+    assert mean == [0.5, 0.5, 0.5]
+    assert std == [0.5, 0.5, 0.5]
     warn_records = [r for r in caplog.records if r.levelno == logging.WARNING]
     assert len(warn_records) == 1
     assert "known-good stats" in warn_records[0].getMessage()
@@ -96,7 +96,7 @@ def test_resolve_normalization_falls_back_on_attribute_error() -> None:
     with patch("transformers.AutoImageProcessor", mock_aip):
         mean, _std = resolve_normalization("facebook/sam3.1", NormalizeConfig())
 
-    assert mean == [0.485, 0.456, 0.406]
+    assert mean == [0.5, 0.5, 0.5]
 
 
 def test_resolve_normalization_processor_loads_no_table_entry_no_warn(
@@ -125,8 +125,8 @@ def test_resolve_normalization_processor_loads_matches_table(
 ) -> None:
     """Path 1, model in table, values within 1e-3 of table entry: no WARN, INFO present."""
     fake_proc = SimpleNamespace(
-        image_mean=[0.4855, 0.4555, 0.4055],  # within 1e-3 of [0.485, 0.456, 0.406]
-        image_std=[0.2295, 0.2245, 0.2255],  # within 1e-3 of [0.229, 0.224, 0.225]
+        image_mean=[0.5005, 0.5005, 0.5005],  # within 1e-3 of [0.5, 0.5, 0.5]
+        image_std=[0.4995, 0.4995, 0.4995],  # within 1e-3 of [0.5, 0.5, 0.5]
     )
     mock_aip = MagicMock()
     mock_aip.from_pretrained.return_value = fake_proc
@@ -135,8 +135,8 @@ def test_resolve_normalization_processor_loads_matches_table(
         caplog.set_level(logging.INFO, logger="custom_sam_peft.data.transforms")
         mean, std = resolve_normalization("facebook/sam3.1", NormalizeConfig())
 
-    assert mean == [0.4855, 0.4555, 0.4055]
-    assert std == [0.2295, 0.2245, 0.2255]
+    assert mean == [0.5005, 0.5005, 0.5005]
+    assert std == [0.4995, 0.4995, 0.4995]
     assert not any(rec.levelno >= logging.WARNING for rec in caplog.records)
     assert any(
         re.search(r"Using image_mean/image_std from AutoImageProcessor", rec.message)
@@ -148,7 +148,9 @@ def test_resolve_normalization_processor_loads_diverges_from_table(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     """Path 1, in-table divergence > 1e-3: returns proc values + one WARN naming both vectors."""
-    fake_proc = SimpleNamespace(image_mean=[0.5, 0.5, 0.5], image_std=[0.5, 0.5, 0.5])
+    fake_proc = SimpleNamespace(
+        image_mean=[0.485, 0.456, 0.406], image_std=[0.229, 0.224, 0.225]
+    )
     mock_aip = MagicMock()
     mock_aip.from_pretrained.return_value = fake_proc
 
@@ -157,15 +159,14 @@ def test_resolve_normalization_processor_loads_diverges_from_table(
         mean, std = resolve_normalization("facebook/sam3.1", NormalizeConfig())
 
     # Table is a sentinel, not a gate: processor values are returned.
-    assert mean == [0.5, 0.5, 0.5]
-    assert std == [0.5, 0.5, 0.5]
+    assert mean == [0.485, 0.456, 0.406]
+    assert std == [0.229, 0.224, 0.225]
     warn_records = [r for r in caplog.records if r.levelno == logging.WARNING]
     assert len(warn_records) == 1
     msg = warn_records[0].getMessage()
     # Both vectors must appear in the single WARN message.
-    assert "0.5" in msg
-    assert "0.485" in msg
-    assert "0.229" in msg
+    assert "0.485" in msg  # diverging processor value
+    assert "0.5" in msg  # table value
 
 
 def test_resolve_normalization_processor_fails_model_in_table(
@@ -178,16 +179,16 @@ def test_resolve_normalization_processor_fails_model_in_table(
     with patch("transformers.AutoImageProcessor", mock_aip):
         caplog.set_level(logging.WARNING, logger="custom_sam_peft.data.transforms")
         # User's NormalizeConfig is intentionally distinct from the table to confirm table wins.
-        user_norm = NormalizeConfig(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5])
+        user_norm = NormalizeConfig(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
         mean, std = resolve_normalization("facebook/sam3.1", user_norm)
 
-    assert mean == [0.485, 0.456, 0.406]
-    assert std == [0.229, 0.224, 0.225]
+    assert mean == [0.5, 0.5, 0.5]
+    assert std == [0.5, 0.5, 0.5]
     warn_records = [r for r in caplog.records if r.levelno == logging.WARNING]
     assert len(warn_records) == 1
     msg = warn_records[0].getMessage()
     assert "known-good stats" in msg
-    assert "0.485" in msg
+    assert "0.5" in msg
 
 
 def test_resolve_normalization_processor_fails_model_not_in_table(
