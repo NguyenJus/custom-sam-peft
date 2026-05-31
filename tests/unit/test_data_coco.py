@@ -656,7 +656,7 @@ def test_register_coco_lookup(tiny_coco_dir: Path) -> None:
         },
         "augmentations": {"preset": "natural", "intensity": "medium"},
         "text_prompt": {"mode": "present"},
-        "normalize": {"mean": [0.485, 0.456, 0.406], "std": [0.229, 0.224, 0.225]},
+        "normalize": {"mean": [0.5, 0.5, 0.5], "std": [0.5, 0.5, 0.5]},
     }
     with _patch_imagenet_ctx():
         ds = builder(cfg, model_name="facebook/sam3.1", pipeline="eval")
@@ -680,7 +680,7 @@ def test_build_coco_train_pipeline_uses_train_transforms(tiny_coco_dir: Path) ->
         },
         "augmentations": {"preset": "none"},
         "text_prompt": {"mode": "present"},
-        "normalize": {"mean": [0.485, 0.456, 0.406], "std": [0.229, 0.224, 0.225]},
+        "normalize": {"mean": [0.5, 0.5, 0.5], "std": [0.5, 0.5, 0.5]},
     }
     with _patch_imagenet_ctx():
         ds = builder(cfg, model_name="facebook/sam3.1", pipeline="train")

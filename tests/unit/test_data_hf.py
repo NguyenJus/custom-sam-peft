@@ -303,7 +303,7 @@ def test_register_hf_lookup(monkeypatch: pytest.MonkeyPatch) -> None:
         },
         "augmentations": {"preset": "none"},
         "text_prompt": {"mode": "present"},
-        "normalize": {"mean": [0.485, 0.456, 0.406], "std": [0.229, 0.224, 0.225]},
+        "normalize": {"mean": [0.5, 0.5, 0.5], "std": [0.5, 0.5, 0.5]},
     }
     with _patch_imagenet_ctx():
         hfds = builder(cfg, model_name="facebook/sam3.1", pipeline="eval")
@@ -379,7 +379,7 @@ def test_build_hf_train_pipeline(monkeypatch: pytest.MonkeyPatch) -> None:
         },
         "augmentations": {"preset": "none"},
         "text_prompt": {"mode": "present"},
-        "normalize": {"mean": [0.485, 0.456, 0.406], "std": [0.229, 0.224, 0.225]},
+        "normalize": {"mean": [0.5, 0.5, 0.5], "std": [0.5, 0.5, 0.5]},
     }
     with _patch_imagenet_ctx():
         hfds = builder(cfg, model_name="facebook/sam3.1", pipeline="train")

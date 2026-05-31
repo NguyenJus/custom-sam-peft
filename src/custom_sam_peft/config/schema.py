@@ -256,22 +256,22 @@ class NormalizeConfig(_Strict):
       3. Otherwise, return the (mean, std) here (emits WARNING — verify these
          are correct for the backbone).
 
-    Defaults are ImageNet stats, matching ``facebook/sam3.1``'s
-    ``Sam3ImageProcessor`` and the ``KNOWN_PROCESSOR_STATS`` entry. Users with a
-    non-SAM3 backbone should override these and the YAML's ``data.normalize``
-    block accordingly.
+    Defaults to ``[0.5, 0.5, 0.5]`` / ``[0.5, 0.5, 0.5]`` — matching
+    ``facebook/sam3.1``'s ``Sam3ImageProcessor`` (empirically verified 2026-05-30)
+    and the ``KNOWN_PROCESSOR_STATS`` entry. Users with a non-SAM3 backbone should
+    override these and the YAML's ``data.normalize`` block accordingly.
     """
 
     # --- advanced --- (all normalize fields override the AutoImageProcessor-derived stats)
     mean: list[float] = Field(
-        default_factory=lambda: [0.485, 0.456, 0.406],
+        default_factory=lambda: [0.5, 0.5, 0.5],
         min_length=1,
-        max_length=16,  # cite: torchvision ImageNet-1k training-set statistics
+        max_length=16,  # cite: empirically verified 2026-05-30 (Sam3ImageProcessor)
     )
     std: list[float] = Field(
-        default_factory=lambda: [0.229, 0.224, 0.225],
+        default_factory=lambda: [0.5, 0.5, 0.5],
         min_length=1,
-        max_length=16,  # cite: torchvision ImageNet-1k training-set statistics
+        max_length=16,  # cite: empirically verified 2026-05-30 (Sam3ImageProcessor)
     )
     max_pixel_value: float = Field(
         default=255.0,
