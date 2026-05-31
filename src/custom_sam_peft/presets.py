@@ -53,8 +53,18 @@ D_OUT = 768  # avg output feature dim across LoRA targets
 Q_OVERHEAD = 64 * _MIB  # bnb NF4 per-block scale + zero-point overhead
 # cite: empirical (#148/#179 VRAM calibration)
 WORKSPACE_BYTES = 256 * _MIB  # cuDNN workspace + autograd graph + tmp buffers (spec §3)
-# cite: empirical (#148/#179 VRAM calibration)
-BASE_ACTIVATION_AT_1024 = int(1.5 * _GB)  # seed; superseded by calibration cache.
+# Split activation seeds, measured natively at SAM 3.1's fixed SAM3_IMAGE_SIZE=1008
+# (no image-size scale term — image size is constant). Spec §2/§6.
+#   activation(method, batch, K) = (A_FIXED + A_PER_CLASS * K) * batch
+# A_FIXED   — K-invariant vision-encoder (hiera-large) activation, per image.
+# A_PER_CLASS — decoder / mask-head activation, per (image × class).
+# tbd: conservative split of the prior BASE_ACTIVATION_AT_1024 (~1.45 GiB at 1008px),
+#   bulk attributed to the encoder. RE-DERIVE on the dev-env RTX 5070 Ti before merge:
+#   uv run python scripts/_derive_preset_constants.py --method qlora --r 4 --batch 1
+#   (§9 real-GPU gate enforces this; replace this tag with a GPU+cc / commit SHA /
+#    date / command citation when landing the measured values).
+A_FIXED = int(1.30 * _GB)  # tbd: encoder-dominant share of ~1.45 GiB at 1008px
+A_PER_CLASS = int(0.15 * _GB)  # tbd: decoder per-class share at 1008px
 
 # Forward-only memory is roughly 1/4 of the train-step probe (train captures
 # forward + backward + retained graph; eval captures only forward, no graph).
@@ -64,7 +74,7 @@ forward_only_factor: float = 0.25  # cite: empirical (#148/#179 VRAM calibration
 # === CALIBRATION CACHE =====================================================
 
 CACHE_FILENAME = ".custom_sam_peft_calibration.json"
-CACHE_SCHEMA_VERSION = 2  # index-only (internal cache versioning; not trust-bearing)
+CACHE_SCHEMA_VERSION = 3  # v3: split activation (A_fixed/A_per_class); drops activation_bytes_per_example
 
 
 # === PresetDecision ========================================================
@@ -142,8 +152,8 @@ class PresetDecision:
 # the train-branch formula and decide_eval_batch_size's SDPA ceiling so both
 # cite one definition (spec §3.2).
 # _attention_bytes_per_example is the dominant activation term at SAM 3.1's
-# 1008px image; k_eff scales BASE_ACTIVATION_AT_1024 in the train branch
-# (see _activation_bytes).
+# 1008px image; only the A_PER_CLASS term scales with k_eff in the train branch
+# (see _activation_bytes). Spec §2.
 # cite: sam3/model_builder.py (hiera-large backbone, patch_size=14 line 82)
 _SAM3_PATCH = 14  # vision backbone patch size
 # cite: sam3/model_builder.py (hiera-large backbone, num_heads=16 line 85)
