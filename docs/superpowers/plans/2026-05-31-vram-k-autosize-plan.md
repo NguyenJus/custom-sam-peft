@@ -22,6 +22,46 @@ pyyaml line-surgery rewrites, pytest with monkeypatched CUDA stubs.
 
 ---
 
+## Amendment 1 (2026-05-31): overhead-model recalibration
+
+**Why.** Phase 4's §9 real-GPU gate (RTX 5070 Ti, 16 GiB, sm_120, driver 610.47)
+caught a genuine modeling defect at the first step: the original derivation
+`A_FIXED = peak_K1 − fixed_overhead − A_PER_CLASS` trusted an analytic
+`fixed_overhead` that included a **fictional SDPA attention term**
+(`_attention_bytes_per_example` ≈ 1.6 GiB). Real SAM 3.1 uses flash / mem-efficient
+SDPA (no materialized N×N matrix; the whole K=1 forward activation is ≈0.96 GiB), so
+the analytic `fixed_overhead` (4.248 GiB) **exceeded** the measured `peak_K1`
+(3.049 GiB) and drove `A_FIXED` to −2.36 GiB — physically meaningless, un-landable.
+
+**What changed (spec §2/§2.1/§6/§9).** The decomposition is now **self-consistent**:
+predictor and derive script share one overhead `STATIC = _model_bytes +
+_adapter_bytes + _optimizer_bytes + WORKSPACE_BYTES` with **no attention term**.
+
+- The `_attention_bytes_per_example(image) * batch` term is **removed from the
+  `_predicted_bytes` train branch** (real attention is folded into the empirical
+  split). The symbol is **retained** and still feeds the `decide_eval_batch_size`
+  SDPA ceiling, which is an independent conservative eval cap (only lowers
+  `best_bs`) — kept unchanged.
+- `A_FIXED = clamp(peak_K1 − STATIC − A_PER_CLASS, min=0)`. On the dev GPU the
+  residual is negative and clamps to **0**, landed as a **cited measured result**
+  (not `# tbd:`), the encoder activation being below the model-weight conservatism
+  margin in `STATIC`.
+- `A_PER_CLASS` (two-point differential, ≈1.163 GiB) is **unchanged** — the
+  validated core of #203.
+- **Safety inequality** (must over-predict at probe points): `predicted_peak(K=1) =
+  2.646 + 1.163 = 3.81 GiB ≥ 3.049` measured; `predicted_peak(K=4) = 2.646 + 4.652 =
+  7.30 GiB ≥ 6.54` measured. Both ~0.76 GiB conservative; ~2.4 GiB less
+  over-conservative than the broken status quo.
+
+**Phase impact.** Phase 1 is already implemented; the amended Tasks **1.3** and
+**1.6** below **MODIFY already-landed `presets.py` + tests** (drop the train-branch
+attention term; keep the eval SDPA cap). Task **3.4** (derive script) and Phase 4
+Task **4.1** are amended to the recalibrated `STATIC`/clamp formula so a negative no
+longer blocks landing. Task 2.1's `_derive_split` and the `test_calibrate_cmd.py`
+synthetic-peak helper are corrected to drop the attention term from their overhead.
+
+---
+
 ## Phasing overview
 
 Four sequential phases, each a coherent reviewable block. Phases 1–3 are CPU-only
@@ -309,15 +349,30 @@ git commit -m "feat(presets): split activation helper (A_FIXED + A_PER_CLASS*K),
 
 ### Task 1.3: Thread the split through `_predicted_bytes` (train + eval)
 
+> **AMENDED (Amendment 1, overhead-model recalibration).** This task **MODIFIES the
+> already-landed `_predicted_bytes`** (Phase 1 is implemented). The change vs. the
+> original task: the train branch **drops** the `_attention_bytes_per_example(image)
+> * batch` term — real SDPA is folded into the empirical split, and keeping a
+> separate analytic attention term double-counts (spec §2.1). The train branch
+> becomes `STATIC + split` only. The eval branch is unchanged from the original task
+> (it never had a separate attention term). A new test asserts the train branch
+> carries **no** attention term.
+
 **Files:**
 
-- Modify: `src/custom_sam_peft/presets.py:204-227`
+- Modify: `src/custom_sam_peft/presets.py:218-244` (already-landed `_predicted_bytes`)
 - Test: `tests/unit/test_presets.py`
 
-- [ ] **Step 1: Write the failing test for `_predicted_bytes` train/eval K-threading**
+- [ ] **Step 1: Write/refresh the failing tests for train/eval K-threading + no-attention**
 
 ```python
-from custom_sam_peft.presets import _predicted_bytes
+from custom_sam_peft.presets import (
+    WORKSPACE_BYTES,
+    _adapter_bytes,
+    _model_bytes,
+    _optimizer_bytes,
+    _predicted_bytes,
+)
 
 
 def test_predicted_bytes_train_threads_k() -> None:
@@ -328,6 +383,16 @@ def test_predicted_bytes_train_threads_k() -> None:
     assert pb_k16 - pb_k1 == 15 * A_PER_CLASS * 1
 
 
+def test_predicted_bytes_train_has_no_attention_term() -> None:
+    # Recalibration (spec §2.1): the train branch is STATIC + split, with NO
+    # separate _attention_bytes_per_example term. At K=1 batch=1 it must equal
+    # STATIC + (A_FIXED + A_PER_CLASS) exactly.
+    img = 1008
+    static = _model_bytes("qlora") + _adapter_bytes(4) + _optimizer_bytes(4) + WORKSPACE_BYTES
+    pb = _predicted_bytes("qlora", 4, 1, img, None, mode="train", k_eff=1)
+    assert pb == static + (A_FIXED + A_PER_CLASS * 1)
+
+
 def test_predicted_bytes_eval_threads_k() -> None:
     img = 1008
     pb_k1 = _predicted_bytes("lora", 4, 1, img, None, mode="eval", k_eff=1)
@@ -335,19 +400,27 @@ def test_predicted_bytes_eval_threads_k() -> None:
     assert pb_k4 > pb_k1  # eval activation now scales with K via the split
 ```
 
-- [ ] **Step 2: Run to verify failure**
+(`A_FIXED`/`A_PER_CLASS` are already imported in the file from Task 1.2.)
+
+- [ ] **Step 2: Run to verify the new no-attention test fails**
 
 ```bash
 uv run pytest tests/unit/test_presets.py -k predicted_bytes -o "addopts=" -q
 ```
 
-Expected: FAIL — `_activation_bytes` is called with the old positional `image_size`
-arg, raising `TypeError`, or eval branch hard-codes K=1.
+Expected: `test_predicted_bytes_train_has_no_attention_term` FAILs — the
+already-landed train branch still adds `_attention_bytes_per_example(image_size) *
+batch`, so `pb` exceeds `static + (A_FIXED + A_PER_CLASS)` by that term. (The
+K-delta and eval tests already pass against the landed code; the new assertion is
+the recalibration guard.)
 
 - [ ] **Step 3: Update both branches of `_predicted_bytes`**
 
-Replace `presets.py:204-227` (the whole function body). The signature keeps
-`image_size` (the attention helper still needs it) but the activation calls drop it:
+Replace the already-landed `_predicted_bytes` body (`presets.py:218-244`). The
+signature keeps `image_size` (only so the eval-cap caller's signature stays stable;
+the activation calls do not use it). **The train branch drops the
+`_attention_bytes_per_example(image_size) * batch` term** (spec §2.1 — folded into
+the empirical split):
 
 ```python
 def _predicted_bytes(
@@ -360,26 +433,36 @@ def _predicted_bytes(
     k_eff: int = 1,
 ) -> int:
     if mode == "train":
+        # STATIC + split. NO separate _attention_bytes_per_example term — real
+        # SDPA (flash/mem-efficient) is folded into the empirical split, and adding
+        # an analytic attention figure double-counts (spec §2.1 recalibration). The
+        # derive script subtracts the SAME STATIC, so this reproduces the measured
+        # peak at the probe points.
         return (
             _model_bytes(method)
             + _adapter_bytes(r)
             + _optimizer_bytes(r)
-            # Split activation: only A_PER_CLASS scales with k_eff. The SDPA
-            # attention term is forward+backward (NOT scaled by
-            # forward_only_factor). Spec §2/§3.2.
             + _activation_bytes(batch, cache, k_eff=k_eff)
-            + _attention_bytes_per_example(image_size) * batch
             + WORKSPACE_BYTES
         )
     # mode == "eval": no optimizer, no adapter bytes; activations x forward_only_factor.
-    # K is now threaded through the split; decide_eval_batch_size passes its
-    # classes_per_forward as k_eff. The SDPA attention cap stays in
-    # decide_eval_batch_size. Spec §6.
+    # K is threaded through the split; decide_eval_batch_size passes its
+    # classes_per_forward as k_eff. The SDPA attention CAP stays in
+    # decide_eval_batch_size (independent eval ceiling). Spec §2.1/§6.
     activations = int(
         _activation_bytes(batch, cache, k_eff=k_eff) * forward_only_factor
     )
     return _model_bytes(method) + activations + WORKSPACE_BYTES
 ```
+
+`image_size` is now unused inside `_predicted_bytes`. Keep the parameter (callers
+pass it positionally) and silence the linter by prefixing the param with `_` **or**
+adding a `# noqa`-free no-op — simplest: rename the parameter to `image_size` but
+mark it explicitly unused with a leading underscore is NOT possible without touching
+callers, so instead keep the name and add `del image_size` as the first line of the
+body, or leave it and confirm `ruff` does not flag an unused **parameter** (ruff's
+default ruleset does not flag unused function parameters). Verify with
+`ruff check`; if a future rule flags it, add `# noqa` on the signature line.
 
 - [ ] **Step 4: Run to verify pass**
 
@@ -387,13 +470,13 @@ def _predicted_bytes(
 uv run pytest tests/unit/test_presets.py -k predicted_bytes -o "addopts=" -q
 ```
 
-Expected: 2 PASS.
+Expected: 3 PASS (K-delta, no-attention, eval-threads-K).
 
 - [ ] **Step 5: Commit**
 
 ```bash
 git add src/custom_sam_peft/presets.py tests/unit/test_presets.py
-git commit -m "feat(presets): _predicted_bytes consumes split; eval branch threads k_eff"
+git commit -m "fix(presets): drop fictional attention term from _predicted_bytes train branch (recalibration)"
 ```
 
 ---
@@ -834,9 +917,18 @@ git commit -m "feat(presets): K in candidate grid + (lora,-r,-K,-batch) sort; k 
 
 ### Task 1.6: Thread K through `decide_eval_batch_size` + v3 cache-round-trip tests
 
+> **AMENDED (Amendment 1).** This task **MODIFIES already-landed code**. Under the
+> recalibration, `decide_eval_batch_size` **keeps its SDPA attention ceiling
+> unchanged** — `_attention_bytes_per_example` is retained as the eval cap's
+> `_attn_per_example` (spec §2.1 / §7). The recalibration only removed the attention
+> term from the **train** branch (Task 1.3); the eval cap is an independent
+> conservative ceiling that can only lower `best_bs`, so it stays as written below.
+> No new test is needed beyond the existing K-threading / no-regression test; the
+> code block is unchanged from the original task.
+
 **Files:**
 
-- Modify: `src/custom_sam_peft/presets.py:401-485`
+- Modify: `src/custom_sam_peft/presets.py:428-529` (already-landed `decide_eval_batch_size`)
 - Test: `tests/unit/test_presets.py`
 
 - [ ] **Step 1: Write the failing tests**
@@ -1027,6 +1119,12 @@ Downstream phases consume (do NOT re-read `presets.py` internals):
   `"A_fixed"`/`"A_per_class"` when `cache` is not None. **No `image_size` param.**
 - `_predicted_bytes(method, r, batch, image_size, cache, mode="train"|"eval",
   k_eff=1) -> int` — both branches consume the split; eval threads `k_eff`.
+  **Train branch = `STATIC + (A_FIXED + A_PER_CLASS*k_eff)*batch` with NO separate
+  `_attention_bytes_per_example` term** (Amendment 1, spec §2.1). `STATIC =
+  _model_bytes + _adapter_bytes + _optimizer_bytes + WORKSPACE_BYTES`. `image_size`
+  is accepted but unused inside the function.
+- `_attention_bytes_per_example(image_size) -> int` — **retained**; consumed ONLY by
+  the `decide_eval_batch_size` SDPA ceiling, never by `_predicted_bytes`.
 - `decide_preset(k: int | None = None, cache_path: Path | None = None) ->
   PresetDecision` — `k` is the **upper bound** on the K search; `k < 1` raises
   `ValueError`; searches `methods × rs × batches × Ks(1,2,4,8,16)`; sort key
@@ -1076,9 +1174,17 @@ Phase 2 — it would `TypeError`.
 
 ### Task 2.1: Add `run_calibration` Stage 1 (derive the split) + helpers
 
+> **AMENDED (Amendment 1).** Phase 2 is already implemented; this task's
+> `_derive_split` is **modified** so its inverted overhead `STATIC` carries **no
+> `_attention_bytes_per_example` term** (matching the predictor, spec §2.1), and a
+> clamped-to-zero `A_fixed` is silent/expected (warn only on negative
+> `A_per_class`). The Stage-1 test helper `_synthetic_peak` (Step 2) is likewise
+> corrected to drop the attention term from its overhead, so the synthetic peak and
+> the derive solve stay self-consistent.
+
 **Files:**
 
-- Modify: `src/custom_sam_peft/cli/calibrate_cmd.py`
+- Modify: `src/custom_sam_peft/cli/calibrate_cmd.py` (already-landed `_derive_split`)
 - Test: `tests/unit/test_calibrate_cmd.py`
 
 - [ ] **Step 1: Import the split seeds + grid constants into `calibrate_cmd.py`**
@@ -1115,15 +1221,17 @@ derivation test. The synthetic probe encodes the split so derivation is exact:
 
 ```python
 def _synthetic_peak(*, method: str, r: int, k_eff: int, batch: int) -> int:
-    """Deterministic peak following the split model, for confirm-and-climb tests."""
+    """Deterministic peak following the split model, for confirm-and-climb tests.
+
+    Overhead is STATIC with NO attention term, matching the recalibrated predictor
+    and _derive_split (Amendment 1 / spec §2.1), so the Stage-1 solve is exact.
+    """
     from custom_sam_peft.presets import (
         WORKSPACE_BYTES,
         _adapter_bytes,
-        _attention_bytes_per_example,
         _model_bytes,
         _optimizer_bytes,
     )
-    from custom_sam_peft.models.sam3 import SAM3_IMAGE_SIZE
 
     a_fixed = 1_000_000_000
     a_per_class = 50_000_000
@@ -1132,7 +1240,6 @@ def _synthetic_peak(*, method: str, r: int, k_eff: int, batch: int) -> int:
         + _adapter_bytes(r)
         + _optimizer_bytes(r)
         + WORKSPACE_BYTES
-        + _attention_bytes_per_example(SAM3_IMAGE_SIZE) * batch
     )
     activation = (a_fixed + a_per_class * k_eff) * batch
     return int(overhead + activation)
@@ -1196,20 +1303,25 @@ def _derive_split(method: str, r: int, batch: int) -> tuple[int, int]:
 
     Raises _GpuTooSmall iff the K=1 probe OOMs. A K=4-probe OOM degrades to the
     analytic A_PER_CLASS seed (single-point A_fixed from peak_K1). Spec §4 Stage 1.
-    """
-    from custom_sam_peft.models.sam3 import SAM3_IMAGE_SIZE
 
+    STATIC (the inverted overhead) carries NO attention term — it must match the
+    _predicted_bytes train branch exactly so the split reproduces the measured peak
+    (Amendment 1, spec §2.1). A_fixed clamps to >=0; a clamped-to-zero A_fixed is the
+    EXPECTED dev-GPU outcome (encoder activation < model-weight conservatism margin),
+    not an error.
+    """
     try:
         peak_k1 = _run_probe(method="qlora", r=4, k_eff=1, batch=1)
     except torch.cuda.OutOfMemoryError as exc:
         raise _GpuTooSmall("K=1 probe OOMed — GPU too small") from exc
 
-    fixed_overhead = (
+    # STATIC: model + adapter + optimizer + workspace. NO _attention_bytes_per_example
+    # term (Amendment 1 / spec §2.1) — same STATIC the predictor adds.
+    static = (
         _model_bytes("qlora")
         + _adapter_bytes(4)
         + _optimizer_bytes(4)
         + WORKSPACE_BYTES
-        + _attention_bytes_per_example(SAM3_IMAGE_SIZE) * 1
     )
     try:
         peak_k4 = _run_probe(method="qlora", r=4, k_eff=4, batch=1)
@@ -1220,21 +1332,26 @@ def _derive_split(method: str, r: int, batch: int) -> tuple[int, int]:
             err=True,
         )
         a_per_class = A_PER_CLASS
-    a_fixed = int(peak_k1 - fixed_overhead - a_per_class)
+    a_fixed = int(peak_k1 - static - a_per_class)
 
-    if a_fixed < 0 or a_per_class < 0:
+    # Warn ONLY on a negative A_per_class (a genuinely broken differential). A
+    # negative A_fixed clamps to 0 silently — it is the expected recalibrated
+    # outcome and must NOT block the cache write (Amendment 1 / spec §2.1).
+    if a_per_class < 0:
         typer.echo(
-            f"WARNING: clamped negative split (A_fixed={a_fixed}, "
-            f"A_per_class={a_per_class}); overhead model may need re-derivation",
+            f"WARNING: clamped negative A_per_class={a_per_class}; "
+            "two-point differential looks broken — re-derive on a real GPU",
             err=True,
         )
-        a_fixed = max(0, a_fixed)
         a_per_class = max(0, a_per_class)
+    a_fixed = max(0, a_fixed)
     return a_fixed, a_per_class
 ```
 
 `_run_probe`, `_model_bytes`, `_adapter_bytes`, `_optimizer_bytes`,
-`WORKSPACE_BYTES`, `_attention_bytes_per_example` are already imported. Add
+`WORKSPACE_BYTES` are already imported. (`_attention_bytes_per_example` is **not**
+used by `_derive_split` under Amendment 1 — drop it from this function's overhead;
+it remains imported for any eval-cap use.) Add
 `run_calibration` returning a `PresetDecision`; for now it derives the split, writes
 a v3 cache with the Stage-1 split and `peak_memory_bytes_at_probe = peak_k1`, and
 calls `decide_preset` for the decision (Stage 2/3 climb added next tasks):
@@ -2538,6 +2655,13 @@ git commit -m "feat(wizard): consent runs run_calibration with analytic/manual f
 
 - Modify: `scripts/_derive_preset_constants.py`
 
+> **AMENDED (Amendment 1).** This script is already committed (commit `8fa12e0`)
+> with the **broken** attention-term overhead — it is exactly what produced the
+> −2.36 GiB `A_FIXED` on the 5070 Ti. This task now **corrects the landed script**:
+> `fixed_overhead` becomes `STATIC` with **no `_attention_bytes_per_example` term**
+> (matching the predictor and `_derive_split`, spec §2.1), and `A_FIXED` clamps to
+> `>=0` so a negative residual prints `0` instead of a meaningless negative number.
+
 This script is maintainer-only, not imported by the package or tests, so it has no
 unit test. It is exercised by hand in Phase 4. The edits below must still pass
 `ruff`.
@@ -2545,7 +2669,7 @@ unit test. It is exercised by hand in Phase 4. The edits below must still pass
 - [ ] **Step 1: Update the module docstring**
 
 Replace the docstring (~1-12) to drop the `BASE_ACTIVATION_AT_1024`/`design §3.3`
-references:
+references and the attention term:
 
 ```python
 """Re-derive presets.py split activation seeds from probes on the local GPU.
@@ -2556,10 +2680,13 @@ Maintainer-only. Run on the 16 GB dev card:
 
 Runs two cheap probes (K=1, K=4) and prints the two-point split:
     A_per_class = (peak_K4 - peak_K1) / (4 - 1)
-    A_fixed     = peak_K1 - fixed_overhead - A_per_class
-measured natively at SAM 3.1's fixed 1008px (no image-size scale term). Prints
-copy-paste-ready `A_FIXED = ...` / `A_PER_CLASS = ...` lines for presets.py.
-Not imported by the package or the test suite. Spec §6.
+    A_fixed     = clamp(peak_K1 - STATIC - A_per_class, min=0)
+where STATIC = model + adapter + optimizer + workspace (NO attention term — real
+SDPA is folded into the empirical split; same STATIC the predictor adds, spec §2.1).
+Measured natively at SAM 3.1's fixed 1008px (no image-size scale term). A clamped
+A_FIXED=0 is the expected dev-GPU result. Prints copy-paste-ready
+`A_FIXED = ...` / `A_PER_CLASS = ...` lines for presets.py.
+Not imported by the package or the test suite. Spec §2.1/§6.
 """
 ```
 
@@ -2596,19 +2723,37 @@ single-probe body, computes the split, and prints the constants. Keep the argpar
     peak_k1 = _probe_peak(min(1, MULTIPLEX_CAP))
     peak_k4 = _probe_peak(min(4, MULTIPLEX_CAP))
 
-    fixed_overhead = (
+    # STATIC: model + adapter + optimizer + workspace. NO attention term — real SDPA
+    # is folded into the empirical split; this is the SAME STATIC the predictor adds
+    # (spec §2.1). Inverting it makes the printed seeds reproduce the measured peak.
+    static = (
         _model_bytes(args.method)
         + _adapter_bytes(args.r)
         + _optimizer_bytes(args.r)
         + WORKSPACE_BYTES
-        + _attention_bytes_per_example(image_size) * args.batch
     )
     a_per_class = int((peak_k4 - peak_k1) / (4 - 1))
-    a_fixed = int(peak_k1 - fixed_overhead - a_per_class)
+    a_fixed = int(peak_k1 - static - a_per_class)
+
+    if args.batch != 1:
+        # Split is per-image; normalize the activation by batch before clamping.
+        a_per_class = int(a_per_class / args.batch)
+        a_fixed = int((peak_k1 - static) / args.batch - a_per_class)
+
+    # Clamp A_FIXED to >=0. A negative residual (encoder activation below the
+    # model-weight conservatism margin in STATIC) clamps to 0 — the expected,
+    # cited dev-GPU outcome (spec §2.1/§6), not an error.
+    clamped = a_fixed < 0
+    a_fixed = max(0, a_fixed)
 
     print(f"peak K=1:        {peak_k1 / _GB:.2f} GiB")  # noqa: T201
     print(f"peak K=4:        {peak_k4 / _GB:.2f} GiB")  # noqa: T201
-    print(f"fixed overhead:  {fixed_overhead / _GB:.2f} GiB")  # noqa: T201
+    print(f"STATIC overhead: {static / _GB:.2f} GiB")  # noqa: T201
+    if clamped:
+        print(  # noqa: T201
+            "note: A_FIXED residual was negative -> clamped to 0 (encoder activation "
+            "below STATIC model-weight margin; expected, spec §2.1)"
+        )
     print(  # noqa: T201
         f"A_FIXED = {a_fixed}  # {a_fixed / _GB:.3f} GiB (encoder, per image @1008px)"
     )
@@ -2618,20 +2763,11 @@ single-probe body, computes the split, and prints the constants. Keep the argpar
 ```
 
 The imports already include `_model_bytes`, `_adapter_bytes`, `_optimizer_bytes`,
-`WORKSPACE_BYTES`, `_attention_bytes_per_example`, and `MULTIPLEX_CAP` is imported
-in the GPU branch (~44). Confirm `--batch > 1` still divides correctly: the split is
-defined per-image, so when `args.batch > 1` divide both peaks' activation by
-`args.batch` before solving. For the documented derivation command (`--batch 1`)
-this is a no-op; add a guard:
-
-```python
-    if args.batch != 1:
-        # Split is per-image; normalize the activation delta by batch.
-        a_per_class = int(a_per_class / args.batch)
-        a_fixed = int((peak_k1 - fixed_overhead) / args.batch - a_per_class)
-```
-
-(Place this normalization before the print block.)
+`WORKSPACE_BYTES`, and `MULTIPLEX_CAP` is imported in the GPU branch (~44).
+`_attention_bytes_per_example` is **no longer used** by this script under Amendment
+1 — remove it from the script's import block (and any now-unused `image_size`
+reference) so `ruff` stays clean. `image_size` is still needed by `_probe_peak` for
+the input tensor shape, so keep `image_size = SAM3_IMAGE_SIZE`.
 
 - [ ] **Step 3: Lint the script**
 
@@ -2749,39 +2885,57 @@ Confirm `models/sam3.1/sam3.1_multiplex.pt` resolves before probing.
 
 ### Task 4.1: Derive and land the measured seed constants
 
-- [ ] **Step 1: Run the derive script on the 5070 Ti, capture output**
+> **AMENDED (Amendment 1).** A first run of this task on the 5070 Ti caught the
+> overhead-model defect (`A_FIXED = −2.36 GiB`). **Prerequisite:** Task 3.4's
+> corrected derive script (STATIC, no attention term, clamp ≥0) must be landed
+> first. With the correction the **measured** result is `A_FIXED = 0` (clamped
+> residual) and `A_PER_CLASS = 1_248_840_021` (≈1.163 GiB). `A_FIXED = 0` lands as a
+> **cited measured value** (not `# tbd:`), with a comment noting the clamp rationale
+> (spec §2.1). The safety inequality holds: predicted K=1 = 3.81 GiB ≥ 3.05 measured;
+> K=4 = 7.30 GiB ≥ 6.54 measured.
+
+- [ ] **Step 1: Run the CORRECTED derive script on the 5070 Ti, capture output**
 
 ```bash
 uv run python scripts/_derive_preset_constants.py --method qlora --r 4 --batch 1
 ```
 
 Confirm both cheap probes (K=1, K=4) complete without OOM and record the printed
-`A_FIXED = ...` / `A_PER_CLASS = ...` lines plus the peak figures. Capture the full
-stdout for the citation.
+`A_FIXED = ...` / `A_PER_CLASS = ...` lines plus the peak / STATIC figures. Expect
+`A_FIXED = 0` (with the "clamped to 0" note) and `A_PER_CLASS ≈ 1_248_840_021`.
+Capture the full stdout for the citation. If `A_FIXED` prints **negative**, the
+script still has the old attention-term overhead — go back and finish Task 3.4
+before landing.
 
 - [ ] **Step 2: Replace the `# tbd:` seeds with cited measured constants**
 
 In `presets.py`, replace the `# tbd:`-tagged block (from Phase 1 Task 1.1) with the
-measured values and a rigorous citation. Use the exact format below, filling the
-measured integers and the live commit SHA / date:
+measured values and a rigorous citation. Use the exact format below, substituting
+the live commit SHA and the actual integers from Step 1 (shown here with the
+measured dev-GPU values):
 
 ```python
 # Split activation seeds, measured natively at SAM 3.1's fixed SAM3_IMAGE_SIZE=1008
-# (no image-size scale term). Spec §2/§6.
-#   activation(method, batch, K) = (A_FIXED + A_PER_CLASS * K) * batch
+# (no image-size scale term). Spec §2/§2.1/§6.
+#   predicted_peak = STATIC + (A_FIXED + A_PER_CLASS * K) * batch   (NO attention term)
 # A_FIXED   — K-invariant vision-encoder (hiera-large) activation, per image.
-# A_PER_CLASS — decoder / mask-head activation, per (image × class).
-# cite: measured on NVIDIA GeForce RTX 5070 Ti (16 GiB, sm_120, cc=12.0),
-#   commit <SHA>, 2026-05-31, via:
+# A_PER_CLASS — decoder / mask-head activation, per (image × class), two-point split.
+# cite: measured on NVIDIA GeForce RTX 5070 Ti (16 GiB, sm_120, cc=12.0, driver
+#   610.47), commit <SHA>, 2026-05-31, via:
 #   uv run python scripts/_derive_preset_constants.py --method qlora --r 4 --batch 1
 #   (split is model+dtype driven, not card-driven → applies to all GPUs).
-A_FIXED = <measured_int>  # <X.XX> GiB encoder activation per image @1008px
-A_PER_CLASS = <measured_int>  # <X.XX> GiB decoder activation per class @1008px
+# A_FIXED clamps to 0: the K-invariant encoder activation sits below the analytic
+#   model-weight conservatism margin in STATIC (residual peak_K1 - STATIC -
+#   A_PER_CLASS ≈ -0.76 GiB), so STATIC already absorbs it. Predicted peak stays
+#   conservative (K=1: 3.81 ≥ 3.05 measured; K=4: 7.30 ≥ 6.54 measured GiB). Spec §2.1.
+A_FIXED = 0  # 0.00 GiB encoder activation per image @1008px (clamped residual)
+A_PER_CLASS = 1_248_840_021  # 1.163 GiB decoder activation per class @1008px
 ```
 
-Replace `<SHA>` with `git rev-parse --short HEAD`, `<measured_int>` with the script
-output, and the GiB annotations with the measured values. **No `# tbd:` tag may
-remain** anywhere in `presets.py` after this step.
+Replace `<SHA>` with `git rev-parse --short HEAD`. If Step 1's run yields different
+integers (probe noise / driver update), use those instead — but `A_FIXED` must be
+the clamped (`max(0, …)`) value and `A_PER_CLASS` the two-point differential. **No
+`# tbd:` tag may remain** anywhere in `presets.py` after this step.
 
 - [ ] **Step 3: Confirm no `# tbd:` remains and the suite still passes**
 
@@ -2870,9 +3024,13 @@ acceptance gate (§9)" heading. The gate is satisfied only when all four steps p
 ### Phase 4 — definition of done
 
 - `A_FIXED`/`A_PER_CLASS` are measured, cited constants (GPU+cc, commit SHA, date,
-  command); no `# tbd:` tag remains in `presets.py`.
+  command); no `# tbd:` tag remains in `presets.py`. Recalibrated outcome:
+  `A_FIXED = 0` (clamped, cited rationale), `A_PER_CLASS ≈ 1_248_840_021`.
+- The derive script prints a non-negative `A_FIXED` (no negative residual blocks
+  landing) — the Amendment 1 self-consistency fix is in effect.
 - The §9 gate (derive, calibrate e2e, wizard path, real-train sanity) passes on the
-  RTX 5070 Ti with captured output in the PR.
+  RTX 5070 Ti with captured output in the PR; the safety inequality (predicted ≥
+  measured) holds at both probe points (K=1: 3.81 ≥ 3.05; K=4: 7.30 ≥ 6.54 GiB).
 - Full `tests/unit` suite still green with the measured constants.
 
 ---
@@ -2883,6 +3041,8 @@ acceptance gate (§9)" heading. The gate is satisfied only when all four steps p
 |--------------|-----------|
 | §0 root cause (whole-forward × K over-count) | Task 1.2 split helper; regression test 1.2/1.3/1.5 |
 | §2 split model `(A_FIXED + A_PER_CLASS*K)*batch`, no scale | Tasks 1.1, 1.2, 1.3 |
+| §2.1 self-consistent `STATIC`, no train attention term, A_FIXED clamp, safety inequality (Amendment 1) | Tasks 1.3 (drop attention), 2.1 (`_derive_split` STATIC), 3.4 (derive script STATIC+clamp), 4.1 (cited A_FIXED=0) |
+| §2.1 `_attention_bytes_per_example` retained as eval SDPA cap only | Task 1.6 (kept), 1.3 (removed from train) |
 | §3 candidate grid + Ks | Task 1.5 (`_candidates`) |
 | §3 sort key `(lora?, -r, -K, -batch)` | Task 1.5 (`_sort_key`) |
 | §3 `k` = upper bound; `k<1` raises | Task 1.5 (`decide_preset`) |
