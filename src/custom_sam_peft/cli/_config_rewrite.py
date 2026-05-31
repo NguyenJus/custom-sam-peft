@@ -27,6 +27,7 @@ def _rewrite_sizing_block(
     r: int,
     batch_size: int,
     grad_accum_steps: int,
+    classes_per_forward: int,
     dtype: str,
     annotation: str,
 ) -> None:
@@ -35,10 +36,12 @@ def _rewrite_sizing_block(
     Locates peft.method/peft.r, train.batch_size/train.grad_accum_steps, model.dtype
     and substitutes their values by LINE SURGERY (not yaml.safe_dump, which would
     strip comments/formatting). Prepends `annotation` as a comment line above the
-    first touched line. Only rewrites DIRECT children of the target section
-    (zero-indent section → first child-indent level); deeper-nested keys with the
-    same name are left untouched. If any of the 5 expected (section, key) targets are
-    absent from the file, raises ValueError naming the missing keys. Strips any
+    first touched line. Rewrites DIRECT children of the target section (zero-indent
+    section → first child-indent level); deeper-nested keys with the same name are
+    left untouched — EXCEPT the nested train.multiplex.classes_per_forward target,
+    which is rewritten by a dedicated pass. If any of the 5 direct (section, key)
+    targets are absent, raises ValueError naming the missing keys; a missing
+    train.multiplex.classes_per_forward likewise raises ValueError. Strips any
     immediately preceding annotation line (starting with '# calibrated' or
     '# formula-derived') before inserting the new one, so exactly one annotation
     remains across repeated runs.
@@ -71,6 +74,9 @@ def _rewrite_sizing_block(
     # Pre-compile patterns.
     _top_section_pat = re.compile(r"^([a-zA-Z_][a-zA-Z0-9_]*):\s*$")
     _top_section_with_value_pat = re.compile(r"^([a-zA-Z_][a-zA-Z0-9_]*):\s+\S")
+    # Nested target: train.multiplex.classes_per_forward lives one indent level
+    # deeper than the direct children rewritten above.
+    _cpf_pat = re.compile(r"^(\s+)classes_per_forward:\s+(\S+)(.*)$")
 
     # Map: (section, key) -> new_value (as YAML scalar string)
     replacements: dict[tuple[str, str], str] = {
@@ -124,6 +130,25 @@ def _rewrite_sizing_block(
                     staged.append((i, new_line))
                     touched_indices.append(i)
                     done.add(tgt)
+
+    # Nested target: train.multiplex.classes_per_forward (one extra indent level
+    # under train). Match the first (and expected-unique — `classes_per_forward`
+    # only appears under MultiplexConfig) indented `classes_per_forward:` line and
+    # rewrite its value; if absent, raise so the caller knows the config predates
+    # the multiplex block. Spec §3.
+    cpf_done = False
+    for i, line in enumerate(lines):
+        m = _cpf_pat.match(line.rstrip("\n"))
+        if m:
+            indent, _old, tail = m.groups()
+            staged.append((i, f"{indent}classes_per_forward: {classes_per_forward}{tail}\n"))
+            touched_indices.append(i)
+            cpf_done = True
+            break
+    if not cpf_done:
+        raise ValueError(
+            "_rewrite_sizing_block: config missing train.multiplex.classes_per_forward"
+        )
 
     # Validate that all 5 expected targets were found.
     missing = set(replacements.keys()) - done

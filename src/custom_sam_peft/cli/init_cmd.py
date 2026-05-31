@@ -182,6 +182,7 @@ def run_init(
                 r=decision.r,
                 batch_size=decision.batch_size,
                 grad_accum_steps=decision.grad_accum_steps,
+                classes_per_forward=decision.classes_per_forward,
                 dtype=decision.dtype,
                 annotation="# formula-derived",
             )
