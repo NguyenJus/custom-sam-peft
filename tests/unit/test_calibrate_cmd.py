@@ -265,6 +265,47 @@ def test_calibrate_auto_inits_when_no_config(
     assert "not initialized" in result.output.lower() or "auto" in result.output.lower()
 
 
+def _synthetic_peak(*, method: str, r: int, k_eff: int, batch: int) -> int:
+    """Deterministic peak following the split model, for confirm-and-climb tests."""
+    from custom_sam_peft.models.sam3 import SAM3_IMAGE_SIZE
+    from custom_sam_peft.presets import (
+        WORKSPACE_BYTES,
+        _adapter_bytes,
+        _attention_bytes_per_example,
+        _model_bytes,
+        _optimizer_bytes,
+    )
+
+    a_fixed = 1_000_000_000
+    a_per_class = 50_000_000
+    overhead = (
+        _model_bytes(method)
+        + _adapter_bytes(r)
+        + _optimizer_bytes(r)
+        + WORKSPACE_BYTES
+        + _attention_bytes_per_example(SAM3_IMAGE_SIZE) * batch
+    )
+    activation = (a_fixed + a_per_class * k_eff) * batch
+    return int(overhead + activation)
+
+
+def test_run_calibration_stage1_solves_split(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from custom_sam_peft.cli import calibrate_cmd
+
+    _patch_probe(monkeypatch, tmp_path=tmp_path)  # sets cuda stubs + writes config
+    monkeypatch.setattr(calibrate_cmd, "_run_probe", lambda **kw: _synthetic_peak(**kw))
+    monkeypatch.chdir(tmp_path)
+    out = tmp_path / ".custom_sam_peft_calibration.json"
+    calibrate_cmd.run_calibration(config=tmp_path / "config.yaml", output=out, force=True)
+    data = json.loads(out.read_text())
+    assert data["schema_version"] == 3
+    # A_per_class solved from the two synthetic K=1/K=4 peaks (closed form).
+    assert abs(data["A_per_class"] - 50_000_000) < 1_000_000
+    assert "activation_bytes_per_example" not in data
+
+
 def test_calibrate_non_default_output_uses_calibrated_provenance(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
