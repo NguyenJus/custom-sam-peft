@@ -100,7 +100,7 @@ def _make_skip_predicate_cases():
     "marker_tier,satisfied,should_skip,reason_substr",
     _make_skip_predicate_cases(),
 )
-def test_should_skip_helper(monkeypatch, marker_tier, satisfied, should_skip, reason_substr):
+def test_should_skip_helper(marker_tier, satisfied, should_skip, reason_substr):
     """_should_skip returns a skip-reason string when the tier is unmet, else None."""
     from tests.conftest import _should_skip
 

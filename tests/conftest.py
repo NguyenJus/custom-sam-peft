@@ -101,8 +101,6 @@ def _satisfied_tiers() -> set[str]:
     A >16 GB card satisfies only gpu_xl and is intentionally NOT auto-run for the
     <=16 GB ceiling assertions (running them on a bigger card could mask a small-card OOM).
     """
-    import torch
-
     if not _has_compatible_gpu():
         return set()
     cc = torch.cuda.get_device_capability()
@@ -168,7 +166,7 @@ def _free_cuda_after_gpu_test(request: pytest.FixtureRequest) -> Iterator[None]:
 
     Real-model GPU tests each load the full SAM 3.1 checkpoint (and some load it
     twice, e.g. an export/reload round-trip). Without freeing between tests, the
-    caching allocator accumulates and a ~7 GB card (GTX 1080, gpu_local tier)
+    caching allocator accumulates and a <=16 GB card (gpu_t4 / gpu_bf16 tier)
     OOMs partway through a file. Gated on ``requires_compatible_gpu`` so this is
     a no-op for the CPU suite (the only marker every GPU test carries, stable
     across the tier-marker swap).
