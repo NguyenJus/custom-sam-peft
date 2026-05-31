@@ -12,7 +12,7 @@ from unittest.mock import MagicMock
 import pytest
 import torch
 
-from custom_sam_peft.presets import PresetDecision, decide_preset
+from custom_sam_peft.presets import A_FIXED, A_PER_CLASS, PresetDecision, _activation_bytes, decide_preset
 
 _GB = 1024**3
 
@@ -415,3 +415,24 @@ def test_decide_preset_defaults_k_to_cap_when_none(monkeypatch: pytest.MonkeyPat
     monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
     _stub_gpu(monkeypatch, int(80 * _GB))
     assert decide_preset().predicted_bytes == decide_preset(k=MULTIPLEX_CAP).predicted_bytes
+
+
+def test_activation_bytes_split_is_linear_in_k_no_analytic_cache() -> None:
+    # Encoder term (A_FIXED) does NOT scale with K; only A_PER_CLASS * K does.
+    at_k1 = _activation_bytes(batch=1, cache=None, k_eff=1)
+    at_k16 = _activation_bytes(batch=1, cache=None, k_eff=16)
+    assert at_k1 == A_FIXED + A_PER_CLASS * 1
+    assert at_k16 == A_FIXED + A_PER_CLASS * 16
+    # The #203 regression guard: K=1 vs K=16 differ by exactly 15 * A_PER_CLASS.
+    assert at_k16 - at_k1 == 15 * A_PER_CLASS
+
+
+def test_activation_bytes_scales_with_batch() -> None:
+    assert _activation_bytes(batch=4, cache=None, k_eff=2) == (
+        (A_FIXED + A_PER_CLASS * 2) * 4
+    )
+
+
+def test_activation_bytes_reads_split_cache() -> None:
+    cache = {"A_fixed": 1000, "A_per_class": 7}
+    assert _activation_bytes(batch=2, cache=cache, k_eff=3) == (1000 + 7 * 3) * 2

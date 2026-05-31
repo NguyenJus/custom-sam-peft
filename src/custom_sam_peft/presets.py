@@ -195,20 +195,21 @@ def _attention_bytes_per_example(image_size: int) -> int:
     return _SAM3_HEADS * n_tokens * n_tokens * 4
 
 
-def _activation_per_example(image_size: int, cache: dict[str, Any] | None) -> int:
+def _activation_bytes(batch: int, cache: dict[str, Any] | None, k_eff: int = 1) -> int:
+    """Split activation bytes: (A_FIXED + A_PER_CLASS * K) * batch.
+
+    A_FIXED (K-invariant vision-encoder activation) does NOT scale with K; only the
+    A_PER_CLASS decoder term does. Measured natively at SAM 3.1's fixed 1008px, so
+    there is no image-size scale term. Reads the split from a v3 cache when present.
+    Spec §2.
+    """
     if cache is not None:
-        return int(cache["activation_bytes_per_example"])
-    return int(BASE_ACTIVATION_AT_1024 * (image_size / 1024) ** 2)
-
-
-def _activation_bytes(
-    image_size: int, batch: int, cache: dict[str, Any] | None, k_eff: int = 1
-) -> int:
-    # The SAM 3.1 multiplex forward materializes per-class mask/box decoder
-    # activations within a group, so per-example activation scales with k_eff
-    # (the per-group class count). Spec §3.1.
-    per = _activation_per_example(image_size, cache)
-    return int(per * batch * k_eff)
+        a_fixed = int(cache["A_fixed"])
+        a_per_class = int(cache["A_per_class"])
+    else:
+        a_fixed = A_FIXED
+        a_per_class = A_PER_CLASS
+    return int((a_fixed + a_per_class * k_eff) * batch)
 
 
 def _predicted_bytes(
