@@ -18,13 +18,14 @@ from custom_sam_peft import paths
 from custom_sam_peft.cli._progress import progress as P
 from custom_sam_peft.config._duration import format_seconds, parse_duration_to_seconds
 from custom_sam_peft.config.schema import LRSchedule, Optimizer, TrainConfig
-from custom_sam_peft.data.base import Dataset
+from custom_sam_peft.data.base import Dataset, TextPrompts
 from custom_sam_peft.data.collate import collate_batch
 from custom_sam_peft.eval._artifacts import EvalArtifacts, TimeLimitStop
 from custom_sam_peft.eval.evaluator import Evaluator
 from custom_sam_peft.models.sam3 import MULTIPLEX_CAP, Sam3Wrapper
 from custom_sam_peft.peft_adapters import PEFTMethod, make_peft_method
-from custom_sam_peft.runtime import Runtime
+from custom_sam_peft.predict.budget import decide_predict_budget_warning
+from custom_sam_peft.runtime import Runtime, to_device
 from custom_sam_peft.tracking.base import Tracker
 from custom_sam_peft.train._scheduler import PlateauOrLambda
 from custom_sam_peft.train.checkpoint import (
@@ -490,6 +491,56 @@ class Trainer:
         )
         self._log_image_panel(val_examples, class_names, step)
 
+    def _probe_predict_budget(self) -> None:
+        """Empirically measure the model's predict VRAM footprint and warn if it exceeds budget.
+
+        Runs one batch=1/K=1 forward (no backward, no optimizer step) under
+        ``torch.no_grad()`` immediately before the training loop, so any
+        over-budget warning reaches the user at the earliest possible moment.
+        CPU no-op.  Probe failures are swallowed — warn-not-block.
+        """
+        if self.runtime.device.type != "cuda":
+            return
+        # FIX 2: empty-dataset guard — avoid IndexError swallowed as a confusing message
+        if len(self.train_ds) == 0:
+            _LOG.debug("predict-budget probe skipped: no training examples")
+            return
+        try:
+            # Snapshot all RNG state so the probe (dataset __getitem__ augmentation +
+            # forward) does not advance the main-process RNG visible to the epoch loop.
+            cpu_rng = torch.get_rng_state()
+            cuda_rng = torch.cuda.get_rng_state_all()
+            try:
+                batch = collate_batch([self.train_ds[0]])
+                classes = sorted({c for p in batch["prompts"] for c in p.classes})
+                if not classes:
+                    _LOG.debug("predict-budget probe skipped: no classes in first training example")
+                    return
+                # any single class; image-encoder cost dominates and is ~uniform across prompts
+                probe_prompts = [TextPrompts(classes=[classes[0]])]
+                images = to_device(batch["images"], self.runtime)
+                was_training = self.model.training
+                self.model.eval()
+                try:
+                    # Resets the device-global peak counter; acceptable here — the probe
+                    # runs once at model-ready and any subsequent training peak is still
+                    # captured by callers measuring after the run.
+                    torch.cuda.reset_peak_memory_stats()
+                    with torch.no_grad():
+                        self.model(images, probe_prompts)
+                    measured = torch.cuda.max_memory_allocated()
+                finally:
+                    if was_training:
+                        self.model.train()
+                warn, msg = decide_predict_budget_warning(measured)
+                if warn:
+                    _LOG.warning(msg)
+            finally:
+                torch.set_rng_state(cpu_rng)
+                torch.cuda.set_rng_state_all(cuda_rng)
+        except Exception as exc:
+            _LOG.debug("predict-budget probe skipped: %s", exc)
+
     # ------------------------------------------------------------------
     # Public API
     # ------------------------------------------------------------------
@@ -657,6 +708,8 @@ class Trainer:
             if d is not None and d.should_stop:
                 return _EarlyStop(d.triggering_step, _current_epoch[0], d.reason)
             return None
+
+        self._probe_predict_budget()
 
         try:
             try:
