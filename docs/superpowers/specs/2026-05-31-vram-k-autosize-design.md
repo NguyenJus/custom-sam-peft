@@ -120,20 +120,44 @@ config rewrite wiring, the runtime ladder) stays.
 
 ## §2 The corrected memory model (split activation)
 
-> **Amendment (2026-05-31, overhead-model recalibration).** The §9 real-GPU gate
-> caught a genuine modeling defect on the dev-env RTX 5070 Ti: the original
-> derivation `A_FIXED = peak_K1 − fixed_overhead − A_PER_CLASS` trusted an analytic
-> `fixed_overhead` that **included a fictional SDPA attention term**
-> (`_attention_bytes_per_example` ≈ 1.6 GiB) and an over-conservative model-weight
-> estimate. Real SAM 3.1 uses flash / memory-efficient SDPA, which never
-> materializes the N×N score matrix, so the whole real K=1 forward activation is
-> only ≈0.96 GiB. The analytic `fixed_overhead` (4.248 GiB) thereby **exceeded** the
-> measured `peak_K1` (3.049 GiB), driving `A_FIXED` to −2.36 GiB — physically
-> meaningless. The fix below makes the decomposition **self-consistent**: the
-> predictor and the derive script share one `STATIC` overhead with **no separate
-> attention term**, so inverting the measured peak reproduces it, and `A_FIXED`
-> becomes a non-negative residual. The two-point `A_PER_CLASS` derivation
-> (validated, no analytic overhead in it) is unchanged.
+> **Amendment 2 (2026-05-31, cc-aware attention model — SUPERSEDES Amendment 1).**
+> Amendment 1 dropped the analytic attention term **universally** based on a real-GPU
+> probe on the dev-env RTX 5070 Ti. That direction is **wrong** and is superseded
+> here. The 5070 Ti is **compute capability 12.0 (sm_120)**, which receives
+> **FlashAttention-2** — a best-case card where encoder self-attention never
+> materializes the N×N score matrix (the whole K=1 forward activation is only ≈0.96
+> GiB). **Older GPUs do not get flash:** FlashAttention-2 in PyTorch SDPA requires
+> **sm_80+ (cc ≥ 8.0)**; Turing (cc 7.5: T4, RTX 2080) and Pascal (cc 6.1: GTX 1080)
+> do not. The mem-efficient SDPA backend often covers Turing, but **Pascal commonly
+> falls back to the math backend, which materializes the full `H·N²` fp32 score
+> matrix** (≈1.6 GiB/image at SAM 3.1's 1008px / N=5184 tokens / 16 heads). cc<8.0 is
+> a first-class supported target (`presets.py` already branches dtype on `cc < (8,0)`
+> for fp16; GTX 1080 / issue-79 older-CUDA testing is in scope). Dropping the
+> materialized-attention term **universally** would re-introduce the exact OOM-causing
+> **under-count** that `_attention_bytes_per_example` was added to fix on no-flash
+> cards.
+>
+> **What Amendment 2 keeps from Amendment 1 (the genuine fix).** The attention term
+> is **K-invariant** in the predictor (`* batch`, never `* k_eff`); only `A_PER_CLASS`
+> scales with K, so the split fix already cures #203's ×K over-count regardless of the
+> attention term. The only real defect Amendment 1 reacted to is that the *derivation*
+> subtracted a worst-case (materialized) attention overhead from a best-case (flash)
+> measured peak → a negative `A_FIXED`. Amendment 2 fixes that by making the attention
+> term **conditional on the card's SDPA regime**, not by deleting it.
+>
+> **The cc-aware model.** A helper `_flash_attention_available(cc) -> bool` returns
+> `cc >= (8, 0)`. The train predictor adds `_attention_bytes_per_example(image) *
+> batch` **only when flash is NOT available** (cc < 8.0, or cc unknown → conservative
+> "no flash" over-estimate). On flash cards the real forward attention is already
+> folded into the empirically-derived `A_FIXED`/`A_PER_CLASS` (so no separate term);
+> on no-flash cards the materialized term is re-added for safety. The derivation
+> subtracts **exactly the terms the predictor adds for the card's regime**
+> (`overhead_to_subtract = STATIC + (attention_materialized if not flash else 0)`), so
+> the stored seeds are a **portable flash-baseline**: seeds derived on the 5070 Ti
+> (flash) are valid for ALL cards, and the predictor re-adds the materialized
+> attention only for cc<8.0. No re-derivation on a Pascal/Turing card is needed.
+> See §2.1 for the per-regime formulas, the `STATIC` definition, and the safety
+> inequalities for both a flash and a no-flash card.
 
 Replace the single lumped `BASE_ACTIVATION_AT_1024` constant with two seed
 constants:
@@ -164,17 +188,39 @@ Notes:
   with class count. This removes the ~Kx over-count.
 - The cached form stores both constants (§3, schema v3) and reconstructs the same
   formula: `(cache["A_fixed"] + cache["A_per_class"] * K) * batch` — no scale term.
-- **No separate attention term.** The full predicted peak is
-  `predicted_peak(method, r, batch, K) = STATIC(method, r) + (A_FIXED +
-  A_PER_CLASS * K) * batch`. Real SDPA never materializes the N×N score matrix, so
-  the forward attention is already inside the measured activation that the split
-  fits; adding a separate analytic `_attention_bytes_per_example` term would
-  double-count and break self-consistency. `STATIC` is defined in §2.1.
-- **Self-consistency requirement.** The derive script (§6) inverts the **same**
-  `STATIC` the predictor adds, so `predicted_peak` reproduces the measured peak at
-  the probe points (up to the clamp): at K=1, `predicted_peak = STATIC + A_FIXED +
-  A_PER_CLASS`; with `A_FIXED` clamped to 0 this **over-predicts** by exactly the
-  clamped residual magnitude — a safety margin, never an under-prediction.
+- **Conditional (cc-aware) attention term — Amendment 2.** The full predicted train
+  peak is regime-dependent:
+
+  ```text
+  flash_available(cc) := cc >= (8, 0)          # cc unknown -> False (conservative)
+  attn(batch)         := _attention_bytes_per_example(SAM3_IMAGE_SIZE) * batch
+                         # K-INVARIANT: scales with batch, NEVER with K
+  predicted_peak(method, r, batch, K) =
+        STATIC(method, r) + (A_FIXED + A_PER_CLASS * K) * batch
+      + (attn(batch) if not flash_available(cc) else 0)
+  ```
+
+  On a **flash card (cc ≥ 8.0)** the forward attention is already inside the measured
+  activation that the empirical split fits, so adding a separate analytic term would
+  double-count — no attention term. On a **no-flash card (cc < 8.0)** SDPA commonly
+  falls back to the math backend, which materializes the full `H·N²` fp32 score
+  matrix; that worst case is NOT in the flash-baseline split, so the materialized
+  `_attention_bytes_per_example` term is **re-added** for safety. `STATIC` and
+  `_attention_bytes_per_example` are defined in §2.1.
+- **The attention term is K-invariant.** It multiplies `batch`, never `k_eff`. Only
+  `A_PER_CLASS * K` scales with class count. So re-adding the attention term on
+  no-flash cards does **not** re-trigger #203's ×K over-count — the split fix already
+  cured that, and a 24 GiB card still sizes with the term present (§2.1 confirms).
+- **Self-consistency requirement (regime-matched).** The derive script (§6) inverts
+  the **same overhead the predictor adds for the deriving card's regime**:
+  `overhead_to_subtract = STATIC + (attn(1) if not flash_available(cc) else 0)`. So
+  `predicted_peak` reproduces the measured peak at the probe points (up to the clamp),
+  and the stored `A_FIXED`/`A_PER_CLASS` are a **portable flash-baseline** — derived
+  on the 5070 Ti (flash, subtract STATIC only) they apply to all cards; the predictor
+  re-adds the materialized attention only when cc < 8.0. At K=1 on a flash card,
+  `predicted_peak = STATIC + A_FIXED + A_PER_CLASS`; with `A_FIXED` clamped to 0 this
+  **over-predicts** by exactly the clamped residual magnitude — a safety margin,
+  never an under-prediction.
 
 ### Symbols to change in `presets.py`
 
@@ -199,34 +245,60 @@ Notes:
 
   The `image_size` parameter is gone from the activation helpers — with image size
   fixed it carries no information. `_attention_bytes_per_example(image_size)` is
-  **retained** (it still reads `SAM3_IMAGE_SIZE` to derive token count) but is now
-  called **only** by the `decide_eval_batch_size` SDPA cap, not by the train
-  predictor (§2.1). Keep a thin `_activation_per_example` only if a caller still
+  **retained** (it still reads `SAM3_IMAGE_SIZE` to derive token count) and is now
+  called by **(a)** the `decide_eval_batch_size` SDPA cap and **(b)** the
+  `_predicted_bytes` train branch **conditionally**, only when flash is unavailable
+  (Amendment 2, §2.1). Keep a thin `_activation_per_example` only if a caller still
   needs a per-image figure; collapse to the minimal set of helpers the call sites
   (`_predicted_bytes`, `decide_eval_batch_size`) need, with no dead helper left
   behind.
 
-- **`_predicted_bytes(..., mode, k_eff)`** (~line 204):
-  - **train** branch — `STATIC(method, r) + _activation_bytes(batch, cache,
-    k_eff)`, where `STATIC = _model_bytes(method) + _adapter_bytes(r) +
-    _optimizer_bytes(r) + WORKSPACE_BYTES`. **The `_attention_bytes_per_example(...)
-    * batch` term is REMOVED** from the train branch — real SDPA attention is folded
-    into the empirical split (§2 self-consistency). This is the recalibration: the
-    train predictor no longer adds the fictional ≈1.6 GiB attention figure.
+- **`_flash_attention_available(cc)`** (NEW helper, Amendment 2) — returns
+  `cc >= (8, 0)`. cc ≥ 8.0 (Ampere/Ada/Hopper/Blackwell) gets FlashAttention-2 /
+  mem-efficient SDPA → no separate materialized attention term. cc < 8.0
+  (Turing 7.5, Pascal 6.1) does not → assume the math backend materializes the
+  `H·N²` score matrix → include the attention term. **Conservative default:** when
+  `cc` is `None`/unreadable, return `False` (assume no flash → include the term →
+  safe over-estimate). Deliberate conservatism: Turing (7.5) is treated as no-flash
+  even though it usually gets mem-efficient SDPA — over-estimating is always safe,
+  and Pascal genuinely needs the term.
+
+- **`_predicted_bytes(..., mode, k_eff, flash_available)`** (~line 218): gains a
+  `flash_available: bool = True` parameter (default `True` keeps existing bare unit
+  calls in the flash regime). Callers that know the card — `decide_preset`,
+  `decide_eval_batch_size` — compute `_flash_attention_available(cc)` from the
+  device capability and pass it through.
+  - **train** branch — `STATIC + split + (attn(batch) if not flash_available else 0)`.
+    Here `split = _activation_bytes(batch, cache, k_eff)`;
+    `STATIC = _model_bytes + _adapter_bytes + _optimizer_bytes + WORKSPACE_BYTES`;
+    `attn(batch) = _attention_bytes_per_example(image_size) * batch` (K-invariant). On
+    a flash card the attention is folded into the empirical split (no term); on a
+    no-flash card the materialized term is re-added for safety (§2 / §2.1). This
+    supersedes Amendment 1's universal drop.
   - **eval** branch — `_model_bytes(method) + _activation_bytes(batch, cache,
-    k_eff) * forward_only_factor + WORKSPACE_BYTES`. The eval branch must accept
-    and thread `k_eff` (today it hard-codes K=1 by calling `_activation_bytes`
-    without `k_eff`). `decide_eval_batch_size` passes its `classes_per_forward`
-    through as `k_eff` (§6). The eval branch already carries no separate attention
-    term; the SDPA ceiling stays in `decide_eval_batch_size` as an independent cap
-    (§2.1 / §7).
+    k_eff) * forward_only_factor + WORKSPACE_BYTES + (attn(batch) if not
+    flash_available else 0)`. The eval branch must accept and thread `k_eff` (today
+    it hard-codes K=1 by calling `_activation_bytes` without `k_eff`), and now also
+    honors `flash_available`: under no-flash it adds the same materialized attention
+    term so eval stays SAFE (never under-predicts). `decide_eval_batch_size` passes
+    its `classes_per_forward` as `k_eff` and `_flash_attention_available(cc)` as
+    `flash_available` (§6). The independent SDPA *ceiling* inside
+    `decide_eval_batch_size` is unchanged (§2.1 / §7) — it is an additional cap, not
+    the same term.
 
 `_model_bytes`, `_adapter_bytes`, `_optimizer_bytes`, `forward_only_factor`,
-`WORKSPACE_BYTES` are unchanged. `_attention_bytes_per_example` is **retained** but
-**no longer called by `_predicted_bytes`**; its only remaining caller is the eval
-SDPA ceiling in `decide_eval_batch_size` (§2.1 / §7).
+`WORKSPACE_BYTES` are unchanged. `_attention_bytes_per_example` is **retained** and
+is now called by `_predicted_bytes` **only on the no-flash branch** (cc < 8.0) and by
+the eval SDPA ceiling in `decide_eval_batch_size` (§2.1 / §7).
 
-### §2.1 The self-consistent `STATIC` overhead, the SDPA cap, and the safety inequality
+### §2.1 The regime-matched overhead, the cc-aware attention term, the SDPA cap, and the safety inequalities
+
+> **Amendment 2.** The attention term is now **conditional on the card's SDPA
+> regime** (flash vs. math backend), not universally dropped. The predictor adds, and
+> the derive script subtracts, **exactly the same regime-matched overhead**, so the
+> stored seeds form a portable flash-baseline. This section gives `STATIC`, the
+> `_flash_attention_available` proxy, the per-regime `overhead_to_subtract`, and the
+> safety inequalities for **both** a flash and a no-flash card.
 
 **`STATIC` definition (shared by predictor and derive script).**
 
@@ -235,12 +307,40 @@ STATIC(method, r) = _model_bytes(method) + _adapter_bytes(r)
                     + _optimizer_bytes(r) + WORKSPACE_BYTES
 ```
 
-There is **no `_attention_bytes_per_example` term in `STATIC`** and none in the
-train predictor. `_model_bytes` stays analytic — it is deliberately conservative
-(over-estimates model weights), which keeps sizing safe and remains portable to
-arbitrary method/r. The derive script (§6) subtracts this **same** `STATIC` to
-recover `A_FIXED = clamp(peak_K1 − STATIC − A_PER_CLASS, min=0)`, so the predictor
-reproduces the measured peak at the probe points.
+`_model_bytes` stays analytic — it is deliberately conservative (over-estimates
+model weights), which keeps sizing safe and remains portable to arbitrary method/r.
+
+**The `_flash_attention_available(cc)` proxy and the regime-matched overhead.**
+
+```text
+_flash_attention_available(cc) := (cc is not None) and cc >= (8, 0)
+attn(batch)                    := _attention_bytes_per_example(SAM3_IMAGE_SIZE) * batch  # K-invariant
+
+# Predictor (train) adds:
+overhead_added      = STATIC + (attn(batch) if not flash_available else 0)
+# Derive script (§6) subtracts, at batch=1:
+overhead_to_subtract = STATIC + (attn(1)     if not flash_available(cc) else 0)
+A_FIXED = clamp(peak_K1 − overhead_to_subtract − A_PER_CLASS, min=0)
+```
+
+- On a **flash card** (the 5070 Ti dev box, cc 12.0): `overhead_to_subtract = STATIC`
+  only → `A_FIXED` is the small flash residual (clamps to 0 on the dev GPU; cited as
+  measured, §6).
+- On a **no-flash card** (cc < 8.0): `overhead_to_subtract = STATIC + attn(1)` → the
+  measured peak (which on the math backend *includes* the materialized attention) has
+  that attention subtracted off, so `A_FIXED` is regime-normalized to the **same
+  flash-baseline quantity** the predictor stores.
+
+**Portability of the seeds.** Because the derive script subtracts exactly the term
+the predictor re-adds for the same regime, one `A_FIXED`/`A_PER_CLASS` pair is a
+portable flash-baseline: derived on the 5070 Ti (flash), it is valid for **all**
+cards. The predictor re-adds the materialized attention only when cc < 8.0. **No
+re-derivation on a Pascal/Turing card is needed.** This rests on one accepted
+approximation: `A_PER_CLASS` (the per-class *decoder* term, taken over a few class
+queries) is small and robust across SDPA backends relative to the dominant *encoder*
+self-attention captured by the conditional `attn` term — so a single flash-derived
+`A_PER_CLASS` is reused across regimes. Flagged as an accepted approximation with a
+follow-up (§9) to validate on a real cc < 8.0 card if one becomes available.
 
 Measured on the dev-env RTX 5070 Ti (qlora, r=4, batch=1, sm_120, driver 610.47):
 
@@ -254,34 +354,67 @@ Measured on the dev-env RTX 5070 Ti (qlora, r=4, batch=1, sm_120, driver 610.47)
 `A_PER_CLASS` is a pure empirical differential (no analytic overhead enters it) and
 is unchanged from the original design — it is the validated core of #203.
 
-**Fate of `_attention_bytes_per_example`.** The symbol is **retained** and the SDPA
-ceiling inside `decide_eval_batch_size` is **kept as-is** (`_attn_per_example`,
-`attn_budget`). Rationale: that cap models a genuine worst case — when SDPA falls
-back to the math kernel it materializes the full `B·H·N²` fp32 score matrix, which
-flash / mem-efficient attention avoids but is not guaranteed. The cap only ever
-*lowers* `best_bs` (issue #162), so it can never cause an under-prediction; it is an
-orthogonal conservative eval safety ceiling, not part of the train-peak
-decomposition. It is **not** recomputed from the split and **not** removed. Removing
-the term from the *train* predictor (where it double-counted against the empirical
-split) while keeping it as the *eval* cap is consistent: train fits the empirical
-split; eval keeps its independent SDPA guard.
+**Fate of `_attention_bytes_per_example` (Amendment 2).** The symbol is **retained**
+and now has **two** consumers: the conditional no-flash branch of the train/eval
+predictor (above), and the SDPA ceiling inside `decide_eval_batch_size`. The eval
+SDPA ceiling (`_attn_per_example`, `attn_budget`) is kept as an **unconditional**
+conservative cap — it stays regime-independent on purpose: that cap models the math
+backend's full `B·H·N²` fp32 score matrix, only ever *lowers* `best_bs` (issue #162),
+and can therefore never cause an under-prediction. Keeping it unconditional (rather
+than making it cc-aware) preserves a safe eval ceiling on every card with zero OOM
+risk; making it cc-aware could only *raise* `best_bs` on flash cards, which is the
+unsafe direction, so it is deliberately left as-is. The predictor's *train/eval
+attention term* is the cc-aware one; the eval SDPA *ceiling* is the always-on guard.
 
-**Safety inequality (must hold at every validated probe point).** The predictor
-must over-predict (≥ measured); under-prediction is forbidden (OOM risk). With
-`A_FIXED = 0`:
+**Safety inequality A — flash card (RTX 5070 Ti, cc 12.0).** The predictor must
+over-predict (≥ measured); under-prediction is forbidden (OOM risk). On a flash card,
+no attention term is added (`flash_available = True`), and `A_FIXED = 0`:
 
 ```text
-predicted_peak(qlora, 4, 1, K=1) = STATIC + (0 + A_PER_CLASS·1)
+predicted_peak(qlora, 4, 1, K=1) = STATIC + (0 + A_PER_CLASS·1)            # no attn term
                                  = 2.646 + 1.163 = 3.809 GiB  ≥  measured 3.049 GiB   (+0.760)
 predicted_peak(qlora, 4, 1, K=4) = STATIC + (0 + A_PER_CLASS·4)
                                  = 2.646 + 4.652 = 7.298 GiB  ≥  measured 6.540 GiB   (+0.758)
 ```
 
-Both probe points are **safely conservative** (~0.76 GiB margin each), and the K=1
-prediction is ~2.4 GiB **less** over-conservative than the broken status quo (which
-added the fictional 1.6 GiB attention term on top of an over-estimated overhead).
-The clamp can only *raise* the predicted floor (residual was negative), so it
-strictly preserves the over-prediction safety property at every point.
+Both probe points are **safely conservative** (~0.76 GiB margin each). The clamp can
+only *raise* the predicted floor (residual was negative), so it strictly preserves
+over-prediction at every point.
+
+**Safety inequality B — synthetic no-flash card (math-backend SDPA, cc < 8.0).** The
+seeds are the same portable flash-baseline (`A_FIXED = 0`, `A_PER_CLASS = 1.163
+GiB`), but the predictor **re-adds** the materialized attention term `attn(batch) =
+_attention_bytes_per_example(1008) · batch ≈ 1.60 GiB · batch` (`H=16`, `N=5184`,
+`16·5184²·4 B ≈ 1.717e9 B ≈ 1.60 GiB`). At batch=1:
+
+```text
+predicted_peak_noflash(qlora, 4, 1, K=1) = STATIC + (0 + A_PER_CLASS·1) + attn(1)
+                                         = 2.646 + 1.163 + 1.60 = 5.41 GiB
+predicted_peak_noflash(qlora, 4, 1, K=4) = STATIC + (0 + A_PER_CLASS·4) + attn(1)
+                                         = 2.646 + 4.652 + 1.60 = 8.90 GiB
+```
+
+A plausible **math-backend** peak on such a card is the flash measured peak *plus*
+the materialized score matrix it cannot avoid: `plausible_noflash_peak(K=1) ≈ 3.049 +
+1.60 = 4.65 GiB` and `(K=4) ≈ 6.540 + 1.60 = 8.14 GiB`. So:
+
+```text
+K=1:  predicted 5.41 GiB  ≥  plausible math-backend 4.65 GiB   (+0.76, safe)
+K=4:  predicted 8.90 GiB  ≥  plausible math-backend 8.14 GiB   (+0.76, safe)
+```
+
+The materialized ≈1.6 GiB/image term is re-added and the prediction stays **above** a
+plausible math-backend peak — exactly the under-count `_attention_bytes_per_example`
+was added to fix. The ~0.76 GiB margin (from the clamped flash residual) carries over
+to the no-flash regime, so dropping the term universally (Amendment 1) would have
+under-predicted by ≈1.6 GiB on a no-flash card — the forbidden direction.
+
+**#203 non-regression with the term present.** The attention term is K-invariant
+(`· batch`, never `· k_eff`), so it adds a single constant to every K candidate and
+cannot reintroduce the ×K over-count. A 24 GiB card still sizes successfully with the
+term present (the existing `test_decide_preset_24gib_sizes_successfully` runs at
+`cc=(8,0)` → flash regime → no term; and even a forced no-flash 24 GiB card adds only
+≈1.6 GiB · batch, which leaves QLoRA r=4 batch=1 K=1 ≈ 5.4 GiB ≪ 22.5 GiB budget).
 
 ---
 
@@ -370,9 +503,11 @@ Stage 1 — DERIVE (two cheap probes, both fit a 16 GiB card)
   probe @ (qlora, r=4, batch=1, K=1)  -> peak_K1   (~3.05 GiB measured)
   probe @ (qlora, r=4, batch=1, K=4)  -> peak_K4   (~6.54 GiB measured)
   A_per_class = (peak_K4 - peak_K1) / (4 - 1)
-  A_fixed     = clamp(peak_K1 - STATIC - A_per_class, min=0)
-                (STATIC = model + adapter + optimizer + workspace; NO attention
-                 term — same STATIC the predictor adds, §2.1)
+  A_fixed     = clamp(peak_K1 - overhead_to_subtract - A_per_class, min=0)
+                (overhead_to_subtract = STATIC + (attn(1) if not flash else 0);
+                 STATIC = model + adapter + optimizer + workspace — the SAME
+                 regime-matched overhead the predictor adds, §2.1. On the cc=12.0
+                 dev box flash=True -> subtract STATIC only.)
         |
         v
 Stage 2 — AIM (pure analytic, no GPU work)
@@ -401,21 +536,30 @@ Run two cheap probes via the existing `_run_probe(method, r, k_eff, batch)`
 - `peak_K1 = _run_probe(method="qlora", r=4, k_eff=1, batch=1)`
 - `peak_K4 = _run_probe(method="qlora", r=4, k_eff=4, batch=1)`
 
-Both fit a 16 GiB card (≈3.05 / ≈6.54 GiB measured). Solve using the **same
-`STATIC` the predictor adds** (no attention term, §2.1):
+Both fit a 16 GiB card (≈3.05 / ≈6.54 GiB measured). Solve by subtracting the **same
+regime-matched overhead the predictor adds** (§2.1), reading the live card's compute
+capability to decide the flash regime:
 
 ```text
 A_per_class = (peak_K4 - peak_K1) / (4 - 1)
+cc          = torch.cuda.get_device_capability(0)
+flash       = _flash_attention_available(cc)            # cc >= (8, 0)
 STATIC      = _model_bytes("qlora") + _adapter_bytes(4) + _optimizer_bytes(4)
-              + WORKSPACE_BYTES                         # NO attention term
-A_fixed     = clamp(peak_K1 - STATIC - A_per_class, min=0)
+              + WORKSPACE_BYTES
+overhead    = STATIC + (_attention_bytes_per_example(SAM3_IMAGE_SIZE) if not flash else 0)
+A_fixed     = clamp(peak_K1 - overhead - A_per_class, min=0)
 ```
 
-Clamp `A_fixed` and `A_per_class` to `>= 0`. On the dev-env 5070 Ti `A_fixed`'s
-pre-clamp residual is negative (≈ −0.76 GiB) and clamps to 0 — this is the
-**expected, cited** outcome (§2.1 / §6), not an error: the K-invariant encoder
-activation is below the conservative model-weight margin in `STATIC`. Warn only on a
-**negative `A_per_class`** (mirroring today's warning at `calibrate_cmd.py:188`),
+On the cc=12.0 dev box `flash=True`, so `overhead = STATIC` (no attention subtracted)
+and the derived seeds are the portable flash-baseline. On a cc<8.0 card `flash=False`,
+so the materialized attention is subtracted off the (math-backend) measured peak,
+normalizing `A_fixed` to the **same** flash-baseline quantity — seeds derived on
+either regime are interchangeable (§2.1). Clamp `A_fixed` and `A_per_class` to `>= 0`.
+On the dev-env 5070 Ti `A_fixed`'s pre-clamp residual is negative (≈ −0.76 GiB) and
+clamps to 0 — this is the **expected, cited** outcome (§2.1 / §6), not an error: the
+K-invariant encoder activation is below the conservative model-weight margin in
+`STATIC`. Warn only on a **negative `A_per_class`** (mirroring today's warning at
+`calibrate_cmd.py:188`),
 which would signal a genuinely broken differential. A clamped-to-zero `A_fixed` must
 **not** block the derivation or the cache write; emit at most an informational note.
 
@@ -536,11 +680,16 @@ it to emit the **two-point split**:
 - Run two probes at `(method, r, batch=1)` for `K=1` and `K=4` (reuse its
   existing single-probe body in a loop over K).
 - Compute `A_per_class = (peak_K4 - peak_K1) / 3` and `A_fixed = clamp(peak_K1 -
-  STATIC - A_per_class, min=0)` at SAM 3.1's native 1008px — no scaling conversion
-  (the prior `* (1024 / image_size) ** 2` artifact is removed). `STATIC` is
-  `_model_bytes + _adapter_bytes + _optimizer_bytes + WORKSPACE_BYTES` with **no
-  `_attention_bytes_per_example` term** — the same `STATIC` the predictor adds
-  (§2.1), so the printed seeds reproduce the measured peak.
+  overhead - A_per_class, min=0)` at SAM 3.1's native 1008px — no scaling conversion
+  (the prior `* (1024 / image_size) ** 2` artifact is removed). `overhead` is the
+  **regime-matched** quantity `STATIC + (attn(1) if not flash else 0)` (Amendment 2,
+  §2.1), where `STATIC = _model_bytes + _adapter_bytes + _optimizer_bytes +
+  WORKSPACE_BYTES`, `flash = _flash_attention_available(cc)` from the live card's
+  `torch.cuda.get_device_capability(0)`, and `attn(1) =
+  _attention_bytes_per_example(SAM3_IMAGE_SIZE)`. This is the **same** regime-matched
+  overhead the predictor adds, so the printed seeds reproduce the measured peak and
+  are a portable flash-baseline (on the cc=12.0 dev box `flash=True` → subtract STATIC
+  only).
 - Print copy-paste-ready `A_FIXED = ...` and `A_PER_CLASS = ...` lines. A
   clamped-to-zero `A_FIXED` is a valid, expected result on the dev GPU (the residual
   is negative because the encoder activation sits under the model-weight
@@ -556,7 +705,10 @@ sm_120, driver 610.47)** — and hardcode the result as `A_FIXED` / `A_PER_CLASS
 capability, commit SHA, date, and the exact derivation command (`uv run python
 scripts/_derive_preset_constants.py --method qlora --r 4 --batch 1`). The split is
 model-driven — activation bytes per example depend on the model and dtype, not the
-card — so constants derived on the 5070 Ti apply to all GPUs.
+card — and because the derivation subtracts the regime-matched overhead (Amendment 2,
+§2.1), the constants are a **portable flash-baseline** that applies to all GPUs: the
+predictor re-adds the materialized attention only on cc < 8.0 cards. **No
+re-derivation on a Pascal/Turing card is required.**
 
 **If the implementing session lacks GPU access:** land the constants as
 `# tbd:`-tagged seeds — a documented, conservative split of the current
@@ -567,13 +719,17 @@ over-attributes to `A_FIXED`, which can only *raise* the predicted floor, keepin
 sizing safe. **Never ship a silent guess.** The `# tbd:` tag is the trigger for
 re-derivation on the 5070 Ti before merge — which the §9 real-GPU gate enforces.
 
-> **Amendment (2026-05-31).** The §9 gate has since been run on the 5070 Ti. The
-> **measured** outcome is `A_FIXED = 0` (clamped residual) and `A_PER_CLASS =
-> 1,248,840,021 B` (≈1.163 GiB). `A_FIXED = 0` is landed as a **cited measured
-> result** (GPU+cc / commit SHA / date / command), with a comment noting the
-> K-invariant encoder activation is below the model-weight conservatism margin in
-> `STATIC` (§2.1). It is **not** a `# tbd:` guess — the clamp is the documented
-> derivation outcome, and the safety inequality (§2.1) holds at both probe points.
+> **Amendment 2 (2026-05-31, supersedes the prior note).** The §9 gate was run on the
+> 5070 Ti (cc 12.0, **flash** regime). The **measured** outcome is `A_FIXED = 0`
+> (clamped residual, `overhead = STATIC` since flash → no attention subtracted) and
+> `A_PER_CLASS = 1,248,840,021 B` (≈1.163 GiB). These are the **portable
+> flash-baseline** seeds. `A_FIXED = 0` is landed as a **cited measured result**
+> (GPU+cc / commit SHA / date / command), noting the K-invariant encoder activation is
+> below the model-weight conservatism margin in `STATIC` (§2.1). It is **not** a
+> `# tbd:` guess. The safety inequalities (§2.1) hold at both probe points on a flash
+> card (A: 3.81 ≥ 3.05; 7.30 ≥ 6.54 GiB) and on a synthetic no-flash card with the
+> re-added attention term (B: 5.41 ≥ 4.65; 8.90 ≥ 8.14 GiB). The seeds are valid for
+> all cards — **no Pascal/Turing re-derivation needed.**
 
 ---
 
@@ -583,12 +739,15 @@ re-derivation on the 5070 Ti before merge — which the §9 real-GPU gate enforc
   net for data-dependent class counts that exceed the sized K (batch inner rung →
   K outer rung → hard fail).
 - **`decide_eval_batch_size`** (`presets.py:401`; consumed by
-  `train/trainer.py:304,538`): keeps its SDPA attention ceiling and its own batch
-  loop. It only *consumes* the new split — `eval activation = (A_fixed +
+  `train/trainer.py:304,538`): keeps its **unconditional** SDPA attention ceiling and
+  its own batch loop. It *consumes* the new split — `eval activation = (A_fixed +
   A_per_class * K) * forward_only_factor` — by threading its `classes_per_forward`
-  arg into `_predicted_bytes(..., mode="eval", k_eff=classes_per_forward)` and
-  into the `_act_per_example` term used for the cap. No eval behavioral regression
-  intended; verify the cap still only lowers `best_bs`.
+  arg into `_predicted_bytes(..., mode="eval", k_eff=classes_per_forward,
+  flash_available=_flash_attention_available(cc))` (Amendment 2: it now also passes
+  the regime flag so the eval predictor adds the materialized attention on no-flash
+  cards) and into the `_act_per_example` term used for the cap. The SDPA *ceiling*
+  itself stays regime-independent (always-on guard, §2.1). No eval behavioral
+  regression intended; verify the cap still only lowers `best_bs`.
 - No unrelated refactors.
 
 ---
@@ -604,13 +763,14 @@ re-derivation on the 5070 Ti before merge — which the §9 real-GPU gate enforc
 | | `PresetDecision.config_patch` (97) | Write `train.multiplex.classes_per_forward`. |
 | | `PresetDecision.label` (108) | Surface `K=`. |
 | | `_activation_per_example` / `_activation_bytes` (188–201) | Replace with split formula `(A_fixed + A_per_class*K)*batch` (no scale term); read split from cache. |
-| | `_attention_bytes_per_example` (190) | **Retained**, but **no longer called by `_predicted_bytes`**. Only caller is the `decide_eval_batch_size` SDPA cap (§2.1). |
-| | `_predicted_bytes` (204) | train branch = `STATIC + split`, **drop the `_attention_bytes_per_example * batch` term** (§2.1); eval branch threads `k_eff`. Both consume the split. |
+| | `_flash_attention_available` (NEW, near ~190) | **Add** (Amendment 2): `cc >= (8, 0)`; `None`/unreadable cc → `False` (conservative). Keyed on `torch.cuda.get_device_capability`. |
+| | `_attention_bytes_per_example` (190) | **Retained**; called CONDITIONALLY by `_predicted_bytes` (only when `not flash_available`, cc < 8.0) AND by the `decide_eval_batch_size` SDPA cap (§2.1, Amendment 2). |
+| | `_predicted_bytes` (218) | Gains `flash_available: bool = True`. train branch = `STATIC + split + (attn(batch) if not flash_available else 0)`; eval branch = `model + split·ff + workspace + (attn(batch) if not flash_available else 0)`; both thread `k_eff`. Attention term is **cc-aware & K-invariant** (Amendment 2, supersedes Amendment 1's universal drop). |
 | | `_load_cache` (248) | reads `A_fixed`/`A_per_class` keys (schema v3); stale-version drop already handled. |
 | | `_candidates` (304) | add `Ks=(1,2,4,8,16)`; return `(method, r, batch, K)`. |
 | | `_sort_key` (311) | key `(lora?, -r, -K, -batch)` over 4-tuple. |
-| | `decide_preset` (323) | `k` = upper bound on K search; iterate 4-tuples; raise message recomputed via split; return `classes_per_forward`. |
-| | `decide_eval_batch_size` (401) | thread `classes_per_forward` into the split via `_predicted_bytes(mode="eval", k_eff=...)` and the cap term. |
+| | `decide_preset` (323) | `k` = upper bound on K search; iterate 4-tuples; pass `flash_available=_flash_attention_available(cc)` into `_predicted_bytes` (it already reads `cc`, §line 380); raise message recomputed via split; return `classes_per_forward`. |
+| | `decide_eval_batch_size` (401) | thread `classes_per_forward` into the split via `_predicted_bytes(mode="eval", k_eff=..., flash_available=_flash_attention_available(cc))`; SDPA cap stays unconditional (§2.1, Amendment 2). |
 | `src/custom_sam_peft/cli/calibrate_cmd.py` | `_run_probe` (65) | reused as-is for the multi-probe stages (no signature change required). |
 | | `run_calibration` (new) | stages 1–3 core; cache write (v3); config rewrite; returns `PresetDecision`. |
 | | `calibrate` (129) | thin wrapper over `run_calibration`; preserve exit codes; new "GPU too small" only on K=1-probe OOM. |
@@ -620,7 +780,8 @@ re-derivation on the 5070 Ti before merge — which the §9 real-GPU gate enforc
 | `src/custom_sam_peft/cli/init_cmd.py` | `run_init` (~178) | `decide_preset(k=cfg…classes_per_forward)`; rewrite must persist chosen `classes_per_forward`. |
 | `src/custom_sam_peft/cli/run_cmd.py` | `_fallback_preset` (48–50) | pass `k=cfg.train.multiplex.classes_per_forward`. |
 | `src/custom_sam_peft/cli/_config_rewrite.py` | `_rewrite_sizing_block` | extend to write `train.multiplex.classes_per_forward` (verify current signature; add a `classes_per_forward` arg threaded from all callers). |
-| `scripts/_derive_preset_constants.py` | `main` | emit two-point split; update docstring. |
+| `src/custom_sam_peft/cli/calibrate_cmd.py` | `_derive_split` | subtract **regime-matched** overhead `STATIC + (attn(1) if not flash else 0)` (Amendment 2); clamp `A_fixed` ≥ 0 silently. |
+| `scripts/_derive_preset_constants.py` | `main` | emit two-point split using regime-matched overhead (Amendment 2); update docstring. |
 | `src/custom_sam_peft/config/schema.py` | `MultiplexConfig.classes_per_forward` (517) | no change (default 16, `ge=1, le=16`); confirm the rewrite writes within bounds. |
 
 > Implementer note: `_rewrite_sizing_block` is referenced by both `init_cmd.py`
@@ -653,9 +814,20 @@ Existing conventions to mirror:
   scaled), and that K=1 vs K=16 differ by exactly `15 * A_per_class * batch *
   scale` — i.e. the encoder term does **not** scale with K. This is the direct
   regression guard for #203.
+- **cc-aware attention term (Amendment 2).** Two regime tests: with
+  `_predicted_bytes(..., flash_available=True)` the train value carries **no**
+  attention term (equals `STATIC + split`); with `flash_available=False` it equals
+  `STATIC + split + _attention_bytes_per_example(1008)·batch`. Drive the regime
+  through `decide_preset` by monkeypatching `torch.cuda.get_device_capability` to
+  `(12, 0)` (no term) and `(7, 5)` (term present). Under cc<8.0 the train predictor
+  **grows with image_size** via attention; under cc≥8.0 it does not. The term is
+  K-invariant: K=1 vs K=16 still differ by exactly `15·A_per_class·batch` in BOTH
+  regimes.
 - A 24 GiB card now sizes successfully (no `RuntimeError`): add a tier test at
   `_stub_gpu(int(24 * _GB))` asserting a `PresetDecision` is returned (replacing
-  the false-rejection behavior).
+  the false-rejection behavior). Confirm it sizes in the flash regime
+  (`_stub_gpu` default `cc=(8,0)`) AND when forced to `cc=(7,5)` (no-flash term
+  present).
 - Cache round-trip: a v3 split cache is consumed by `decide_preset`
   (provenance="calibrated"); a v2 cache is ignored (stale).
 - `PresetDecision` JSON round-trip carries `classes_per_forward`.
@@ -726,6 +898,11 @@ must run and capture output for:
    via `run_calibration`, with graceful fallback when the checkpoint is absent.
 4. **Sanity vs. reality** — train a few steps at the chosen config and confirm it
    does not OOM at runtime, closing the loop the analytic-only ship failed to.
+5. **cc<8.0 prediction path exercised (Amendment 2).** No Pascal/Turing card is on
+   hand, so the no-flash branch is exercised by the monkeypatched unit test (cc set
+   to `(7, 5)` → attention term present; §9 split-model tests), not on real silicon.
+   The gate confirms this test passes; the seeds are a portable flash-baseline, so a
+   real cc<8.0 run is a follow-up validation (§10 Q4), not a merge blocker.
 
 Checkpoint note: the worktree has no `models/sam3.1/`; point
 `ModelConfig.local_dir` (or the env override) at the main checkout's
@@ -752,3 +929,14 @@ real-silicon confirmation.
    the implementer must confirm whether it takes keyword sizing args or a
    `PresetDecision`, then thread `classes_per_forward` consistently across
    `init_cmd`, `calibrate_cmd`, and any other caller.
+4. **Follow-up — validate the flash-baseline on a real cc<8.0 card (Amendment 2).**
+   The portable-seed claim rests on two assumptions worth confirming on real Pascal
+   (GTX 1080, cc 6.1) or Turing (T4, cc 7.5) silicon if one becomes available: (a)
+   that SDPA actually falls back to the math backend there (so the re-added
+   materialized term is real, not over-conservative), and (b) that `A_PER_CLASS` (the
+   per-class decoder term over a few class queries) is small and backend-robust
+   relative to the encoder self-attention captured by the conditional `attn` term, so
+   reusing the flash-derived `A_PER_CLASS` across regimes holds. Until then the
+   monkeypatched cc<8.0 unit test (§9) is the guard, and the conservative default
+   (unknown cc → no flash) keeps any mis-detection on the safe over-estimate side.
+   Not a merge blocker.
