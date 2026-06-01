@@ -29,6 +29,9 @@ pytestmark = [
 ]
 
 CONFIG_PATH = Path(__file__).resolve().parents[2] / "configs" / "examples" / "gpu_smoke_lora.yaml"
+# Budgets confirmed on RTX 5070 Ti (sm_120) 2026-05-31, 50-step overfit on
+# tiny_coco: loss 0.5222 -> 0.3081 (ratio 0.590 <= 0.70 ceil), peak 4.49 GB
+# (<= 14 GB ceil), ~55 s wall. Comfortable headroom -> no retune (#195).
 LOSS_RATIO_CEIL = 0.70
 VRAM_CEIL_GB = 14.0
 
@@ -59,7 +62,7 @@ def test_overfits_in_50_steps(
     run_training(cfg)
     peak_vram_gb = torch.cuda.max_memory_allocated() / 1e9
 
-    losses = [s["loss/total"] for _, s in tracker.scalars if s["loss/total"] > 0]
+    losses = [s["loss/total"] for _, s in tracker.scalars if s.get("loss/total", 0) > 0]
     assert losses, "expected at least one logged loss scalar"
     assert all(math.isfinite(v) for _, s in tracker.scalars for v in s.values()), (
         "non-finite scalar logged during training"

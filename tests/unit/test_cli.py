@@ -76,6 +76,7 @@ def test_train_invokes_runner(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -
         adapter_path=tmp_path / "r" / "adapter",
         final_metrics=None,
         time_limit_stop=None,
+        host_ram_stop=None,
     )
     called: dict[str, object] = {}
 
@@ -234,6 +235,7 @@ def test_train_resume_no_flag_forwards_none(
         checkpoint_path=tmp_path / "r" / "adapter",
         final_metrics=None,
         time_limit_stop=None,
+        host_ram_stop=None,
     )
     called: dict[str, object] = {}
 
@@ -264,6 +266,7 @@ def test_train_resume_explicit_path_forwarded(
         checkpoint_path=tmp_path / "r" / "adapter",
         final_metrics=None,
         time_limit_stop=None,
+        host_ram_stop=None,
     )
     called: dict[str, object] = {}
 
@@ -296,6 +299,7 @@ def test_train_resume_latest_calls_find_latest_checkpoint(
         checkpoint_path=tmp_path / "r" / "adapter",
         final_metrics=None,
         time_limit_stop=None,
+        host_ram_stop=None,
     )
     resolved_ckpt = _Path(tmp_path / "myrun-2026-01-01T00-00-00" / "checkpoints" / "step_10")
     called: dict[str, object] = {}
@@ -332,6 +336,7 @@ def test_train_resume_latest_no_checkpoint_exits_nonzero(
         checkpoint_path=tmp_path / "r" / "adapter",
         final_metrics=None,
         time_limit_stop=None,
+        host_ram_stop=None,
     )
 
     monkeypatch.setattr(train_cmd, "run_train", lambda *a, **kw: fake_result)

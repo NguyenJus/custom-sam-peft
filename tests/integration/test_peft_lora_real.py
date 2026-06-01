@@ -19,7 +19,7 @@ from custom_sam_peft.peft_adapters.lora import apply_lora, load_lora, merge_lora
 pytestmark = [
     pytest.mark.requires_checkpoint,
     pytest.mark.requires_compatible_gpu,
-    pytest.mark.gpu_local,
+    pytest.mark.gpu_t4,
 ]
 
 

@@ -14,14 +14,24 @@ def _src() -> str:
     return SCRIPT.read_text()
 
 
-def test_accepts_three_tiers_and_rejects_legacy() -> None:
+def test_accepts_capability_tiers_and_rejects_legacy() -> None:
     src = _src()
-    assert "local)" in src and "t4)" in src and "xl)" in src
+    assert "local)" in src and "t4)" in src and "bf16)" in src and "xl)" in src
     assert "inspection)" not in src and "release)" not in src
 
 
-def test_local_maps_to_gpu_local_marker() -> None:
-    assert "gpu_local" in _src()
+def test_local_tier_selects_both_le16gb_bands() -> None:
+    """The default `local` tier runs everything a <=16 GB dev card satisfies."""
+    assert "gpu_t4 or gpu_bf16" in _src()
+
+
+def test_no_legacy_gpu_local_marker() -> None:
+    """The runner must not reference the removed `gpu_local` marker.
+
+    Selectors map to the capability-named markers (gpu_t4, gpu_bf16, gpu_xl);
+    the default `local` tier expands to `gpu_t4 or gpu_bf16`.
+    """
+    assert "gpu_local" not in _src()
 
 
 def test_collects_predict_path() -> None:

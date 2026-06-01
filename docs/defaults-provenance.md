@@ -248,6 +248,18 @@ same symbol. This section cross-links the template slot to its schema row.
 | `models/losses/presets.py:PRESET_TABLE[("satellite","severe")].tversky_alpha` | `0.7` | `# cite: (A,E)` | Salehi et al. 2017, arXiv:1706.05721 (same as above). | Experiments: "the best results were obtained from the FCN trained with β=0.7 ...". | Same as medical/moderate row above; microscopy/moderate and microscopy/severe inherit this via alias (legend G). |
 | `models/losses/presets.py:PRESET_TABLE[("medical","severe")].tversky_alpha` | `0.8` | `# tbd: #191` | — | — | Further FN-bias escalation from the issue #112 design table (legend A); no external paper specifies α=0.8 as an FN-penalization weight and no internal calibration run has been recorded. |
 
+## predict/budget.py
+
+| Location | Value | Tag | Full reference | Verifying quote | Notes |
+| --- | --- | --- | --- | --- | --- |
+| `predict/budget.py:PREDICT_8GB_BUDGET_GB` | `7.0` | `# cite: empirical (8 GB nominal − ~1.0 GB reservation)` | 8 GB nominal − ~1.0 GB driver/CUDA-context reservation; consistent with `presets.py::_headroom_bytes` convention. `# tbd: #142` — replace reservation with a measured figure from a real 8 GB card. | — | CC 7.5 / 8 GB predict footprint budget. The ~1.0 GB reservation matches the headroom convention already in use in `presets.py`. |
+
+## tests/gpu/test\_qlora\_8gb\_ceiling.py
+
+| Location | Value | Tag | Full reference | Verifying quote | Notes |
+| --- | --- | --- | --- | --- | --- |
+| `tests/gpu/test_qlora_8gb_ceiling.py:QLORA_8GB_CEIL_GB` | `8.0` | `# cite: issue-137 feasibility doc + ~3 GB margin` | measured ~5.0 GB peak (GTX 1080, fp16) in `docs/research/2026-05-24-issue-137-qlora-8gb-feasibility.md`; 8.0 GB target minimum-card envelope (~3 GB margin); `# tbd: #142` confirm on a real 8 GB card. 5070 Ti measured peak: 2.348 GB (fp16, min\_gpu\_qlora, 2026-05-31) — within the 8.0 envelope. | — | CC 7.5 / 8 GB QLoRA train envelope (min\_gpu\_qlora.yaml). |
+
 ## Reference Training Profile
 
 The shipped training defaults form the following reference profile:
@@ -274,6 +286,13 @@ The 160-epoch figure is therefore a **convergence anchor** drawn from the publis
 
 At 160 epochs the run no longer fits the original "≤30 min on a 16 GB free-tier Colab T4" window that the earlier framing assumed: 160 epochs is ~16× the previous 10-epoch default, so the run exceeds that window by a wide margin. This is an order-of-magnitude inference from the epoch ratio, **not** a measured figure. The "≤30 min" budget framing is therefore **dropped** in favor of convergence. This reflects the standing design priority for this project: **final accuracy ≫ training speed** — a speed-only benefit is not a sufficient reason to reduce epoch count.
 
-There is **no citable T4 per-step wall-clock figure** in the literature for this configuration, so the actual wall-clock is left unmeasured: `# tbd: #193` (empirical T4 confirmation of the reference profile). No runtime figure is stated as a measured or completed claim here.
+There is **no citable T4 per-step wall-clock figure** in the literature for this configuration. The **T4 sample remains pending a user Colab run** (T4 sample: pending user Colab confirmation (#193)). `# tbd: #193` is therefore **partially resolved**: the 5070 Ti per-step datapoint is now recorded (see below); T4 confirmation is still outstanding.
+
+**5070 Ti per-step measurement (2026-05-31):** The following wall-clock figures were measured on an **RTX 5070 Ti (CC 12.0, 16 GB)** using `scripts/run_gpu_tests.sh`, running the 50-step `tiny_coco` overfit smokes (`tests/fixtures/tiny_coco/`, 2 images, `batch_size=1`, `grad_accum=1`, 50 gradient updates). These are smoke-test step times — a per-step proxy for the reference profile, **not** the 160-epoch reference profile wall-clock itself (which remains unmeasured):
+
+- **QLoRA** (`test_qlora_overfits_in_50_steps` / `min_gpu_qlora`): 37.6 s / 50 steps ≈ **0.75 s/step**
+- **LoRA** (`test_overfits_in_50_steps` / `gpu_smoke_lora`): 55.0 s / 50 steps ≈ **1.10 s/step**
+
+No 160-epoch reference profile wall-clock is stated as a measured or completed claim here.
 
 For empirical GPU-test budget questions — including the 2-image overfit smoke-test — see **issue #195** (2-image overfit GPU smoke-test speed/convergence).

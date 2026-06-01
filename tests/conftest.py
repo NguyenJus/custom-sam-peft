@@ -1,4 +1,13 @@
-"""Project-level pytest hooks (markers, autoskips) and shared fixtures."""
+"""Project-level pytest hooks (markers, autoskips) and shared fixtures.
+
+GPU tier taxonomy (Tesla T4 floor, CC 7.5 / RTX 5070 Ti primary dev card):
+- gpu_t4:   CC >= 7.5 AND total VRAM <= 16 GB (fp16 band; bf16 coerced below CC 8.0)
+- gpu_bf16: CC >= 8.0 AND total VRAM <= 16 GB (native bf16, RTX 5070 Ti)
+- gpu_xl:   total VRAM > 16 GB (deferred — no tests assigned yet)
+
+Bands are NOT linearly ordered; the skip predicate is a capability-subset check.
+See docs/testing/gpu-test-policy.md for the full policy.
+"""
 
 from __future__ import annotations
 
@@ -24,9 +33,9 @@ def pytest_configure(config: pytest.Config) -> None:
     )
     config.addinivalue_line(
         "markers",
-        "requires_compatible_gpu: skip unless a CUDA device with compute "
-        "capability >= 6.0 is available (NF4 QLoRA + LoRA work from CC 6.0 / "
-        "Pascal; only LLM.int8() needs CC 7.5 and is unused here)",
+        "requires_compatible_gpu: skip unless a CUDA GPU with CC >= 7.5 is available "
+        "(Tesla T4 floor; RTX 5070 Ti primary dev card). "
+        "See docs/testing/gpu-test-policy.md.",
     )
     config.addinivalue_line(
         "markers",
@@ -34,36 +43,38 @@ def pytest_configure(config: pytest.Config) -> None:
     )
     config.addinivalue_line(
         "markers",
-        "gpu_local: GPU test that fits the GTX 1080 (<=~7 GB, CC 6.0+, NF4+float16); "
-        "run via run_gpu_tests.sh local",
+        "gpu_t4: requires a CUDA GPU with CC >= 7.5 AND total VRAM <= 16 GB "
+        "(Tesla T4 floor and RTX 5070 Ti). fp16 band (bf16 is coerced below CC 8.0). "
+        "See docs/testing/gpu-test-policy.md.",
     )
     config.addinivalue_line(
         "markers",
-        "gpu_t4: GPU test needing >8 GB and <=16 GB, or bf16-representative numerics; Colab T4",
+        "gpu_bf16: requires a CUDA GPU with CC >= 8.0 AND total VRAM <= 16 GB "
+        "(RTX 5070 Ti). Native, non-coerced bf16 numerics. "
+        "See docs/testing/gpu-test-policy.md.",
     )
     config.addinivalue_line(
         "markers",
-        "gpu_xl: GPU test beyond a T4 (>16 GB / larger arch); cloud auto-provision (needs #124)",
+        "gpu_xl: requires a CUDA GPU with total VRAM > 16 GB. "
+        "Empty in this PR; populated only via the gpu_xl follow-up issue. "
+        "See docs/testing/gpu-test-policy.md.",
     )
 
 
 def _torch_can_launch_kernel() -> bool:
     """Whether the *installed* torch build can run a kernel on the current CUDA device.
 
-    CC >= 6.0 is necessary but not sufficient: the default cu130 wheel ships no
-    sm_61 cubin/PTX, so on a GTX 1080 a kernel launch raises "no kernel image is
-    available". The opt-in gpu-pascal (cu118) build JITs compute_60 -> sm_61 and
-    runs. Probing an actual launch is the only reliable signal. Separated out so
-    unit tests can monkeypatch it without a real GPU.
+    A reported compute capability is necessary but not sufficient: the installed
+    wheel may ship no matching cubin/PTX for the device (or the driver is too old),
+    so a kernel launch raises "no kernel image is available" even though the device
+    is visible. Probing an actual launch is the only reliable signal. Separated out
+    so unit tests can monkeypatch it without a real GPU.
     """
     try:
         torch.zeros(8, device="cuda").add_(1.0).cpu()
         return True
     except Exception:
         return False
-
-
-_TIER_ORDER = {"gpu_local": 0, "gpu_t4": 1, "gpu_xl": 2}
 
 
 def _has_compatible_gpu() -> bool:
@@ -73,54 +84,79 @@ def _has_compatible_gpu() -> bool:
         major, minor = torch.cuda.get_device_capability()
     except RuntimeError:
         return False
-    if (major, minor) < (6, 0):
+    if (major, minor) < (7, 5):
         return False
     return _torch_can_launch_kernel()
 
 
-def _current_tier() -> str | None:
-    """The highest tier the current runner's live hardware can satisfy.
+_GB = 1024**3
 
-    The 1080 (and any usable CC>=6.0 card <=~7 GB) is the local tier. We cannot
-    reliably auto-detect >8 GB / bf16-faithful capability here, so a t4/xl runner
-    asserts its own tier out-of-band; on the dev box this returns 'gpu_local'.
-    Returns None on CPU-only / no usable GPU.
+
+def _satisfied_tiers() -> set[str]:
+    """Return the SET of GPU tiers the live card satisfies.
+
+    Bands are NOT linearly ordered: gpu_t4/gpu_bf16 are <=16 GB; gpu_xl is >16 GB.
+    The 16 GB band is a CLOSED upper bound (<= 16 * _GB) so a card reporting
+    slightly under a marketing "16 GB" (driver-reserved) still counts as gpu_t4/gpu_bf16.
+    A >16 GB card satisfies only gpu_xl and is intentionally NOT auto-run for the
+    <=16 GB ceiling assertions (running them on a bigger card could mask a small-card OOM).
     """
     if not _has_compatible_gpu():
+        return set()
+    cc = torch.cuda.get_device_capability()
+    total = torch.cuda.get_device_properties(0).total_memory
+    tiers: set[str] = set()
+    if cc >= (7, 5) and total <= 16 * _GB:
+        tiers.add("gpu_t4")
+    if cc >= (8, 0) and total <= 16 * _GB:
+        tiers.add("gpu_bf16")
+    if total > 16 * _GB:
+        tiers.add("gpu_xl")
+    return tiers
+
+
+_KNOWN_TIERS = frozenset({"gpu_t4", "gpu_bf16", "gpu_xl"})
+
+# Human-readable gate descriptions for skip reasons — one per tier.
+_TIER_GATES = {
+    "gpu_t4": "CC >= 7.5 AND total VRAM <= 16 GB",
+    "gpu_bf16": "CC >= 8.0 AND total VRAM <= 16 GB",
+    "gpu_xl": "total VRAM > 16 GB",
+}
+
+
+def _should_skip(marker_tier: str, satisfied: set[str]) -> str | None:
+    """Return a skip-reason string if *marker_tier* is not in *satisfied*, else None.
+
+    Pure function — no I/O.  The caller (pytest_collection_modifyitems) supplies
+    the live *satisfied* set so unit tests can monkeypatch just the probe.
+    """
+    if marker_tier in satisfied:
         return None
-    return "gpu_local"
+    gate = _TIER_GATES.get(marker_tier, marker_tier)
+    return f"requires {marker_tier} ({gate}); not satisfied on this runner"
 
 
 def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item]) -> None:
     ckpt = pathlib.Path("models/sam3.1/sam3.1_multiplex.pt")
     skip_no_ckpt = pytest.mark.skip(reason="real SAM 3.1 checkpoint not present locally")
     skip_no_gpu = pytest.mark.skip(
-        reason="requires a CUDA GPU with CC >= 6.0 (NF4 QLoRA + LoRA; "
-        "LLM.int8() would need CC 7.5 but is unused here)"
+        reason="requires a CUDA GPU with CC >= 7.5 (Tesla T4 floor; RTX 5070 Ti primary)"
     )
     have_gpu = _has_compatible_gpu()
+    active_tiers = _satisfied_tiers()
     for item in items:
         if "requires_checkpoint" in item.keywords and not ckpt.exists():
             item.add_marker(skip_no_ckpt)
         if "requires_compatible_gpu" in item.keywords and not have_gpu:
             item.add_marker(skip_no_gpu)
 
-    runner_tier = _current_tier()
     for item in items:
-        item_tier = next((t for t in _TIER_ORDER if t in item.keywords), None)
+        item_tier = next((t for t in _KNOWN_TIERS if t in item.keywords), None)
         if item_tier is None:
             continue
-        if runner_tier is None:
-            # CPU-only / unusable GPU: already skipped via requires_compatible_gpu above.
-            continue
-        if _TIER_ORDER[item_tier] > _TIER_ORDER[runner_tier]:
-            if item_tier == "gpu_xl":
-                reason = (
-                    "gpu_xl tier needs a >16 GB / larger-arch runner via cloud "
-                    "auto-provision (#124); not available on this runner"
-                )
-            else:
-                reason = f"{item_tier} tier needs hardware beyond this runner ({runner_tier})"
+        reason = _should_skip(item_tier, active_tiers)
+        if reason is not None:
             item.add_marker(pytest.mark.skip(reason=reason))
 
 
@@ -130,7 +166,7 @@ def _free_cuda_after_gpu_test(request: pytest.FixtureRequest) -> Iterator[None]:
 
     Real-model GPU tests each load the full SAM 3.1 checkpoint (and some load it
     twice, e.g. an export/reload round-trip). Without freeing between tests, the
-    caching allocator accumulates and a ~7 GB card (GTX 1080, gpu_local tier)
+    caching allocator accumulates and a <=16 GB card (gpu_t4 / gpu_bf16 tier)
     OOMs partway through a file. Gated on ``requires_compatible_gpu`` so this is
     a no-op for the CPU suite (the only marker every GPU test carries, stable
     across the tier-marker swap).
@@ -138,9 +174,16 @@ def _free_cuda_after_gpu_test(request: pytest.FixtureRequest) -> Iterator[None]:
     yield
     if request.node.get_closest_marker("requires_compatible_gpu") is None:
         return
+    # Synchronize FIRST so all of this test's kernels have finished and their
+    # tensors are actually dropped before we collect + free — otherwise the
+    # next test can begin allocating while this test's memory is still resident
+    # (overlap), defeating the sequential, freed-before-next guarantee.
+    if torch.cuda.is_available():
+        torch.cuda.synchronize()
     gc.collect()
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
+        torch.cuda.synchronize()
 
 
 @pytest.fixture

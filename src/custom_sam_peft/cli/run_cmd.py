@@ -21,6 +21,7 @@ from rich import print as rprint
 from rich.console import Console
 
 from custom_sam_peft._registry import lookup
+from custom_sam_peft.cli._host_ram import format_host_ram_message
 from custom_sam_peft.cli._logging import configure_logging
 from custom_sam_peft.cli._progress import ProgressKind, ProgressMode, progress_session, resolve_mode
 from custom_sam_peft.cli._time_limit import format_time_limit_message
@@ -96,6 +97,13 @@ def _orchestrate(
         rprint(
             format_time_limit_message(
                 train_result.time_limit_stop, subcommand="run", config_path=config_path
+            )
+        )
+        return 0
+    if train_result.host_ram_stop is not None:
+        rprint(
+            format_host_ram_message(
+                train_result.host_ram_stop, subcommand="run", config_path=config_path
             )
         )
         return 0

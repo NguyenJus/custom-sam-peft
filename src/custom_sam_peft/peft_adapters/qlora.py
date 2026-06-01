@@ -383,9 +383,20 @@ def save_qlora(wrapper: Sam3Wrapper, dirpath: str | Path) -> None:
 
 
 def load_qlora(wrapper: Sam3Wrapper, dirpath: str | Path) -> Sam3Wrapper:
-    """Reconstruct a QLoRA wrapper from a saved directory; mutate in place."""
+    """Reconstruct a QLoRA wrapper from a saved directory; mutate in place.
+
+    If ``wrapper`` already has a PeftModel (i.e. apply_qlora was called before
+    this, as in the normal resume-from-checkpoint / close_out best-restore flow),
+    the saved adapter weights are reloaded into the existing 4-bit PeftModel
+    instead of re-quantizing the base. Follows ``load_lora``'s already-attached
+    branch, additionally re-asserting the active adapter via ``set_adapter("default")``.
+    """
     if wrapper.peft_model is not None:
-        raise RuntimeError("load_qlora: wrapper already has a PeftModel attached")
+        # Resume path: wrapper is already QLoRA-wrapped; reload adapter weights only.
+        # Do NOT re-quantize the base — it is already 4-bit. Mirror load_lora.
+        wrapper.peft_model.load_adapter(str(dirpath), "default", is_trainable=True)
+        wrapper.peft_model.set_adapter("default")
+        return wrapper
 
     src = Path(dirpath)
     meta_path = src / _QLORA_META_FILE
