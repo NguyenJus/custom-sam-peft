@@ -42,7 +42,8 @@ envelope, so the small-card claim validates on the 16 GB 5070 Ti.
 **#195:** the 25-epoch / 50-update step budgets hold on the 5070 Ti (both
 smokes overfit inside the window); confirmed, no retune needed. Per-step
 wall-clock samples (≈ 1.10 s/step LoRA, ≈ 0.75 s/step QLoRA) are recorded in
-`docs/defaults-provenance.md` (#193; T4 sample still pending a user Colab run).
+`docs/defaults-provenance.md` (#193; the T4 sample — ≈ 6.34 s/step QLoRA on a
+Colab T4 — is now recorded there too, resolving #193).
 
 ## #83 — all-scope LoRA peak
 
