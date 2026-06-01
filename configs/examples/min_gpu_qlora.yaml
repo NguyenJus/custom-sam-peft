@@ -1,10 +1,9 @@
-# Pascal-tuned QLoRA config — fits one fwd+bwd+optim step of SAM 3.1 multiplex
-# on a GTX 1080 (sm_61, ~7 GB usable) at ~5.0 GB peak. See the feasibility
-# write-up: docs/research/2026-05-24-issue-137-qlora-8gb-feasibility.md (#137).
+# Minimum-supported-card QLoRA config — fits one fwd+bwd+optim step of SAM 3.1
+# multiplex on a CC 7.5 / 8 GB card at ~5.0 GB peak (measured; see feasibility
+# write-up: docs/research/2026-05-24-issue-137-qlora-8gb-feasibility.md (#137)).
 #
-# Reach the GPU only via the gpu-pascal uv extra (torch 2.7.1+cu118, bnb 0.49.2):
-#   uv run --extra gpu-pascal python -m custom_sam_peft.cli train \
-#     --config configs/examples/min_gpu_qlora.yaml
+# Default wheel covers T4 and 5070 Ti — no extra needed:
+#   uv run python -m custom_sam_peft.cli train --config configs/examples/min_gpu_qlora.yaml
 run:
   name: min_gpu_qlora
   output_dir: ./runs
@@ -14,7 +13,7 @@ model:
   name: facebook/sam3.1
   local_dir: models/sam3.1
   checkpoint_file: sam3.1_multiplex.pt
-  dtype: float16  # Pascal-required: sm_61 has no bf16 hardware (bf16 is coerced anyway)
+  dtype: float16  # fp16 to model the CC 7.5 / 8 GB minimum-supported card (bf16 is coerced to fp16 below CC 8.0 — see src/custom_sam_peft/runtime/_runtime.py coerce_dtype_for_capability); fp16 keeps the 8 GB-envelope assertion honest
 
 data:
   format: coco
@@ -42,7 +41,7 @@ peft:
     - 'transformer\.decoder\.layers\.\d+\.linear[12]$'
   qlora:
     quant_type: nf4
-    compute_dtype: float16  # Pascal-required (see model.dtype)
+    compute_dtype: float16  # fp16 to model the CC 7.5 / 8 GB minimum-supported card (see model.dtype)
     use_double_quant: true  # NF4 nested quant of the quant constants
 
 train:
