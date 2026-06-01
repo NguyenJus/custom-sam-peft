@@ -9,7 +9,7 @@ and go straight to training.
 ## What's in the image
 
 - **Base:** `pytorch/pytorch:2.6.0-cuda12.4-cudnn9-runtime`
-- **Extras installed:** `qlora`, `tensorboard`, `wandb`, `jupyter`
+- **Extras installed:** `qlora`, `wandb`, `jupyter`
   (`dev` extras are not installed)
 - **Entrypoint:** `custom-sam-peft` (the CLI)
 - **Default command:** `--help`

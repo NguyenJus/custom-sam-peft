@@ -77,19 +77,6 @@ def test_build_tracker_returns_wandb(tmp_path: Path, monkeypatch: pytest.MonkeyP
     assert type(t).__name__ == "WandBTracker"
 
 
-def test_build_tracker_raises_when_tensorboard_extra_missing(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    # Setting sys.modules[name] = None makes `import name` raise ImportError.
-    # The TensorBoardTracker constructor's `import tensorboard` will hit this.
-    monkeypatch.setitem(sys.modules, "tensorboard", None)
-
-    from custom_sam_peft.tracking import build_tracker
-
-    with pytest.raises(ImportError, match=r"\[tensorboard\]"):
-        build_tracker(_cfg(tmp_path, "tensorboard"))
-
-
 def test_build_tracker_raises_when_wandb_extra_missing(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

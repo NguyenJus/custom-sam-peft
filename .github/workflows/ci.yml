@@ -31,8 +31,9 @@ jobs:
       - name: Install deps
         # CI is CPU-only; install the dev + cu130 (the default CUDA wheel,
         # which covers the Tesla T4 and RTX 5070 Ti) extras plus the optional
-        # feature extras the test suite needs.
-        run: uv sync --extra dev --extra cu130 --extra qlora --extra wandb --extra tensorboard --extra jupyter
+        # feature extras the test suite needs. (tensorboard is now a base
+        # dependency, so it no longer needs an --extra.)
+        run: uv sync --extra dev --extra cu130 --extra qlora --extra wandb --extra jupyter
 
       - name: Lint
         run: uv run ruff check

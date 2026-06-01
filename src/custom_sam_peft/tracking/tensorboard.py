@@ -1,8 +1,4 @@
-"""TensorBoardTracker — wraps torch.utils.tensorboard.SummaryWriter.
-
-Requires the [tensorboard] optional extra. Eager ImportError surfaces the
-missing dependency at construction (not at step 50).
-"""
+"""TensorBoardTracker — wraps torch.utils.tensorboard.SummaryWriter."""
 
 from __future__ import annotations
 
@@ -25,16 +21,6 @@ class TensorBoardTracker:
     """Tracker backend writing to TensorBoard event files under run_dir."""
 
     def __init__(self, cfg: TrainConfig) -> None:
-        # Probe the `tensorboard` package directly — torch.utils.tensorboard
-        # is part of torch itself and would import successfully even with the
-        # extra missing; the SDK only fails when SummaryWriter is used.
-        try:
-            import tensorboard  # noqa: F401
-        except ImportError as e:
-            raise ImportError(
-                "tracking.backend='tensorboard' requires the [tensorboard] extra. "
-                "Install with: pip install 'custom-sam-peft[tensorboard]'"
-            ) from e
         self._cfg = cfg
         self._writer: SummaryWriter | None = None
         self._closed = False
