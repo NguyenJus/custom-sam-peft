@@ -277,7 +277,7 @@ def render(answers: dict[str, Any], *, run_mode: RunMode) -> str:
 
 
 def _ask_run_mode(ctx: Ctx) -> dict[str, Any]:
-    ctx.run_mode = ask_choice("Run mode?", ["train", "run"], default="train")  # type: ignore[assignment]
+    ctx.run_mode = ask_choice("Run mode?", ["train", "run"], default="run")  # type: ignore[assignment]
     return {}
 
 
