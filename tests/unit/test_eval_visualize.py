@@ -189,11 +189,12 @@ def test_compose_pair_hstacks_with_titles_and_legend() -> None:
 
     from custom_sam_peft.eval.visualize import _compose_pair
 
+    orig = Image.new("RGB", (40, 30), color=(5, 5, 5))
     gt = Image.new("RGB", (40, 30), color=(10, 10, 10))
     pred = Image.new("RGB", (40, 30), color=(20, 20, 20))
-    composite = _compose_pair(gt, pred, class_names_present=["cat", "dog"])
-    # Width is at least the sum of the two panels (hstacked), height >= panel height.
-    assert composite.width >= gt.width + pred.width
+    composite = _compose_pair(orig, gt, pred, class_names_present=["cat", "dog"])
+    # Width is at least the sum of all three panels (hstacked), height >= panel height.
+    assert composite.width >= orig.width + gt.width + pred.width
     assert composite.height >= gt.height
 
 
