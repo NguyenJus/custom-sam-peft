@@ -6,8 +6,6 @@ import stat
 import subprocess
 from pathlib import Path
 
-import pytest
-
 SCRIPT = Path(__file__).resolve().parents[2] / "scripts" / "run_gpu_tests.sh"
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
@@ -16,20 +14,23 @@ def _src() -> str:
     return SCRIPT.read_text()
 
 
-def test_accepts_three_tiers_and_rejects_legacy() -> None:
+def test_accepts_capability_tiers_and_rejects_legacy() -> None:
     src = _src()
-    assert "local)" in src and "t4)" in src and "xl)" in src
+    assert "local)" in src and "t4)" in src and "bf16)" in src and "xl)" in src
     assert "inspection)" not in src and "release)" not in src
 
 
-@pytest.mark.xfail(
-    reason="selector rewrite lands in Phase E E1 — script still references gpu_local",
-    strict=False,
-)
-def test_local_maps_to_gpu_local_marker() -> None:
-    # NOTE: remove this xfail in Phase E once run_gpu_tests.sh is updated to
-    # drop 'local'/'gpu_local' and map selectors to the new capability-named
-    # markers (gpu_t4, gpu_bf16, gpu_xl).
+def test_local_tier_selects_both_le16gb_bands() -> None:
+    """The default `local` tier runs everything a <=16 GB dev card satisfies."""
+    assert "gpu_t4 or gpu_bf16" in _src()
+
+
+def test_no_legacy_gpu_local_marker() -> None:
+    """The runner must not reference the removed `gpu_local` marker.
+
+    Selectors map to the capability-named markers (gpu_t4, gpu_bf16, gpu_xl);
+    the default `local` tier expands to `gpu_t4 or gpu_bf16`.
+    """
     assert "gpu_local" not in _src()
 
 

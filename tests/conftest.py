@@ -174,9 +174,16 @@ def _free_cuda_after_gpu_test(request: pytest.FixtureRequest) -> Iterator[None]:
     yield
     if request.node.get_closest_marker("requires_compatible_gpu") is None:
         return
+    # Synchronize FIRST so all of this test's kernels have finished and their
+    # tensors are actually dropped before we collect + free — otherwise the
+    # next test can begin allocating while this test's memory is still resident
+    # (overlap), defeating the sequential, freed-before-next guarantee.
+    if torch.cuda.is_available():
+        torch.cuda.synchronize()
     gc.collect()
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
+        torch.cuda.synchronize()
 
 
 @pytest.fixture
