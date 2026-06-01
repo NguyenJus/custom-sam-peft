@@ -197,29 +197,31 @@ def _sanitize_image_id(image_id: str) -> str:
 
 
 def _compose_pair(
+    orig_panel: Image.Image,
     gt_panel: Image.Image,
     pred_panel: Image.Image,
     *,
     class_names_present: list[str],
 ) -> Image.Image:
-    """Hstack `Ground Truth | Prediction` with panel titles and a shared per-class
-    color legend (the union of classes present in either panel). The same class is
-    the same color in both panels because both call color_for_class."""
+    """Hstack `Original | Ground Truth | Prediction` with panel titles and a shared
+    per-class color legend (union of classes present in either overlay panel)."""
     font = ImageFont.load_default()
-    panel_h = max(gt_panel.height, pred_panel.height)
-    panel_w = gt_panel.width + pred_panel.width
+    panel_h = max(orig_panel.height, gt_panel.height, pred_panel.height)
+    panel_w = orig_panel.width + gt_panel.width + pred_panel.width
     legend_h = _LEGEND_ROW_H * (len(class_names_present) + 1) if class_names_present else 0
     total_h = _TITLE_BAR_H + panel_h + legend_h
     canvas = Image.new("RGB", (panel_w, total_h), color=(255, 255, 255))
 
     # Titles.
     draw = ImageDraw.Draw(canvas)
-    draw.text((4, 4), "Ground Truth", fill=(0, 0, 0), font=font)
-    draw.text((gt_panel.width + 4, 4), "Prediction", fill=(0, 0, 0), font=font)
+    draw.text((4, 4), "Original", fill=(0, 0, 0), font=font)
+    draw.text((orig_panel.width + 4, 4), "Ground Truth", fill=(0, 0, 0), font=font)
+    draw.text((orig_panel.width + gt_panel.width + 4, 4), "Prediction", fill=(0, 0, 0), font=font)
 
     # Panels below the title bar.
-    canvas.paste(gt_panel, (0, _TITLE_BAR_H))
-    canvas.paste(pred_panel, (gt_panel.width, _TITLE_BAR_H))
+    canvas.paste(orig_panel, (0, _TITLE_BAR_H))
+    canvas.paste(gt_panel, (orig_panel.width, _TITLE_BAR_H))
+    canvas.paste(pred_panel, (orig_panel.width + gt_panel.width, _TITLE_BAR_H))
 
     # Legend below the panels.
     if class_names_present:
@@ -282,12 +284,12 @@ def render_eval_pair(
     std: Sequence[float],
     matcher: HungarianMatcher,
 ) -> Image.Image:
-    """Return the hstacked `Ground Truth | Prediction` composite for one image.
+    """Return the hstacked `Original | Ground Truth | Prediction` composite for one image.
 
-    GT panel: denormalized source + GT instance overlays (no score). Pred panel:
-    denormalized source + the Hungarian mask-only matched 1:1 preds per class,
-    aggregated across classes (matched preds only). Both panels use the same
-    color_for_class mapping so a class is the same color in both.
+    Original panel: denormalized source image with no overlays. GT panel: same source
+    + GT instance overlays (no score). Pred panel: same source + Hungarian mask-only
+    matched 1:1 preds per class. Both overlay panels use the same color_for_class
+    mapping so a class is the same color in both.
     """
     try:
         param_device = next(model.parameters()).device
@@ -317,7 +319,7 @@ def render_eval_pair(
         if isinstance(e["category_id"], (int, float))
     }
     names_present = [class_names[c - 1] for c in sorted(present_ids) if 0 < c <= len(class_names)]
-    return _compose_pair(gt_panel, pred_panel, class_names_present=names_present)
+    return _compose_pair(source, gt_panel, pred_panel, class_names_present=names_present)
 
 
 def write_eval_visualizations(

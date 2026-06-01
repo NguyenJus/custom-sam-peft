@@ -47,8 +47,8 @@ def test_render_eval_pair_returns_hstacked_image() -> None:
     )
     assert isinstance(out, Image.Image)
     assert out.mode == "RGB"
-    # Hstacked: width >= 2 * source width (8 px each, plus legend/titles add height not width).
-    assert out.width >= 16
+    # Hstacked: width >= 3 * source width (8 px each, plus legend/titles add height not width).
+    assert out.width >= 24
 
 
 def test_render_eval_pair_no_gt_class_draws_no_pred_for_that_class() -> None:
