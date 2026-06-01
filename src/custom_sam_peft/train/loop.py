@@ -619,8 +619,17 @@ def run_epoch(
             _flush_full_state()
             raise _TimeLimitReached(global_step, epoch)
         if host_ram_floor_bytes is not None:
-            available = psutil.virtual_memory().available
-            if available < host_ram_floor_bytes:
+            try:
+                available = psutil.virtual_memory().available
+            except Exception:
+                _LOG.warning(
+                    "host_ram_guard: psutil.virtual_memory() raised at step %d; "
+                    "skipping check this step.",
+                    global_step,
+                    exc_info=True,
+                )
+                available = None
+            if available is not None and available < host_ram_floor_bytes:
                 _flush_full_state()
                 raise _HostRamLow(global_step, epoch, available / 1e9)
     return global_step, nan_streak

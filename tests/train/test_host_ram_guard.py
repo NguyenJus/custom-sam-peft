@@ -141,6 +141,91 @@ def test_run_epoch_no_raise_when_ram_above_floor(
 
 
 # ---------------------------------------------------------------------------
+# run_epoch-level: exactly-at-floor boundary (strict <, not <=)
+# ---------------------------------------------------------------------------
+
+
+def test_run_epoch_no_raise_when_available_equals_floor(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """available == floor must NOT fire the guard (check is strict <)."""
+    import custom_sam_peft.train.loop as loop_mod
+
+    floor_bytes = int(4e9)
+    available_bytes = floor_bytes  # exactly at the floor
+    monkeypatch.setattr(loop_mod.psutil, "virtual_memory", lambda: _fake_vmem(available_bytes))
+
+    ds = _TinyDataset()
+    wrapper = make_stub_wrapper(dim=8, working=True)
+    cfg = _make_cfg(tmp_path)
+    apply_lora(wrapper, cfg.peft)
+    run_dir = tmp_path / "run"
+    (run_dir / "checkpoints").mkdir(parents=True)
+
+    optimizer = torch.optim.AdamW([p for p in wrapper.parameters() if p.requires_grad], lr=1e-4)
+    scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda=lambda s: 1.0)
+
+    # Must NOT raise — available == floor is not below the floor.
+    gs, _ = run_epoch(
+        wrapper,
+        _loader(ds),
+        optimizer,
+        scheduler,
+        NoopTracker(),
+        cfg,
+        run_dir,
+        epoch=0,
+        global_step=0,
+        nan_streak=0,
+        class_names=ds.class_names,
+        on_checkpoint=lambda *a: None,
+        on_eval=lambda *a: None,
+        host_ram_floor_bytes=floor_bytes,
+    )
+    assert gs == len(_loader(ds))  # all batches processed normally
+
+
+def test_run_epoch_raises_when_available_is_floor_minus_one(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """available == floor - 1 must fire the guard (strictly below the floor)."""
+    import custom_sam_peft.train.loop as loop_mod
+
+    floor_bytes = int(4e9)
+    available_bytes = floor_bytes - 1  # one byte below the floor
+    monkeypatch.setattr(loop_mod.psutil, "virtual_memory", lambda: _fake_vmem(available_bytes))
+
+    ds = _TinyDataset()
+    wrapper = make_stub_wrapper(dim=8, working=True)
+    cfg = _make_cfg(tmp_path)
+    apply_lora(wrapper, cfg.peft)
+    run_dir = tmp_path / "run"
+    (run_dir / "checkpoints").mkdir(parents=True)
+
+    optimizer = torch.optim.AdamW([p for p in wrapper.parameters() if p.requires_grad], lr=1e-4)
+    scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda=lambda s: 1.0)
+
+    with pytest.raises(_HostRamLow) as exc:
+        run_epoch(
+            wrapper,
+            _loader(ds),
+            optimizer,
+            scheduler,
+            NoopTracker(),
+            cfg,
+            run_dir,
+            epoch=0,
+            global_step=0,
+            nan_streak=0,
+            class_names=ds.class_names,
+            on_checkpoint=lambda *a: None,
+            on_eval=lambda *a: None,
+            host_ram_floor_bytes=floor_bytes,
+        )
+    assert exc.value.step == 1  # fires after the first step
+
+
+# ---------------------------------------------------------------------------
 # run_epoch-level: guard disabled (host_ram_floor_bytes=None)
 # ---------------------------------------------------------------------------
 
@@ -323,6 +408,48 @@ def test_train_hyperparams_host_ram_floor_gb_zero_disables() -> None:
     assert hp.host_ram_floor_gb == 0.0
 
 
+def test_run_epoch_psutil_probe_fail_open(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """If psutil.virtual_memory() raises, the run continues without crashing
+    and without firing _HostRamLow (fail-open: probe error skips that step's check)."""
+    import custom_sam_peft.train.loop as loop_mod
+
+    floor_bytes = int(4e9)
+
+    def _raise_vmem() -> None:
+        raise OSError("psutil probe failed (test)")
+
+    monkeypatch.setattr(loop_mod.psutil, "virtual_memory", _raise_vmem)
+
+    ds = _TinyDataset()
+    wrapper = make_stub_wrapper(dim=8, working=True)
+    cfg = _make_cfg(tmp_path)
+    apply_lora(wrapper, cfg.peft)
+    run_dir = tmp_path / "run"
+    (run_dir / "checkpoints").mkdir(parents=True)
+
+    optimizer = torch.optim.AdamW([p for p in wrapper.parameters() if p.requires_grad], lr=1e-4)
+    scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda=lambda s: 1.0)
+
+    # Must complete normally — probe failure must not crash training.
+    gs, _ = run_epoch(
+        wrapper,
+        _loader(ds),
+        optimizer,
+        scheduler,
+        NoopTracker(),
+        cfg,
+        run_dir,
+        epoch=0,
+        global_step=0,
+        nan_streak=0,
+        class_names=ds.class_names,
+        on_checkpoint=lambda *a: None,
+        on_eval=lambda *a: None,
+        host_ram_floor_bytes=floor_bytes,
+    )
+    assert gs == len(_loader(ds))  # all batches processed
+
+
 def test_trainer_disabled_when_floor_gb_zero(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -343,4 +470,4 @@ def test_trainer_disabled_when_floor_gb_zero(
     # Normal completion; no RAM stop.
     assert isinstance(result, EvalArtifacts)
     assert result.final_metrics is not None or result.time_limit_stop is None
-    assert not hasattr(result, "host_ram_stop") or result.host_ram_stop is None
+    assert result.host_ram_stop is None

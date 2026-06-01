@@ -10,6 +10,7 @@ import typer
 from rich import print as rprint
 from rich.console import Console
 
+from custom_sam_peft.cli._host_ram import format_host_ram_message
 from custom_sam_peft.cli._logging import configure_logging
 from custom_sam_peft.cli._progress import ProgressKind, progress_session, resolve_mode
 from custom_sam_peft.cli._time_limit import format_time_limit_message
@@ -115,6 +116,12 @@ def train(
             format_time_limit_message(
                 result.time_limit_stop, subcommand="train", config_path=config
             )
+        )
+        return
+
+    if result.host_ram_stop is not None:
+        rprint(
+            format_host_ram_message(result.host_ram_stop, subcommand="train", config_path=config)
         )
         return
 
