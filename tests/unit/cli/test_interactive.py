@@ -106,6 +106,113 @@ def test_detect_dir_candidates_finds_subdir(tmp_path: Path) -> None:
     assert result[0].name == "train"
 
 
+def test_detect_json_candidates_finds_nested_json(tmp_path: Path) -> None:
+    nested = tmp_path / "DataFusionContest"
+    nested.mkdir()
+    (nested / "train.json").write_text("{}")
+    result = itv._detect_json_candidates(tmp_path)
+    assert len(result) == 1
+    assert result[0].name == "train.json"
+
+
+def test_detect_dir_candidates_finds_nested_subdir(tmp_path: Path) -> None:
+    (tmp_path / "DataFusionContest" / "train").mkdir(parents=True)
+    result = itv._detect_dir_candidates(["train"], tmp_path)
+    assert len(result) == 1
+    assert result[0].name == "train"
+
+
+def test_detect_dir_candidates_empty_when_no_data_dir(tmp_path: Path) -> None:
+    result = itv._detect_dir_candidates(["train"], tmp_path / "nonexistent")
+    assert result == []
+
+
+def test_auto_detect_path_single_candidate_suggests_default(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(itv, "ask_confirm", lambda *a, **k: True)
+    result = itv._auto_detect_path("train annotations", "Path?", [tmp_path / "train.json"])
+    assert result == str(tmp_path / "train.json")
+
+
+def test_auto_detect_path_multiple_candidates_skips_confirm(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    confirm_calls: list[bool] = []
+    monkeypatch.setattr(itv, "ask_confirm", lambda *a, **k: confirm_calls.append(True) or True)
+    got_default: list[str | None] = []
+
+    def _capture_ask_text(*args, default: str | None = None, **kwargs: object) -> str:
+        got_default.append(default)
+        return "manual.json"
+
+    monkeypatch.setattr(itv, "ask_text", _capture_ask_text)
+    result = itv._auto_detect_path(
+        "train annotations", "Path?", [tmp_path / "a.json", tmp_path / "b.json"]
+    )
+    assert confirm_calls == []
+    assert got_default == [None]
+    assert result == "manual.json"
+
+
+def test_ask_dataset_source_coco_validates_paths(monkeypatch: pytest.MonkeyPatch) -> None:
+    """_ask_dataset_source must wire up file/dir validators for COCO paths."""
+    monkeypatch.setattr(itv, "ask_choice", lambda *a, **k: "coco")
+    captured: list[tuple[str, object]] = []
+
+    def _capture(label: str, prompt: str, candidates: list, *, validate=None, **kw: object) -> str:
+        captured.append((label, validate))
+        return "dummy"
+
+    monkeypatch.setattr(itv, "_auto_detect_path", _capture)
+    ctx = itv.Ctx(answers={}, cuda_available=False)
+    itv._ask_dataset_source(ctx)
+    labels = [label for label, _ in captured]
+    validators = [v for _, v in captured]
+    assert "train annotations" in labels
+    assert "train images dir" in labels
+    for v in validators:
+        assert v is not None, "all COCO path prompts must carry a validate= callback"
+
+
+def test_ask_validation_explicit_coco_validates_paths(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Explicit-val COCO path prompts must carry file/dir validators."""
+    monkeypatch.setattr(itv, "ask_choice", lambda *a, **k: "explicit")
+    captured: list[tuple[str, object]] = []
+
+    def _capture(label: str, prompt: str, candidates: list, *, validate=None, **kw: object) -> str:
+        captured.append((label, validate))
+        return "dummy"
+
+    monkeypatch.setattr(itv, "_auto_detect_path", _capture)
+    ctx = itv.Ctx(answers={"data": {"format": "coco"}}, cuda_available=False)
+    itv._ask_validation(ctx)
+    labels = [label for label, _ in captured]
+    validators = [v for _, v in captured]
+    assert "val annotations" in labels
+    assert "val images dir" in labels
+    for v in validators:
+        assert v is not None, "all COCO val path prompts must carry a validate= callback"
+
+
+def test_validate_is_file_accepts_existing_file(tmp_path: Path) -> None:
+    f = tmp_path / "foo.json"
+    f.write_text("{}")
+    assert itv._validate_is_file(str(f)) is None
+
+
+def test_validate_is_file_rejects_missing(tmp_path: Path) -> None:
+    assert itv._validate_is_file(str(tmp_path / "missing.json")) is not None
+
+
+def test_validate_is_dir_accepts_existing_dir(tmp_path: Path) -> None:
+    assert itv._validate_is_dir(str(tmp_path)) is None
+
+
+def test_validate_is_dir_rejects_missing(tmp_path: Path) -> None:
+    assert itv._validate_is_dir(str(tmp_path / "missing")) is not None
+
+
 def test_require_tty_non_tty_raises(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(itv.sys.stdin, "isatty", lambda: False)
     with pytest.raises(typer.BadParameter, match="TTY"):
