@@ -93,15 +93,20 @@ def ask_confirm(prompt: str, *, default: bool = True) -> bool:
 
 
 def _detect_json_candidates(data_dir: Path = Path("data")) -> list[Path]:
-    """Return sorted .json files found directly in data_dir, or empty list."""
+    """Return sorted .json files found recursively under data_dir, or empty list."""
     if not data_dir.is_dir():
         return []
-    return sorted(data_dir.glob("*.json"))
+    return sorted(p for p in data_dir.rglob("*.json") if p.is_file())
 
 
 def _detect_dir_candidates(subdirs: list[str], data_dir: Path = Path("data")) -> list[Path]:
-    """Return the first matching subdir under data_dir that exists, or empty list."""
-    return [data_dir / s for s in subdirs if (data_dir / s).is_dir()]
+    """Return directories matching any name in subdirs found recursively under data_dir."""
+    if not data_dir.is_dir():
+        return []
+    hits: list[Path] = []
+    for s in subdirs:
+        hits.extend(p for p in data_dir.rglob(s) if p.is_dir())
+    return sorted(hits)
 
 
 def _auto_detect_path(
@@ -111,12 +116,26 @@ def _auto_detect_path(
     *,
     validate: Callable[[str], str | None] | None = None,
 ) -> str:
-    """Propose the first candidate (if any) and confirm; fall back to ask_text."""
-    if candidates:
+    """Propose the candidate when exactly one is found and confirm; fall back to ask_text.
+
+    Multiple candidates are ambiguous (e.g. several datasets under data/), so no
+    default is offered — the user types the path explicitly.
+    """
+    if len(candidates) == 1:
         typer.echo(f"Detected {label}: {candidates[0]}")
         if ask_confirm("Use this path?", default=True):
             return str(candidates[0])
+    elif len(candidates) > 1:
+        typer.echo(f"Multiple {label} found; enter path manually.")
     return ask_text(prompt, validate=validate)
+
+
+def _validate_is_file(s: str) -> str | None:
+    return None if Path(s).is_file() else f"no file at {s}"
+
+
+def _validate_is_dir(s: str) -> str | None:
+    return None if Path(s).is_dir() else f"no directory at {s}"
 
 
 def _ask_dataset_source(ctx: Ctx) -> dict[str, Any]:
@@ -126,11 +145,13 @@ def _ask_dataset_source(ctx: Ctx) -> dict[str, Any]:
             "train annotations",
             "Path to COCO train annotations (.json)?",
             _detect_json_candidates(),
+            validate=_validate_is_file,
         )
         imgs = _auto_detect_path(
             "train images dir",
             "Path to COCO train images dir?",
             _detect_dir_candidates(["train"]),
+            validate=_validate_is_dir,
         )
         return {"data": {"format": "coco", "train": {"annotations": ann, "images": imgs}}}
     name = ask_text("HuggingFace dataset name (org/dataset)?")
@@ -167,11 +188,13 @@ def _ask_validation(ctx: Ctx) -> dict[str, Any]:
         "val annotations",
         "Path to COCO val annotations (.json)?",
         val_candidates,
+        validate=_validate_is_file,
     )
     imgs = _auto_detect_path(
         "val images dir",
         "Path to COCO val images dir?",
         _detect_dir_candidates(["val"]),
+        validate=_validate_is_dir,
     )
     return {"data": {"val": {"annotations": ann, "images": imgs}}}
 
