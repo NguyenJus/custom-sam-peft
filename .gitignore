@@ -45,6 +45,9 @@ models/*
 .mcp.json
 .serena/
 
+# token-savior local index cache (not committed)
+.token-savior-cache.json
+
 # Local git worktrees
 .worktrees/
 
