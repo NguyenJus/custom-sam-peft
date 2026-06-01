@@ -164,6 +164,7 @@ def run_init(
         loss_preset=preset,
         aug_intensity=intensity,
         class_imbalance=class_imbalance,
+        lr_schedule="cosine",
         overrides_block=overrides_block,
         loss_overrides_block=loss_overrides_block,
         **blocks,
