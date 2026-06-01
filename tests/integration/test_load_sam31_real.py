@@ -1,8 +1,9 @@
 """Integration test: load real SAM 3.1 checkpoint and run a forward pass.
 
 Skipped automatically unless the .pt checkpoint is present AND a CUDA GPU
-with compute capability >= 6.0 is available.  The two cheaper tests use
-gpu_local (fits a GTX 1080); the K=8 multiplex forward uses gpu_t4.
+with compute capability >= 7.5 is available.  The two cheaper tests use
+gpu_t4 (CC 7.5 floor: Tesla T4 / RTX 5070 Ti); the K=8 multiplex forward
+also uses gpu_t4.
 """
 
 from __future__ import annotations
@@ -21,14 +22,14 @@ pytestmark = [
 ]
 
 
-@pytest.mark.gpu_local
+@pytest.mark.gpu_t4
 def test_load_sam31_returns_wrapper() -> None:
     cfg = ModelConfig(device="cuda", dtype="bfloat16")
     wrapper = load_sam31(cfg)
     assert isinstance(wrapper, Sam3Wrapper)
 
 
-@pytest.mark.gpu_local
+@pytest.mark.gpu_t4
 def test_load_sam31_forward_to_canonical() -> None:
     cfg = ModelConfig(device="cuda", dtype="bfloat16")
     wrapper = load_sam31(cfg)

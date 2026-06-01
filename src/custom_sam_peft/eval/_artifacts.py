@@ -13,6 +13,25 @@ if TYPE_CHECKING:
 
 
 @dataclass(frozen=True)
+class HostRamStop:
+    """Set when Trainer.fit stopped early because available host RAM fell below the floor.
+
+    Distinct from TimeLimitStop: the host-RAM guard fires proactively to avoid
+    an uncatchable SIGKILL from the Linux OOM killer. The evaluator never reads
+    this field; the CLI uses it to print the resume message and exit 0.
+    """
+
+    stop_step: int
+    stop_epoch: int  # zero-based epoch index at the stop
+    total_epochs: int  # cfg.train.epochs
+    checkpoint_dir: Path  # run_dir/checkpoints/step_<N>/
+    available_gb: float  # psutil-reported available GB at the stop
+    floor_gb: float  # the configured floor (cfg.train.host_ram_floor_gb)
+    best_dir: Path | None  # run_dir/best/ if it exists, else None
+    best_map: float | None  # best.json "value" if best/ exists, else None
+
+
+@dataclass(frozen=True)
 class TimeLimitStop:
     """Set when Trainer.fit stopped early on a wall-clock budget. None otherwise.
 
@@ -49,6 +68,9 @@ class EvalArtifacts:
     # Set when training stopped early on a wall-clock budget; None on the
     # normal path. The evaluator never reads it (seam-safe optional field).
     time_limit_stop: TimeLimitStop | None = field(default=None)
+    # Set when training stopped early because host RAM fell below the floor;
+    # None on the normal path. The evaluator never reads it (seam-safe optional).
+    host_ram_stop: HostRamStop | None = field(default=None)
     # close_out's single eval's per-example IoU (return_per_example_iou=True),
     # so the run/finalize bundle reuses it with no second eval. None no-val.
     per_example_iou: list[float] | None = field(default=None)

@@ -18,13 +18,14 @@ from custom_sam_peft import paths
 from custom_sam_peft.cli._progress import progress as P
 from custom_sam_peft.config._duration import format_seconds, parse_duration_to_seconds
 from custom_sam_peft.config.schema import LRSchedule, Optimizer, TrainConfig
-from custom_sam_peft.data.base import Dataset
+from custom_sam_peft.data.base import Dataset, TextPrompts
 from custom_sam_peft.data.collate import collate_batch
-from custom_sam_peft.eval._artifacts import EvalArtifacts, TimeLimitStop
+from custom_sam_peft.eval._artifacts import EvalArtifacts, HostRamStop, TimeLimitStop
 from custom_sam_peft.eval.evaluator import Evaluator
 from custom_sam_peft.models.sam3 import MULTIPLEX_CAP, Sam3Wrapper
 from custom_sam_peft.peft_adapters import PEFTMethod, make_peft_method
-from custom_sam_peft.runtime import Runtime
+from custom_sam_peft.predict.budget import decide_predict_budget_warning
+from custom_sam_peft.runtime import Runtime, to_device
 from custom_sam_peft.tracking.base import Tracker
 from custom_sam_peft.train._scheduler import PlateauOrLambda
 from custom_sam_peft.train.checkpoint import (
@@ -35,7 +36,13 @@ from custom_sam_peft.train.checkpoint import (
 )
 from custom_sam_peft.train.close_out import close_out
 from custom_sam_peft.train.ladder import LadderEvents, LadderState, LrCut, StopDecision
-from custom_sam_peft.train.loop import OomState, _EarlyStop, _TimeLimitReached, run_epoch
+from custom_sam_peft.train.loop import (
+    OomState,
+    _EarlyStop,
+    _HostRamLow,
+    _TimeLimitReached,
+    run_epoch,
+)
 from custom_sam_peft.train.visualize import render_mask_panel
 
 _LOG = logging.getLogger(__name__)
@@ -281,6 +288,7 @@ class Trainer:
         deadline: float | None = None,
         should_stop_early: Any = None,
         effective_schedule: str | None = None,
+        host_ram_floor_bytes: int | None = None,
     ) -> tuple[int, int]:
         """Run one training epoch; returns (global_step, nan_streak)."""
         return run_epoch(
@@ -308,6 +316,7 @@ class Trainer:
                 "best_metric_value": self._best_metric_value,
                 "scheduler_kind": self._scheduler_kind,
             },
+            host_ram_floor_bytes=host_ram_floor_bytes,
         )
 
     def _cap_eval_batch_size(self, bs: int, cap: int) -> int:
@@ -456,6 +465,49 @@ class Trainer:
             time_limit_stop=time_limit_stop,
         )
 
+    def _host_ram_artifacts(
+        self,
+        run_dir: Path,
+        stop: Any,  # _HostRamLow
+        oom_state: OomState | None,
+    ) -> EvalArtifacts:
+        """Build the EvalArtifacts for a host-RAM-floor stop.
+
+        Mirrors _time_limited_artifacts but does not depend on budget_seconds
+        (there is no wall-clock budget here; the stop is driven by available RAM).
+        """
+        checkpoint_dir = paths.checkpoint_path(run_dir, step=stop.step).parent / f"step_{stop.step}"
+        best_dir: Path | None = None
+        best_map: float | None = None
+        best_candidate = run_dir / "best"
+        best_json = best_candidate / "best.json"
+        if best_candidate.is_dir() and best_json.is_file():
+            try:
+                data = json.loads(best_json.read_text())
+                best_dir = best_candidate
+                best_map = float(data["value"])
+            except Exception:
+                best_dir = None
+                best_map = None
+        host_ram_stop = HostRamStop(
+            stop_step=stop.step,
+            stop_epoch=stop.epoch,
+            total_epochs=self.cfg.train.epochs,
+            checkpoint_dir=checkpoint_dir,
+            available_gb=stop.available_gb,
+            floor_gb=self.cfg.train.host_ram_floor_gb,
+            best_dir=best_dir,
+            best_map=best_map,
+        )
+        return EvalArtifacts(
+            checkpoint_path=checkpoint_dir / "adapter",
+            peft_method=self.cfg.peft.method,
+            run_dir=run_dir,
+            final_metrics=None,
+            oom_events=tuple(oom_state.pending_oom_events) if oom_state is not None else (),
+            host_ram_stop=host_ram_stop,
+        )
+
     def _maybe_checkpoint(
         self,
         step: int,
@@ -489,6 +541,56 @@ class Trainer:
             scheduler_kind=self._scheduler_kind,
         )
         self._log_image_panel(val_examples, class_names, step)
+
+    def _probe_predict_budget(self) -> None:
+        """Empirically measure the model's predict VRAM footprint and warn if it exceeds budget.
+
+        Runs one batch=1/K=1 forward (no backward, no optimizer step) under
+        ``torch.no_grad()`` immediately before the training loop, so any
+        over-budget warning reaches the user at the earliest possible moment.
+        CPU no-op.  Probe failures are swallowed — warn-not-block.
+        """
+        if self.runtime.device.type != "cuda":
+            return
+        # FIX 2: empty-dataset guard — avoid IndexError swallowed as a confusing message
+        if len(self.train_ds) == 0:
+            _LOG.debug("predict-budget probe skipped: no training examples")
+            return
+        try:
+            # Snapshot all RNG state so the probe (dataset __getitem__ augmentation +
+            # forward) does not advance the main-process RNG visible to the epoch loop.
+            cpu_rng = torch.get_rng_state()
+            cuda_rng = torch.cuda.get_rng_state_all()
+            try:
+                batch = collate_batch([self.train_ds[0]])
+                classes = sorted({c for p in batch["prompts"] for c in p.classes})
+                if not classes:
+                    _LOG.debug("predict-budget probe skipped: no classes in first training example")
+                    return
+                # any single class; image-encoder cost dominates and is ~uniform across prompts
+                probe_prompts = [TextPrompts(classes=[classes[0]])]
+                images = to_device(batch["images"], self.runtime)
+                was_training = self.model.training
+                self.model.eval()
+                try:
+                    # Resets the device-global peak counter; acceptable here — the probe
+                    # runs once at model-ready and any subsequent training peak is still
+                    # captured by callers measuring after the run.
+                    torch.cuda.reset_peak_memory_stats()
+                    with torch.no_grad():
+                        self.model(images, probe_prompts)
+                    measured = torch.cuda.max_memory_allocated()
+                finally:
+                    if was_training:
+                        self.model.train()
+                warn, msg = decide_predict_budget_warning(measured)
+                if warn:
+                    _LOG.warning(msg)
+            finally:
+                torch.set_rng_state(cpu_rng)
+                torch.cuda.set_rng_state_all(cuda_rng)
+        except Exception as exc:
+            _LOG.debug("predict-budget probe skipped: %s", exc)
 
     # ------------------------------------------------------------------
     # Public API
@@ -645,7 +747,16 @@ class Trainer:
                 budget_seconds,
             )
 
+        host_ram_floor_bytes: int | None = None
+        if cfg.train.host_ram_floor_gb > 0:
+            host_ram_floor_bytes = int(cfg.train.host_ram_floor_gb * 1e9)
+            _LOG.info(
+                "host-RAM floor: %.2f GB — stops gracefully if available RAM drops below this",
+                cfg.train.host_ram_floor_gb,
+            )
+
         stop: _TimeLimitReached | None = None
+        ram_stop: _HostRamLow | None = None
         _early: _EarlyStop | None = None  # set on early stop; Phase 2 wires into close_out
         close_out_result: EvalArtifacts | None = None
         # Mutable single-element list so the closure below sees the live epoch
@@ -657,6 +768,8 @@ class Trainer:
             if d is not None and d.should_stop:
                 return _EarlyStop(d.triggering_step, _current_epoch[0], d.reason)
             return None
+
+        self._probe_predict_budget()
 
         try:
             try:
@@ -679,16 +792,20 @@ class Trainer:
                         deadline=deadline,
                         should_stop_early=should_stop_early,
                         effective_schedule=effective_schedule,
+                        host_ram_floor_bytes=host_ram_floor_bytes,
                     )
                     P.advance_outer()
             except _TimeLimitReached as e:
                 stop = e
                 global_step = e.step  # the flushed checkpoint's step
+            except _HostRamLow as e:
+                ram_stop = e
+                global_step = e.step  # the flushed checkpoint's step
             except _EarlyStop as e:
                 _early = e
                 global_step = e.step
 
-            if stop is None:
+            if stop is None and ram_stop is None:
                 final_epoch = _early.epoch if _early is not None else cfg.train.epochs - 1
                 _cuts = tuple(self._ladder_cuts)
                 _stop_reason = _early.reason if _early is not None else None
@@ -712,6 +829,20 @@ class Trainer:
 
         if stop is not None:
             return self._time_limited_artifacts(run_dir, stop, budget_seconds, oom_state)
+
+        if ram_stop is not None:
+            _LOG.warning(
+                "host-RAM floor reached at step %d (epoch %d): %.2f GB available (floor: %.2f GB). "
+                "Checkpoint saved to %s. "
+                "To resume: reduce data.num_workers and/or batch_size, or raise "
+                "train.host_ram_floor_gb, then resume from the checkpoint.",
+                ram_stop.step,
+                ram_stop.epoch,
+                ram_stop.available_gb,
+                self.cfg.train.host_ram_floor_gb,
+                paths.checkpoint_path(run_dir, step=ram_stop.step).parent / f"step_{ram_stop.step}",
+            )
+            return self._host_ram_artifacts(run_dir, ram_stop, oom_state)
 
         if close_out_result is None:  # set whenever stop is None; guard for the type checker
             raise RuntimeError("close_out did not run despite normal completion")

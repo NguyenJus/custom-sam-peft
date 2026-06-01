@@ -24,6 +24,7 @@ dependencies = [
   "scipy>=1.10",
   "einops>=0.7",
   "huggingface-hub>=0.30",
+  "psutil>=5.9",
   "tensorboard>=2.18",
   "sam3 @ git+https://github.com/facebookresearch/sam3@2814fa619404a722d03e9a012e083e4f293a4e53",
 ]
@@ -32,7 +33,6 @@ dependencies = [
 wandb = ["wandb>=0.18"]
 qlora = ["bitsandbytes>=0.43"]
 cu130 = ["torch"]
-gpu-pascal = ["torch", "torchvision", "bitsandbytes>=0.43"]
 jupyter = ["jupyterlab>=4"]
 dev = [
   "ruff>=0.7",
@@ -120,6 +120,7 @@ module = [
   "sam3.*",
   "peft.*",
   "google.colab",
+  "psutil",
 ]
 ignore_missing_imports = true
 
@@ -128,10 +129,10 @@ testpaths = ["tests"]
 markers = [
   "integration: end-to-end tests using the stub model (CPU)",
   "requires_checkpoint: skip unless real checkpoint is present",
-  "requires_compatible_gpu: skip unless CUDA compute capability >= 6.0 (NF4 QLoRA + LoRA work from Pascal; LLM.int8() unused)",
-  "gpu_local: GPU test that fits the GTX 1080 (<=~7 GB, CC 6.0+, NF4+float16); run via run_gpu_tests.sh local",
-  "gpu_t4: GPU test needing >8 GB and <=16 GB, or bf16-representative numerics; Colab T4",
-  "gpu_xl: GPU test beyond a T4 (>16 GB / larger arch); cloud auto-provision (needs #124)",
+  "requires_compatible_gpu: skip unless a CUDA GPU with CC >= 7.5 is available (Tesla T4 floor; RTX 5070 Ti primary dev card). See docs/testing/gpu-test-policy.md.",
+  "gpu_t4: requires a CUDA GPU with CC >= 7.5 AND total VRAM <= 16 GB (Tesla T4 floor and RTX 5070 Ti). fp16 band (bf16 is coerced below CC 8.0). See docs/testing/gpu-test-policy.md.",
+  "gpu_bf16: requires a CUDA GPU with CC >= 8.0 AND total VRAM <= 16 GB (RTX 5070 Ti). Native, non-coerced bf16 numerics. See docs/testing/gpu-test-policy.md.",
+  "gpu_xl: requires a CUDA GPU with total VRAM > 16 GB. Empty in this PR; populated only via the gpu_xl follow-up issue. See docs/testing/gpu-test-policy.md.",
 ]
 addopts = "-ra --strict-markers --cov=custom_sam_peft --cov-report=term-missing --cov-report=html --cov-fail-under=80"
 
@@ -151,26 +152,3 @@ dev = [
     "ruff>=0.15.13",
 ]
 
-[[tool.uv.index]]
-# PyTorch cu118 wheels — covers sm_60..sm_90; PTX from compute_60 JIT-compiles
-# to the GTX 1080's sm_61 at first kernel launch (research #79). Explicit so it
-# is consulted ONLY for packages routed to it (the default cu130 resolution is
-# untouched).
-name = "pytorch-cu118"
-url = "https://download.pytorch.org/whl/cu118"
-explicit = true
-
-[tool.uv.sources]
-# Route torch + torchvision to cu118 ONLY under the gpu-pascal extra. Outside it
-# they resolve from PyPI (cu130) as today. torchvision MUST be pinned to the same
-# cu118 build as torch — the generic PyPI wheel links against a different CUDA
-# runtime and fails at import with "operator torchvision::nms does not exist".
-torch = [{ index = "pytorch-cu118", extra = "gpu-pascal" }]
-torchvision = [{ index = "pytorch-cu118", extra = "gpu-pascal" }]
-
-[tool.uv]
-# gpu-pascal (cu118) and cu130 (PyPI default) use different torch builds and
-# must never co-resolve.
-conflicts = [
-    [{ extra = "cu130" }, { extra = "gpu-pascal" }],
-]

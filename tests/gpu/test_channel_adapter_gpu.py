@@ -6,7 +6,7 @@ All three require:
   - The real SAM 3.1 checkpoint at models/sam3.1/sam3.1_multiplex.pt  (requires_checkpoint)
 
 Run explicitly:
-    pytest -m gpu_local tests/gpu/test_channel_adapter_gpu.py -v
+    pytest -m gpu_t4 tests/gpu/test_channel_adapter_gpu.py -v
 """
 
 from __future__ import annotations
@@ -15,7 +15,7 @@ import pytest
 import torch
 
 pytestmark = [
-    pytest.mark.gpu_local,
+    pytest.mark.gpu_t4,
     pytest.mark.requires_compatible_gpu,
     pytest.mark.requires_checkpoint,
 ]

@@ -1,5 +1,7 @@
 # Manual GPU Test Pass — 2026-05-24 (GTX 1080, §4.3 hard-gate milestone)
 
+> **Superseded by the RTX 5070 Ti; Pascal is no longer supported as of this PR (min supported GPU: Tesla T4, CC 7.5).**
+
 Operational tracker for the §4.3 Pascal hard-gate milestone and the local
 `gpu_local` tier. Companion to
 [`local-pascal-gpu-testing.md`](local-pascal-gpu-testing.md) and

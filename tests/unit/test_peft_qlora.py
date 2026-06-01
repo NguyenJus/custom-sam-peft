@@ -13,7 +13,7 @@ Task 3. Three tests are expected to fail against the current
 NotImplementedError stub and will go green when Task 3 lands:
   * test_apply_qlora_raises_helpful_importerror_when_bnb_missing
   * test_save_qlora_raises_when_no_peft_model
-  * test_load_qlora_raises_when_peft_model_already_set
+  * test_load_qlora_reloads_into_attached_peft_model
 """
 
 from __future__ import annotations
@@ -131,16 +131,27 @@ def test_save_qlora_raises_when_no_peft_model(tmp_path: Path) -> None:
         save_qlora(w, tmp_path)
 
 
-def test_load_qlora_raises_when_peft_model_already_set(tmp_path: Path) -> None:
-    """load_qlora refuses to overwrite a wrapper that already has an adapter."""
+def test_load_qlora_reloads_into_attached_peft_model(tmp_path: Path) -> None:
+    """load_qlora reloads adapter weights into an already-attached PeftModel.
+
+    Mirrors load_lora's resume branch: when wrapper.peft_model is not None,
+    load_adapter + set_adapter are called on the existing PeftModel instead of
+    raising RuntimeError.  This is the path that close_out uses for best-restore.
+    """
+    from unittest.mock import MagicMock
+
     from custom_sam_peft.peft_adapters.qlora import load_qlora
 
     w = make_stub_wrapper()
-    # Fake a previously-applied state. The real type is PeftModel; for this
-    # guard test any non-None object suffices.
-    w.peft_model = object()
-    with pytest.raises(RuntimeError, match="already has a PeftModel"):
-        load_qlora(w, tmp_path)
+    # Fake a previously-applied state with a mock PeftModel.
+    mock_peft = MagicMock()
+    w.peft_model = mock_peft
+
+    # Must not raise; must call load_adapter + set_adapter on the existing PeftModel.
+    result = load_qlora(w, tmp_path)
+    assert result is w, "load_qlora should return the same wrapper"
+    mock_peft.load_adapter.assert_called_once_with(str(tmp_path), "default", is_trainable=True)
+    mock_peft.set_adapter.assert_called_once_with("default")
 
 
 # ---------------------------------------------------------------------------
