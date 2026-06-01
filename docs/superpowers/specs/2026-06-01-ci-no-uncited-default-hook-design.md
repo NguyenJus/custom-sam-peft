@@ -7,6 +7,22 @@
   and explicitly deferred this CI hook to its own follow-up.
 - **Date:** 2026-06-01
 - **Status:** Locked design, ready for planning.
+- **Amendment (2026-06-01, #192 — closes a Phase-1 implementation gap):** Phase 1
+  landed the checker and ran it over the REAL repo, which exposed two problems
+  the original design got wrong. (1) The "default surface" definition was too
+  naive — it over-collected type aliases, loggers, computed constants, enum-style
+  module symbols, and nested-config container fields, and it could not key the
+  inconsistent doc rows. (2) The "no new doc rows" rule (Doc-migration §5) rested
+  on a false premise: that #120 already documented *every* trust-bearing default.
+  It did not — real trust-bearing defaults ship with **no** doc row. **User
+  decision (authoritative): FULLY LIFT "no new rows" and make this EXHAUSTIVE.**
+  Document every genuinely-undocumented trust-bearing default so the guard is
+  meaningful and the repo ends green. Honest placeholder provenance is acceptable
+  now (every new row gets a real citation OR an explicit `# tbd:` tag — never a
+  silent guessed value; per the standing "cite new hyperparams" rule); the user
+  refines content in a future PR. **No default *value* changes** — document-and-
+  tooling-only still holds. The refined surface and exhaustive-registry policy are
+  folded into the relevant sections below.
 
 ## Summary / Goal
 
@@ -26,11 +42,18 @@ check after the strip and doc migration are applied.
 
 ## Background & motivation
 
-#120 audited every trust-bearing default value in the codebase and gave each a
+#120 audited trust-bearing default values in the codebase and gave many of them a
 provenance entry in `docs/defaults-provenance.md`, with terse inline
 `# cite:` / `# tbd:` tags pointing into it. #192 (this work) asks for a guard so
 that a *new* default added to an in-scope file cannot silently ship without
 provenance.
+
+**Amendment note:** #120's coverage was **not** exhaustive. Running the Phase-1
+checker over the real repo revealed genuinely trust-bearing defaults with no doc
+row (e.g. `presets.py:A_FIXED` / `A_PER_CLASS`, the #204 activation-model
+calibration constants; `tests/gpu/test_qlora_8gb_ceiling.py:LOSS_RATIO_CEIL`;
+several `config/schema.py` fields). This work therefore **completes** the registry
+(see Doc-migration §5) so the guard is meaningful and the repo ends green.
 
 During brainstorming the scope was deliberately widened beyond a bare guard to
 also **de-clutter the inline tags**. The reason: the provenance *document*, not
@@ -43,11 +66,13 @@ head (regression-bait).
 
 ## Principle
 
-`docs/defaults-provenance.md` is the **complete registry and the single source
-of truth** for default provenance. Inline tags are no longer the primary
-code↔doc pointer. A small curated set of head-turner defaults retains an inline
-note purely as a reader's "wait, that's intentional" guard, not as the canonical
-provenance pointer.
+`docs/defaults-provenance.md` is the **single source of truth** for default
+provenance, and this work makes it the **exhaustive registry**: every
+trust-bearing default in an in-scope file has a row (real citation or honest
+`# tbd:` placeholder — never a silent guessed value). Inline tags are no longer
+the primary code↔doc pointer. A small curated set of head-turner defaults retains
+an inline note purely as a reader's "wait, that's intentional" guard, not as the
+canonical provenance pointer.
 
 ## Scope
 
@@ -157,23 +182,124 @@ state what is missing, and give a one-line remediation.
 
 ### The "default surface" (definition for Assertion 1)
 
-For `prose` sections, the **enforced default surface** is exactly:
+> **Amended (#192).** The original three-bullet definition over-collected and
+> could not key the doc's inconsistent rows. The definition below is the
+> authoritative one; it was verified against the real repo to reconcile every
+> prose section to **zero** Assertion-1 violations (together with the exhaustive
+> registry completion in Doc-migration §5).
 
-- pydantic `Field(default=...)` and `Field(default_factory=...)` defaults,
-- dataclass field defaults (`name: T = <default>`),
-- module-level constant assignments (`NAME = <value>` and `NAME: T = <value>` at
-  module top level).
+For `prose` sections, the **enforced default surface** is computed from the
+file's AST as follows. A symbol is keyed `<defining-class>.<field>` for class
+fields, or `<NAME>` for module constants.
 
-The surface **deliberately excludes arbitrary in-function magic literals.**
-Concretely, the `presets.py` rows that document in-function dtype/byte math —
+**(1) Module-level constant assignments — INCLUDE with literal-value RHS only.**
+Collect `NAME = <value>` and `NAME: T = <value>` at module top level **iff** the
+RHS value node is a *literal* — an `ast.Constant`, `ast.Tuple`, `ast.List`,
+`ast.Dict`, `ast.Set`, or a `UnaryOp` over a `Constant` (e.g. `-1`). **Exclude:**
+
+- `__dunder__` names (e.g. `__all__`) — AST discriminator: name starts and ends
+  with `__`.
+- `model_config` assignments (pydantic `ConfigDict`, not a default value).
+- `pytestmark` (a pytest marker list, not a default).
+- **Type aliases** — RHS is an `ast.Subscript` whose base `Name`/`Attribute` is
+  `Literal` / `Union` / `Optional` (covers the ~19 `Dtype` / `Preset` /
+  `MaskFamily` / `NormalizationPath` / … aliases, whether plain `Assign` or
+  `AnnAssign`).
+- **Non-literal RHS** — any RHS that is NOT a literal node above (an `ast.Call`,
+  `ast.BinOp`, `ast.Name`, etc.). This drops loggers
+  (`_LOG = logging.getLogger(...)`), computed handles
+  (`_HED_FROM_RGB_INV = np.linalg.inv(...)`, `CHANNEL_SEMANTIC_NAMES = tuple(...)`),
+  and unit/derived constants (`_GB = 1024**3`, `CONFIG_PATH = Path(...) / ...`).
+  Such symbols are **not** demanded in the code→doc direction. (If the doc *does*
+  carry a row for one — e.g. `_HED_FROM_RGB_MATRIX = np.array(...)`, `Q_OVERHEAD =
+  64 * _MIB`, `WORKSPACE_BYTES = 256 * _MIB` — the row is preserved and exempted
+  in the doc→code direction by the module-constant exemption, below.)
+
+Enum *member* assignments inside an `Enum` class body are **not** module-level
+assignments and are never collected as `Enum.MEMBER` surface symbols (they live in
+a class body; the recursion in (2) only descends config containers, and an `Enum`
+subclass is not one — but if a future enum is added, ensure its members are not
+emitted).
+
+**(2) Class-body field defaults — INCLUDE with nested-container suppression +
+outer-rooted recursion.** For each config class, walk its body fields
+(`name: T = <default>` AnnAssign, or `name = <default>` Assign):
+
+- **Required / no-default fields are exempt** (not in the surface): an `AnnAssign`
+  with no value, or a `Field(...)` call with neither `default` nor
+  `default_factory` (e.g. `epochs: PositiveInt`, `name: str = Field(min_length=1)`).
+- **Nested-config container fields are suppressed as leaves and recursed into.**
+  A field is a container iff its default/`default_factory` references a config
+  class — `Field(default_factory=X)`, `Field(default=X())`, or a bare `= X()`.
+  The nested config may be a **pydantic BaseModel OR a dataclass**
+  (e.g. `TrackingConfig.wandb: WandbConfig` and `TrainConfig.export: ExportConfig`
+  are dataclasses in `config/_internal.py`; `DataConfig.augmentations:
+  AugmentationsConfig` is a pydantic model). Handling:
+  - If `X` is a class **defined in the same file**, recurse into `X`'s body
+    (emitting its leaves under `X.<field>`), and do NOT emit a leaf for the
+    container field itself.
+  - If `X` is **imported** (defined in another file — e.g. `WandbConfig`,
+    `ExportConfig` from `_internal.py`), recognize it as a container by
+    name-shape (`*Config` / `*Overrides` / `*Weights`), suppress the container
+    field, and do NOT recurse (the imported module's own doc section documents
+    its leaves — `config/_internal.py` already carries `WandbConfig.*` /
+    `ExportConfig.*`).
+- **Override-mirror classes are excluded entirely.** `AugmentationOverrides`
+  (8 fields) and `LossOverrides` (14 fields) are all-`None` "inherit from the
+  preset table" mirrors; their value provenance lives in the TABLE modules, not in
+  prose. Discriminator: the field's defining class is `AugmentationOverrides` or
+  `LossOverrides`. (Do NOT over-generalize to "any `None` default" — legitimate
+  `None`-sentinel fields outside these two classes, e.g. `ModelConfig.device`,
+  `LimitConfig.train`, DO get documented `index-only` rows; see Doc-migration §5.)
+- Otherwise emit the leaf `<defining-class>.<field>`.
+
+**Keying rule (single, coherent): leaves are keyed by DEFINING CLASS.** The
+recursion emits each leaf under the class whose body declares it
+(`EarlyStopConfig.enabled`, `LrDecayOnPlateauConfig.factor`,
+`TextPromptConfig.k`, `LimitConfig.seed`, `NormalizeConfig.mean`). The doc keys
+**most** nested leaves this way already, but keys the 8
+`TrainHyperparams.early_stop.*` / `TrainHyperparams.lr_decay_on_plateau.*` rows by
+**outer path**. The migration **re-keys those 8 rows to the defining-class form**
+(`EarlyStopConfig.*` / `LrDecayOnPlateauConfig.*`) so the whole doc uses one rule.
+The recursion descends each container once and emits each leaf under exactly one
+key (a `set`), so there is no double-count.
+
+**Required-field exemption in the doc→code direction.** A doc row whose **Value**
+cell marks a required / no-default field (e.g.
+`config/schema.py:TrainHyperparams.epochs` with value `required (template
+$epochs slot)`) is **not** an orphan even though the field is absent from the
+surface — it is exempt from the doc→code obligation (analogous to the in-function
+literal exemption). The implementer detects this by the value cell containing
+`required`.
+
+**Subscript-keyed rows exemption.** `data/channel_semantics.py` keys 4 rows by a
+subscript path (`CHANNEL_SEMANTICS["rgb"].normalize_default`, etc.) that an AST
+symbol-surface cannot emit. A doc row whose bare symbol contains `[` or `(` is a
+**subscript / call-path key** and is **exempt** in the doc→code direction (it
+documents a per-key value of a container constant, not a surface symbol). The
+container constant itself (`CHANNEL_SEMANTICS`, a `Dict` literal) IS a surface
+symbol and gets its own `index-only` row (the per-key leaves are documented by the
+subscript rows beneath it).
+
+**Module-constant exemption in the doc→code direction.** A doc row whose bare
+symbol (no `.`) names **any** module-level assigned symbol that still exists in
+the file — regardless of its RHS kind — is not an orphan. This preserves the rows
+for documented `Call`/`BinOp` constants (`_HED_FROM_RGB_MATRIX`, `Q_OVERHEAD`,
+`WORKSPACE_BYTES`) that the literal-RHS rule (1) excludes from the code→doc
+demand. A doc row naming a module symbol that **no longer exists** (e.g. the stale
+`presets.py:BASE_ACTIVATION_AT_1024`, superseded by the #204 `A_FIXED`/
+`A_PER_CLASS` split) IS an orphan and the migration must fix/replace it.
+
+**In-function magic-literal exclusion (unchanged).** The surface deliberately
+excludes arbitrary in-function magic literals. Concretely, the `presets.py` rows
+that document in-function dtype/byte math —
 `presets.py:_bytes_per_param_for_method (2.0)`,
 `presets.py:_bytes_per_param_for_method (0.5)`,
-`presets.py:_optimizer_bytes (*4 literal)` — are values that live **inside
-function bodies**, not at module scope. The doc keeps documenting them (their
-rows stay and are exempt from the doc→code direction; see below), but they are
-**NOT** in the auto-enforced code→doc surface. Stating this exclusion
-explicitly prevents the checker from demanding the implementer hoist
-in-function literals to module constants just to satisfy the guard.
+`presets.py:_optimizer_bytes (*4 literal)` — live **inside function bodies**, not
+at module scope. The doc keeps documenting them (their rows stay and are exempt
+from the doc→code direction via the parenthetical-suffix rule below), but they are
+**NOT** in the auto-enforced code→doc surface. This prevents the checker from
+demanding the implementer hoist in-function literals to module constants.
 
 ### Assertion 1 — prose/constant files: symbol⇄row bijection (both directions)
 
@@ -190,12 +316,25 @@ For every `prose` section:
   `<file>:<symbol>` — remove or update the row in `docs/defaults-provenance.md`").
 
   The doc→code direction applies only to rows whose `Location` denotes a surface
-  symbol. Rows whose `Location` denotes an **in-function literal** (the three
-  `presets.py` `(... literal)` rows above) are recognized by their parenthetical
-  suffix and are **skipped** in the doc→code direction (they are intentionally
-  out of the enforced surface). The implementer must detect these rows
-  syntactically (a `Location` of the form `file:symbol (<literal-note>)`) and
-  exempt them.
+  symbol. The following row classes are **exempt** (skipped) in the doc→code
+  direction, each detected syntactically (see the amended "default surface"
+  definition above for the precise discriminators):
+
+  - **In-function-literal rows** — a `Location` of the form
+    `file:symbol (<literal-note>)` (the three `presets.py` `(... literal)` rows).
+  - **Required-field rows** — the row's **Value** cell contains `required`
+    (e.g. `TrainHyperparams.epochs` → `required (template $epochs slot)`).
+  - **Subscript/call-path rows** — the bare symbol contains `[` or `(`
+    (the 4 `channel_semantics.py` `CHANNEL_SEMANTICS["…"].…` rows).
+  - **Module-constant rows** — the bare symbol (no `.`) names any module-level
+    assigned symbol that still exists in the file, regardless of RHS kind (covers
+    documented `Call`/`BinOp` constants like `_HED_FROM_RGB_MATRIX`,
+    `Q_OVERHEAD`, `WORKSPACE_BYTES` that the literal-RHS surface rule excludes
+    from the code→doc demand).
+
+  A row that matches none of these and names a symbol absent from the surface and
+  absent from the file's module-level assignments is a genuine orphan and FAILS
+  (e.g. the stale `presets.py:BASE_ACTIVATION_AT_1024` row).
 
 ### Assertion 2 — table modules: tag-presence + legend resolution
 
@@ -390,11 +529,104 @@ These are the only edits to the provenance doc, and they are in scope:
    off-by-default / opt-in cells, with `(A,C)` and `(F)` for the base-dict
    focal/Tversky cells per their per-preset siblings). The `### Citation legend`
    table is unchanged — no row added, none deleted.
-5. **Do NOT delete any existing rows.** Every current row stays. The only row
-   *addition* anywhere in the doc is the single `(e)` aug-legend row above; the
-   newly tagged off-cells otherwise reuse existing legend letters and the
-   existing legend + noteworthy-row structure, so they introduce no further new
-   rows.
+5. **Exhaustive registry completion (AMENDED #192 — the "no new rows" rule is
+   FULLY LIFTED).** The original §5 ("Do NOT add rows…") rested on a false premise
+   (#120 was assumed exhaustive; it is not). It is **replaced** by this policy:
+
+   - **New rows are permitted and REQUIRED** for every genuinely-undocumented
+     trust-bearing default that the refined surface emits. After the migration,
+     Assertion 1 must reach **zero** violations over the real repo for every prose
+     section.
+   - **Each new row carries a real citation OR an explicit `# tbd:` tag** (per the
+     standing "cite new hyperparams" rule), or `index-only` for self-evident
+     structural / `None`-sentinel / runtime-flag defaults. **Never a silent
+     guessed value.** Placeholder `# tbd:` provenance is acceptable now; the user
+     refines content in a future PR. **No default *value* changes.**
+   - **Existing rows are preserved**, with two surgical FIXES required for the
+     surface to reconcile (these are corrections of already-stale content, not
+     value changes): (i) **re-key** the 8 outer-rooted rows
+     `config/schema.py:TrainHyperparams.early_stop.*` and
+     `…lr_decay_on_plateau.*` to the defining-class form
+     (`config/schema.py:EarlyStopConfig.*` and `…:LrDecayOnPlateauConfig.*`) to
+     match the single keying rule; (ii) **fix the stale**
+     `presets.py:BASE_ACTIVATION_AT_1024` row — that symbol no longer exists (the
+     #204 split replaced it with `A_FIXED` / `A_PER_CLASS`); replace it with the
+     two new split rows (below) and drop the obsolete one. (Optionally correct the
+     `presets.py:CACHE_SCHEMA_VERSION` Value cell `2` → `3` to match code; the
+     checker does not enforce values, but honesty warrants it.)
+
+   **Enumerated new rows to author** (symbol → value → tag class). This set was
+   verified against the real repo to bring all prose sections green; the
+   implementer re-runs the checker and authors exactly the rows it still reports.
+
+   - **`presets.py`** (4 rows + the stale-row fix above):
+     - `presets.py:A_FIXED` → `0` → `# cite: #204` (or `# tbd: #204`) — #204
+       activation-model calibration constant (K-invariant encoder activation,
+       clamped flash residual).
+     - `presets.py:A_PER_CLASS` → `1_248_840_021` → `# cite: #204` (or
+       `# tbd: #204`) — #204 per-class decoder activation seed.
+     - `presets.py:CACHE_FILENAME` → `".custom_sam_peft_calibration.json"` →
+       `index-only` (structural filename).
+     - `presets.py:_CUDA_HINT` → (the CUDA-required help string) → `index-only`
+       (structural user-facing message).
+   - **`config/schema.py`** (19 rows):
+     - `AugmentationsConfig.preset` → `"natural"` → `index-only` (mirrors
+       `LossConfig.preset`/structural; or `# cite:` the augmentation-preset design
+       note if one exists).
+     - `AugmentationsConfig.intensity` → `"medium"` → `index-only`.
+     - `LossConfig.preset` → `"natural"` → `index-only`.
+     - `LossConfig.class_imbalance` → `"balanced"` → `index-only`.
+     - `ModelConfig.revision` → `None` → `index-only` (`None`-sentinel; pin a HF
+       revision).
+     - `ModelConfig.device` → `None` → `index-only` (`None`-sentinel; auto-select).
+     - `LimitConfig.train` → `None` → `index-only` (`None`-sentinel; no limit).
+     - `LimitConfig.val` → `None` → `index-only` (`None`-sentinel; no limit).
+     - `ValSplitConfig.seed` → `None` → `index-only` (`None`-sentinel; inherits
+       `run.seed`).
+     - `HFDatasetConfig.split_val` → `None` → `index-only` (`None`-sentinel).
+     - `DataConfig.val` → `None` → `index-only` (`None`-sentinel; no-val mode).
+     - `DataConfig.val_split` → `None` → `index-only` (`None`-sentinel).
+     - `DataConfig.normalize` → `None` → `index-only` (`None`-sentinel; resolved
+       from channel semantics).
+     - `DataConfig.test` → `None` → `index-only` (`None`-sentinel).
+     - `DataConfig.hf` → `None` → `index-only` (`None`-sentinel; required only for
+       `format == "hf"`).
+     - `PEFTConfig.target_modules` → `None` → `index-only` (`None`-sentinel; uses
+       `SCOPE_TARGETS[scope]`).
+     - `TrainHyperparams.save_every` → `None` → `index-only` (`None`-sentinel;
+       auto = one ckpt/epoch).
+     - `TrainHyperparams.eval_every` → `None` → `index-only` (`None`-sentinel;
+       auto = one eval/epoch).
+     - `TrainHyperparams.host_ram_floor_gb` → `2.0` → `# tbd:` (the field already
+       carries an inline `# tbd:` rationale — a heuristic host-RAM floor; mirror it
+       into the row).
+
+     Note: `TrackingConfig.wandb` and `TrainConfig.export` are nested **dataclass
+     containers** (from `_internal.py`); the refined surface suppresses them and
+     their leaves are already documented under `## config/_internal.py`
+     (`WandbConfig.*` / `ExportConfig.*`). They need **no** new row.
+   - **`data/channel_semantics.py`** (1 row):
+     - `data/channel_semantics.py:CHANNEL_SEMANTICS` → `(registry dict)` →
+       `index-only` (container constant; per-key `normalize_default` values are
+       documented by the four existing subscript rows beneath it).
+   - **`data/transforms.py`** (3 rows):
+     - `data/transforms.py:KNOWN_PROCESSOR_STATS` →
+       `{"facebook/sam3.1": ([0.5,0.5,0.5],[0.5,0.5,0.5])}` →
+       `# cite: empirically verified 2026-05-30 (Sam3ImageProcessor)` (the
+       container constant; same citation as its existing subscript row).
+     - `data/transforms.py:_warned_non3ch_photometric` → `False` → `index-only`
+       (module-level one-time-warning runtime flag; off by default).
+     - `data/transforms.py:_warned_freeform` → `False` → `index-only` (same).
+   - **`tests/gpu/test_qlora_8gb_ceiling.py`** (1 row):
+     - `tests/gpu/test_qlora_8gb_ceiling.py:LOSS_RATIO_CEIL` → `0.75` → `# tbd:`
+       (or `# cite:` if the overfit loss-drop ceiling has a derivation; an honest
+       `# tbd:` is acceptable now).
+
+   The implementer authors the rows the **refined checker** reports as missing
+   over the real repo — the list above is the verified expected set, not a ceiling
+   (if the surface emits a symbol not listed here, it gets a row too). The only row
+   *additions* in the table modules remain the single `(e)` aug-legend row (item 3);
+   the off-cell tagging there reuses existing legend letters.
 
 ## Curated keep-list (reviewer's veto checklist — embed verbatim)
 
@@ -477,6 +709,17 @@ following independently:
    is **not** documented → **passes** (it is outside the enforced surface); a
    doc row of the `symbol (<literal>)` form whose base symbol is absent →
    **passes** in the doc→code direction (the row is exempt).
+7. (Refined-surface coverage, #192) Synthetic fixtures assert: a type alias
+   (`X = Literal[...]`), a logger (`= logging.getLogger(...)`), a computed
+   constant (`= 1024**3`), a `__dunder__`, `model_config`, and `pytestmark` are
+   **excluded** from the surface; a nested-config container field (pydantic AND
+   dataclass) is **suppressed** and its leaves emitted by **defining class**; an
+   imported container is suppressed without recursion; `AugmentationOverrides` /
+   `LossOverrides` fields are **excluded**; a required/no-default field is exempt
+   (and its doc row, value-cell `required`, is not an orphan); a subscript-keyed
+   doc row and a documented `Call`/`BinOp` module constant are **exempt** in the
+   doc→code direction, while a doc row naming a vanished module symbol **fails**;
+   an outer-rooted doc row is matched after **re-keying** to the defining class.
 
 The unit tests must NOT depend on the live repo state — they construct their own
 fixtures so they stay green regardless of future real-repo edits.
@@ -503,7 +746,8 @@ acceptance gate: the post-strip repo passes its own completeness check.
    pure functions taking an explicit repo-root / doc-text + file-set, and
    implements all three assertions with the failure-output contract.
 2. `tests/test_defaults_provenance.py` runs the three assertions over the real
-   repo and is **green** after the strip + bare-cell tagging + doc migration.
+   repo and is **green** after the strip + bare-cell tagging + doc migration +
+   exhaustive registry completion (the new rows of Doc-migration §5).
    Bare-cell tagging satisfies **T1** with **honest justifications**: every
    preset-table cell in both table modules carries a tag, with off-cells tagged by
    *why* they are off — off symmetry booleans `# (a)`; domain-not-applicable
@@ -522,8 +766,21 @@ acceptance gate: the post-strip repo passes its own completeness check.
    a header resolving to no file is a hard fail.
 5. `prose-narrative` sections (`Verification Standard`, `Reference Training
    Profile`) are excluded from all assertions.
-6. The default surface excludes in-function magic literals; the three
-   `presets.py` `(... literal)` doc rows are exempt in the doc→code direction.
+6. The default surface follows the amended definition: literal-RHS module
+   constants (excluding dunders, `model_config`, `pytestmark`, type aliases, and
+   non-literal/`Call`/`BinOp` RHS); class-field defaults with nested-container
+   suppression + outer-rooted recursion (pydantic AND dataclass containers; local
+   recurse, imported suppress) keyed by **defining class**; override-mirror
+   classes (`AugmentationOverrides`/`LossOverrides`) excluded; required/no-default
+   fields exempt. In the doc→code direction the in-function-literal,
+   required-field, subscript/call-path, and module-constant exemptions all apply;
+   the 8 outer-rooted `TrainHyperparams.early_stop.*` /
+   `…lr_decay_on_plateau.*` rows are re-keyed to the defining-class form.
+6a. **Exhaustive registry:** every trust-bearing default the refined surface emits
+   has a doc row (real `# cite:` / `# tbd:` / `index-only` — never a silent guessed
+   value); the stale `presets.py:BASE_ACTIVATION_AT_1024` row is replaced by the
+   `A_FIXED` / `A_PER_CLASS` rows. Assertion 1 reaches zero violations over the
+   real repo for every prose section. No default *value* changes.
 7. The curated inline-tag strip is applied: confident-keep notes retained; the
    resolved keep/strip decisions applied (KEEP `k=16`/`classes_per_forward=16`,
    `mask_threshold=0.0`, and the `config_full.yaml` divergence notes; STRIP
@@ -556,7 +813,10 @@ acceptance gate: the post-strip repo passes its own completeness check.
 
 ## Open questions
 
-None. All keep/strip items are user-confirmed at spec review (see "Resolved
+None. The #192 amendment (refined default surface + exhaustive registry; "no new
+rows" fully lifted) is the user's authoritative decision; the new rows carry real
+citations or honest `# tbd:` placeholders (no guessed values), to be refined in a
+future PR. All keep/strip items are user-confirmed at spec review (see "Resolved
 keep/strip decisions"). The
 bring-green tagging of bare off-cells in **both** table modules
 (`aug_presets.py` and `losses/presets.py`) is resolved in the Assertion-2 note's

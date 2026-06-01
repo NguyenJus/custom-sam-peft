@@ -2,6 +2,22 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
+<!-- markdownlint amendment callout -->
+
+> **Amendment (2026-06-01, #192 — closes a Phase-1 implementation gap).** Phase 1
+> landed `_provenance_check.py`; running it over the REAL repo showed the naive
+> default surface over-collected (type aliases, loggers, computed constants,
+> nested-config containers, override mirrors) and that #120's registry was NOT
+> exhaustive (real trust-bearing defaults had no row). **User decision: fully lift
+> "no new rows"; make the registry EXHAUSTIVE.** This amendment updates **Task 1.3**
+> (refined `extract_default_surface`), **Task 1.4/1.5** (defining-class re-key +
+> the required/subscript/module-constant doc→code exemptions), the **Phase-1
+> interface contract**, and adds **Task 4.6 — exhaustive registry completion**
+> (author the new doc rows). New rows carry a real citation OR an honest `# tbd:`
+> (never a guessed value); `index-only` for structural/`None`-sentinel/runtime-flag
+> defaults. No default *value* changes. The refined surface was verified against the
+> real repo to reconcile all prose sections to zero Assertion-1 violations.
+
 **Goal:** Ship a pytest-driven provenance-completeness check (three assertions over `docs/defaults-provenance.md` and in-scope source files) plus a curated inline-tag strip, bare-off-cell tagging, and a doc migration, leaving the repo green under its own check.
 
 **Architecture:** A new internal module `src/custom_sam_peft/_provenance_check.py` exposes pure functions that take an explicit repo-root (or explicit doc-text + file-set) so unit tests can drive it over synthetic fixture trees. The module auto-derives scope from the doc's `## <path>` section headers, classifies each (`prose` / `table` / `yaml` / `prose-narrative`), and dispatches one of three assertions. Synthetic unit tests give the module its own coverage and land first (green in isolation). The repo-conformance edits (strip, bare-cell tagging, doc migration) land before the *live* test `tests/test_defaults_provenance.py`, which runs the check over the real repo and is the final green gate.
@@ -30,7 +46,7 @@ These are load-bearing repo facts discovered during planning. Bake them in; do n
   - The three in-function literal rows: `presets.py:_bytes_per_param_for_method (2.0)`, `presets.py:_bytes_per_param_for_method (0.5)`, `presets.py:_optimizer_bytes (*4 literal)` — recognized by the `(<...>)` parenthetical suffix.
   So when matching rows to a section, **strip the section's own header-derived prefix** from each `Location` to get the bare `symbol`, then compare against the file's surface symbols. Do not assume a fixed prefix across sections.
 - **Base-path resolution** (header text → file on disk), in order: `cli/templates/…` → `src/custom_sam_peft/cli/templates/…`; `tests/…` → repo-root `tests/…`; everything else → `src/custom_sam_peft/…`. The header `tests/gpu/test\_qlora\_8gb\_ceiling.py` must have its markdown `\_` unescaped to `_` before resolving. A file-section header resolving to no file on disk is a hard FAIL.
-- **Default surface (prose sections)** — exactly: pydantic `Field(default=...)` / `Field(default_factory=...)`, dataclass field defaults (`name: T = <default>`), and module-level constant assignments (`NAME = <value>` / `NAME: T = <value>` at module top level). **Excludes** in-function literals.
+- **Default surface (prose sections) — AMENDED (#192).** See the spec's amended "default surface" definition (authoritative) and Task 1.3 below. In brief: (1) module-level constants with a **literal-value RHS only** (`Constant`/`Tuple`/`List`/`Dict`/`Set`/`UnaryOp`-on-`Constant`), excluding dunders, `model_config`, `pytestmark`, **type aliases** (`Subscript` base `Literal`/`Union`/`Optional`), and **non-literal RHS** (`Call`/`BinOp` → loggers, computed handles, unit constants); (2) class-field defaults with **nested-container suppression + recursion** (local class → recurse; imported `*Config`/`*Overrides`/`*Weights` container → suppress; pydantic AND dataclass), **override-mirror classes `AugmentationOverrides`/`LossOverrides` excluded**, **required/no-default fields exempt**, keyed by **defining class**. Doc→code exemptions: in-function-literal, **required-field** (value cell says `required`), **subscript/call-path** (symbol has `[`/`(`), and **module-constant** (bare symbol is any module-level assigned name still present, regardless of RHS) — the last preserves rows for documented `Call`/`BinOp` constants (`_HED_FROM_RGB_MATRIX`, `Q_OVERHEAD`, `WORKSPACE_BYTES`). The 8 `TrainHyperparams.early_stop.*` / `…lr_decay_on_plateau.*` doc rows are re-keyed to `EarlyStopConfig.*` / `LrDecayOnPlateauConfig.*`.
 - **Table modules' tag syntaxes differ.** `aug_presets.py` uses bare `# (a)`–`# (e)` (lowercase). `losses/presets.py` uses `# cite: (A)`–`# cite: (H)` and combined forms `# cite: (A,C)`. Both also allow `# cite: <non-legend>` (e.g. `# cite: empirical`) and `# tbd: …`. The recognizer must accept all of these.
 - **`losses/presets.py` table scope** includes the `PRESET_TABLE` dict literal, the three module-level alias-assignment lines `PRESET_TABLE[("microscopy", …)] = dict(...)  # cite: (G)`, AND the `_LEGACY_DEFAULTS` base dict.
 
@@ -51,7 +67,7 @@ These are load-bearing repo facts discovered during planning. Bake them in; do n
 | `src/custom_sam_peft/predict/budget.py` (modify) | Strip the budget-derivation tags to doc-only. |
 | `src/custom_sam_peft/data/aug_presets.py` (modify) | Tag bare off-cells (`# (a)` / `# (d)` / new `# (e)`); keep legend-letter system. |
 | `src/custom_sam_peft/models/losses/presets.py` (modify) | Tag bare off-cells + `_LEGACY_DEFAULTS` (`# cite: (B)` / `(A,C)` / `(F)`); keep legend system. |
-| `docs/defaults-provenance.md` (modify) | Preamble reword, `Tag` column redefinition, add `(e)` aug-legend row. |
+| `docs/defaults-provenance.md` (modify) | Preamble reword, `Tag` column redefinition, add `(e)` aug-legend row, **exhaustive registry completion (Task 4.6): author new trust-bearing-default rows + re-key the 8 outer-rooted rows + replace the stale `BASE_ACTIVATION_AT_1024` row**. |
 
 ---
 
@@ -62,7 +78,7 @@ Five phases, each leaving CI green.
 - **Phase 1 — Checker core + section classification + Assertion 1 (prose), with synthetic unit tests.** Lands `_provenance_check.py` with doc parsing, classification, base-path resolution, and the prose-section symbol⇄row bijection, all exercised by synthetic fixtures. Green in isolation (no live-repo test yet).
 - **Phase 2 — Assertions 2 & 3 (table + yaml) added to the checker, with synthetic unit tests.** Extends the module; still no live test. Green in isolation.
 - **Phase 3 — Bare-off-cell tagging in the two table modules + the `(e)` aug-legend doc row.** Makes the table modules Assertion-2-clean. Value-preserving edits only.
-- **Phase 4 — Curated inline-tag strip of prose/constant files + doc preamble/Tag-column migration.** Makes the prose files Assertion-1-clean and the doc principle-correct.
+- **Phase 4 — Curated inline-tag strip of prose/constant files + doc preamble/Tag-column migration + exhaustive registry completion (Task 4.6).** Makes the prose files Assertion-1-clean: strips redundant tags, migrates the doc principle, and authors a doc row for every trust-bearing default the refined surface emits (re-keying the 8 outer-rooted rows and replacing the stale `BASE_ACTIVATION_AT_1024` row).
 - **Phase 5 — Live enforcement test + final green gate.** Adds `tests/test_defaults_provenance.py`, runs the full check over the real repo, and confirms the whole CI matrix is green.
 
 ### Phase-boundary interface contracts
@@ -72,22 +88,24 @@ Five phases, each leaving CI green.
   - `classify_section(section: Section, repo_root: Path) -> SectionClass` returning a `SectionClass` enum/`Literal["prose", "table", "yaml", "prose-narrative"]`. Internally calls `resolve_section_path`.
   - `resolve_section_path(header: str, repo_root: Path) -> Path | None` — applies the `cli/templates/` / `tests/` / else `src/custom_sam_peft/` rules (unescaping markdown `\_`), returns `None` if the header is in the prose-narrative allow-set, raises/records a hard-fail violation if a file-section header resolves to a missing file.
   - `ProvenanceViolation` dataclass: `ProvenanceViolation(location: str, problem: str, remediation: str)` with `__str__` rendering `"{location}: {problem} — {remediation}"`. This is the single failure record type all assertions emit.
-  - `check_prose_section(section: Section, file_path: Path) -> list[ProvenanceViolation]` — Assertion 1.
-  - `extract_default_surface(file_path: Path) -> set[str]` — surface symbols (used by Assertion 1 and unit-tested directly).
-  - The table-module allow-set constant `TABLE_MODULES = {"data/aug_presets.py", "models/losses/presets.py"}` and the prose-narrative allow-set `PROSE_NARRATIVE_HEADERS = {"Verification Standard", "Reference Training Profile"}`.
+  - `check_prose_section(section: Section, file_path: Path) -> list[ProvenanceViolation]` — Assertion 1, applying the defining-class re-key + the in-function-literal / required-field / subscript / module-constant doc→code exemptions.
+  - `extract_default_surface(file_path: Path) -> set[str]` — surface symbols per the **amended** definition (literal-RHS module constants; nested-container suppression + recursion for pydantic AND dataclass containers; override-mirror exclusion; required-field exemption; defining-class keying). Used by Assertion 1 and unit-tested directly.
+  - `module_assign_names(file_path: Path) -> set[str]` — every module-level assigned name (any RHS), for `check_prose_section`'s module-constant doc→code exemption.
+  - `DocRow` carries `symbol`, `is_in_function_literal`, `value` (the Value cell, for the required-field exemption), and `is_subscript_key` (amended #192).
+  - The override-mirror constant `OVERRIDE_MIRROR_CLASSES = {"AugmentationOverrides", "LossOverrides"}`, the table-module allow-set `TABLE_MODULES = {"data/aug_presets.py", "models/losses/presets.py"}`, and the prose-narrative allow-set `PROSE_NARRATIVE_HEADERS = {"Verification Standard", "Reference Training Profile"}`.
 - **End of Phase 2 exposes** (consumed by Phase 5):
   - `check_table_section(section: Section, file_path: Path) -> list[ProvenanceViolation]` — Assertion 2.
   - `check_yaml_section(section: Section, yaml_path: Path, schema_default_paths: set[str]) -> list[ProvenanceViolation]` — Assertion 3.
   - `run_all_checks(repo_root: Path) -> list[ProvenanceViolation]` — the top-level driver: reads `docs/defaults-provenance.md`, discovers + classifies sections, dispatches each to its assertion, aggregates ALL violations, returns them. This is the one function the live test calls.
 - **End of Phase 3 guarantees** (consumed by Phase 5): every preset-table value line in `aug_presets.py` and `losses/presets.py` (incl. `_LEGACY_DEFAULTS` + alias lines) carries a recognized tag whose legend letter is defined in that module's doc legend — i.e. Assertion 2 over the real repo is clean. No cell *value* changed.
-- **End of Phase 4 guarantees** (consumed by Phase 5): every prose-section file's default surface ⇄ doc rows is a bijection (no undocumented surface symbol, no orphaned surface-symbol row) — i.e. Assertion 1 over the real repo is clean. The doc preamble + `Tag` column reflect the new principle. The curated keep-list notes are exactly the surviving inline notes.
+- **End of Phase 4 guarantees** (consumed by Phase 5): under the **refined surface**, every prose-section file's default surface ⇄ doc rows is a bijection (no undocumented surface symbol, no orphaned surface-symbol row) — i.e. Assertion 1 over the real repo is clean. This includes the **exhaustive registry completion** (Task 4.6): every trust-bearing default the surface emits has a `# cite:` / `# tbd:` / `index-only` row (no value changes), the 8 outer-rooted rows are re-keyed to defining-class form, and the stale `BASE_ACTIVATION_AT_1024` row is replaced by the `A_FIXED` / `A_PER_CLASS` rows. The doc preamble + `Tag` column reflect the new principle. The curated keep-list notes are exactly the surviving inline notes.
 - **End of Phase 5:** `run_all_checks(repo_root)` over the real repo returns `[]`; `tests/test_defaults_provenance.py` is green; full CI (ruff check, ruff format --check, mypy, pytest with coverage, markdownlint) is green.
 
 ---
 
 ## Phase 1 — Checker core, classification, Assertion 1 (prose)
 
-**Interface contract this phase EXPOSES:** `discover_sections`, `Section`, `classify_section`, `resolve_section_path`, `ProvenanceViolation`, `extract_default_surface`, `check_prose_section`, `TABLE_MODULES`, `PROSE_NARRATIVE_HEADERS` (signatures above). Phases 2 & 5 build on these without re-reading the implementation.
+**Interface contract this phase EXPOSES:** `discover_sections`, `Section`, `classify_section`, `resolve_section_path`, `ProvenanceViolation`, `extract_default_surface` (amended), `module_assign_names`, `check_prose_section`, `TABLE_MODULES`, `PROSE_NARRATIVE_HEADERS` (signatures above). Phases 2 & 5 build on these without re-reading the implementation.
 
 **CI state at phase end:** GREEN. The module + its unit tests land together; no live-repo test exists yet, so nothing depends on repo conformance. The unit tests cover the new module so the 80% gate holds.
 
@@ -353,117 +371,307 @@ git add src/custom_sam_peft/_provenance_check.py tests/unit/test_provenance_chec
 git commit -m "feat(#192): base-path resolution + section classification"
 ```
 
-### Task 1.3: `extract_default_surface` (ast-based)
+### Task 1.3: `extract_default_surface` + `module_assign_names` (ast-based, AMENDED #192)
 
 **Files:**
 
 - Modify: `src/custom_sam_peft/_provenance_check.py`
 - Test: `tests/unit/test_provenance_check.py`
 
+> **AMENDED (#192).** The original three-bullet surface over-collected. The
+> refined surface (verified to bring all real prose sections green) is: literal-RHS
+> module constants only (excluding dunders / `model_config` / `pytestmark` / type
+> aliases / non-literal RHS); class-field defaults with nested-container
+> suppression + recursion (pydantic AND dataclass; local recurse, imported
+> `*Config`/`*Overrides`/`*Weights` suppress); override-mirror classes
+> (`AugmentationOverrides`/`LossOverrides`) excluded; required/no-default fields
+> exempt; keyed by **defining class**. A sibling `module_assign_names` returns
+> every module-level assigned name (any RHS) for the doc→code module-constant
+> exemption.
+
 - [ ] **Step 1: Write the failing test** (difficulty: medium)
 
 ```python
 # append to tests/unit/test_provenance_check.py
-from custom_sam_peft._provenance_check import extract_default_surface
+from custom_sam_peft._provenance_check import (
+    extract_default_surface,
+    module_assign_names,
+)
 
 
-def test_surface_collects_pydantic_dataclass_and_module_constants(tmp_path: Path) -> None:
+def test_surface_collects_literal_module_consts_and_nested_class_fields(tmp_path: Path) -> None:
     src = '''
-from pydantic import BaseModel, Field
+from __future__ import annotations
+import logging
 from dataclasses import dataclass
+from typing import Literal
+from pydantic import BaseModel, Field
 
-MODULE_CONST = 7
-TYPED_CONST: int = 8
-
-
-class Cfg(BaseModel):
-    a: int = Field(default=3)
-    b: list[int] = Field(default_factory=list)
-    plain: int = 5
+__all__ = ["Cfg"]                       # dunder -> excluded
+pytestmark = []                         # pytest marker -> excluded
+Dtype = Literal["a", "b"]               # type alias -> excluded
+_LOG = logging.getLogger(__name__)      # Call RHS -> excluded (not literal)
+_GB = 1024 ** 3                         # BinOp RHS -> excluded (not literal)
+MODEL_PARAMS = 5_000_000_000            # literal -> INCLUDED
+_IMAGENET_MEAN = (0.485, 0.456, 0.406)  # Tuple literal -> INCLUDED
 
 
 @dataclass
-class DC:
-    x: float = 1.5
+class Wandb:                            # imported-style container (here: local) 
+    project: str = "p"
 
 
-def helper() -> int:
-    magic = 42  # in-function literal, NOT surface
-    return magic
+class Inner(BaseModel):
+    k: int = Field(default=16)
+    model_config = {"x": 1}            # model_config -> excluded
+
+
+class Overrides(BaseModel):           # name in OVERRIDE_MIRROR set -> all excluded
+    a: int | None = None
+
+
+class Cfg(BaseModel):
+    epochs: int                        # required (no default) -> exempt
+    plain: int = 5                     # leaf
+    inner: Inner = Field(default_factory=Inner)   # local container -> recurse, suppress
+    ovr: Overrides = Field(default_factory=Overrides)
+    wandb: Wandb = Field(default_factory=Wandb)   # local dataclass container -> recurse
+
+
+OVERRIDE_MIRROR_FIXTURE = "Overrides"  # the impl's override-mirror set must include Overrides for this test
 '''
     f = tmp_path / "m.py"
     f.write_text(src)
     surface = extract_default_surface(f)
-    assert "MODULE_CONST" in surface
-    assert "TYPED_CONST" in surface
-    assert "Cfg.a" in surface
-    assert "Cfg.b" in surface
+    # literal module constants
+    assert "MODEL_PARAMS" in surface
+    assert "_IMAGENET_MEAN" in surface
+    # excluded module symbols
+    for excluded in ("__all__", "pytestmark", "Dtype", "_LOG", "_GB"):
+        assert excluded not in surface, excluded
+    # nested recursion + container suppression (keyed by defining class)
+    assert "Inner.k" in surface
+    assert "Cfg.inner" not in surface          # container suppressed, not a leaf
+    assert "Wandb.project" in surface          # dataclass container recursed
+    assert "Cfg.wandb" not in surface
+    # required field exempt; override-mirror excluded; model_config excluded
+    assert "Cfg.epochs" not in surface
     assert "Cfg.plain" in surface
-    assert "DC.x" in surface
-    # In-function literal is excluded.
-    assert not any("magic" in s for s in surface)
-    assert "helper" not in surface
+    assert not any(s.startswith("Overrides.") for s in surface)
+    assert "Inner.model_config" not in surface
+
+    # module_assign_names returns ALL module-level names (any RHS) for the
+    # doc->code module-constant exemption.
+    names = module_assign_names(f)
+    assert {"MODEL_PARAMS", "_LOG", "_GB", "Dtype"} <= names
+
+
+def test_surface_excludes_override_mirror_real_classes(tmp_path: Path) -> None:
+    # The real impl hard-codes OVERRIDE_MIRROR = {"AugmentationOverrides", "LossOverrides"}.
+    src = '''
+from pydantic import BaseModel, Field
+
+
+class LossOverrides(BaseModel):
+    w_box: float | None = Field(default=None)
+    mask_family: str | None = None
+
+
+class TextPromptConfig(BaseModel):
+    k: int = Field(default=16)
+'''
+    f = tmp_path / "schema.py"
+    f.write_text(src)
+    surface = extract_default_surface(f)
+    assert not any(s.startswith("LossOverrides.") for s in surface)
+    assert "TextPromptConfig.k" in surface
 ```
+
+> The fixture's `OVERRIDE_MIRROR_FIXTURE` comment is informational: the real
+> implementation's override-mirror set is the fixed
+> `{"AugmentationOverrides", "LossOverrides"}` constant. The first fixture renames
+> its mirror class to `Overrides`, so split that assertion into the dedicated
+> `test_surface_excludes_override_mirror_real_classes` (above), which uses the real
+> class name. (Adjust the first test to drop the `Overrides`/`ovr` lines if you
+> prefer one assertion per concern — the load-bearing checks are the
+> literal/alias/logger exclusions, the nested recursion + suppression, the
+> required-field exemption, and `module_assign_names`.)
 
 - [ ] **Step 2: Run test to verify it fails**
 
 Run: `uv run pytest tests/unit/test_provenance_check.py -k surface -v`
-Expected: FAIL — `ImportError` for `extract_default_surface`.
+Expected: FAIL — `ImportError` for `extract_default_surface` / `module_assign_names` (or assertion failures against the old naive surface).
 
-- [ ] **Step 3: Write minimal implementation**
+- [ ] **Step 3: Write the refined implementation**
 
 ```python
-# add to src/custom_sam_peft/_provenance_check.py
+# replace the Phase-1-original extract_default_surface in
+# src/custom_sam_peft/_provenance_check.py with the amended surface below.
 import ast
 
+# Override-mirror config classes: all fields default to None ("inherit from the
+# preset table"); their value provenance lives in the TABLE modules, not prose.
+OVERRIDE_MIRROR_CLASSES: frozenset[str] = frozenset(
+    {"AugmentationOverrides", "LossOverrides"}
+)
+_ALIAS_BASES: frozenset[str] = frozenset({"Literal", "Union", "Optional"})
+_LITERAL_NODES = (ast.Constant, ast.Tuple, ast.List, ast.Dict, ast.Set)
 
-def _is_field_call(node: ast.expr) -> bool:
-    """True if node is a ``Field(...)`` / ``...Field(...)`` call."""
-    return (
-        isinstance(node, ast.Call)
-        and (
-            (isinstance(node.func, ast.Name) and node.func.id == "Field")
-            or (isinstance(node.func, ast.Attribute) and node.func.attr == "Field")
-        )
+
+def _is_type_alias_rhs(value: ast.expr | None) -> bool:
+    """RHS is ``Literal[...]`` / ``Union[...]`` / ``Optional[...]`` (a type alias)."""
+    if not isinstance(value, ast.Subscript):
+        return False
+    base = value.value
+    return (isinstance(base, ast.Name) and base.id in _ALIAS_BASES) or (
+        isinstance(base, ast.Attribute) and base.attr in _ALIAS_BASES
     )
 
 
-def extract_default_surface(file_path: Path) -> set[str]:
-    """Return the enforced default-surface symbol keys for a prose file.
+def _is_literal_value(value: ast.expr | None) -> bool:
+    """RHS is a literal value node (Constant/Tuple/List/Dict/Set or -Constant)."""
+    if isinstance(value, _LITERAL_NODES):
+        return True
+    return isinstance(value, ast.UnaryOp) and isinstance(value.operand, ast.Constant)
 
-    Surface = pydantic ``Field(default=...)``/``Field(default_factory=...)``,
-    dataclass field defaults, and module-level constant assignments. In-function
-    literals are deliberately excluded.
+
+def _is_field_call(value: ast.expr | None) -> bool:
+    """True if value is a ``Field(...)`` / ``...Field(...)`` call."""
+    return isinstance(value, ast.Call) and (
+        (isinstance(value.func, ast.Name) and value.func.id == "Field")
+        or (isinstance(value.func, ast.Attribute) and value.func.attr == "Field")
+    )
+
+
+def _nested_container_name(value: ast.expr | None) -> str | None:
+    """Class name if the default/default_factory references a config class, else None.
+
+    Handles ``Field(default_factory=X)``, ``Field(default=X())``, and bare ``= X()``.
+    """
+    if value is None:
+        return None
+    if _is_field_call(value):
+        assert isinstance(value, ast.Call)
+        for kw in value.keywords:
+            if kw.arg == "default_factory" and isinstance(kw.value, ast.Name):
+                return kw.value.id
+            if (
+                kw.arg == "default"
+                and isinstance(kw.value, ast.Call)
+                and isinstance(kw.value.func, ast.Name)
+            ):
+                return kw.value.func.id
+        return None
+    if isinstance(value, ast.Call) and isinstance(value.func, ast.Name):
+        return value.func.id
+    return None
+
+
+def _looks_like_container(name: str | None) -> bool:
+    """Name-shape heuristic for an IMPORTED config container (cannot recurse)."""
+    return name is not None and name.endswith(("Config", "Overrides", "Weights"))
+
+
+def _is_required_field(value: ast.expr | None) -> bool:
+    """A no-default field: AnnAssign w/o value, or Field(...) w/o default*/factory."""
+    if value is None:
+        return True
+    if _is_field_call(value):
+        assert isinstance(value, ast.Call)
+        return not any(kw.arg in ("default", "default_factory") for kw in value.keywords)
+    return False
+
+
+def _field_target_name(stmt: ast.stmt) -> str | None:
+    if isinstance(stmt, ast.AnnAssign) and isinstance(stmt.target, ast.Name):
+        return stmt.target.id
+    if isinstance(stmt, ast.Assign):
+        names = [t.id for t in stmt.targets if isinstance(t, ast.Name)]
+        return names[0] if names else None
+    return None
+
+
+def _field_value(stmt: ast.stmt) -> ast.expr | None:
+    if isinstance(stmt, (ast.AnnAssign, ast.Assign)):
+        return stmt.value
+    return None
+
+
+def extract_default_surface(file_path: Path) -> set[str]:
+    """Return the enforced default-surface symbol keys (amended #192).
+
+    See the design spec's "default surface" definition (authoritative).
     """
     tree = ast.parse(file_path.read_text(encoding="utf-8"))
+    classes: dict[str, ast.ClassDef] = {
+        n.name: n for n in tree.body if isinstance(n, ast.ClassDef)
+    }
     surface: set[str] = set()
 
-    # Module-level constant assignments.
+    # (1) Module-level constants — literal RHS only, with exclusions.
+    for node in tree.body:
+        targets_values: list[tuple[str, ast.expr | None]] = []
+        if isinstance(node, ast.Assign):
+            targets_values = [
+                (t.id, node.value) for t in node.targets if isinstance(t, ast.Name)
+            ]
+        elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
+            targets_values = [(node.target.id, node.value)]
+        for name, value in targets_values:
+            if name.startswith("__") and name.endswith("__"):
+                continue
+            if name in ("pytestmark", "model_config"):
+                continue
+            if _is_type_alias_rhs(value):
+                continue
+            if not _is_literal_value(value):
+                continue  # excludes Call/BinOp/Name RHS (loggers, computed, derived)
+            surface.add(name)
+
+    # (2) Class-body field defaults — suppress nested containers + recurse;
+    #     defining-class keying; required + override-mirror handling.
+    def recurse(class_node: ast.ClassDef) -> None:
+        for stmt in class_node.body:
+            target = _field_target_name(stmt)
+            if target is None or target == "model_config":
+                continue
+            value = _field_value(stmt)
+            if _is_required_field(value):
+                continue
+            nested = _nested_container_name(value)
+            if nested in classes:
+                recurse(classes[nested])  # local container -> recurse, suppress leaf
+                continue
+            if _looks_like_container(nested):
+                continue  # imported container -> suppress (leaves in its own section)
+            if class_node.name in OVERRIDE_MIRROR_CLASSES:
+                continue
+            surface.add(f"{class_node.name}.{target}")
+
+    for node in tree.body:
+        if isinstance(node, ast.ClassDef):
+            recurse(node)
+    return surface
+
+
+def module_assign_names(file_path: Path) -> set[str]:
+    """Every module-level assigned name (any RHS) — for the module-constant exemption."""
+    tree = ast.parse(file_path.read_text(encoding="utf-8"))
+    names: set[str] = set()
     for node in tree.body:
         if isinstance(node, ast.Assign):
-            for target in node.targets:
-                if isinstance(target, ast.Name):
-                    surface.add(target.id)
-        elif isinstance(node, ast.AnnAssign):
-            if isinstance(node.target, ast.Name) and node.value is not None:
-                surface.add(node.target.id)
-
-    # Class-body field defaults (pydantic + dataclass): ``name: T = <default>``.
-    for node in tree.body:
-        if not isinstance(node, ast.ClassDef):
-            continue
-        for stmt in node.body:
-            if isinstance(stmt, ast.AnnAssign) and isinstance(stmt.target, ast.Name):
-                if stmt.value is not None:
-                    surface.add(f"{node.name}.{stmt.target.id}")
-            elif isinstance(stmt, ast.Assign):
-                for target in stmt.targets:
-                    if isinstance(target, ast.Name):
-                        surface.add(f"{node.name}.{target.id}")
-    return surface
+            names.update(t.id for t in node.targets if isinstance(t, ast.Name))
+        elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
+            names.add(node.target.id)
+    return names
 ```
 
-Note: `_is_field_call` is provided for the reviewer's intent — the surface rule treats *any* class-body annotated/plain assignment with a value as a field default (whether or not the RHS is a `Field(...)` call), which matches the spec's "dataclass field defaults" + "pydantic `Field(default=...)`" union. Keep `_is_field_call` only if a later refinement needs to distinguish; otherwise the implementer MAY drop it to satisfy ruff's unused-symbol check. (Decide at implementation: if unused, delete it — do not leave dead code.)
+> **Recursion correctness note.** Calling `recurse` on every top-level `ClassDef`
+> *and* descending into local containers is safe: leaves are keyed by **defining
+> class** and collected into a `set`, so a class reached both directly and as a
+> nested container emits each of its leaves under one key, with no double-count.
+> The override-mirror check is on the **defining** class, so a mirror's fields are
+> dropped whether reached directly or via a container.
 
 - [ ] **Step 4: Run test to verify it passes**
 
@@ -474,7 +682,7 @@ Expected: PASS.
 
 ```bash
 git add src/custom_sam_peft/_provenance_check.py tests/unit/test_provenance_check.py
-git commit -m "feat(#192): ast-based default-surface extraction"
+git commit -m "feat(#192): refined ast default-surface (aliases/loggers/nested/override-mirror)"
 ```
 
 ### Task 1.4: Doc-row parsing for a prose section
@@ -507,6 +715,24 @@ def test_parse_prose_rows_strips_section_prefix_and_flags_literals() -> None:
     # The parenthetical-suffix row is recognized as an in-function literal.
     lit = next(r for r in rows if r.is_in_function_literal)
     assert lit.symbol == "_optimizer_bytes"
+    # AMENDED (#192): DocRow also carries the Value cell and a subscript-key flag.
+    assert by_symbol["MODEL_PARAMS"].value == "1"
+    assert by_symbol["MODEL_PARAMS"].is_subscript_key is False
+
+
+def test_parse_prose_rows_flags_subscript_keys_and_required_value() -> None:
+    body = (
+        "| Location | Value | Tag | Full reference | Verifying quote | Notes |\n"
+        "| --- | --- | --- | --- | --- | --- |\n"
+        '| `schema.py:CHANNEL_SEMANTICS["rgb"].x` | `1` | `index-only` | — | — | n |\n'
+        "| `schema.py:T.epochs` | `required (slot)` | `# cite: x` | — | — | n |\n"
+    )
+    rows = parse_prose_rows(body, section_header="schema.py")
+    sub = next(r for r in rows if r.is_subscript_key)
+    assert "[" in sub.symbol
+    epochs = next(r for r in rows if r.symbol == "T.epochs")
+    assert "required" in epochs.value.lower()
+    assert epochs.is_subscript_key is False
 ```
 
 - [ ] **Step 2: Run test to verify it fails**
@@ -528,18 +754,33 @@ _LITERAL_SUFFIX = re.compile(r"^(?P<symbol>[^()]+?)\s*\((?P<note>[^)]*)\)\s*$")
 
 @dataclass(frozen=True)
 class DocRow:
-    """A parsed Location key from one doc table row, relative to its section."""
+    """A parsed doc table row, relative to its section (amended #192).
+
+    ``value`` is the raw **Value** cell text (used for the required-field
+    exemption); ``is_subscript_key`` flags Location keys an AST surface cannot
+    emit (a bare symbol containing ``[`` or ``(``).
+    """
 
     symbol: str
     is_in_function_literal: bool
+    value: str
+    is_subscript_key: bool
+
+
+def _cell_inner(cell: str) -> str:
+    """Strip the backtick wrapper from a markdown cell, if present."""
+    m = re.search(r"`([^`]+)`", cell)
+    return m.group(1).strip() if m else cell.strip()
 
 
 def parse_prose_rows(body: str, section_header: str) -> list[DocRow]:
-    """Parse a prose section body into per-row Location symbols.
+    """Parse a prose section body into per-row DocRows (amended #192).
 
     The Location prefix mirrors ``section_header`` and is stripped to yield the
-    bare symbol. Rows whose Location has a ``symbol (<note>)`` parenthetical are
-    flagged as in-function literals (exempt in the doc->code direction).
+    bare symbol. Rows whose Location has a ``symbol (<note>)`` parenthetical (with
+    NO ``[`` before the paren) are in-function literals. Rows whose bare symbol
+    contains ``[`` or ``(`` are subscript/call-path keys. The **Value** cell
+    (2nd column) is captured for the required-field exemption.
     """
     prefix = _unescape_md(section_header).strip()
     rows: list[DocRow] = []
@@ -547,20 +788,44 @@ def parse_prose_rows(body: str, section_header: str) -> list[DocRow]:
         m = _ROW.match(line)
         if m is None:
             continue
-        loc_match = _LOCATION_CELL.search(m.group("cells").split("|", 1)[0])
+        cells = m.group("cells").split("|")
+        loc_match = _LOCATION_CELL.search(cells[0])
         if loc_match is None:
             continue
         loc = loc_match.group("loc").strip()
         if not loc.startswith(f"{prefix}:"):
             continue  # header/separator/non-location rows
         rest = loc[len(prefix) + 1 :]  # drop "prefix:"
+        value = _cell_inner(cells[1]) if len(cells) > 1 else ""
+        # subscript/call-path key: a bracket or a paren that is part of a path
+        # (e.g. CHANNEL_SEMANTICS["rgb"].x). Detect a '[' anywhere first.
+        if "[" in rest:
+            rows.append(
+                DocRow(symbol=rest.strip(), is_in_function_literal=False,
+                       value=value, is_subscript_key=True)
+            )
+            continue
         lit = _LITERAL_SUFFIX.match(rest)
         if lit is not None:
-            rows.append(DocRow(symbol=lit.group("symbol").strip(), is_in_function_literal=True))
+            # ``symbol (<note>)`` with no bracket -> in-function literal.
+            rows.append(
+                DocRow(symbol=lit.group("symbol").strip(), is_in_function_literal=True,
+                       value=value, is_subscript_key=False)
+            )
         else:
-            rows.append(DocRow(symbol=rest.strip(), is_in_function_literal=False))
+            rows.append(
+                DocRow(symbol=rest.strip(), is_in_function_literal=False,
+                       value=value, is_subscript_key=False)
+            )
     return rows
 ```
+
+> **Ordering note.** The `[`-check runs **before** the `_LITERAL_SUFFIX` paren
+> match so `CHANNEL_SEMANTICS["rgb"].normalize_default` is classified as a
+> subscript key (not mis-read as an in-function literal because of an embedded
+> `(` elsewhere). The three real in-function-literal rows
+> (`_optimizer_bytes (*4 literal)`, etc.) have no `[`, so they still match the
+> literal-suffix branch.
 
 - [ ] **Step 4: Run test to verify it passes**
 
@@ -642,6 +907,75 @@ def test_prose_in_function_literal_row_exempt_from_doccode(tmp_path: Path) -> No
     )
     section = Section(header="presets.py", body=body)
     assert check_prose_section(section, f) == []
+
+
+def test_prose_required_field_row_exempt_from_doccode(tmp_path: Path) -> None:
+    # `epochs` is required (no default) -> NOT in the surface; its row's Value cell
+    # marks it `required`, so the row is not an orphan.
+    f = tmp_path / "schema.py"
+    f.write_text(
+        "from pydantic import BaseModel\n\n\nclass T(BaseModel):\n    epochs: int\n"
+    )
+    body = _prose_doc_body(
+        "| `schema.py:T.epochs` | `required (template slot)` | `# cite: x` | — | — | n |\n"
+    )
+    section = Section(header="schema.py", body=body)
+    assert check_prose_section(section, f) == []
+
+
+def test_prose_subscript_keyed_row_exempt_from_doccode(tmp_path: Path) -> None:
+    # A subscript/call-path key the AST surface cannot emit -> exempt; the
+    # container constant itself gets its own (index-only) row.
+    f = tmp_path / "channel_semantics.py"
+    f.write_text("CHANNEL_SEMANTICS = {'rgb': 1}\n")
+    body = _prose_doc_body(
+        "| `channel_semantics.py:CHANNEL_SEMANTICS` | `{...}` | `index-only` | — | — | n |\n"
+        '| `channel_semantics.py:CHANNEL_SEMANTICS["rgb"].x` | `1` | `# cite: y` | — | — | n |\n'
+    )
+    section = Section(header="channel_semantics.py", body=body)
+    assert check_prose_section(section, f) == []
+
+
+def test_prose_module_constant_row_exempt_even_with_call_rhs(tmp_path: Path) -> None:
+    # `_HED = np.array(...)` is a Call RHS -> NOT in the literal surface, so it is
+    # not demanded code->doc; but a doc row pointing at it must NOT be an orphan
+    # (it is a real module-level assigned name).
+    f = tmp_path / "transforms.py"
+    f.write_text("import numpy as np\n\n_HED = np.array([[1.0]])\n")
+    body = _prose_doc_body("| `transforms.py:_HED` | `[[1.0]]` | `# cite: x` | — | — | n |\n")
+    section = Section(header="transforms.py", body=body)
+    assert check_prose_section(section, f) == []
+
+
+def test_prose_stale_module_row_is_orphan(tmp_path: Path) -> None:
+    # A doc row naming a module symbol that no longer exists IS an orphan.
+    f = tmp_path / "presets.py"
+    f.write_text("A_FIXED = 0\n")
+    body = _prose_doc_body(
+        "| `presets.py:A_FIXED` | `0` | `# cite: x` | — | — | n |\n"
+        "| `presets.py:BASE_ACTIVATION_AT_1024` | `gone` | `# cite: y` | — | — | n |\n"
+    )
+    section = Section(header="presets.py", body=body)
+    violations = check_prose_section(section, f)
+    assert len(violations) == 1
+    assert "BASE_ACTIVATION_AT_1024" in str(violations[0])
+
+
+def test_prose_defining_class_rekey(tmp_path: Path) -> None:
+    # Outer-rooted doc rows (TrainHyperparams.early_stop.*) are re-keyed to the
+    # defining-class form (EarlyStopConfig.*) before matching the surface.
+    f = tmp_path / "schema.py"
+    f.write_text(
+        "from pydantic import BaseModel, Field\n\n\n"
+        "class EarlyStopConfig(BaseModel):\n    enabled: bool = True\n\n\n"
+        "class TrainHyperparams(BaseModel):\n"
+        "    early_stop: EarlyStopConfig = Field(default_factory=EarlyStopConfig)\n"
+    )
+    body = _prose_doc_body(
+        "| `schema.py:TrainHyperparams.early_stop.enabled` | `True` | `index-only` | — | — | n |\n"
+    )
+    section = Section(header="schema.py", body=body)
+    assert check_prose_section(section, f) == []
 ```
 
 - [ ] **Step 2: Run test to verify it fails**
@@ -651,26 +985,56 @@ Expected: FAIL — `ImportError` for `check_prose_section`.
 
 - [ ] **Step 3: Write minimal implementation**
 
+> **AMENDED (#192).** `check_prose_section` now (a) re-keys outer-rooted doc rows
+> to the defining-class form, (b) reads the row's **Value** cell to apply the
+> required-field exemption, and (c) skips subscript/call-path rows and
+> module-constant rows in the doc→code direction. The simplest implementation
+> threads a richer parsed row (symbol, value, plus the literal flag) — extend
+> `parse_prose_rows` / `DocRow` in Task 1.4 to also capture the **Value** cell and
+> whether the bare symbol contains `[`/`(`. The Task-1.4 test gains an assertion
+> that `DocRow` carries `value` and `is_subscript_key`.
+
 ```python
 # add to src/custom_sam_peft/_provenance_check.py
 
+# Outer-rooted doc rows re-keyed to defining-class form (single keying rule).
+_REKEY_PREFIXES: dict[str, str] = {
+    "TrainHyperparams.early_stop.": "EarlyStopConfig.",
+    "TrainHyperparams.lr_decay_on_plateau.": "LrDecayOnPlateauConfig.",
+}
+
+
+def _rekey_to_defining_class(symbol: str) -> str:
+    for prefix, repl in _REKEY_PREFIXES.items():
+        if symbol.startswith(prefix):
+            return repl + symbol[len(prefix) :]
+    return symbol
+
 
 def check_prose_section(section: Section, file_path: Path) -> list[ProvenanceViolation]:
-    """Assertion 1: symbol<->row bijection over the file's default surface.
+    """Assertion 1: symbol<->row bijection over the file's default surface (amended #192).
 
-    code->doc: every surface symbol must have a doc row.
-    doc->code: every doc row naming a *surface* symbol must still resolve;
-               rows flagged as in-function literals are exempt in this direction.
+    code->doc: every surface symbol must have a doc row (keyed by defining class).
+    doc->code: every doc row naming a *surface* symbol must still resolve, EXCEPT
+        in-function-literal rows, required-field rows (Value cell says ``required``),
+        subscript/call-path rows (symbol has ``[`` / ``(``), and module-constant rows
+        (bare symbol is any module-level assigned name still present, any RHS).
     """
     file_disp = _unescape_md(section.header).strip()
     surface = extract_default_surface(file_path)
+    module_names = module_assign_names(file_path)
     rows = parse_prose_rows(section.body, section.header)
-    documented_surface_symbols = {r.symbol for r in rows if not r.is_in_function_literal}
+
+    documented: set[str] = set()
+    for row in rows:
+        if row.is_in_function_literal or row.is_subscript_key:
+            continue
+        documented.add(_rekey_to_defining_class(row.symbol))
 
     violations: list[ProvenanceViolation] = []
 
     # code->doc
-    for symbol in sorted(surface - documented_surface_symbols):
+    for symbol in sorted(surface - documented):
         violations.append(
             ProvenanceViolation(
                 location=f"{file_disp}:{symbol}",
@@ -682,20 +1046,24 @@ def check_prose_section(section: Section, file_path: Path) -> list[ProvenanceVio
             )
         )
 
-    # doc->code (skip in-function-literal rows)
+    # doc->code (apply all four exemptions)
     for row in rows:
-        if row.is_in_function_literal:
+        if row.is_in_function_literal or row.is_subscript_key:
             continue
-        if row.symbol not in surface:
-            violations.append(
-                ProvenanceViolation(
-                    location=f"{file_disp}:{row.symbol}",
-                    problem="stale/orphaned provenance row",
-                    remediation=(
-                        "remove or update the row in docs/defaults-provenance.md"
-                    ),
-                )
+        if "required" in row.value.lower():
+            continue  # required-field exemption
+        symbol = _rekey_to_defining_class(row.symbol)
+        if symbol in surface:
+            continue
+        if "." not in symbol and symbol in module_names:
+            continue  # module-constant exemption (documented Call/BinOp constants)
+        violations.append(
+            ProvenanceViolation(
+                location=f"{file_disp}:{row.symbol}",
+                problem="stale/orphaned provenance row",
+                remediation=("remove or update the row in docs/defaults-provenance.md"),
             )
+        )
     return violations
 ```
 
@@ -1562,9 +1930,13 @@ git commit -m "docs(#192): add (e) intensity-tier-omission aug legend row"
 
 **Interface contract this phase CONSUMES (from Phase 1):** Assertion 1's bijection rule. Stripping an inline tag does **not** remove a default *value*, so the surface symbol stays and its doc row stays — the bijection is preserved. The keep-list notes are cosmetic comments the checker ignores. (The checker reads the *default surface* and *doc rows*, never the inline tag text in prose files.)
 
-**Interface contract this phase EXPOSES (to Phase 5):** every prose-section file is Assertion-1-clean (it already is, value-wise; this phase only removes redundant comments and migrates the doc prose). The doc preamble + `Tag` column reflect the new principle. Exactly the curated keep-list notes survive.
+**Interface contract this phase EXPOSES (to Phase 5):** every prose-section file is Assertion-1-clean under the **refined surface** — the strip removes redundant comments and migrates the doc prose, AND **Task 4.6 completes the exhaustive registry** (a `# cite:` / `# tbd:` / `index-only` row for every trust-bearing default the surface emits; the 8 outer-rooted rows re-keyed; the stale `BASE_ACTIVATION_AT_1024` row replaced). The doc preamble + `Tag` column reflect the new principle. Exactly the curated keep-list notes survive. No default *value* changes.
 
-**CI state at phase end:** GREEN. Comment-only code edits (ruff/format/mypy unaffected); doc edits pass markdownlint. The live test still does not exist; but after this phase the repo IS conformant, so Phase 5 is pure verification.
+**CI state at phase end:** GREEN. Comment-only code edits (ruff/format/mypy unaffected); doc edits (strip migration + the new rows) pass markdownlint. The live test still does not exist; but after this phase the repo IS conformant (run `run_all_checks` ad hoc to confirm), so Phase 5 is pure verification.
+
+> **AMENDED (#192):** this phase now includes **Task 4.6 — exhaustive registry completion**. The strip alone is NOT enough: the refined surface emits trust-bearing defaults #120 never documented, so Assertion 1 is only clean after Task 4.6 authors their rows. Run Task 4.6 LAST in this phase (after the strip + doc migration), driving off the live checker output.
+
+<!-- markdownlint callout separator -->
 
 > **CRITICAL — the strip removes inline `# cite:` / `# tbd:` comments only; never a value, never a docstring, never a non-tag comment.** A "strip" turns `seed: int = 42  # cite: degenerate-case (...)` into `seed: int = 42`. Multi-line `# cite:` comment blocks (e.g. the LR-schedule block in `TrainHyperparams`) are removed in full. After each file, `git diff` must show only comment deletions (plus the keep-list lines unchanged).
 
@@ -1762,11 +2134,127 @@ git add docs/defaults-provenance.md
 git commit -m "docs(#192): reword preamble + redefine Tag column as provenance class"
 ```
 
+### Task 4.6: Exhaustive registry completion — author the new doc rows + fixes (AMENDED #192)
+
+**Files:**
+
+- Modify: `docs/defaults-provenance.md`
+
+This task closes the Phase-1 gap: the refined surface emits trust-bearing defaults
+that #120 never documented. Author a row for **every** one so Assertion 1 reaches
+zero violations over the real repo. **No default *value* changes** — doc-only.
+Each new row gets a real `# cite:`, an honest `# tbd:`, or `index-only` (structural
+/ `None`-sentinel / runtime-flag) — **never a silent guessed value**.
+
+> **DRIVE OFF THE CHECKER, not this list.** After Phases 1–4 land, run the live
+> driver and author exactly what it reports:
+>
+> ```bash
+> uv run python -c "from pathlib import Path; from custom_sam_peft._provenance_check import run_all_checks; [print(v) for v in run_all_checks(Path('.'))]"
+> ```
+>
+> The enumerated set below is the **verified expected output** (it was checked to
+> bring all prose sections green). If the checker reports a symbol not listed,
+> author it too; if a listed symbol is absent, the surface changed — reconcile.
+
+- [ ] **Step 1: Fix the two stale/mis-keyed existing rows** (corrections, not value changes):
+  - **Re-key** the 8 outer-rooted rows in the `## config/schema.py` section:
+    `TrainHyperparams.early_stop.{enabled,monitor,min_delta,stop_patience}` →
+    `EarlyStopConfig.{…}`, and
+    `TrainHyperparams.lr_decay_on_plateau.{patience,factor,min_lr}` →
+    `LrDecayOnPlateauConfig.{…}`. Change only the `Location` cell prefix; keep all
+    other cells. (3 + 4 = 7 rows; if a future field is added the count grows — re-key
+    every `TrainHyperparams.early_stop.*` / `…lr_decay_on_plateau.*` row present.)
+  - **Replace the stale** `presets.py:BASE_ACTIVATION_AT_1024` row (that symbol no
+    longer exists — the #204 split replaced it) with the two new `A_FIXED` /
+    `A_PER_CLASS` rows (Step 2). Optionally correct the `presets.py:CACHE_SCHEMA_VERSION`
+    Value cell `2` → `3` to match code (`CACHE_SCHEMA_VERSION = 3`).
+
+- [ ] **Step 2: Author the new rows.** Add each to the matching `## <section>`
+  table (keep the six-column schema). Verified expected set:
+
+  **`## presets.py`** (4 rows):
+
+  ```markdown
+  | `presets.py:A_FIXED` | `0` | `# cite: #204` | PR #204 (VRAM K-autosize split activation model) — K-invariant vision-encoder (hiera-large) activation per image, clamped to 0 as the flash-baseline residual sits below the STATIC conservatism margin. | (See presets.py block comment "A_FIXED clamps to 0".) | #204 split-activation calibration constant; superseded by the calibration cache. `# tbd: #204` if a crisper citation is wanted. |
+  | `presets.py:A_PER_CLASS` | `1_248_840_021` | `# cite: #204` | PR #204 — decoder/mask-head activation per (image×class), two-point split measured on RTX 5070 Ti @1008px (see presets.py "Split activation seeds" comment + scripts/_derive_preset_constants.py). | `A_PER_CLASS = 1_248_840_021  # 1.163 GiB decoder activation per class @1008px` | #204 split-activation calibration constant. |
+  | `presets.py:CACHE_FILENAME` | `".custom_sam_peft_calibration.json"` | `index-only` | — | — | Structural calibration-cache filename; not trust-bearing. |
+  | `presets.py:_CUDA_HINT` | `(CUDA-required help string)` | `index-only` | — | — | Structural user-facing error message; not trust-bearing. |
+  ```
+
+  **`## config/schema.py`** (19 rows). All `None`-sentinel / structural-enum
+  defaults are `index-only`; `host_ram_floor_gb` is `# tbd:` (mirrors its inline
+  `# tbd:` heuristic rationale):
+
+  ```markdown
+  | `config/schema.py:AugmentationsConfig.preset` | `"natural"` | `index-only` | — | — | Default augmentation preset; structural (mirrors LossConfig.preset). |
+  | `config/schema.py:AugmentationsConfig.intensity` | `"medium"` | `index-only` | — | — | Default augmentation intensity tier; structural. |
+  | `config/schema.py:LossConfig.preset` | `"natural"` | `index-only` | — | — | Default loss preset; structural. |
+  | `config/schema.py:LossConfig.class_imbalance` | `"balanced"` | `index-only` | — | — | Default class-imbalance tier; structural. |
+  | `config/schema.py:ModelConfig.revision` | `None` | `index-only` | — | — | `None`-sentinel: no pinned HF revision unless set. |
+  | `config/schema.py:ModelConfig.device` | `None` | `index-only` | — | — | `None`-sentinel: auto-select device unless set. |
+  | `config/schema.py:LimitConfig.train` | `None` | `index-only` | — | — | `None`-sentinel: no train-split limit. |
+  | `config/schema.py:LimitConfig.val` | `None` | `index-only` | — | — | `None`-sentinel: no val-split limit. |
+  | `config/schema.py:ValSplitConfig.seed` | `None` | `index-only` | — | — | `None`-sentinel: inherits run.seed at resolve time. |
+  | `config/schema.py:HFDatasetConfig.split_val` | `None` | `index-only` | — | — | `None`-sentinel: no separate HF val split unless set. |
+  | `config/schema.py:DataConfig.val` | `None` | `index-only` | — | — | `None`-sentinel: no-val mode unless set. |
+  | `config/schema.py:DataConfig.val_split` | `None` | `index-only` | — | — | `None`-sentinel: auto-split off unless set. |
+  | `config/schema.py:DataConfig.normalize` | `None` | `index-only` | — | — | `None`-sentinel: resolved from channel semantics unless set. |
+  | `config/schema.py:DataConfig.test` | `None` | `index-only` | — | — | `None`-sentinel: optional test split. |
+  | `config/schema.py:DataConfig.hf` | `None` | `index-only` | — | — | `None`-sentinel: required only when format == "hf". |
+  | `config/schema.py:PEFTConfig.target_modules` | `None` | `index-only` | — | — | `None`-sentinel: uses SCOPE_TARGETS[scope] when None. |
+  | `config/schema.py:TrainHyperparams.save_every` | `None` | `index-only` | — | — | `None`-sentinel: auto-resolves to one checkpoint/epoch. |
+  | `config/schema.py:TrainHyperparams.eval_every` | `None` | `index-only` | — | — | `None`-sentinel: auto-resolves to one eval/epoch. |
+  | `config/schema.py:TrainHyperparams.host_ram_floor_gb` | `2.0` | `# tbd:` | — | — | Heuristic host-RAM floor (GB) for the graceful-stop guard; the field's inline `# tbd:` notes "tune empirically". No internal calibration run recorded. |
+  ```
+
+  > **Note:** `TrackingConfig.wandb` and `TrainConfig.export` are nested dataclass
+  > containers; the refined surface suppresses them and their leaves are documented
+  > under `## config/_internal.py` (`WandbConfig.*` / `ExportConfig.*`). Do NOT add
+  > rows for them.
+
+  **`## data/channel_semantics.py`** (1 row):
+
+  ```markdown
+  | `data/channel_semantics.py:CHANNEL_SEMANTICS` | `{rgb, rgba, grayscale, freeform profiles}` | `index-only` | — | — | Container registry; per-key `normalize_default` values are documented by the four `CHANNEL_SEMANTICS["…"].normalize_default` rows below. |
+  ```
+
+  **`## data/transforms.py`** (3 rows):
+
+  ```markdown
+  | `data/transforms.py:KNOWN_PROCESSOR_STATS` | `{"facebook/sam3.1": ([0.5,0.5,0.5],[0.5,0.5,0.5])}` | `# cite: empirically verified 2026-05-30 (Sam3ImageProcessor)` | `AutoImageProcessor.from_pretrained("facebook/sam3.1")` → `Sam3ImageProcessor`, image_mean/std = (0.5,0.5,0.5). Same verification as the `["facebook/sam3.1"]` subscript row below. | `Sam3ImageProcessor (0.5,0.5,0.5) (0.5,0.5,0.5)` — live output 2026-05-30. | Container constant; the per-key value is also documented by the subscript row. |
+  | `data/transforms.py:_warned_non3ch_photometric` | `False` | `index-only` | — | — | Module-level one-time-warning runtime flag; off by default. Not trust-bearing. |
+  | `data/transforms.py:_warned_freeform` | `False` | `index-only` | — | — | Module-level one-time-warning runtime flag; off by default. Not trust-bearing. |
+  ```
+
+  **`## tests/gpu/test\_qlora\_8gb\_ceiling.py`** (1 row):
+
+  ```markdown
+  | `tests/gpu/test_qlora_8gb_ceiling.py:LOSS_RATIO_CEIL` | `0.75` | `# tbd:` | — | — | Overfit smoke-test loss-drop ceiling: the 50-step run must drop loss to ≤ 0.75× its first value. Repo-chosen overfit-signal threshold; no external derivation recorded. |
+  ```
+
+- [ ] **Step 3: Run the live driver to confirm zero prose violations**
+
+Run: `uv run python -c "from pathlib import Path; from custom_sam_peft._provenance_check import run_all_checks; vs=run_all_checks(Path('.')); print('\n'.join(str(v) for v in vs)); print('TOTAL', len(vs))"`
+Expected: prints `TOTAL 0` (no prose Assertion-1 violations). If any remain, author/fix the exact rows it names. Do NOT weaken the surface.
+
+- [ ] **Step 4: Markdown-lint the doc**
+
+Run: `uvx --from nodejs-bin@22.9.0 --with markdownlint-cli2@0.18.1 markdownlint-cli2 --config .config/markdownlint-cli2.jsonc docs/defaults-provenance.md`
+Expected: no findings. Fix line-length / table findings before committing.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add docs/defaults-provenance.md
+git commit -m "docs(#192): exhaustive registry completion — author new trust-bearing-default rows + re-key/stale fixes"
+```
+
 ---
 
 ## Phase 5 — Live enforcement test + final green gate
 
-**Interface contract this phase CONSUMES:** `run_all_checks(repo_root) -> list[ProvenanceViolation]` (Phase 2). The repo is now conformant (Phases 3–4): Assertions 1–3 over the real repo return `[]`.
+**Interface contract this phase CONSUMES:** `run_all_checks(repo_root) -> list[ProvenanceViolation]` (Phase 2). The repo is now conformant (Phases 3–4, incl. Task 4.6 exhaustive registry completion): Assertions 1–3 over the real repo return `[]`.
 
 **Interface contract this phase EXPOSES:** none downstream — this is the terminal phase. It opens the PR.
 
@@ -1852,8 +2340,9 @@ Expected: the ONLY surviving `# cite:`/`# tbd:` lines are the confident-keep set
 - Checker module `_provenance_check.py`, pure functions, explicit repo-root → Phase 1–2. ✓
 - Scope auto-derived from `## <path>` headers; no second path list → `discover_sections` + `classify_section`, Task 1.2/1.5. ✓
 - Section classification (4 classes) + base-path resolution + missing-file hard fail → Task 1.2. ✓
-- Default surface (pydantic/dataclass/module-const; excludes in-function literals) → Task 1.3. ✓
-- Assertion 1 both directions + in-function-literal exemption → Task 1.4/1.5. ✓
+- Refined default surface (#192: literal-RHS module consts; type-alias/dunder/model_config/pytestmark exclusion; nested-container suppression + recursion for pydantic AND dataclass; override-mirror exclusion; required-field exemption; defining-class keying) → Task 1.3. ✓
+- Assertion 1 both directions + in-function-literal / required-field / subscript / module-constant exemptions + defining-class re-key → Task 1.4/1.5. ✓
+- Exhaustive registry completion (#192: author every trust-bearing-default row, cite-or-tbd-or-index-only, no value changes; re-key 8 outer-rooted rows; replace stale `BASE_ACTIVATION_AT_1024`) → Task 4.6. Verified against the real repo to reconcile all prose sections to zero Assertion-1 violations. ✓
 - Assertion 2 tag-presence + legend resolution + both tag syntaxes + `_LEGACY_DEFAULTS` + alias lines → Task 2.1/2.2/2.3. ✓
 - Assertion 3 cross-link coverage + schema-echo definition → Task 2.4/2.5. ✓
 - Failure-output contract (file:symbol / file:line + missing + remediation; all violations) → `ProvenanceViolation` + each `check_*` aggregating, never short-circuiting. ✓
@@ -1861,8 +2350,8 @@ Expected: the ONLY surviving `# cite:`/`# tbd:` lines are the confident-keep set
 - `(e)` aug legend row added; losses legend unchanged; no rows deleted → Task 3.3 + Task 4.5 (preamble/Tag only). ✓
 - Curated strip with keep-list + resolved keep/strip decisions → Phase 4 (4.1–4.4). ✓
 - Doc preamble reword + Tag-column redefinition → Task 4.5. ✓
-- Unit tests over synthetic fixtures (6 cases incl. in-function exclusion) → Tasks 1.1–2.5 collectively (documented-pass, undocumented-fail, orphaned-fail, untagged-cell-fail, undefined-letter-fail, in-function-exclusion). ✓
-- Live test green after strip+tagging+doc → Phase 5. ✓
+- Unit tests over synthetic fixtures (incl. in-function exclusion AND the #192 surface refinements: alias/logger/dunder exclusion, nested recursion + container suppression, override-mirror exclusion, required-field/subscript/module-constant exemptions, defining-class re-key) → Tasks 1.1–2.5 collectively. ✓
+- Live test green after strip+tagging+doc+registry-completion → Phase 5. ✓
 - Lint gates (ruff/format/mypy/markdownlint) → verification steps in every phase + Task 5.2. ✓
 - Out-of-scope untouched; no value changes → enforced by "value-preserving only" guards in Phases 3–4. ✓
 
