@@ -10,6 +10,7 @@ See ``docs/defaults-provenance.md`` and the design spec
 
 from __future__ import annotations
 
+import ast
 import re
 from dataclasses import dataclass
 from pathlib import Path
@@ -86,6 +87,41 @@ def classify_section(section: Section, repo_root: Path) -> SectionClass:
     if path.suffix == ".yaml":
         return "yaml"
     return "prose"
+
+
+def extract_default_surface(file_path: Path) -> set[str]:
+    """Return the enforced default-surface symbol keys for a prose file.
+
+    Surface = pydantic ``Field(default=...)``/``Field(default_factory=...)``,
+    dataclass field defaults, and module-level constant assignments. In-function
+    literals are deliberately excluded.
+    """
+    tree = ast.parse(file_path.read_text(encoding="utf-8"))
+    surface: set[str] = set()
+
+    # Module-level constant assignments.
+    for node in tree.body:
+        if isinstance(node, ast.Assign):
+            for target in node.targets:
+                if isinstance(target, ast.Name):
+                    surface.add(target.id)
+        elif isinstance(node, ast.AnnAssign):
+            if isinstance(node.target, ast.Name) and node.value is not None:
+                surface.add(node.target.id)
+
+    # Class-body field defaults (pydantic + dataclass): ``name: T = <default>``.
+    for node in tree.body:
+        if not isinstance(node, ast.ClassDef):
+            continue
+        for stmt in node.body:
+            if isinstance(stmt, ast.AnnAssign) and isinstance(stmt.target, ast.Name):
+                if stmt.value is not None:
+                    surface.add(f"{node.name}.{stmt.target.id}")
+            elif isinstance(stmt, ast.Assign):
+                for target in stmt.targets:
+                    if isinstance(target, ast.Name):
+                        surface.add(f"{node.name}.{target.id}")
+    return surface
 
 
 def discover_sections(doc_text: str) -> list[Section]:

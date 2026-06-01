@@ -92,3 +92,44 @@ def test_classify_missing_file_is_hard_fail(tmp_path: Path) -> None:
     repo = _make_repo(tmp_path)
     with pytest.raises(FileNotFoundError):
         classify_section(Section(header="config/does_not_exist.py", body=""), repo)
+
+
+from custom_sam_peft._provenance_check import extract_default_surface
+
+
+def test_surface_collects_pydantic_dataclass_and_module_constants(tmp_path: Path) -> None:
+    src = '''
+from pydantic import BaseModel, Field
+from dataclasses import dataclass
+
+MODULE_CONST = 7
+TYPED_CONST: int = 8
+
+
+class Cfg(BaseModel):
+    a: int = Field(default=3)
+    b: list[int] = Field(default_factory=list)
+    plain: int = 5
+
+
+@dataclass
+class DC:
+    x: float = 1.5
+
+
+def helper() -> int:
+    magic = 42  # in-function literal, NOT surface
+    return magic
+'''
+    f = tmp_path / "m.py"
+    f.write_text(src)
+    surface = extract_default_surface(f)
+    assert "MODULE_CONST" in surface
+    assert "TYPED_CONST" in surface
+    assert "Cfg.a" in surface
+    assert "Cfg.b" in surface
+    assert "Cfg.plain" in surface
+    assert "DC.x" in surface
+    # In-function literal is excluded.
+    assert not any("magic" in s for s in surface)
+    assert "helper" not in surface
