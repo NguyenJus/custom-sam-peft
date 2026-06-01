@@ -51,6 +51,21 @@ TIER="${1:-local}"
 # same interpreter that `pip install -e .` populated. Bare `pytest` on
 # PATH can resolve to a different Python (common in Colab) and trigger
 # `ModuleNotFoundError: No module named 'custom_sam_peft'`.
+#
+# Resolve the interpreter robustly: an explicit $PYTHON wins; otherwise prefer a
+# repo-local uv venv (`.venv/bin/python`), then `python3`, then `python`. Some
+# shells (e.g. WSL dev boxes) have no bare `python` on PATH, only the venv one.
+if [ -z "${PYTHON:-}" ]; then
+  _here="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+  if [ -x "$_here/.venv/bin/python" ]; then
+    PYTHON="$_here/.venv/bin/python"
+  elif command -v python3 >/dev/null 2>&1; then
+    PYTHON="python3"
+  else
+    PYTHON="python"
+  fi
+fi
+export PYTHON
 
 # expandable_segments reduces allocator fragmentation within each process.
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
