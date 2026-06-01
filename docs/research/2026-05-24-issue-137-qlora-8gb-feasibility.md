@@ -1,5 +1,7 @@
 # QLoRA 8 GB Fit Investigation — GTX 1080 (sm_61)
 
+> **Historical record.** The GTX 1080 (CC 6.1) is no longer a tested or supported target. The minimum supported GPU is the Tesla T4 (CC 7.5). The VRAM figures and config (`min_gpu_qlora.yaml`) remain valid for the 8 GB / CC 7.5 envelope; the GTX 1080–specific environment (`gpu-pascal` uv extra, cu118 torch) is no longer maintained.
+>
 > Research write-up for [issue #137](https://github.com/NguyenJus/custom-sam-peft/issues/137)
 > Date: 2026-05-24
 > Spec: `docs/superpowers/specs/2026-05-24-qlora-8gb-fit-investigation-design.md`

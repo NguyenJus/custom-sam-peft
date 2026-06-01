@@ -2,8 +2,8 @@
 
 Validates that the minimum-supported-card QLoRA configuration
 (configs/examples/min_gpu_qlora.yaml — decoder-only narrow-scope QLoRA,
-fp16, batch_size=1) fits within an 8 GB VRAM envelope, faithfully modelling
-a CC 7.5 / 8 GB card (e.g. GTX 1080, T4).
+fp16, batch_size=1) fits within an 8 GB VRAM envelope, targeting the
+CC 7.5 / 8 GB envelope (e.g. T4).
 
 The test runs the full run_training() path (50 optimizer steps on the
 2-image tiny_coco fixture) and asserts:
@@ -29,9 +29,9 @@ from custom_sam_peft.config.loader import load_config
 from custom_sam_peft.train.runner import run_training
 from tests.gpu.conftest import _bnb_available, _RecordingTracker
 
-# cite: measured ~5.0 GB peak (GTX 1080, fp16) in
+# cite: measured ~5.0 GB peak (fp16, decoder-only scope) in
 # docs/research/2026-05-24-issue-137-qlora-8gb-feasibility.md. 8.0 GB = target
-# minimum-card envelope with ~3 GB margin over the measured peak. Date 2026-05-31.
+# CC 7.5 / 8 GB-card envelope with ~3 GB margin over the measured peak. Date 2026-05-31.
 # 5070 Ti measured peak: 2.348 GB (fp16, min_gpu_qlora, 2026-05-31) — within the 8.0 envelope.
 # tbd: #142 — confirm on a real 8 GB card.
 QLORA_8GB_CEIL_GB: float = 8.0

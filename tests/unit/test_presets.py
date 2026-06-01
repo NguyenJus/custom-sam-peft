@@ -334,7 +334,7 @@ def test_preset_decision_float16_round_trips() -> None:
 def test_decide_preset_selects_float16_below_cc80(
     monkeypatch: pytest.MonkeyPatch, _force_cuda_available: None
 ) -> None:
-    """On CC<8.0 hardware (Pascal/GTX 1080) decide_preset must pick float16."""
+    """On CC<8.0 hardware (below the CC 8.0 / Ampere floor) decide_preset must pick float16."""
     # Use 40 GiB so a preset fits even at K_eff=MULTIPLEX_CAP (16).
     _stub_gpu(monkeypatch, int(40 * _GB), cc=(6, 1))
     decision = decide_preset()
@@ -363,7 +363,7 @@ def test_flash_attention_available_by_cc() -> None:
     assert _flash_attention_available((12, 0)) is True  # 5070 Ti dev box
     # cc < (8, 0): assume math backend materializes -> include the attention term.
     assert _flash_attention_available((7, 5)) is False  # Turing (conservative)
-    assert _flash_attention_available((6, 1)) is False  # Pascal (GTX 1080)
+    assert _flash_attention_available((6, 1)) is False  # CC 6.1 (pre-Ampere)
     # Unknown / unreadable cc -> conservative False (safe over-estimate).
     assert _flash_attention_available(None) is False
 
