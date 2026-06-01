@@ -86,7 +86,7 @@ def coerce_dtype_for_capability(
         logger.warning(
             "Requested bfloat16 on a device with compute capability %s (< 8.0, "
             "where bf16 is emulated); coercing to float16. This is expected on "
-            "Pascal (GTX 1080).",
+            "pre-Ampere cards such as the Turing Tesla T4 (CC 7.5).",
             capability,
         )
         _dtype_coercion_warned = True

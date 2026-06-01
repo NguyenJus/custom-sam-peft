@@ -38,7 +38,9 @@ it does not automatically satisfy lower tiers.
   T4 floor; also satisfied by RTX 5070 Ti at CC 12.0 / 16 GB).
 - **Dtype note:** **bf16 is coerced to fp16 below CC 8.0**. Tests in this tier
   run in fp16 on a real T4 (CC 7.5) and in fp16-compatible mode on a 5070 Ti.
-  They must not assert bf16-faithful numerics (that is `gpu_bf16`'s role).
+  They must not assert bf16-faithful numerics (that is `gpu_bf16`'s role). The
+  coercion is confirmed on a real Colab T4 (2026-06-01, finding #139) — see
+  [`gpu-evidence-colab-t4.md`](gpu-evidence-colab-t4.md).
 - **Count:** **33 tests** across `tests/integration/`, `tests/predict/`, and
   `tests/gpu/`.
 - **Cadence guidance:** run before a tagged release, or when the training
