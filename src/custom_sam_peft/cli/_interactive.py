@@ -32,7 +32,7 @@ RunMode = Literal["train", "run", "eval"]  # superset; init -i narrows to train|
 class Ctx:
     answers: dict[str, Any]
     cuda_available: bool
-    run_mode: RunMode = "train"
+    run_mode: RunMode = "run"
     categories: list[str] | None = None
     category_counts: dict[str, int] | None = None
 

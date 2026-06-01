@@ -31,7 +31,7 @@ def test_ctx_constructs_with_cuda_flag_and_run_mode() -> None:
     ctx = sw.Ctx(answers={}, cuda_available=False)
     assert ctx.answers == {}
     assert ctx.cuda_available is False
-    assert ctx.run_mode == "train"  # default
+    assert ctx.run_mode == "run"  # default
     assert ctx.categories is None
 
 
