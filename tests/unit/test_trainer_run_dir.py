@@ -38,6 +38,8 @@ def test_fit_uses_caller_provided_run_dir(tmp_path: Path, monkeypatch: pytest.Mo
     cfg.run.seed = 0
 
     cfg.data.augmentations = AugmentationsConfig(preset="none")
+    cfg.data.channel_semantics = "rgb"
+    cfg.data.channels = 3
     cfg.train.loss = LossConfig()
     cfg.train.num_workers = 0
     cfg.train.batch_size = 1
