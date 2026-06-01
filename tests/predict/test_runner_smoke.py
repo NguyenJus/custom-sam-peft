@@ -536,3 +536,24 @@ def test_run_predict_flat_loop_iterates_image_chunks_x_groups(
         )
 
     assert report.n_images == 4
+
+
+# ---------------------------------------------------------------------------
+# 16. test_run_predict_run_json_has_channels_and_semantics
+# ---------------------------------------------------------------------------
+
+
+def test_run_predict_run_json_has_channels_and_semantics(tmp_path: Path) -> None:
+    """run.json must record the resolved channels and channel_semantics."""
+    stub = _StubSamModule()
+    opts = _make_opts(tmp_path, prompts="cat")
+
+    with _patch_load(stub):
+        run_predict(opts)
+
+    run_json = json.loads((tmp_path / "out" / "run.json").read_text())
+    assert "channels" in run_json, "run.json missing 'channels'"
+    assert "channel_semantics" in run_json, "run.json missing 'channel_semantics'"
+    # Default config=None resolves to channels=3, channel_semantics="rgb"
+    assert run_json["channels"] == 3
+    assert run_json["channel_semantics"] == "rgb"
