@@ -12,6 +12,8 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
+from pathlib import Path
+from typing import Literal
 
 TABLE_MODULES: frozenset[str] = frozenset(
     {"data/aug_presets.py", "models/losses/presets.py"}
@@ -41,7 +43,49 @@ class Section:
     body: str
 
 
+SectionClass = Literal["prose", "table", "yaml", "prose-narrative"]
+
 _H2 = re.compile(r"^## (.+)$", re.MULTILINE)
+
+
+def _unescape_md(header: str) -> str:
+    """Strip markdown backslash-escapes (e.g. ``test\\_x`` -> ``test_x``)."""
+    return header.replace("\\_", "_")
+
+
+def resolve_section_path(header: str, repo_root: Path) -> Path | None:
+    """Resolve a ``## <header>`` to a file on disk, or ``None`` for prose-narrative.
+
+    Raises ``FileNotFoundError`` if a file-section header resolves to no file.
+    """
+    if header in PROSE_NARRATIVE_HEADERS:
+        return None
+    text = _unescape_md(header).strip()
+    if text.startswith("cli/templates/"):
+        candidate = repo_root / "src/custom_sam_peft" / text
+    elif text.startswith("tests/"):
+        candidate = repo_root / text
+    else:
+        candidate = repo_root / "src/custom_sam_peft" / text
+    if not candidate.is_file():
+        raise FileNotFoundError(
+            f"doc section names a path that does not exist: {header!r} "
+            f"(resolved to {candidate})"
+        )
+    return candidate
+
+
+def classify_section(section: Section, repo_root: Path) -> SectionClass:
+    """Classify a doc section into one of the four classes."""
+    path = resolve_section_path(section.header, repo_root)
+    if path is None:
+        return "prose-narrative"
+    rel = _unescape_md(section.header).strip()
+    if rel in TABLE_MODULES:
+        return "table"
+    if path.suffix == ".yaml":
+        return "yaml"
+    return "prose"
 
 
 def discover_sections(doc_text: str) -> list[Section]:
