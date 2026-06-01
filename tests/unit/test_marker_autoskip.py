@@ -20,7 +20,7 @@ def _conftest():
         # At and above the floor
         ((7, 5), True),
         ((8, 0), True),
-        # Old Pascal case that used to pass now fails at the gate
+        # CC 5.0 is below the CC 7.5 floor — fails at the gate
         ((5, 0), False),
     ],
 )

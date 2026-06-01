@@ -1,6 +1,6 @@
 # GPU Test Policy
 
-<!-- Capability-taxonomy policy (CC ≥ 7.5 floor, bf16-band, xl-band). Supersedes the old gpu_local/Pascal three-tier scheme. -->
+<!-- Capability-taxonomy policy (CC ≥ 7.5 floor, bf16-band, xl-band). Supersedes the old gpu_local/sub-CC7.5 three-tier scheme. -->
 
 ## 1. Why this exists
 
@@ -69,23 +69,23 @@ it does not automatically satisfy lower tiers.
   [#124](https://github.com/NguyenJus/custom-sam-peft/issues/124).
 - **Runner invocation:** `bash scripts/run_gpu_tests.sh xl`
 
-### Superseded tier: `gpu_local` (Pascal / CC 6.x)
+### Superseded tier: `gpu_local` (CC 6.x / pre-T4)
 
-`gpu_local` and Pascal-era (CC 6.1, GTX 1080) support were **removed** in the
+`gpu_local` and pre-T4 GPU (CC 6.1 and below) support were **removed** in the
 capability-taxonomy migration. Minimum supported GPU is now the **Tesla T4
-(CC 7.5)**. See [§ 3](#3-t4-floor--pascal-dropped-decision) for the full
+(CC 7.5)**. See [§ 3](#3-t4-floor--sub-cc75-dropped-decision) for the full
 rationale. The old `gpu_local` marker and the `gpu-pascal` (cu118) uv extra no
 longer exist.
 
-## 3. T4-floor / Pascal-dropped decision
+## 3. T4-floor / sub-CC7.5 dropped decision
 
-Pascal (CC 6.1, e.g. GTX 1080) is **no longer supported** as of this PR.
+GPUs below CC 7.5 (e.g. CC 6.1) are **no longer supported** as of this PR.
 
 - The `gpu-pascal` (cu118) uv extra was removed; the default `cu130` torch
   wheel covers both T4 and the 5070 Ti.
 - The old `docs/testing/local-pascal-gpu-testing.md` was deleted.
 - `docs/testing/manual-gpu-pass-2026-05-24-gtx1080.md` carries a **superseded
-  banner**.
+  banner** noting that CC 6.1 is no longer a tested target.
 - The historical GTX 1080 audit (`gpu-audit-2026-05-24.md`) remains as dated
   history.
 

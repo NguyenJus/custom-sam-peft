@@ -1,5 +1,7 @@
 # Older CUDA / Driver / Compute Capability Feasibility
 
+> **Historical record.** The minimum supported GPU is now the Tesla T4 (CC 7.5); CC 6.x / Pascal-era hardware (including the GTX 1080, CC 6.1) is no longer a tested or supported target. The `gpu-pascal` uv extra and cu118 torch wheel path were removed in the GPU test migration (#211). This document is retained as a dated feasibility analysis.
+>
 > Research write-up for [issue #79](https://github.com/NguyenJus/custom-sam-peft/issues/79)
 > Date: 2026-05-23
 
