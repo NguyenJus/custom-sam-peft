@@ -255,7 +255,11 @@ class Trainer:
 
         (run_dir / "augmentation_pipeline.json").write_text(
             json.dumps(
-                dump_augmentation_pipeline(cfg.data.augmentations),
+                dump_augmentation_pipeline(
+                    cfg.data.augmentations,
+                    channel_semantics=cfg.data.channel_semantics,
+                    channels=cfg.data.channels,
+                ),
                 indent=2,
                 sort_keys=False,
             )
