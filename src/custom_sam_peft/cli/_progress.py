@@ -99,6 +99,9 @@ class _NoOpHandle:
     def update_postfix(self, **kwargs: Any) -> None:
         pass
 
+    def set_start(self, start_epoch: int, start_step: int) -> None:
+        pass
+
     @contextmanager
     def push_subtask(self, label: str, total: int) -> Generator[_NoOpSubTaskHandle, None, None]:
         yield _NoOpSubTaskHandle()
@@ -168,6 +171,11 @@ class _ProgressHandle:
         desc = " ".join(f"{k}={v}" for k, v in kwargs.items())
         self._progress.update(self._inner, description=desc)
 
+    def set_start(self, start_epoch: int, start_step: int) -> None:
+        self._epoch = start_epoch
+        if self._outer is not None:
+            self._progress.update(self._outer, completed=start_epoch)
+
     @contextmanager
     def push_subtask(self, label: str, total: int) -> Generator[_RichSubTaskHandle, None, None]:
         task_id = self._progress.add_task(label, total=total)
@@ -231,6 +239,7 @@ class _PlainHandle:
         self._log_every = log_every
         self._step = 0
         self._epoch = 0
+        self._cumulative_step_offset = 0
         self._postfix: dict[str, Any] = {}
         self._logger = logging.getLogger("custom_sam_peft.progress")
         self._start_time = time.monotonic()
@@ -245,12 +254,17 @@ class _PlainHandle:
     def reset_inner(self, total: int | None = None) -> None:
         if total is not None:
             self._total_batches = total
+        self._cumulative_step_offset += self._step
         self._step = 0
 
     def advance_inner(self, n: int = 1) -> None:
         self._step += n
         if self._step % self._log_every == 0 or self._step == self._total_batches:
             self._emit()
+
+    def set_start(self, start_epoch: int, start_step: int) -> None:
+        self._epoch = start_epoch
+        self._cumulative_step_offset = start_step
 
     def update_postfix(self, **kwargs: Any) -> None:
         self._postfix.update(kwargs)
@@ -267,7 +281,7 @@ class _PlainHandle:
     def _emit(self) -> None:
         """Emit one progress line in the spec §4 format (global step)."""
         if self._total_epochs is not None and self._total_batches > 0:
-            global_step = self._epoch * self._total_batches + self._step
+            global_step = self._cumulative_step_offset + self._step
             global_total = self._total_epochs * self._total_batches
             epoch_str = f"epoch={self._epoch + 1}/{self._total_epochs}"
             step_str = f"step={global_step}/{global_total}"
@@ -288,7 +302,7 @@ class _PlainHandle:
                 else self._total_batches
             )
             current = (
-                self._epoch * self._total_batches + self._step
+                self._cumulative_step_offset + self._step
                 if self._total_epochs is not None and self._total_batches > 0
                 else self._step
             )
@@ -353,6 +367,9 @@ class _ProgressProxy:
 
     def reset_inner(self, total: int | None = None) -> None:
         _state.handle.reset_inner(total)
+
+    def set_start(self, start_epoch: int, start_step: int) -> None:
+        _state.handle.set_start(start_epoch, start_step)
 
     def update_postfix(self, **kwargs: Any) -> None:
         _state.handle.update_postfix(**kwargs)
