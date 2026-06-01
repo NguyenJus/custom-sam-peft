@@ -719,6 +719,8 @@ class Trainer:
         global_step = rs.start_step
         nan_streak = rs.nan_streak
         start_epoch = rs.start_epoch
+        if start_epoch > 0 or global_step > 0:
+            P.set_start(start_epoch, global_step)
 
         class_names = self.train_ds.class_names
         from custom_sam_peft.models.sam3 import MULTIPLEX_CAP as _MULTIPLEX_CAP
