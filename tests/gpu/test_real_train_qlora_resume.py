@@ -56,6 +56,10 @@ def _load_cfg(tmp_path: Path, tiny_coco_dir: Path, *, epochs: int) -> object:
             # is captured for finiteness checks.
             "train.save_every=25",
             "train.log_every=1",
+            # Disable early-stop: the 2-image overfit keeps eval mAP ~0.0, so
+            # with stop_patience=10 the loop would halt at ~step 22 — before
+            # the save_every=25 boundary fires and phase A writes no checkpoint.
+            "train.early_stop.enabled=false",
         ],
     )
 
@@ -82,7 +86,7 @@ def test_qlora_resume_survives_quant_state_roundtrip(
     assert ckpts_a, f"phase A wrote no checkpoint under {runs[-1] / 'checkpoints'}"
     resume_dir = ckpts_a[-1]
 
-    losses_a = [s["loss/total"] for _, s in tracker_a.scalars if s["loss/total"] > 0]
+    losses_a = [s["loss/total"] for _, s in tracker_a.scalars if s.get("loss/total", 0) > 0]
     assert losses_a, "phase A logged no loss scalars"
     assert all(math.isfinite(v) for _, s in tracker_a.scalars for v in s.values()), (
         "phase A logged a non-finite scalar"
@@ -94,7 +98,7 @@ def test_qlora_resume_survives_quant_state_roundtrip(
     cfg_full = _load_cfg(tmp_path, tiny_coco_dir, epochs=25)
     run_training(cfg_full, resume_from=resume_dir)
 
-    losses_b = [s["loss/total"] for _, s in tracker_b.scalars if s["loss/total"] > 0]
+    losses_b = [s["loss/total"] for _, s in tracker_b.scalars if s.get("loss/total", 0) > 0]
     assert losses_b, "phase B (resumed) logged no loss scalars"
     assert all(math.isfinite(v) for _, s in tracker_b.scalars for v in s.values()), (
         "phase B logged a non-finite scalar"

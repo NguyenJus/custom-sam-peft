@@ -61,7 +61,7 @@ def test_qlora_overfits_in_50_steps(
     run_training(cfg)
     peak_vram_gb = torch.cuda.max_memory_allocated() / 1e9
 
-    losses = [s["loss/total"] for _, s in tracker.scalars if s["loss/total"] > 0]
+    losses = [s["loss/total"] for _, s in tracker.scalars if s.get("loss/total", 0) > 0]
     assert losses, "expected at least one logged loss scalar"
     assert all(math.isfinite(v) for _, s in tracker.scalars for v in s.values()), (
         "non-finite scalar logged during training"
