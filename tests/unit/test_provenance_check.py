@@ -133,3 +133,24 @@ def helper() -> int:
     # In-function literal is excluded.
     assert not any("magic" in s for s in surface)
     assert "helper" not in surface
+
+
+from custom_sam_peft._provenance_check import parse_prose_rows
+
+
+def test_parse_prose_rows_strips_section_prefix_and_flags_literals() -> None:
+    # The body's Location keys are section-relative (prefix == header text).
+    body = (
+        "| Location | Value | Tag | Full reference | Verifying quote | Notes |\n"
+        "| --- | --- | --- | --- | --- | --- |\n"
+        "| `presets.py:MODEL_PARAMS` | `1` | `# tbd: #191` | — | — | n |\n"
+        "| `presets.py:forward_only_factor` | `0.25` | `# cite: x` | — | — | n |\n"
+        "| `presets.py:_optimizer_bytes (*4 literal)` | `4x` | `# cite: y` | — | — | n |\n"
+    )
+    rows = parse_prose_rows(body, section_header="presets.py")
+    by_symbol = {r.symbol: r for r in rows}
+    assert by_symbol["MODEL_PARAMS"].is_in_function_literal is False
+    assert by_symbol["forward_only_factor"].is_in_function_literal is False
+    # The parenthetical-suffix row is recognized as an in-function literal.
+    lit = next(r for r in rows if r.is_in_function_literal)
+    assert lit.symbol == "_optimizer_bytes"

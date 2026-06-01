@@ -89,6 +89,49 @@ def classify_section(section: Section, repo_root: Path) -> SectionClass:
     return "prose"
 
 
+# A table row: leading "| ", cells separated by " | ".
+_ROW = re.compile(r"^\|(?P<cells>.+)\|\s*$")
+_LOCATION_CELL = re.compile(r"`(?P<loc>[^`]+)`")
+# A Location of the form ``symbol (<literal-note>)`` is an in-function literal.
+_LITERAL_SUFFIX = re.compile(r"^(?P<symbol>[^()]+?)\s*\((?P<note>[^)]*)\)\s*$")
+
+
+@dataclass(frozen=True)
+class DocRow:
+    """A parsed Location key from one doc table row, relative to its section."""
+
+    symbol: str
+    is_in_function_literal: bool
+
+
+def parse_prose_rows(body: str, section_header: str) -> list[DocRow]:
+    """Parse a prose section body into per-row Location symbols.
+
+    The Location prefix mirrors ``section_header`` and is stripped to yield the
+    bare symbol. Rows whose Location has a ``symbol (<note>)`` parenthetical are
+    flagged as in-function literals (exempt in the doc->code direction).
+    """
+    prefix = _unescape_md(section_header).strip()
+    rows: list[DocRow] = []
+    for line in body.splitlines():
+        m = _ROW.match(line)
+        if m is None:
+            continue
+        loc_match = _LOCATION_CELL.search(m.group("cells").split("|", 1)[0])
+        if loc_match is None:
+            continue
+        loc = loc_match.group("loc").strip()
+        if not loc.startswith(f"{prefix}:"):
+            continue  # header/separator/non-location rows
+        rest = loc[len(prefix) + 1 :]  # drop "prefix:"
+        lit = _LITERAL_SUFFIX.match(rest)
+        if lit is not None:
+            rows.append(DocRow(symbol=lit.group("symbol").strip(), is_in_function_literal=True))
+        else:
+            rows.append(DocRow(symbol=rest.strip(), is_in_function_literal=False))
+    return rows
+
+
 def extract_default_surface(file_path: Path) -> set[str]:
     """Return the enforced default-surface symbol keys for a prose file.
 
