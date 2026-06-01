@@ -295,7 +295,7 @@ There is **no citable T4 per-step wall-clock figure** in the literature for this
 
 **T4 per-step measurement (2026-06-01):** Measured by the user on a free-tier **Colab Tesla T4 (CC 7.5, 16 GB)** via `scripts/run_gpu_tests.sh colab-min`, running the same 50-step `min_gpu_qlora` QLoRA smoke (`test_qlora_overfits_in_50_steps`, `tiny_coco`, `batch_size=1`, `grad_accum=1`). Same smoke-test proxy caveat as above — **not** the 160-epoch reference profile wall-clock:
 
-- **QLoRA** (`test_qlora_overfits_in_50_steps` / `min_gpu_qlora`): 317.1 s / 50 steps ≈ **6.34 s/step** (~8.5× the 5070 Ti QLoRA step, as expected for the T4's fp16 band).
+- **QLoRA** (`test_qlora_overfits_in_50_steps` / `min_gpu_qlora`): 317.1 s / 50 steps ≈ **6.34 s/step** (~8.4× the 5070 Ti QLoRA step, as expected for the T4's fp16 band).
 
 No 160-epoch reference profile wall-clock is stated as a measured or completed claim here.
 
