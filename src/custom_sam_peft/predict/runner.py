@@ -354,6 +354,13 @@ def run_predict(opts: PredictOptions) -> PredictReport:
     if rcfg.device == "cuda" and bs == 1:
         try:
             free_bytes, _ = torch.cuda.mem_get_info()
+            # Logged at the exact gate point (post model-load) so tests can
+            # assert hint presence against the same value the gate sees, rather
+            # than a pre-load reading that disagrees on cards where free VRAM
+            # straddles 12 GB across the load (e.g. the 16 GB 5070 Ti, #209).
+            logger.debug(
+                "VRAM hint check: free=%d bytes (%.2f GB)", free_bytes, free_bytes / 1024**3
+            )
             if free_bytes > 12 * 1024**3:
                 logger.info("free VRAM is >12 GB; consider --batch-size 4 or 8.")
         except RuntimeError:
