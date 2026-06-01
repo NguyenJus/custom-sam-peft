@@ -1,6 +1,6 @@
 # Manual GPU Test Pass — 2026-05-24 (GTX 1080, §4.3 hard-gate milestone)
 
-> **Superseded by the RTX 5070 Ti; Pascal is no longer supported as of this PR (min supported GPU: Tesla T4, CC 7.5).**
+> **Historical record.** The GTX 1080 (CC 6.1) is no longer a tested or supported target. Minimum supported GPU is the Tesla T4 (CC 7.5 / CC ≥ 8.0 for native bf16). Retained as a dated record of the §4.3 Pascal hard-gate milestone work.
 
 Operational tracker for the §4.3 Pascal hard-gate milestone and the local
 `gpu_local` tier. Companion to

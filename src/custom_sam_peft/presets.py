@@ -64,8 +64,8 @@ WORKSPACE_BYTES = 256 * _MIB  # cuDNN workspace + autograd graph + tmp buffers (
 #   uv run python scripts/_derive_preset_constants.py --method qlora --r 4 --batch 1
 # PORTABILITY: the derive subtracts the regime-matched overhead (flash card -> STATIC
 #   only), so these seeds are valid for ALL GPUs; _predicted_bytes re-adds the
-#   materialized attention term only when cc < 8.0 (Turing/Pascal math backend). NO
-#   re-derivation on a Pascal/Turing card is needed (Amendment 2, spec §2.1).
+#   materialized attention term only when cc < 8.0 (pre-Ampere math backend). NO
+#   re-derivation on a pre-Ampere card is needed (Amendment 2, spec §2.1).
 # A_FIXED clamps to 0: the K-invariant encoder activation sits below the analytic
 #   model-weight conservatism margin in STATIC (residual peak_K1 - STATIC -
 #   A_PER_CLASS ≈ -0.76 GiB), so STATIC already absorbs it. Predicted peak stays
@@ -211,14 +211,14 @@ def _flash_attention_available(cc: tuple[int, int] | None) -> bool:
     SDPA (cc >= 8.0), so the encoder self-attention never materializes the N*N score
     matrix.
 
-    cc < 8.0 (Turing 7.5, Pascal 6.1) commonly falls back to the SDPA math backend,
-    which materializes the full H*N^2 fp32 score matrix; on those cards the predictor
-    re-adds _attention_bytes_per_example for safety (Amendment 2, spec §2.1).
+    cc < 8.0 (pre-Ampere, e.g. Turing 7.5) commonly falls back to the SDPA math
+    backend, which materializes the full H*N^2 fp32 score matrix; on those cards the
+    predictor re-adds _attention_bytes_per_example for safety (Amendment 2, spec §2.1).
 
     Conservative default: an unknown / unreadable cc returns False (assume no flash ->
     include the attention term -> safe over-estimate). Turing (7.5) is deliberately
     treated as no-flash even though it usually gets mem-efficient SDPA — over-
-    estimating is always safe, and Pascal genuinely needs the term.
+    estimating is always safe for cards below the CC 8.0 floor.
     """
     if cc is None:
         return False
