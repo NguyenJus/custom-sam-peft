@@ -286,6 +286,13 @@ The 160-epoch figure is therefore a **convergence anchor** drawn from the publis
 
 At 160 epochs the run no longer fits the original "≤30 min on a 16 GB free-tier Colab T4" window that the earlier framing assumed: 160 epochs is ~16× the previous 10-epoch default, so the run exceeds that window by a wide margin. This is an order-of-magnitude inference from the epoch ratio, **not** a measured figure. The "≤30 min" budget framing is therefore **dropped** in favor of convergence. This reflects the standing design priority for this project: **final accuracy ≫ training speed** — a speed-only benefit is not a sufficient reason to reduce epoch count.
 
-There is **no citable T4 per-step wall-clock figure** in the literature for this configuration, so the actual wall-clock is left unmeasured: `# tbd: #193` (empirical T4 confirmation of the reference profile). No runtime figure is stated as a measured or completed claim here.
+There is **no citable T4 per-step wall-clock figure** in the literature for this configuration. The **T4 sample remains pending a user Colab run** (T4 sample: pending user Colab confirmation (#193)). `# tbd: #193` is therefore **partially resolved**: the 5070 Ti per-step datapoint is now recorded (see below); T4 confirmation is still outstanding.
+
+**5070 Ti per-step measurement (2026-05-31):** The following wall-clock figures were measured on an **RTX 5070 Ti (CC 12.0, 16 GB)** using `scripts/run_gpu_tests.sh`, running the 50-step `tiny_coco` overfit smokes (`tests/fixtures/tiny_coco/`, 2 images, `batch_size=1`, `grad_accum=1`, 50 gradient updates). These are smoke-test step times — a per-step proxy for the reference profile, **not** the 160-epoch reference profile wall-clock itself (which remains unmeasured):
+
+- **QLoRA** (`test_qlora_overfits_in_50_steps` / `min_gpu_qlora`): 37.6 s / 50 steps ≈ **0.75 s/step**
+- **LoRA** (`test_overfits_in_50_steps` / `gpu_smoke_lora`): 55.0 s / 50 steps ≈ **1.10 s/step**
+
+No 160-epoch reference profile wall-clock is stated as a measured or completed claim here.
 
 For empirical GPU-test budget questions — including the 2-image overfit smoke-test — see **issue #195** (2-image overfit GPU smoke-test speed/convergence).
