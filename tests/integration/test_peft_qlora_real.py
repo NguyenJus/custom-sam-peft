@@ -22,7 +22,7 @@ import torch
 from torch import nn
 
 from custom_sam_peft.config.schema import ModelConfig, PEFTConfig
-from custom_sam_peft.models.sam3 import load_sam31
+from custom_sam_peft.models.sam3 import SAM3_IMAGE_SIZE, load_sam31
 from custom_sam_peft.peft_adapters.lora import merge_lora
 from custom_sam_peft.peft_adapters.qlora import (
     _infer_compute_dtype_from_wrapper,
@@ -119,7 +119,9 @@ def test_save_load_qlora_roundtrip(tmp_path: Path) -> None:
 
     torch.manual_seed(0)
     w1.eval()
-    _images = torch.zeros(1, 3, 1024, 1024, device="cuda", dtype=torch.float32)
+    _images = torch.zeros(
+        1, 3, SAM3_IMAGE_SIZE, SAM3_IMAGE_SIZE, device="cuda", dtype=torch.float32
+    )
     _prompts = [TextPrompts(classes=["object"])]
     with torch.no_grad():
         _out_w1 = w1(_images, _prompts, support=None)
@@ -148,7 +150,9 @@ def test_save_load_qlora_roundtrip(tmp_path: Path) -> None:
     # compute_dtype so tolerances apply to fp16 arithmetic.
     torch.manual_seed(0)
     w2.eval()
-    _images2 = torch.zeros(1, 3, 1024, 1024, device="cuda", dtype=torch.float32)
+    _images2 = torch.zeros(
+        1, 3, SAM3_IMAGE_SIZE, SAM3_IMAGE_SIZE, device="cuda", dtype=torch.float32
+    )
     _prompts2 = [TextPrompts(classes=["object"])]
     with torch.no_grad():
         _out_w2 = w2(_images2, _prompts2, support=None)

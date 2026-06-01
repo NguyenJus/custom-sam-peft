@@ -10,7 +10,8 @@ assertions.
 **Hardware:** NVIDIA GeForce RTX 5070 Ti — CC 12.0, 16 GB VRAM, WSL2.
 **Runner:** `scripts/run_gpu_tests.sh` (one pytest process per file; checkpoint
 freed between files).
-**Captured:** Phase C real-GPU validation, 2026-05-31.
+**Captured:** Phase C real-GPU validation, 2026-05-31; full `gpu_t4 or gpu_bf16`
+per-test re-validation, 2026-06-01 (32/34 pass — see "Full-sweep re-validation").
 
 > **Freshness / non-blocking contract.** The `gpu-evidence` check reports this
 > artifact `current` only when it contains the workflow's HEAD commit SHA, and
@@ -49,11 +50,26 @@ wall-clock samples (≈ 1.10 s/step LoRA, ≈ 0.75 s/step QLoRA) are recorded in
 VRAM = **3.926 GB**, well inside the ≤ 16 GB `gpu_t4` band. **Branch (a): DONE**
 — the all-scope smoke fits `gpu_t4`; no `gpu_xl` overflow.
 
+## Full-sweep re-validation (2026-06-01, per-test process isolation)
+
+Re-ran the entire `gpu_t4`/`gpu_bf16` surface (34 tests) one process per test on
+the 5070 Ti (durable per-test transcript). **32 passed, 2 known out-of-scope reds
+(#208, #209).** Every Phase C deliverable above is green, and #207 now passes
+(see below).
+
+## #207 — FIXED (1008px input contract)
+
+`test_peft_qlora_real::test_save_load_qlora_roundtrip` previously tripped a
+`freqs_cis` RoPE shape at `vitdet.py:110` because the test forwarded a raw
+**1024²** tensor straight to the model, which only accepts SAM 3.1's native
+1008px (`SAM3_IMAGE_SIZE`). The predict/train paths rescale internally, so this
+was a test-only contract gap, not a model bug. Corrected to `SAM3_IMAGE_SIZE`
+(part of the codebase-wide 1024px→1008 purge); the roundtrip now passes.
+
 ## Out-of-scope GPU reds (triaged, NOT blockers)
 
-Filed as separate issues during Phase C; not regressions introduced by this PR:
+Filed as separate issues during Phase C; not regressions introduced by this PR
+(both re-confirmed identical in the 2026-06-01 sweep):
 
-- **#207** — `test_peft_qlora_real::test_save_load_qlora_roundtrip` trips a
-  `freqs_cis` RoPE shape at `vitdet.py:110` on a 1024² input (real/longstanding).
 - **#208** — `calibrate` VRAM probe `device not ready` (likely environmental).
-- **#209** — vram-hint logged for < 12 GB free on a 16 GB card (card-specific).
+- **#209** — vram-hint not logged for < 12 GB free on a 16 GB card (card-specific).

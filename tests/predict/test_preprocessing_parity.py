@@ -17,9 +17,10 @@ from PIL import Image
 
 from custom_sam_peft.config.schema import NormalizeConfig
 from custom_sam_peft.data.transforms import build_eval_transforms, resolve_normalization
+from custom_sam_peft.models.sam3 import SAM3_IMAGE_SIZE
 
 _MODEL_NAME = "facebook/sam3.1"
-_IMAGE_SIZE = 1024
+_IMAGE_SIZE = SAM3_IMAGE_SIZE
 
 
 def _make_synthetic_image() -> Image.Image:

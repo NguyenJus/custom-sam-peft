@@ -296,8 +296,8 @@ def test_predicted_bytes_train_mode_unchanged() -> None:
     """Existing train-mode callers stay correct after the ckpt param removal."""
     from custom_sam_peft.presets import _predicted_bytes
 
-    n = _predicted_bytes("lora", r=4, batch=1, image_size=1024, cache=None)
-    assert n == _predicted_bytes("lora", r=4, batch=1, image_size=1024, cache=None, mode="train")
+    n = _predicted_bytes("lora", r=4, batch=1, image_size=1008, cache=None)
+    assert n == _predicted_bytes("lora", r=4, batch=1, image_size=1008, cache=None, mode="train")
 
 
 def test_preset_decision_label_has_no_ckpt_token() -> None:

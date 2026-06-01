@@ -30,6 +30,7 @@ from PIL import Image as PILImage
 from pycocotools import mask as mask_utils
 
 from custom_sam_peft.config.loader import load_config
+from custom_sam_peft.models.sam3 import SAM3_IMAGE_SIZE
 from custom_sam_peft.predict.budget import PREDICT_8GB_BUDGET_GB
 from custom_sam_peft.predict.runner import PredictOptions, run_predict
 from custom_sam_peft.train.runner import run_training
@@ -49,7 +50,7 @@ _MIN_GPU_QLORA_CONFIG = (
 # ---------------------------------------------------------------------------
 
 
-def _make_synthetic_image(tmp_path: Path, *, size: int = 1024) -> Path:
+def _make_synthetic_image(tmp_path: Path, *, size: int = SAM3_IMAGE_SIZE) -> Path:
     """Write a synthetic RGB PNG of (size x size) to tmp_path/images/synthetic.png."""
     img_dir = tmp_path / "images"
     img_dir.mkdir(parents=True, exist_ok=True)
@@ -175,7 +176,7 @@ def test_predict_fits_8gb(
         tmp_path, _MIN_GPU_QLORA_CONFIG, tiny_coco_dir, monkeypatch
     )
 
-    img_path = _make_synthetic_image(tmp_path, size=1024)
+    img_path = _make_synthetic_image(tmp_path, size=SAM3_IMAGE_SIZE)
     opts = _make_base_opts(
         tmp_path,
         images=img_path.parent,
@@ -197,4 +198,4 @@ def test_predict_fits_8gb(
         f"(#142 / R11)"
     )
 
-    _assert_predictions_decodable(tmp_path / "out", orig_h=1024, orig_w=1024)
+    _assert_predictions_decodable(tmp_path / "out", orig_h=SAM3_IMAGE_SIZE, orig_w=SAM3_IMAGE_SIZE)

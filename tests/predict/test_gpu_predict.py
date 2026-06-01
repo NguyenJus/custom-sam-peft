@@ -25,6 +25,7 @@ from PIL import Image as PILImage
 from pycocotools import mask as mask_utils
 
 from custom_sam_peft.config.loader import load_config
+from custom_sam_peft.models.sam3 import SAM3_IMAGE_SIZE
 from custom_sam_peft.predict.runner import PredictOptions, run_predict
 from custom_sam_peft.train.runner import run_training
 from tests.gpu.conftest import _RecordingTracker
@@ -48,7 +49,7 @@ _QLORA_CONFIG = (
 # ---------------------------------------------------------------------------
 
 
-def _make_synthetic_image(tmp_path: Path, *, size: int = 1024) -> Path:
+def _make_synthetic_image(tmp_path: Path, *, size: int = SAM3_IMAGE_SIZE) -> Path:
     """Write a synthetic RGB PNG of (size x size) to tmp_path/images/synthetic.png."""
     img_dir = tmp_path / "images"
     img_dir.mkdir(parents=True, exist_ok=True)
@@ -147,20 +148,20 @@ def _train_and_get_adapter(
 
 
 # ---------------------------------------------------------------------------
-# Test 1: Base model (no adapter), real SAM 3.1, synthetic 1024x1024 image
+# Test 1: Base model (no adapter), real SAM 3.1, synthetic 1008x1008 image
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.gpu_t4
 def test_predict_base_model_cuda(tmp_path: Path) -> None:
-    """Real facebook/sam3.1 load + warmup + one synthetic 1024x1024 image + two text prompts.
+    """Real facebook/sam3.1 load + warmup + one synthetic 1008x1008 image + two text prompts.
 
-    Asserts predictions.json is written and every RLE decodes to (1024, 1024) uint8.
+    Asserts predictions.json is written and every RLE decodes to (1008, 1008) uint8.
     """
-    img_path = _make_synthetic_image(tmp_path, size=1024)
+    img_path = _make_synthetic_image(tmp_path, size=SAM3_IMAGE_SIZE)
     opts = _make_base_opts(tmp_path, images=img_path.parent, prompts="cat,dog")
     run_predict(opts)
-    _assert_predictions_decodable(tmp_path / "out", orig_h=1024, orig_w=1024)
+    _assert_predictions_decodable(tmp_path / "out", orig_h=SAM3_IMAGE_SIZE, orig_w=SAM3_IMAGE_SIZE)
 
 
 # ---------------------------------------------------------------------------
@@ -181,7 +182,7 @@ def test_predict_lora_adapter_cuda(
     """
     adapter_dir = _train_and_get_adapter(tmp_path, _LORA_CONFIG, tiny_coco_dir, monkeypatch)
 
-    img_path = _make_synthetic_image(tmp_path, size=1024)
+    img_path = _make_synthetic_image(tmp_path, size=SAM3_IMAGE_SIZE)
     opts = _make_base_opts(
         tmp_path,
         images=img_path.parent,
@@ -190,7 +191,7 @@ def test_predict_lora_adapter_cuda(
         merge_adapter=True,
     )
     run_predict(opts)
-    _assert_predictions_decodable(tmp_path / "out", orig_h=1024, orig_w=1024)
+    _assert_predictions_decodable(tmp_path / "out", orig_h=SAM3_IMAGE_SIZE, orig_w=SAM3_IMAGE_SIZE)
 
 
 # ---------------------------------------------------------------------------
@@ -211,7 +212,7 @@ def test_predict_qlora_no_merge_cuda(
     """
     adapter_dir = _train_and_get_adapter(tmp_path, _QLORA_CONFIG, tiny_coco_dir, monkeypatch)
 
-    img_path = _make_synthetic_image(tmp_path, size=1024)
+    img_path = _make_synthetic_image(tmp_path, size=SAM3_IMAGE_SIZE)
     opts = _make_base_opts(
         tmp_path,
         images=img_path.parent,
@@ -220,7 +221,7 @@ def test_predict_qlora_no_merge_cuda(
         merge_adapter=False,  # --no-merge-adapter: skip merge_and_unload
     )
     run_predict(opts)
-    _assert_predictions_decodable(tmp_path / "out", orig_h=1024, orig_w=1024)
+    _assert_predictions_decodable(tmp_path / "out", orig_h=SAM3_IMAGE_SIZE, orig_w=SAM3_IMAGE_SIZE)
 
 
 # ---------------------------------------------------------------------------
@@ -243,7 +244,7 @@ def test_predict_vram_hint_log(
     if free_bytes <= 12 * 1024**3:
         pytest.skip(reason="free VRAM is not >12 GB; hint would not fire")
 
-    img_path = _make_synthetic_image(tmp_path, size=1024)
+    img_path = _make_synthetic_image(tmp_path, size=SAM3_IMAGE_SIZE)
     opts = _make_base_opts(
         tmp_path,
         images=img_path.parent,
