@@ -388,8 +388,8 @@ def load_qlora(wrapper: Sam3Wrapper, dirpath: str | Path) -> Sam3Wrapper:
     If ``wrapper`` already has a PeftModel (i.e. apply_qlora was called before
     this, as in the normal resume-from-checkpoint / close_out best-restore flow),
     the saved adapter weights are reloaded into the existing 4-bit PeftModel
-    instead of re-quantizing the base. Mirrors ``load_lora``'s already-attached
-    branch exactly.
+    instead of re-quantizing the base. Follows ``load_lora``'s already-attached
+    branch, additionally re-asserting the active adapter via ``set_adapter("default")``.
     """
     if wrapper.peft_model is not None:
         # Resume path: wrapper is already QLoRA-wrapped; reload adapter weights only.

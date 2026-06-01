@@ -162,7 +162,7 @@ Expected: zero hits. **[verify on CPU/CI]**
 
 Run:
 ```bash
-uv run pytest --collect-only -m gpu_t4 -q 2>&1 | tail -3      # expect 27 reclassed (28 after A-task C adds #142 smoke)
+uv run pytest --collect-only -m gpu_t4 -q 2>&1 | tail -3      # expect 27 reclassed here; final gpu_t4 total is 33 after Phases B–C add tests
 uv run pytest --collect-only -m gpu_xl -q 2>&1 | tail -3       # expect 0
 uv run pytest --collect-only -q 2>&1 | tail -3                 # CPU collection: no strict-marker error
 ```
@@ -520,7 +520,7 @@ git add -A && git commit -m "chore(tests): blast-radius sweep — full CPU suite
 - **`tests/conftest.py::_satisfied_tiers() -> set[str]`** — set-returning live capability probe; monkeypatchable for CPU unit tests.
 - **`tests/conftest.py::_has_compatible_gpu()`** — gate is now **CC ≥ 7.5** + kernel-launch probe. Preserved helpers: `_torch_can_launch_kernel`, autouse `_free_cuda_after_gpu_test`. `requires_compatible_gpu` docstring says CC ≥ 7.5.
 - **Skip predicate:** `pytest_collection_modifyitems` runs a test iff its tier ∈ active tiers (forced-tier env/CLI else `_satisfied_tiers()`). **`_TIER_ORDER` is deleted.** Phase E's runner sets the forced tier via the same env/CLI hook Phase A reads — **Phase E must read how A consumes the forced tier** (env var name or `-m` filter) and match it.
-- **Collection counts:** `-m gpu_t4` → 27 (becomes 28 after Phase C's #142 smoke); `-m gpu_bf16` → the new bf16 test(s); `-m gpu_xl` → 0; CPU full suite green.
+- **Collection counts:** `-m gpu_t4` → 27 at end of Phase A (grows to 33 as Phases B–C add the predict-budget-warning, 8 GB-ceiling, predict-fits-8GB, all-scope-LoRA, and qlora-load-attached gpu_t4 tests); `-m gpu_bf16` → the new bf16 test(s); `-m gpu_xl` → 0; CPU full suite green.
 - **Runtime unchanged:** `coerce_dtype_for_capability` in `src/custom_sam_peft/runtime/_runtime.py` is identical to pre-PR.
 
 **CONSUMES:** nothing prior.
@@ -742,7 +742,7 @@ QLORA_8GB_CEIL_GB: float = 8.0
 - [ ] **Step 3: Collection check (CPU).**
 
 Run: `uv run pytest --collect-only -m gpu_t4 -q 2>&1 | tail -3`
-Expected: count is now **28** (27 + this smoke). **[verify on CPU/CI]**
+Expected: this smoke adds 1 gpu_t4 test; the final Phase-C gpu_t4 total is **33** (27 reclassed + 6 net-new across Phases B–C). **[verify on CPU/CI]**
 
 - [ ] **Step 4: Real run.** **[verify on 5070 Ti]** — overfits, `peak <= 8.0 GB`; record the measured peak in the constant comment (resolves the `# tbd: #142` measured-peak line) and the evidence artifact.
 
@@ -873,7 +873,7 @@ git add tests/gpu/test_peft_scope_coverage_gpu.py 2>/dev/null && git commit -m "
 **EXPOSES:**
 
 - **`QLORA_8GB_CEIL_GB = 8.0`** (cited; `# tbd: #142` measured-peak line resolved after the 5070 Ti run) — provenance row in `docs/defaults-provenance.md`.
-- **#142 deliverables:** 8 GB-ceiling QLoRA train smoke (`gpu_t4`, collection count now **28**) + predict-fits-8GB test, both asserting against `QLORA_8GB_CEIL_GB` / `PREDICT_8GB_BUDGET_GB`.
+- **#142 deliverables:** 8 GB-ceiling QLoRA train smoke (`gpu_t4`, total gpu_t4 collection count now **33**) + predict-fits-8GB test, both asserting against `QLORA_8GB_CEIL_GB` / `PREDICT_8GB_BUDGET_GB`.
 - **`configs/examples/min_gpu_qlora.yaml`** carries CC 7.5 / 8 GB rationale (no Pascal/sm_61).
 - **#195 status:** step budgets confirmed-or-retuned vs 5070 Ti (recorded in evidence artifact).
 - **#83 branch decision** + measured all-scope LoRA peak (feeds Phase E: either a landed `gpu_t4` smoke, or a number for the gpu_xl issue body).
@@ -1331,7 +1331,7 @@ Run from the worktree root. ALL must be green before the PR is marked ready:
 - [ ] `shellcheck scripts/run_gpu_tests.sh scripts/check_gpu_evidence.sh` — clean
 - [ ] CI's exact `markdownlint-cli2` (discover from `.github/workflows/`) — clean on every touched `.md` (this plan, the spec, the policy doc, defaults-provenance, the gtx1080 banner)
 - [ ] `grep -rn "gpu_local\|_TIER_ORDER\|gpu-pascal\|cu118" src/ tests/ scripts/ pyproject.toml .github/` — zero live hits (dated history excepted)
-- [ ] Collection counts: `-m gpu_t4` → 28; `-m gpu_bf16` → new bf16 test(s); `-m gpu_xl` → 0
+- [ ] Collection counts: `-m gpu_t4` → 33 (27 reclassed + 6 net-new across Phases B–C); `-m gpu_bf16` → new bf16 test(s); `-m gpu_xl` → 0
 - [ ] 5070 Ti evidence artifact committed (light subset run) with: #142 peak, predict peak, #195 step confirmation, #83 measured all-scope peak + branch
 - [ ] PR body separates "5070 Ti-evidenced (landed)" from "Colab-confirmation-pending (#139, #193)"
 - [ ] gpu_xl issue filed (xrefs #125)
