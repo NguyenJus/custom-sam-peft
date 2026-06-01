@@ -931,6 +931,42 @@ def test_generate_config_happy_path_with_limit_step(tmp_path, monkeypatch) -> No
 
 
 # ---------------------------------------------------------------------------
+# Issue #216: render emits val-aware lr_schedule (plateau vs cosine)
+# ---------------------------------------------------------------------------
+
+
+def test_render_with_val_emits_plateau(tmp_path) -> None:
+    answers = {
+        "run": {"name": "r"},
+        "data": {
+            "format": "coco",
+            "train": {"annotations": "t.json", "images": "t/"},
+            "val_split": {"fraction": 0.1},
+            "augmentations": {"preset": "natural", "intensity": "medium"},
+        },
+        "peft": {"method": "lora"},
+        "train": {"epochs": 1, "loss": {"preset": "natural", "class_imbalance": "balanced"}},
+    }
+    rendered = sw.render(answers, run_mode="train")
+    assert "lr_schedule: plateau" in rendered
+
+
+def test_render_without_val_emits_cosine(tmp_path) -> None:
+    answers = {
+        "run": {"name": "r"},
+        "data": {
+            "format": "coco",
+            "train": {"annotations": "t.json", "images": "t/"},
+            "augmentations": {"preset": "natural", "intensity": "medium"},
+        },
+        "peft": {"method": "lora"},
+        "train": {"epochs": 1, "loss": {"preset": "natural", "class_imbalance": "balanced"}},
+    }
+    rendered = sw.render(answers, run_mode="train")
+    assert "lr_schedule: cosine" in rendered
+
+
+# ---------------------------------------------------------------------------
 # Task 12 (wizard): opt-in calibrate offer after emit (consent-gated, CUDA-only)
 # ---------------------------------------------------------------------------
 
