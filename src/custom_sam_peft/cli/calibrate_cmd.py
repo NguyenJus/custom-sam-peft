@@ -25,6 +25,7 @@ import typer
 
 from custom_sam_peft import __version__ as _PKG_VERSION
 from custom_sam_peft.config.schema import ModelConfig, PEFTConfig
+from custom_sam_peft.oom import is_cuda_oom
 from custom_sam_peft.presets import (
     _CUDA_HINT,
     A_PER_CLASS,
@@ -100,35 +101,6 @@ def _atomic_write_json(path: Path, payload: dict[str, Any]) -> None:
     except OSError:
         Path(tmp).unlink(missing_ok=True)
         raise
-
-
-# A CUDA out-of-memory condition does NOT always raise torch.cuda.OutOfMemoryError.
-# On some driver/arch/runtime combinations (observed: WSL2 + sm_120 + CUDA 13) an
-# exhausted allocation surfaces as a generic RuntimeError carrying a lower-level
-# driver/library status string instead — e.g. "CUDA driver error: device not ready"
-# or "CUBLAS_STATUS_ALLOC_FAILED". The calibration climb must recognize these as
-# "does not fit" (stop climbing / shrink) rather than abort the whole probe. (#208)
-_OOM_SIGNATURES: tuple[str, ...] = (
-    "out of memory",
-    "device not ready",
-    "cublas_status_alloc_failed",
-    "cudnn_status_alloc_failed",
-)
-
-
-def _is_cuda_oom(exc: BaseException) -> bool:
-    """True iff *exc* is a CUDA out-of-memory condition.
-
-    Matches the clean ``torch.cuda.OutOfMemoryError`` AND the dirty-OOM
-    ``RuntimeError`` variants that some driver/arch/runtime stacks raise instead
-    (see ``_OOM_SIGNATURES``). Pure function — unit-testable without a GPU.
-    """
-    if isinstance(exc, torch.cuda.OutOfMemoryError):
-        return True
-    if isinstance(exc, RuntimeError):
-        msg = str(exc).lower()
-        return any(sig in msg for sig in _OOM_SIGNATURES)
-    return False
 
 
 def _run_probe(*, method: str, r: int, k_eff: int, batch: int) -> int:
@@ -232,7 +204,7 @@ def _derive_split(method: str, r: int, batch: int) -> tuple[int, int]:
     try:
         peak_k1 = _run_probe(method="qlora", r=4, k_eff=1, batch=1)
     except RuntimeError as exc:
-        if not _is_cuda_oom(exc):
+        if not is_cuda_oom(exc):
             raise
         raise _GpuTooSmall("K=1 probe OOMed — GPU too small") from exc
 
@@ -248,7 +220,7 @@ def _derive_split(method: str, r: int, batch: int) -> tuple[int, int]:
         peak_k4 = _run_probe(method="qlora", r=4, k_eff=4, batch=1)
         a_per_class = int((peak_k4 - peak_k1) / (4 - 1))
     except RuntimeError as exc:
-        if not _is_cuda_oom(exc):
+        if not is_cuda_oom(exc):
             raise
         typer.echo(
             "WARNING: K=4 probe OOMed; falling back to analytic A_per_class seed",
@@ -394,7 +366,7 @@ def _confirm_and_climb(
         try:
             peak = _run_probe(method=m, r=rr, k_eff=kk, batch=b)
         except RuntimeError as exc:
-            if not _is_cuda_oom(exc):
+            if not is_cuda_oom(exc):
                 raise
             return False, 0
         return peak <= budget, peak

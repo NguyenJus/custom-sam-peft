@@ -26,7 +26,7 @@ from custom_sam_peft.config.schema import TrainConfig
 from custom_sam_peft.data.base import Instance, TextPrompts
 from custom_sam_peft.models.losses import total_loss
 from custom_sam_peft.models.sam3 import MULTIPLEX_CAP, Sam3Wrapper
-from custom_sam_peft.oom import OomDecision, OomLadder, _halve_microbatch
+from custom_sam_peft.oom import OomDecision, OomLadder, _halve_microbatch, is_cuda_oom
 from custom_sam_peft.peft_adapters import PEFTMethod, make_peft_method
 from custom_sam_peft.runtime import Runtime, to_device
 from custom_sam_peft.runtime._runtime import coerce_dtype_for_capability
@@ -158,7 +158,11 @@ def _train_step_with_oom_ladder(
                 (loss / n_micro).backward()
                 last_loss = loss.detach()
             return last_loss if last_loss is not None else torch.tensor(0.0)
-        except torch.cuda.OutOfMemoryError as oom_err:
+        except RuntimeError as oom_err:
+            # OOM does not always raise torch.cuda.OutOfMemoryError on this card
+            # (see oom.is_cuda_oom); genuine non-OOM errors re-propagate. (#208)
+            if not is_cuda_oom(oom_err):
+                raise
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
             if state.micro_batch_size > 1:

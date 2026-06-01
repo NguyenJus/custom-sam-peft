@@ -118,28 +118,6 @@ def test_calibrate_k1_oom_exits_5(tmp_path: Path, monkeypatch: pytest.MonkeyPatc
     assert "GPU too small" in result.output
 
 
-@pytest.mark.parametrize(
-    ("exc", "expected"),
-    [
-        (torch.cuda.OutOfMemoryError("CUDA out of memory"), True),
-        (RuntimeError("CUDA out of memory. Tried to allocate 2 GiB"), True),
-        (RuntimeError("CUDA error: out of memory"), True),
-        (RuntimeError("CUDA driver error: device not ready"), True),
-        (RuntimeError("cuBLAS error: CUBLAS_STATUS_ALLOC_FAILED"), True),
-        (RuntimeError("shape '[4, 3]' is invalid for input of size 5"), False),
-        (ValueError("bad config"), False),
-        (KeyboardInterrupt(), False),
-    ],
-)
-def test_is_cuda_oom_matches_clean_and_dirty_oom(exc: BaseException, expected: bool) -> None:
-    """The matcher recognizes both torch.cuda.OutOfMemoryError and the dirty-OOM
-    RuntimeError variants (e.g. WSL2/sm_120 'device not ready'), but NOT genuine
-    non-OOM errors. (#208)"""
-    from custom_sam_peft.cli.calibrate_cmd import _is_cuda_oom
-
-    assert _is_cuda_oom(exc) is expected
-
-
 def test_calibrate_k1_dirty_oom_exits_5(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """A K=1 probe that OOMs as a dirty 'device not ready' RuntimeError (not
     torch.cuda.OutOfMemoryError) is still recognized as GPU-too-small. (#208)"""

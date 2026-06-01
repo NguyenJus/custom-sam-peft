@@ -22,7 +22,38 @@ import torch
 
 _LOG = logging.getLogger(__name__)
 
-__all__ = ["OomDecision", "OomEvent", "OomLadder"]
+__all__ = ["OomDecision", "OomEvent", "OomLadder", "is_cuda_oom"]
+
+# A CUDA out-of-memory condition does NOT always raise torch.cuda.OutOfMemoryError.
+# On some driver/arch/runtime combinations (observed: WSL2 + sm_120 + CUDA 13) an
+# exhausted allocation surfaces as a generic RuntimeError carrying a lower-level
+# driver/library status string instead — e.g. "CUDA driver error: device not ready"
+# or "CUBLAS_STATUS_ALLOC_FAILED". Every site that recovers from OOM (the ladder
+# retries, the calibrate climb, GPU-too-small reporting) must recognize these too,
+# otherwise the dirty-OOM escapes the guard as a fatal error. (#208)
+_OOM_SIGNATURES: tuple[str, ...] = (
+    "out of memory",
+    "device not ready",
+    "cublas_status_alloc_failed",
+    "cudnn_status_alloc_failed",
+)
+
+
+def is_cuda_oom(exc: BaseException) -> bool:
+    """True iff *exc* is a CUDA out-of-memory condition.
+
+    Matches the clean ``torch.cuda.OutOfMemoryError`` AND the dirty-OOM
+    ``RuntimeError`` variants that some driver/arch/runtime stacks raise instead
+    (see ``_OOM_SIGNATURES``). Genuine non-OOM ``RuntimeError``s (shape errors,
+    real bugs) return False so they keep propagating. Pure function —
+    unit-testable without a GPU.
+    """
+    if isinstance(exc, torch.cuda.OutOfMemoryError):
+        return True
+    if isinstance(exc, RuntimeError):
+        msg = str(exc).lower()
+        return any(sig in msg for sig in _OOM_SIGNATURES)
+    return False
 
 
 @dataclass(frozen=True)
