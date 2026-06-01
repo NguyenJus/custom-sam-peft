@@ -608,6 +608,19 @@ class TrainHyperparams(_Strict):
         parse_duration_to_seconds(v)  # type: ignore[arg-type]  # runtime branches on str|int|bool
         return v
 
+    host_ram_floor_gb: float = Field(
+        default=2.0,
+        # tbd: 2.0 GB host-RAM floor is a heuristic — headroom for the OS plus
+        # the full-state checkpoint flush's own transient host allocation to
+        # complete before the OOM killer fires; tune empirically.
+        description=(
+            "Available host-RAM floor (GB). When psutil.virtual_memory().available "
+            "drops below this value at any training step, a full resumable checkpoint "
+            "is flushed and training stops gracefully (exit 0). A value <= 0 disables "
+            "the guard. On by default (2.0 GB) — host-RAM OOM triggers SIGKILL which "
+            "cannot be caught in Python, so we must stop proactively."
+        ),
+    )
     lr_decay_on_plateau: LrDecayOnPlateauConfig = Field(default_factory=LrDecayOnPlateauConfig)
     early_stop: EarlyStopConfig = Field(default_factory=EarlyStopConfig)
 

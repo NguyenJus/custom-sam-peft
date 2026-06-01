@@ -24,6 +24,7 @@ dependencies = [
   "scipy>=1.10",
   "einops>=0.7",
   "huggingface-hub>=0.30",
+  "psutil>=5.9",
   "sam3 @ git+https://github.com/facebookresearch/sam3@2814fa619404a722d03e9a012e083e4f293a4e53",
 ]
 
@@ -119,6 +120,7 @@ module = [
   "sam3.*",
   "peft.*",
   "google.colab",
+  "psutil",
 ]
 ignore_missing_imports = true
 

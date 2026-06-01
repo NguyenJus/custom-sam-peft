@@ -20,7 +20,7 @@ from custom_sam_peft.config._duration import format_seconds, parse_duration_to_s
 from custom_sam_peft.config.schema import LRSchedule, Optimizer, TrainConfig
 from custom_sam_peft.data.base import Dataset, TextPrompts
 from custom_sam_peft.data.collate import collate_batch
-from custom_sam_peft.eval._artifacts import EvalArtifacts, TimeLimitStop
+from custom_sam_peft.eval._artifacts import EvalArtifacts, HostRamStop, TimeLimitStop
 from custom_sam_peft.eval.evaluator import Evaluator
 from custom_sam_peft.models.sam3 import MULTIPLEX_CAP, Sam3Wrapper
 from custom_sam_peft.peft_adapters import PEFTMethod, make_peft_method
@@ -36,7 +36,13 @@ from custom_sam_peft.train.checkpoint import (
 )
 from custom_sam_peft.train.close_out import close_out
 from custom_sam_peft.train.ladder import LadderEvents, LadderState, LrCut, StopDecision
-from custom_sam_peft.train.loop import OomState, _EarlyStop, _TimeLimitReached, run_epoch
+from custom_sam_peft.train.loop import (
+    OomState,
+    _EarlyStop,
+    _HostRamLow,
+    _TimeLimitReached,
+    run_epoch,
+)
 from custom_sam_peft.train.visualize import render_mask_panel
 
 _LOG = logging.getLogger(__name__)
@@ -282,6 +288,7 @@ class Trainer:
         deadline: float | None = None,
         should_stop_early: Any = None,
         effective_schedule: str | None = None,
+        host_ram_floor_bytes: int | None = None,
     ) -> tuple[int, int]:
         """Run one training epoch; returns (global_step, nan_streak)."""
         return run_epoch(
@@ -309,6 +316,7 @@ class Trainer:
                 "best_metric_value": self._best_metric_value,
                 "scheduler_kind": self._scheduler_kind,
             },
+            host_ram_floor_bytes=host_ram_floor_bytes,
         )
 
     def _cap_eval_batch_size(self, bs: int, cap: int) -> int:
@@ -455,6 +463,49 @@ class Trainer:
             final_metrics=None,
             oom_events=tuple(oom_state.pending_oom_events) if oom_state is not None else (),
             time_limit_stop=time_limit_stop,
+        )
+
+    def _host_ram_artifacts(
+        self,
+        run_dir: Path,
+        stop: Any,  # _HostRamLow
+        oom_state: OomState | None,
+    ) -> EvalArtifacts:
+        """Build the EvalArtifacts for a host-RAM-floor stop.
+
+        Mirrors _time_limited_artifacts but does not depend on budget_seconds
+        (there is no wall-clock budget here; the stop is driven by available RAM).
+        """
+        checkpoint_dir = paths.checkpoint_path(run_dir, step=stop.step).parent / f"step_{stop.step}"
+        best_dir: Path | None = None
+        best_map: float | None = None
+        best_candidate = run_dir / "best"
+        best_json = best_candidate / "best.json"
+        if best_candidate.is_dir() and best_json.is_file():
+            try:
+                data = json.loads(best_json.read_text())
+                best_dir = best_candidate
+                best_map = float(data["value"])
+            except Exception:
+                best_dir = None
+                best_map = None
+        host_ram_stop = HostRamStop(
+            stop_step=stop.step,
+            stop_epoch=stop.epoch,
+            total_epochs=self.cfg.train.epochs,
+            checkpoint_dir=checkpoint_dir,
+            available_gb=stop.available_gb,
+            floor_gb=self.cfg.train.host_ram_floor_gb,
+            best_dir=best_dir,
+            best_map=best_map,
+        )
+        return EvalArtifacts(
+            checkpoint_path=checkpoint_dir / "adapter",
+            peft_method=self.cfg.peft.method,
+            run_dir=run_dir,
+            final_metrics=None,
+            oom_events=tuple(oom_state.pending_oom_events) if oom_state is not None else (),
+            host_ram_stop=host_ram_stop,
         )
 
     def _maybe_checkpoint(
@@ -696,7 +747,16 @@ class Trainer:
                 budget_seconds,
             )
 
+        host_ram_floor_bytes: int | None = None
+        if cfg.train.host_ram_floor_gb > 0:
+            host_ram_floor_bytes = int(cfg.train.host_ram_floor_gb * 1e9)
+            _LOG.info(
+                "host-RAM floor: %.2f GB — stops gracefully if available RAM drops below this",
+                cfg.train.host_ram_floor_gb,
+            )
+
         stop: _TimeLimitReached | None = None
+        ram_stop: _HostRamLow | None = None
         _early: _EarlyStop | None = None  # set on early stop; Phase 2 wires into close_out
         close_out_result: EvalArtifacts | None = None
         # Mutable single-element list so the closure below sees the live epoch
@@ -732,16 +792,20 @@ class Trainer:
                         deadline=deadline,
                         should_stop_early=should_stop_early,
                         effective_schedule=effective_schedule,
+                        host_ram_floor_bytes=host_ram_floor_bytes,
                     )
                     P.advance_outer()
             except _TimeLimitReached as e:
                 stop = e
                 global_step = e.step  # the flushed checkpoint's step
+            except _HostRamLow as e:
+                ram_stop = e
+                global_step = e.step  # the flushed checkpoint's step
             except _EarlyStop as e:
                 _early = e
                 global_step = e.step
 
-            if stop is None:
+            if stop is None and ram_stop is None:
                 final_epoch = _early.epoch if _early is not None else cfg.train.epochs - 1
                 _cuts = tuple(self._ladder_cuts)
                 _stop_reason = _early.reason if _early is not None else None
@@ -765,6 +829,20 @@ class Trainer:
 
         if stop is not None:
             return self._time_limited_artifacts(run_dir, stop, budget_seconds, oom_state)
+
+        if ram_stop is not None:
+            _LOG.warning(
+                "host-RAM floor reached at step %d (epoch %d): %.2f GB available (floor: %.2f GB). "
+                "Checkpoint saved to %s. "
+                "To resume: reduce data.num_workers and/or batch_size, or raise "
+                "train.host_ram_floor_gb, then resume from the checkpoint.",
+                ram_stop.step,
+                ram_stop.epoch,
+                ram_stop.available_gb,
+                self.cfg.train.host_ram_floor_gb,
+                paths.checkpoint_path(run_dir, step=ram_stop.step).parent / f"step_{ram_stop.step}",
+            )
+            return self._host_ram_artifacts(run_dir, ram_stop, oom_state)
 
         if close_out_result is None:  # set whenever stop is None; guard for the type checker
             raise RuntimeError("close_out did not run despite normal completion")

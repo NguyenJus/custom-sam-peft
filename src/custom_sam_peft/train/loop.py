@@ -16,6 +16,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, cast
 
+import psutil
 import torch
 from torch import Tensor
 
@@ -59,6 +60,28 @@ class _TimeLimitReached(Exception):
         super().__init__(f"time limit reached at step {step} (epoch {epoch})")
         self.step = step
         self.epoch = epoch
+
+
+class _HostRamLow(Exception):
+    """Internal signal: available host RAM dropped below the configured floor.
+
+    Graceful (exit 0), like _TimeLimitReached. The key distinction from
+    _TimeLimitReached is that host-RAM exhaustion is NOT catchable in Python
+    (the Linux OOM killer sends SIGKILL; no except/finally/atexit runs), so we
+    must stop *before* the OOM kill happens. This exception is raised when
+    psutil.virtual_memory().available drops below host_ram_floor_bytes at any
+    training step. A full resumable checkpoint is flushed before raising.
+
+    Never propagates past Trainer.fit().
+    """
+
+    def __init__(self, step: int, epoch: int, available_gb: float) -> None:
+        super().__init__(
+            f"host RAM low at step {step} (epoch {epoch}): {available_gb:.2f} GB available"
+        )
+        self.step = step
+        self.epoch = epoch
+        self.available_gb = available_gb
 
 
 class _EarlyStop(Exception):
@@ -503,6 +526,7 @@ def run_epoch(
     should_stop_early: Callable[[], _EarlyStop | None] | None = None,
     effective_schedule: str | None = None,
     flush_extra: Callable[[], dict[str, Any]] | None = None,
+    host_ram_floor_bytes: int | None = None,
 ) -> tuple[int, int]:
     """Drive one epoch. `on_checkpoint(global_step, epoch, nan_streak)`
     is called at every `save_every` boundary; the trainer wires it to the
@@ -517,7 +541,37 @@ def run_epoch(
     If ``should_stop_early`` is given, it is called right after each
     ``on_eval`` call. When it returns a non-None ``_EarlyStop`` that exception
     is raised immediately, unwinding the epoch loop. Spec §4.2.
+
+    If ``host_ram_floor_bytes`` is given (not None), available host RAM is
+    checked after each step via psutil.virtual_memory().available. When it
+    drops below the floor, a full-state checkpoint is flushed and
+    ``_HostRamLow`` is raised. This is the proactive guard against the Linux
+    OOM killer, which sends SIGKILL and cannot be caught in Python.
     """
+
+    def _flush_full_state() -> None:
+        """Flush a full resumable checkpoint at the current global_step.
+
+        Shared by the deadline (time-limit) path and the host-RAM-floor path
+        so the save logic is not duplicated.
+        """
+        state_dir = paths.checkpoint_path(run_dir, step=global_step).parent / f"step_{global_step}"
+        # Read live values at flush time, not the epoch-start snapshot.
+        extra = flush_extra() if flush_extra is not None else {}
+        save_full_state(
+            state_dir=state_dir,
+            wrapper=model,
+            optimizer=optimizer,
+            scheduler=scheduler,
+            global_step=global_step,
+            epoch=epoch,
+            nan_streak=nan_streak,
+            cfg=cfg,
+            ladder=extra.get("ladder"),
+            best_metric_value=extra.get("best_metric_value"),
+            scheduler_kind=extra.get("scheduler_kind"),
+        )
+
     _peft_method: PEFTMethod = (
         peft_method if peft_method is not None else make_peft_method(cfg.peft.method)
     )
@@ -562,23 +616,11 @@ def run_epoch(
                 if stop is not None:
                     raise stop
         if deadline is not None and time.monotonic() >= deadline:
-            state_dir = (
-                paths.checkpoint_path(run_dir, step=global_step).parent / f"step_{global_step}"
-            )
-            # Read live values at flush time, not the epoch-start snapshot.
-            extra = flush_extra() if flush_extra is not None else {}
-            save_full_state(
-                state_dir=state_dir,
-                wrapper=model,
-                optimizer=optimizer,
-                scheduler=scheduler,
-                global_step=global_step,
-                epoch=epoch,
-                nan_streak=nan_streak,
-                cfg=cfg,
-                ladder=extra.get("ladder"),
-                best_metric_value=extra.get("best_metric_value"),
-                scheduler_kind=extra.get("scheduler_kind"),
-            )
+            _flush_full_state()
             raise _TimeLimitReached(global_step, epoch)
+        if host_ram_floor_bytes is not None:
+            available = psutil.virtual_memory().available
+            if available < host_ram_floor_bytes:
+                _flush_full_state()
+                raise _HostRamLow(global_step, epoch, available / 1e9)
     return global_step, nan_streak
