@@ -563,6 +563,8 @@ def run_predict(opts: PredictOptions) -> PredictReport:
         "checkpoint": str(opts.checkpoint) if opts.checkpoint is not None else None,
         "adapter_kind": adapter_kind_str if opts.checkpoint is not None else None,
         "merge_adapter": opts.merge_adapter,
+        "channels": rcfg.channels,
+        "channel_semantics": rcfg.channel_semantics,
         "prompts": prompts,
         "score_threshold": opts.score_threshold,
         "top_k": opts.top_k,
