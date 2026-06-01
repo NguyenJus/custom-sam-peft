@@ -56,7 +56,7 @@ train:
     classes_per_forward: 16
   optimizer: auto
   learning_rate: 1.0e-4
-  lr_schedule: cosine
+  lr_schedule: $lr_schedule
   warmup_steps: 100
   max_grad_norm: 1.0
   # eval_every and save_every default to one-per-epoch (steps_per_epoch) when omitted.

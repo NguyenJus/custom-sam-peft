@@ -247,6 +247,10 @@ def render(answers: dict[str, Any], *, run_mode: RunMode) -> str:
     loss = answers.get("train", {}).get("loss", {})
     epochs = answers.get("train", {}).get("epochs", 1)  # eval defaults to 1
     preset = aug.get("preset", "natural")
+    hf = data.get("hf", {})
+    hf_explicit = data.get("format") == "hf" and hf.get("split_val") is not None
+    has_val = data.get("val") is not None or data.get("val_split") is not None or hf_explicit
+    lr_schedule = "plateau" if has_val else "cosine"
     raw = (files("custom_sam_peft.cli.templates") / UNIFIED_TEMPLATE).read_text()
     return string.Template(raw).substitute(
         run_name=answers.get("run", {}).get("name", "my-run"),
@@ -256,6 +260,7 @@ def render(answers: dict[str, Any], *, run_mode: RunMode) -> str:
         loss_preset=loss.get("preset", "natural"),
         aug_intensity=aug.get("intensity", "medium"),
         class_imbalance=loss.get("class_imbalance", "balanced"),
+        lr_schedule=lr_schedule,
         overrides_block=_aug_overrides_block(),
         loss_overrides_block=_build_loss_overrides_block(preset),
         model_block=_model_block(answers),
