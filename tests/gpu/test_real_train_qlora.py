@@ -31,6 +31,9 @@ pytestmark = [
 ]
 
 CONFIG_PATH = Path(__file__).resolve().parents[2] / "configs" / "examples" / "gpu_smoke_qlora.yaml"
+# Budgets confirmed on RTX 5070 Ti (sm_120) 2026-05-31, 50-step overfit on
+# tiny_coco: loss 0.6221 -> 0.3893 (ratio 0.626 <= 0.75 ceil), peak 3.13 GB
+# (<= 10 GB ceil), ~38 s wall. Comfortable headroom -> no retune (#195).
 LOSS_RATIO_CEIL = 0.75
 VRAM_CEIL_GB = 10.0
 
