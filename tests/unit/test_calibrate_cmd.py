@@ -118,6 +118,64 @@ def test_calibrate_k1_oom_exits_5(tmp_path: Path, monkeypatch: pytest.MonkeyPatc
     assert "GPU too small" in result.output
 
 
+@pytest.mark.parametrize(
+    ("exc", "expected"),
+    [
+        (torch.cuda.OutOfMemoryError("CUDA out of memory"), True),
+        (RuntimeError("CUDA out of memory. Tried to allocate 2 GiB"), True),
+        (RuntimeError("CUDA error: out of memory"), True),
+        (RuntimeError("CUDA driver error: device not ready"), True),
+        (RuntimeError("cuBLAS error: CUBLAS_STATUS_ALLOC_FAILED"), True),
+        (RuntimeError("shape '[4, 3]' is invalid for input of size 5"), False),
+        (ValueError("bad config"), False),
+        (KeyboardInterrupt(), False),
+    ],
+)
+def test_is_cuda_oom_matches_clean_and_dirty_oom(exc: BaseException, expected: bool) -> None:
+    """The matcher recognizes both torch.cuda.OutOfMemoryError and the dirty-OOM
+    RuntimeError variants (e.g. WSL2/sm_120 'device not ready'), but NOT genuine
+    non-OOM errors. (#208)"""
+    from custom_sam_peft.cli.calibrate_cmd import _is_cuda_oom
+
+    assert _is_cuda_oom(exc) is expected
+
+
+def test_calibrate_k1_dirty_oom_exits_5(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A K=1 probe that OOMs as a dirty 'device not ready' RuntimeError (not
+    torch.cuda.OutOfMemoryError) is still recognized as GPU-too-small. (#208)"""
+    from custom_sam_peft.cli import calibrate_cmd
+
+    _patch_probe(monkeypatch, tmp_path=tmp_path)
+    monkeypatch.setattr(
+        calibrate_cmd,
+        "_run_probe",
+        lambda **kw: (_ for _ in ()).throw(RuntimeError("CUDA driver error: device not ready")),
+    )
+    monkeypatch.chdir(tmp_path)
+    result = runner.invoke(app, ["calibrate"])
+    assert result.exit_code == 5
+    assert "GPU too small" in result.output
+
+
+def test_calibrate_non_oom_runtimeerror_not_swallowed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A genuine (non-OOM) RuntimeError in a probe must NOT be misread as
+    GPU-too-small (exit 5); it surfaces as a probe failure (exit 4). (#208)"""
+    from custom_sam_peft.cli import calibrate_cmd
+
+    _patch_probe(monkeypatch, tmp_path=tmp_path)
+    monkeypatch.setattr(
+        calibrate_cmd,
+        "_run_probe",
+        lambda **kw: (_ for _ in ()).throw(RuntimeError("einsum dimension mismatch")),
+    )
+    monkeypatch.chdir(tmp_path)
+    result = runner.invoke(app, ["calibrate"])
+    assert result.exit_code == 4
+    assert "GPU too small" not in result.output
+
+
 def test_calibrate_checkpoint_missing_exits_3(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
