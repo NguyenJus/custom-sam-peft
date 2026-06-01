@@ -189,6 +189,7 @@ def test_plain_line_snapshot(caplog: pytest.LogCaptureFixture) -> None:
         log_every=50,
     )
     handle._epoch = 2  # epoch 3 of 10 (0-indexed internally)
+    handle._cumulative_step_offset = 2 * 4530  # 9060 — two full epochs already accumulated
     handle._step = 1240
     handle._postfix = {"loss": 0.812, "it_s": 2.3}
     # eta = elapsed * (45300 - 10300) / 10300 = elapsed * 35000 / 10300
