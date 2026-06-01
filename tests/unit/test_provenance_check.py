@@ -3,10 +3,17 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from custom_sam_peft._provenance_check import (
     ProvenanceViolation,
     Section,
+    check_prose_section,
+    classify_section,
     discover_sections,
+    extract_default_surface,
+    parse_prose_rows,
+    resolve_section_path,
 )
 
 
@@ -29,12 +36,6 @@ def test_discover_sections_splits_on_h2_headers() -> None:
     assert headers == ["A", "B"]
     assert sections[0].body.strip() == "body a"
     assert isinstance(sections[1], Section)
-
-
-# append to tests/unit/test_provenance_check.py
-import pytest
-
-from custom_sam_peft._provenance_check import classify_section, resolve_section_path
 
 
 def _make_repo(tmp_path: Path) -> Path:
@@ -94,11 +95,8 @@ def test_classify_missing_file_is_hard_fail(tmp_path: Path) -> None:
         classify_section(Section(header="config/does_not_exist.py", body=""), repo)
 
 
-from custom_sam_peft._provenance_check import extract_default_surface
-
-
 def test_surface_collects_pydantic_dataclass_and_module_constants(tmp_path: Path) -> None:
-    src = '''
+    src = """
 from pydantic import BaseModel, Field
 from dataclasses import dataclass
 
@@ -120,7 +118,7 @@ class DC:
 def helper() -> int:
     magic = 42  # in-function literal, NOT surface
     return magic
-'''
+"""
     f = tmp_path / "m.py"
     f.write_text(src)
     surface = extract_default_surface(f)
@@ -133,9 +131,6 @@ def helper() -> int:
     # In-function literal is excluded.
     assert not any("magic" in s for s in surface)
     assert "helper" not in surface
-
-
-from custom_sam_peft._provenance_check import parse_prose_rows
 
 
 def test_parse_prose_rows_strips_section_prefix_and_flags_literals() -> None:
@@ -154,3 +149,66 @@ def test_parse_prose_rows_strips_section_prefix_and_flags_literals() -> None:
     # The parenthetical-suffix row is recognized as an in-function literal.
     lit = next(r for r in rows if r.is_in_function_literal)
     assert lit.symbol == "_optimizer_bytes"
+
+
+def _prose_doc_body(rows: str) -> str:
+    return (
+        "| Location | Value | Tag | Full reference | Verifying quote | Notes |\n"
+        "| --- | --- | --- | --- | --- | --- |\n" + rows
+    )
+
+
+_SCHEMA_SRC = (
+    "from pydantic import BaseModel, Field\n\n\n"
+    "class C(BaseModel):\n"
+    "    a: int = Field(default=3)\n"
+)
+
+
+def test_prose_documented_default_passes(tmp_path: Path) -> None:
+    f = tmp_path / "schema.py"
+    f.write_text(_SCHEMA_SRC)
+    body = _prose_doc_body("| `schema.py:C.a` | `3` | `# cite: x` | — | — | n |\n")
+    section = Section(header="schema.py", body=body)
+    assert check_prose_section(section, f) == []
+
+
+def test_prose_undocumented_default_fails_codedoc(tmp_path: Path) -> None:
+    f = tmp_path / "schema.py"
+    f.write_text(_SCHEMA_SRC)
+    body = _prose_doc_body("")  # no rows at all
+    section = Section(header="schema.py", body=body)
+    violations = check_prose_section(section, f)
+    assert len(violations) == 1
+    msg = str(violations[0])
+    assert "schema.py:C.a" in msg
+    assert "undocumented default" in msg
+    assert "add a row" in msg
+
+
+def test_prose_orphaned_row_fails_doccode(tmp_path: Path) -> None:
+    f = tmp_path / "schema.py"
+    f.write_text(_SCHEMA_SRC)
+    body = _prose_doc_body(
+        "| `schema.py:C.a` | `3` | `# cite: x` | — | — | n |\n"
+        "| `schema.py:C.gone` | `9` | `# cite: y` | — | — | n |\n"
+    )
+    section = Section(header="schema.py", body=body)
+    violations = check_prose_section(section, f)
+    assert len(violations) == 1
+    msg = str(violations[0])
+    assert "schema.py:C.gone" in msg
+    assert "orphaned" in msg or "stale" in msg
+    assert "remove or update" in msg
+
+
+def test_prose_in_function_literal_row_exempt_from_doccode(tmp_path: Path) -> None:
+    # A doc row of `symbol (<literal>)` form whose base symbol is absent => no failure.
+    f = tmp_path / "presets.py"
+    f.write_text("MODEL_PARAMS = 1\n")
+    body = _prose_doc_body(
+        "| `presets.py:MODEL_PARAMS` | `1` | `# tbd: x` | — | — | n |\n"
+        "| `presets.py:_optimizer_bytes (*4 literal)` | `4x` | `# cite: y` | — | — | n |\n"
+    )
+    section = Section(header="presets.py", body=body)
+    assert check_prose_section(section, f) == []

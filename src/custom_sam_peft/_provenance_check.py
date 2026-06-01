@@ -16,9 +16,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
-TABLE_MODULES: frozenset[str] = frozenset(
-    {"data/aug_presets.py", "models/losses/presets.py"}
-)
+TABLE_MODULES: frozenset[str] = frozenset({"data/aug_presets.py", "models/losses/presets.py"})
 PROSE_NARRATIVE_HEADERS: frozenset[str] = frozenset(
     {"Verification Standard", "Reference Training Profile"}
 )
@@ -70,8 +68,7 @@ def resolve_section_path(header: str, repo_root: Path) -> Path | None:
         candidate = repo_root / "src/custom_sam_peft" / text
     if not candidate.is_file():
         raise FileNotFoundError(
-            f"doc section names a path that does not exist: {header!r} "
-            f"(resolved to {candidate})"
+            f"doc section names a path that does not exist: {header!r} (resolved to {candidate})"
         )
     return candidate
 
@@ -148,9 +145,12 @@ def extract_default_surface(file_path: Path) -> set[str]:
             for target in node.targets:
                 if isinstance(target, ast.Name):
                     surface.add(target.id)
-        elif isinstance(node, ast.AnnAssign):
-            if isinstance(node.target, ast.Name) and node.value is not None:
-                surface.add(node.target.id)
+        elif (
+            isinstance(node, ast.AnnAssign)
+            and isinstance(node.target, ast.Name)
+            and node.value is not None
+        ):
+            surface.add(node.target.id)
 
     # Class-body field defaults (pydantic + dataclass): ``name: T = <default>``.
     for node in tree.body:
@@ -165,6 +165,47 @@ def extract_default_surface(file_path: Path) -> set[str]:
                     if isinstance(target, ast.Name):
                         surface.add(f"{node.name}.{target.id}")
     return surface
+
+
+def check_prose_section(section: Section, file_path: Path) -> list[ProvenanceViolation]:
+    """Assertion 1: symbol<->row bijection over the file's default surface.
+
+    code->doc: every surface symbol must have a doc row.
+    doc->code: every doc row naming a *surface* symbol must still resolve;
+               rows flagged as in-function literals are exempt in this direction.
+    """
+    file_disp = _unescape_md(section.header).strip()
+    surface = extract_default_surface(file_path)
+    rows = parse_prose_rows(section.body, section.header)
+    documented_surface_symbols = {r.symbol for r in rows if not r.is_in_function_literal}
+
+    violations: list[ProvenanceViolation] = []
+
+    # code->doc
+    for symbol in sorted(surface - documented_surface_symbols):
+        violations.append(
+            ProvenanceViolation(
+                location=f"{file_disp}:{symbol}",
+                problem="new undocumented default",
+                remediation=(
+                    f"add a row to the `## {file_disp}` section of docs/defaults-provenance.md"
+                ),
+            )
+        )
+
+    # doc->code (skip in-function-literal rows)
+    for row in rows:
+        if row.is_in_function_literal:
+            continue
+        if row.symbol not in surface:
+            violations.append(
+                ProvenanceViolation(
+                    location=f"{file_disp}:{row.symbol}",
+                    problem="stale/orphaned provenance row",
+                    remediation=("remove or update the row in docs/defaults-provenance.md"),
+                )
+            )
+    return violations
 
 
 def discover_sections(doc_text: str) -> list[Section]:
