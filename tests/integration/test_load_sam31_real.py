@@ -1,9 +1,12 @@
 """Integration test: load real SAM 3.1 checkpoint and run a forward pass.
 
 Skipped automatically unless the .pt checkpoint is present AND a CUDA GPU
-with compute capability >= 7.5 is available.  The two cheaper tests use
-gpu_t4 (CC 7.5 floor: Tesla T4 / RTX 5070 Ti); the K=8 multiplex forward
-also uses gpu_t4.
+with compute capability >= 7.5 is available.  The load + single-class B=1/K=1
+forward are `gpu_t4` (CC 7.5 floor: Tesla T4 / RTX 5070 Ti) — the minimal path
+that IS guaranteed on a real T4.  The K=8 multiplex forward is `gpu_bf16`
+(CC >= 8.0): below CC 8.0 there is no Flash attention, so multiplex self-attn
+materializes a ~12.8 GiB score matrix and OOMs the T4 (confirmed on Colab
+2026-06-01, #212).  Multiplex forward is a Flash/bf16-card capability.
 """
 
 from __future__ import annotations
@@ -31,6 +34,13 @@ def test_load_sam31_returns_wrapper() -> None:
 
 @pytest.mark.gpu_t4
 def test_load_sam31_forward_to_canonical() -> None:
+    """B=1, K=1 single-class forward — the minimal-runnable T4 guarantee.
+
+    This is the path that IS guaranteed on a real Tesla T4 (CC 7.5): a single
+    image, a single class prompt. Confirmed green on Colab 2026-06-01 (#212).
+    Multiplex (K>=8) forward is NOT a T4 guarantee — see the gpu_bf16
+    test_load_sam31_multiplex_K8_forward below.
+    """
     cfg = ModelConfig(device="cuda", dtype="bfloat16")
     wrapper = load_sam31(cfg)
     # This is an inference smoke test, so use eval() + no_grad to disable
@@ -48,11 +58,15 @@ def test_load_sam31_forward_to_canonical() -> None:
     assert canonical.img_presence.dim() == 1  # (B,)
 
 
-@pytest.mark.gpu_t4
+@pytest.mark.gpu_bf16
 def test_load_sam31_multiplex_K8_forward() -> None:
     """Real K=8 multiplex forward emits pred_logits.shape[0] == B*8 and finite outputs.
 
     Per spec §13 AC 16. Confirms (B*K, ...) row layout end-to-end on real weights.
+
+    `gpu_bf16` (CC >= 8.0), NOT `gpu_t4`: without Flash attention (CC < 8.0) the
+    K=8 self-attn materializes a ~12.8 GiB score matrix and OOMs a real T4
+    (confirmed on Colab 2026-06-01, #212). Multiplex forward needs a Flash card.
     """
     cfg = ModelConfig(device="cuda", dtype="bfloat16")
     wrapper = load_sam31(cfg)
