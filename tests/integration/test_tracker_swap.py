@@ -275,3 +275,21 @@ def test_trainer_protocol_calls_wandb_tracker(
 
     # run.finish must be called exactly once (by close)
     fake_run.finish.assert_called_once()
+
+
+def test_fit_preserves_existing_config_yaml(tmp_path: Path) -> None:
+    """Trainer.fit must NOT overwrite an existing run_dir/config.yaml (resume).
+
+    Spec Change 1 (config.yaml preservation): on resume into an existing dir
+    the original config.yaml is preserved.
+    """
+    run_dir = tmp_path / "run"
+    run_dir.mkdir(parents=True)
+    sentinel = "SENTINEL_ORIGINAL_CONFIG\n"
+    (run_dir / "config.yaml").write_text(sentinel)
+
+    _run_fit(NoopTracker(), run_dir=run_dir)
+
+    assert (run_dir / "config.yaml").read_text() == sentinel, (
+        "fit() overwrote an existing config.yaml; resume must preserve it"
+    )

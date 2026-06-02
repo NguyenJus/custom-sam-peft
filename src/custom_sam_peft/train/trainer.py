@@ -665,7 +665,11 @@ class Trainer:
                 "n_train": saved.get("n_train"),
                 "n_val": saved.get("n_val"),
             }
-        (run_dir / "config.yaml").write_text(yaml.safe_dump(cfg_dict))
+        # Skip when config.yaml already exists (resume into an existing run
+        # dir per Change 1) so the original run's config is preserved.
+        config_path = run_dir / "config.yaml"
+        if not config_path.exists():
+            config_path.write_text(yaml.safe_dump(cfg_dict))
         self.tracker.start_run(run_dir, cfg_dict, resume_from)
 
         optimizer = self._build_optimizer()
