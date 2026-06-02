@@ -39,7 +39,6 @@ The schema is documented fully in `docs/config-schema.md`. Common fields used by
 | `train.batch_size` | `1`–`4` | Micro-batch size; preset adjusts for VRAM. |
 | `train.grad_accum_steps` | `2`–`16` | Steps before one optimizer update; preset adjusts. |
 | `data.format` | `"coco"` or `"hf"` | Dataset format. |
-| `data.prompt_mode` | `"text"` | Text-class prompting (v0 only; `"bbox"` is planned). |
 
 > **v0.7.0 rename note:** the learning-rate field is now `train.learning_rate` (was `lr` in v0.6 and earlier). Update any saved configs before running with v0.7.0.
 
