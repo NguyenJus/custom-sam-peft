@@ -14,7 +14,7 @@ import os
 import sys
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any
 
 import typer
 from rich import print as rprint
@@ -74,7 +74,7 @@ def _build_val_dataset(cfg: TrainConfig, vs: ValSource) -> Dataset:
     if vs.mode == "auto_split":
         assert vs.val_ids is not None  # noqa: S101 — mode invariant for type narrowing
         data_cfg_dict["_resolved_image_ids"] = {"eval": list(vs.val_ids)}
-    return cast(Dataset, _build_dataset_from_dict(data_cfg_dict, cfg, "eval"))
+    return _build_dataset_from_dict(data_cfg_dict, cfg, "eval")
 
 
 def _orchestrate(
