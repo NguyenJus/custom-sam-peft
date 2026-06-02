@@ -354,6 +354,13 @@ def run_predict(opts: PredictOptions) -> PredictReport:
     if rcfg.device == "cuda" and bs == 1:
         try:
             free_bytes, _ = torch.cuda.mem_get_info()
+            # Logged at the exact gate point (post model-load) so tests can
+            # assert hint presence against the same value the gate sees, rather
+            # than a pre-load reading that disagrees on cards where free VRAM
+            # straddles 12 GB across the load (e.g. the 16 GB 5070 Ti, #209).
+            logger.debug(
+                "VRAM hint check: free=%d bytes (%.2f GB)", free_bytes, free_bytes / 1024**3
+            )
             if free_bytes > 12 * 1024**3:
                 logger.info("free VRAM is >12 GB; consider --batch-size 4 or 8.")
         except RuntimeError:
@@ -378,7 +385,7 @@ def run_predict(opts: PredictOptions) -> PredictReport:
     from custom_sam_peft.eval.evaluator import _row_outputs
     from custom_sam_peft.eval.postprocess import queries_to_coco_results
     from custom_sam_peft.models.sam3 import MULTIPLEX_CAP
-    from custom_sam_peft.oom import OomDecision, OomLadder
+    from custom_sam_peft.oom import OomDecision, OomLadder, is_cuda_oom
 
     all_predictions: list[dict[str, object]] = []
     id_to_path: dict[int, Path] = {}
@@ -447,7 +454,11 @@ def run_predict(opts: PredictOptions) -> PredictReport:
             try:
                 with torch.no_grad():
                     outputs = model(img_batch, prompts_g, support=None)
-            except torch.cuda.OutOfMemoryError as oom_err:
+            except RuntimeError as oom_err:
+                # OOM may surface as a non-OutOfMemoryError RuntimeError on this
+                # card (see oom.is_cuda_oom); genuine errors re-propagate. (#208)
+                if not is_cuda_oom(oom_err):
+                    raise
                 decision = ladder.on_oom()
                 if decision is OomDecision.RETRY_B:
                     restart_chunk = True

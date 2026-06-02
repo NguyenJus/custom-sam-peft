@@ -3,7 +3,7 @@
 See src/custom_sam_peft/models/sam3.py::_patch_mha_input_dtype for full rationale.
 
 The hook also casts a FLOAT additive ``attn_mask`` to the module's weight dtype.
-Under float16 (e.g. GTX 1080, CC 6.1), SAM3's decoder cross-attention
+Under float16 (CC < 8.0), SAM3's decoder cross-attention
 (``sam3/model/decoder.py:166``) passes a float32 additive ``attn_mask`` while the
 query/key/value are fp16; ``F.scaled_dot_product_attention``
 (``sam3/model/model_misc.py:397``) then raises

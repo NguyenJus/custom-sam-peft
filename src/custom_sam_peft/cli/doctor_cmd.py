@@ -110,7 +110,16 @@ def _render_resolved_config_tables(cfg: TrainConfig) -> None:
     aug.add_row("stain_jitter", str(resolved.stain_jitter))
     aug.add_row("blur", str(resolved.blur))
     aug.add_row("gauss_noise", str(resolved.gauss_noise))
-    aug.add_row("steps", ", ".join(_STEP_NAMES_FOR(resolved)))
+    aug.add_row(
+        "steps",
+        ", ".join(
+            _STEP_NAMES_FOR(
+                resolved,
+                channel_semantics=cfg.data.channel_semantics,
+                channels=cfg.data.channels,
+            )
+        ),
+    )
     console.print(aug)
 
     assert cfg.data.normalize is not None  # materialized by DataConfig validator  # noqa: S101
@@ -159,7 +168,11 @@ def _render_resolved_config_tables(cfg: TrainConfig) -> None:
 
 def _build_resolved_config_json(cfg: TrainConfig) -> dict[str, object]:
     """Spec §11.2.3 — additive `resolved_config` block injected into --json."""
-    aug_dump = dump_augmentation_pipeline(cfg.data.augmentations)
+    aug_dump = dump_augmentation_pipeline(
+        cfg.data.augmentations,
+        channel_semantics=cfg.data.channel_semantics,
+        channels=cfg.data.channels,
+    )
     assert cfg.data.normalize is not None  # materialized by DataConfig validator  # noqa: S101
     mean, std, path = resolve_normalization_with_path(cfg.model.name, cfg.data.normalize)
     return {

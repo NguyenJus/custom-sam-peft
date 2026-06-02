@@ -10,9 +10,9 @@ Public API:
   - LOCKED_OFF:   dict[str, dict[str, str]]
   - ResolvedAugmentations: frozen dataclass with 8 knobs
   - resolve(cfg) -> ResolvedAugmentations
-  - dump_augmentation_pipeline(cfg) -> dict  (sidecar helper)
-  - _STEP_NAMES_FOR(resolved) -> list[str]   (module-private; consumed by
-    trainer + doctor for run-metadata + table display)
+  - dump_augmentation_pipeline(cfg, *, channel_semantics, channels) -> dict  (sidecar helper)
+  - _STEP_NAMES_FOR(resolved, *, channel_semantics, channels) -> list[str]
+    (module-private; consumed by trainer + doctor for run-metadata + table display)
 
 Citation legend (full references in docs/defaults-provenance.md §data/aug_presets.py):
   (a) domain convention — flip/rotate90 enabling booleans reflect the symmetry
@@ -271,17 +271,33 @@ def resolve(cfg: AugmentationsConfig) -> ResolvedAugmentations:
 # ---------------------------------------------------------------------------
 
 
-def _STEP_NAMES_FOR(resolved: ResolvedAugmentations) -> list[str]:
+def _STEP_NAMES_FOR(
+    resolved: ResolvedAugmentations,
+    *,
+    channel_semantics: str = "rgb",
+    channels: int = 3,
+) -> list[str]:
     """Ordered Albumentations class-name list produced by build_train_transforms.
 
     MUST match the conditional emission in
-    `custom_sam_peft.data.transforms.build_train_transforms` step-for-step.
+    `custom_sam_peft.data.transforms.build_train_transforms` step-for-step,
+    including the three augmentation regimes driven by channel_semantics:
 
-    # NOTE: reflects the rgb full-family regime only. For non-rgb channel_semantics
-    # (rgba/grayscale substitute RandomBrightnessContrast; freeform geometry-only)
-    # this list is stale. Regime-aware step prediction tracked in issue #128.
+      - rgb (photometric, 3ch): full family — GaussNoise, GaussianBlur,
+        ColorJitter, StainJitter.
+      - rgba / grayscale (photometric, non-3ch): GaussNoise + GaussianBlur kept;
+        ColorJitter replaced by RandomBrightnessContrast; StainJitter skipped.
+      - freeform (non-photometric): geometry only — all four value-altering augs
+        suppressed even when the resolved knobs are > 0.
     """
+    from custom_sam_peft.data.channel_semantics import CHANNEL_SEMANTICS
+
+    profile = CHANNEL_SEMANTICS[channel_semantics]
+    photometric = profile.photometric
+    rgb_like = photometric and channels == 3
+
     steps: list[str] = ["LongestMaxSize", "PadIfNeeded"]
+    # Geometric steps — identical across all three regimes.
     if resolved.hflip:
         steps.append("HorizontalFlip")
     if resolved.vflip:
@@ -290,24 +306,47 @@ def _STEP_NAMES_FOR(resolved: ResolvedAugmentations) -> list[str]:
         steps.append("RandomRotate90")
     if resolved.rotate_arbitrary > 0.0:
         steps.append("Affine")
-    if resolved.gauss_noise > 0.0:
-        steps.append("GaussNoise")
-    if resolved.blur > 0.0:
-        steps.append("GaussianBlur")
-    if resolved.color_jitter > 0.0:
-        steps.append("ColorJitter")
-    if resolved.stain_jitter > 0.0:
-        steps.append("StainJitter")
+    # Value-altering steps — gated by regime.
+    if not photometric:
+        # freeform: geometry only — all value-altering augs suppressed.
+        pass
+    elif rgb_like:
+        # rgb: full family.
+        if resolved.gauss_noise > 0.0:
+            steps.append("GaussNoise")
+        if resolved.blur > 0.0:
+            steps.append("GaussianBlur")
+        if resolved.color_jitter > 0.0:
+            steps.append("ColorJitter")
+        if resolved.stain_jitter > 0.0:
+            steps.append("StainJitter")
+    else:
+        # rgba / grayscale: GaussNoise + GaussianBlur kept; ColorJitter →
+        # RandomBrightnessContrast; StainJitter skipped.
+        if resolved.gauss_noise > 0.0:
+            steps.append("GaussNoise")
+        if resolved.blur > 0.0:
+            steps.append("GaussianBlur")
+        if resolved.color_jitter > 0.0:
+            steps.append("RandomBrightnessContrast")
     steps += ["Normalize", "ToTensorV2"]
     return steps
 
 
-def dump_augmentation_pipeline(cfg: AugmentationsConfig) -> dict[str, Any]:
+def dump_augmentation_pipeline(
+    cfg: AugmentationsConfig,
+    *,
+    channel_semantics: str = "rgb",
+    channels: int = 3,
+) -> dict[str, Any]:
     """Build the JSON-shaped sidecar dict for a resolved augmentation config.
 
     See spec §10 for the exact dict shape. Consumed by the trainer to write
     `run_dir/augmentation_pipeline.json` and by `csp doctor --config` for the
     `resolved_config.augmentations` JSON block.
+
+    Pass `channel_semantics` and `channels` from the data config so the
+    emitted `steps` list reflects the correct augmentation regime.
 
     For strict reproducibility across library versions, copy the returned
     `resolved` dict verbatim into `overrides:` under `preset: custom` —
@@ -333,6 +372,6 @@ def dump_augmentation_pipeline(cfg: AugmentationsConfig) -> dict[str, Any]:
             "blur": resolved.blur,
             "gauss_noise": resolved.gauss_noise,
         },
-        "steps": _STEP_NAMES_FOR(resolved),
+        "steps": _STEP_NAMES_FOR(resolved, channel_semantics=channel_semantics, channels=channels),
         "library_version": lib_version,
     }

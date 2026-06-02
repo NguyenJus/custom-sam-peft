@@ -277,7 +277,7 @@ def render(answers: dict[str, Any], *, run_mode: RunMode) -> str:
 
 
 def _ask_run_mode(ctx: Ctx) -> dict[str, Any]:
-    ctx.run_mode = ask_choice("Run mode?", ["train", "run"], default="train")  # type: ignore[assignment]
+    ctx.run_mode = ask_choice("Run mode?", ["train", "run"], default="run")  # type: ignore[assignment]
     return {}
 
 
@@ -318,6 +318,7 @@ def _ask_class_imbalance(ctx: Ctx) -> dict[str, Any]:
             "defaulting to balanced loss weighting."
         )
         return balanced
+    typer.echo("Analyzing dataset class balance...")
     ratio = measure_class_imbalance_ratio(ann)
     if ratio is None:
         typer.echo(
@@ -370,6 +371,7 @@ def _calibrate_or_analytic(ctx: Ctx) -> dict[str, Any] | None:
         with tempfile.TemporaryDirectory() as td:
             cfg_path = Path(td) / "config.yaml"
             cfg_path.write_text(_wizard_probe_config(answers))
+            typer.echo("Running GPU probe (this may take a moment)...")
             decision = run_calibration(
                 config=cfg_path, output=Path(td) / CACHE_FILENAME, force=True
             )

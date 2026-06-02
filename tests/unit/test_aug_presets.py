@@ -201,7 +201,7 @@ def test_dump_augmentation_pipeline_steps_empty_for_none() -> None:
 
 
 def test_step_names_for_natural_aggressive() -> None:
-    """Representative non-trivial cell: every knob fires."""
+    """Representative non-trivial cell: every knob fires (rgb default regime)."""
     cfg = AugmentationsConfig(preset="natural", intensity="aggressive")
     resolved = resolve(cfg)
     assert _STEP_NAMES_FOR(resolved) == [
@@ -213,6 +213,135 @@ def test_step_names_for_natural_aggressive() -> None:
         "GaussNoise",
         "GaussianBlur",
         "ColorJitter",
+        "Normalize",
+        "ToTensorV2",
+    ]
+
+
+def test_step_names_for_rgba_regime() -> None:
+    """rgba regime: ColorJitter → RandomBrightnessContrast; StainJitter skipped."""
+    # Use a custom preset that has all value-altering knobs enabled.
+    from custom_sam_peft.config.schema import AugmentationOverrides
+
+    cfg = AugmentationsConfig(
+        preset="custom",
+        overrides=AugmentationOverrides(
+            hflip=True,
+            gauss_noise=0.02,
+            blur=0.05,
+            color_jitter=0.1,
+            stain_jitter=0.03,
+        ),
+    )
+    resolved = resolve(cfg)
+    steps = _STEP_NAMES_FOR(resolved, channel_semantics="rgba", channels=4)
+    assert steps == [
+        "LongestMaxSize",
+        "PadIfNeeded",
+        "HorizontalFlip",
+        "GaussNoise",
+        "GaussianBlur",
+        "RandomBrightnessContrast",
+        "Normalize",
+        "ToTensorV2",
+    ]
+    # ColorJitter and StainJitter must NOT appear.
+    assert "ColorJitter" not in steps
+    assert "StainJitter" not in steps
+
+
+def test_step_names_for_grayscale_regime() -> None:
+    """grayscale regime: same substitution as rgba."""
+    from custom_sam_peft.config.schema import AugmentationOverrides
+
+    cfg = AugmentationsConfig(
+        preset="custom",
+        overrides=AugmentationOverrides(color_jitter=0.1, gauss_noise=0.02),
+    )
+    resolved = resolve(cfg)
+    steps = _STEP_NAMES_FOR(resolved, channel_semantics="grayscale", channels=1)
+    assert "RandomBrightnessContrast" in steps
+    assert "ColorJitter" not in steps
+    assert "StainJitter" not in steps
+
+
+def test_step_names_for_freeform_regime_geometry_only() -> None:
+    """freeform regime: all value-altering augs suppressed even with knobs enabled."""
+    from custom_sam_peft.config.schema import AugmentationOverrides
+
+    cfg = AugmentationsConfig(
+        preset="custom",
+        overrides=AugmentationOverrides(
+            hflip=True,
+            vflip=True,
+            rotate90=True,
+            rotate_arbitrary=10.0,
+            gauss_noise=0.02,
+            blur=0.05,
+            color_jitter=0.1,
+            stain_jitter=0.03,
+        ),
+    )
+    resolved = resolve(cfg)
+    steps = _STEP_NAMES_FOR(resolved, channel_semantics="freeform", channels=4)
+    assert steps == [
+        "LongestMaxSize",
+        "PadIfNeeded",
+        "HorizontalFlip",
+        "VerticalFlip",
+        "RandomRotate90",
+        "Affine",
+        "Normalize",
+        "ToTensorV2",
+    ]
+    # No value-altering steps.
+    for name in (
+        "GaussNoise",
+        "GaussianBlur",
+        "ColorJitter",
+        "StainJitter",
+        "RandomBrightnessContrast",
+    ):
+        assert name not in steps
+
+
+def test_step_names_for_rgb_explicit_matches_default() -> None:
+    """Passing channel_semantics='rgb', channels=3 explicitly equals the default."""
+    cfg = AugmentationsConfig(preset="medical", intensity="medium")
+    resolved = resolve(cfg)
+    assert _STEP_NAMES_FOR(resolved, channel_semantics="rgb", channels=3) == _STEP_NAMES_FOR(
+        resolved
+    )
+
+
+def test_dump_augmentation_pipeline_rgba_steps() -> None:
+    """dump_augmentation_pipeline threads channel_semantics through to steps."""
+    from custom_sam_peft.config.schema import AugmentationOverrides
+
+    cfg = AugmentationsConfig(
+        preset="custom",
+        overrides=AugmentationOverrides(color_jitter=0.1),
+    )
+    d_rgb = dump_augmentation_pipeline(cfg, channel_semantics="rgb", channels=3)
+    d_rgba = dump_augmentation_pipeline(cfg, channel_semantics="rgba", channels=4)
+    assert "ColorJitter" in d_rgb["steps"]
+    assert "ColorJitter" not in d_rgba["steps"]
+    assert "RandomBrightnessContrast" in d_rgba["steps"]
+
+
+def test_dump_augmentation_pipeline_freeform_steps() -> None:
+    """dump_augmentation_pipeline freeform → geometry only."""
+    from custom_sam_peft.config.schema import AugmentationOverrides
+
+    cfg = AugmentationsConfig(
+        preset="custom",
+        overrides=AugmentationOverrides(hflip=True, color_jitter=0.1, gauss_noise=0.02),
+    )
+    d = dump_augmentation_pipeline(cfg, channel_semantics="freeform", channels=4)
+    assert d["steps"] == [
+        "LongestMaxSize",
+        "PadIfNeeded",
+        "HorizontalFlip",
         "Normalize",
         "ToTensorV2",
     ]

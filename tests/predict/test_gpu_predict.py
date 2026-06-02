@@ -15,12 +15,12 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from pathlib import Path
 from typing import Any
 
 import numpy as np
 import pytest
-import torch
 from PIL import Image as PILImage
 from pycocotools import mask as mask_utils
 
@@ -234,16 +234,18 @@ def test_predict_vram_hint_log(
     tmp_path: Path,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    """On cuda with >12 GB free VRAM + batch_size=1, runner logs the VRAM hint at INFO.
+    """On cuda + batch_size=1, the runner emits the >12 GB VRAM hint iff the free
+    VRAM measured *after model load* exceeds 12 GB.
 
-    Skipped when free VRAM <= 12 GB (hint would not fire).
+    The runner checks free VRAM at Step 7, after SAM 3.1 is resident on the GPU,
+    so a pre-load reading in the test disagrees with the runner on any card where
+    free VRAM straddles 12 GB across the model load (e.g. the 16 GB 5070 Ti, #209).
+    We therefore assert conditionally against the free value the runner itself
+    logs at its gate point — the exact number the hint is gated on.
+
     Logger: custom_sam_peft.predict.runner
     Expected string: "free VRAM is >12 GB; consider --batch-size 4 or 8."
     """
-    free_bytes, _ = torch.cuda.mem_get_info()
-    if free_bytes <= 12 * 1024**3:
-        pytest.skip(reason="free VRAM is not >12 GB; hint would not fire")
-
     img_path = _make_synthetic_image(tmp_path, size=SAM3_IMAGE_SIZE)
     opts = _make_base_opts(
         tmp_path,
@@ -253,9 +255,24 @@ def test_predict_vram_hint_log(
         batch_size=1,
     )
 
-    with caplog.at_level(logging.INFO, logger="custom_sam_peft.predict.runner"):
+    with caplog.at_level(logging.DEBUG, logger="custom_sam_peft.predict.runner"):
         run_predict(opts)
 
-    assert "free VRAM is >12 GB" in caplog.text, (
-        f"Expected VRAM hint not found in caplog.text. Captured:\n{caplog.text}"
+    # Recover the free-VRAM reading the runner took at its gate point (post-load).
+    match = re.search(r"VRAM hint check: free=(\d+) bytes", caplog.text)
+    assert match is not None, (
+        f"Runner did not log its VRAM-hint free-VRAM reading. Captured:\n{caplog.text}"
     )
+    free_bytes = int(match.group(1))
+    hint_logged = "free VRAM is >12 GB" in caplog.text
+
+    if free_bytes > 12 * 1024**3:
+        assert hint_logged, (
+            f"free VRAM {free_bytes / 1024**3:.2f} GB > 12 GB but hint was not logged. "
+            f"Captured:\n{caplog.text}"
+        )
+    else:
+        assert not hint_logged, (
+            f"free VRAM {free_bytes / 1024**3:.2f} GB <= 12 GB but hint was logged. "
+            f"Captured:\n{caplog.text}"
+        )

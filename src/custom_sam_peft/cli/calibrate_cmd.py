@@ -9,6 +9,7 @@ Spec: docs/superpowers/specs/2026-05-28-vram-calibration-reassess-design.md §4-
 
 from __future__ import annotations
 
+import gc
 import json
 import os
 import tempfile
@@ -24,6 +25,7 @@ import typer
 
 from custom_sam_peft import __version__ as _PKG_VERSION
 from custom_sam_peft.config.schema import ModelConfig, PEFTConfig
+from custom_sam_peft.oom import is_cuda_oom
 from custom_sam_peft.presets import (
     _CUDA_HINT,
     A_PER_CLASS,
@@ -106,32 +108,52 @@ def _run_probe(*, method: str, r: int, k_eff: int, batch: int) -> int:
 
     Returns peak bytes. CUDA only. Spec §5.1.
     """
+    from custom_sam_peft.data.base import TextPrompts
     from custom_sam_peft.models.sam3 import MULTIPLEX_CAP, SAM3_IMAGE_SIZE, load_sam31
     from custom_sam_peft.peft_adapters.lora import apply_lora
 
     k_eff = max(1, min(k_eff, MULTIPLEX_CAP))
     model_cfg = ModelConfig()
-    # No DataConfig in scope; rgb default is the documented exception (spec §5.4).
-    wrapper = load_sam31(model_cfg, channels=3, channel_semantics="rgb")
-    apply_lora(wrapper, PEFTConfig(method=method, r=r))
+    wrapper = out = loss = images = None
+    try:
+        # No DataConfig in scope; rgb default is the documented exception (spec §5.4).
+        wrapper = load_sam31(model_cfg, channels=3, channel_semantics="rgb")
+        apply_lora(wrapper, PEFTConfig(method=method, r=r))
 
-    device = next(wrapper.parameters()).device
-    images = torch.zeros(
-        batch, 3, SAM3_IMAGE_SIZE, SAM3_IMAGE_SIZE, dtype=torch.bfloat16, device=device
-    )
-    from custom_sam_peft.data.base import TextPrompts
+        device = next(wrapper.parameters()).device
+        images = torch.zeros(
+            batch, 3, SAM3_IMAGE_SIZE, SAM3_IMAGE_SIZE, dtype=torch.bfloat16, device=device
+        )
+        # K_eff distinct synthetic class prompts per image (not a single "thing").
+        prompts = [TextPrompts(classes=[f"class_{j}" for j in range(k_eff)]) for _ in range(batch)]
 
-    # K_eff distinct synthetic class prompts per image (not a single "thing").
-    prompts = [TextPrompts(classes=[f"class_{j}" for j in range(k_eff)]) for _ in range(batch)]
-
-    torch.cuda.reset_peak_memory_stats()
-    out = wrapper(images, prompts, support=None)
-    loss = torch.zeros((), device=device, dtype=torch.float32)
-    for t in out.values():
-        if isinstance(t, torch.Tensor):
-            loss = loss + t.float().sum()
-    loss.backward()  # type: ignore[no-untyped-call]
-    return int(torch.cuda.max_memory_allocated())
+        torch.cuda.reset_peak_memory_stats()
+        out = wrapper(images, prompts, support=None)
+        loss = torch.zeros((), device=device, dtype=torch.float32)
+        for t in out.values():
+            if isinstance(t, torch.Tensor):
+                loss = loss + t.float().sum()
+        loss.backward()  # type: ignore[no-untyped-call]
+        # Synchronize so the backward's kernels have all completed before we read
+        # the peak and tear down — otherwise a kernel could still be allocating
+        # (inflating the next probe) or could surface its error only later.
+        torch.cuda.synchronize()
+        return int(torch.cuda.max_memory_allocated())
+    finally:
+        # Release this probe's model + activations before the next ladder probe.
+        # nn.Module plus the dtype forward-hooks form reference cycles, so the
+        # model is NOT freed by refcounting when this function returns — it
+        # lingers until a sporadic cyclic gc.collect(), and the CUDA caching
+        # allocator never returns reserved blocks to the driver without
+        # empty_cache(). Across the 4-6 probe ladder this accumulates to the
+        # <=16GB ceiling and the next allocation dies as "CUDA driver error:
+        # device not ready" (a dirty OOM on this WSL2/sm_120 path). Freeing per
+        # probe also keeps each peak measurement clean: otherwise a probe's peak
+        # is inflated by the prior probe's still-resident model. (#208)
+        del wrapper, out, loss, images
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
 
 
 def _apply_config_rewrite(config: Path, *, decision: PresetDecision) -> None:
@@ -181,7 +203,9 @@ def _derive_split(method: str, r: int, batch: int) -> tuple[int, int]:
     """
     try:
         peak_k1 = _run_probe(method="qlora", r=4, k_eff=1, batch=1)
-    except torch.cuda.OutOfMemoryError as exc:
+    except RuntimeError as exc:
+        if not is_cuda_oom(exc):
+            raise
         raise _GpuTooSmall("K=1 probe OOMed — GPU too small") from exc
 
     from custom_sam_peft.models.sam3 import SAM3_IMAGE_SIZE
@@ -195,7 +219,9 @@ def _derive_split(method: str, r: int, batch: int) -> tuple[int, int]:
     try:
         peak_k4 = _run_probe(method="qlora", r=4, k_eff=4, batch=1)
         a_per_class = int((peak_k4 - peak_k1) / (4 - 1))
-    except torch.cuda.OutOfMemoryError:
+    except RuntimeError as exc:
+        if not is_cuda_oom(exc):
+            raise
         typer.echo(
             "WARNING: K=4 probe OOMed; falling back to analytic A_per_class seed",
             err=True,
@@ -339,7 +365,9 @@ def _confirm_and_climb(
         probes += 1
         try:
             peak = _run_probe(method=m, r=rr, k_eff=kk, batch=b)
-        except torch.cuda.OutOfMemoryError:
+        except RuntimeError as exc:
+            if not is_cuda_oom(exc):
+                raise
             return False, 0
         return peak <= budget, peak
 
