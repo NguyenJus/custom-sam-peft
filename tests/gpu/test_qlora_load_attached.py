@@ -16,6 +16,7 @@ from typing import Any
 import pytest
 import torch
 
+import custom_sam_peft.train.runner as _runner_mod
 from custom_sam_peft.config.loader import load_config
 from custom_sam_peft.train.runner import run_training
 from tests.gpu.conftest import _bnb_available, _RecordingTracker
@@ -60,7 +61,6 @@ def test_qlora_load_into_attached_peft_model(
     # load_sam31 to stash the wrapper reference after PEFT is applied.
     captured: dict[str, Any] = {}
 
-    import custom_sam_peft.train.runner as _runner_mod
     from custom_sam_peft.models.sam3 import load_sam31 as _real_load_sam31
 
     def _capturing_load_sam31(*args: Any, **kwargs: Any) -> Any:

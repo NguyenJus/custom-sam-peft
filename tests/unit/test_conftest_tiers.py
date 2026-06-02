@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import pytest
 
-import custom_sam_peft  # noqa: F401  (eager import sanity)
+import tests.conftest as cf
 
 _GB = 1024**3
 
@@ -24,8 +24,6 @@ def _stub_cuda(monkeypatch, *, available=True, cap=(12, 0), total_gb=16, can_lau
         total_memory = int(total_gb * _GB)
 
     monkeypatch.setattr(torch.cuda, "get_device_properties", lambda *a, **k: _Props())
-    import tests.conftest as cf
-
     monkeypatch.setattr(cf, "_torch_can_launch_kernel", lambda *a, **k: can_launch)
 
 

@@ -8,6 +8,7 @@ from typing import Any
 import pytest
 import torch
 
+import custom_sam_peft.train.loop as loop_mod
 from custom_sam_peft.eval._artifacts import EvalArtifacts
 from custom_sam_peft.peft_adapters.lora import apply_lora
 from custom_sam_peft.tracking.noop import NoopTracker
@@ -70,8 +71,6 @@ def test_fit_stops_flushes_and_skips_finalize(
         update={"train": cfg.train.model_copy(update={"time_limit": "2h30m", "epochs": 50})}
     )
     apply_lora(wrapper, cfg.peft)
-
-    import custom_sam_peft.train.loop as loop_mod
 
     monkeypatch.setattr(loop_mod.time, "monotonic", lambda: float("inf"))
     trainer = Trainer(wrapper, ds, ds, NoopTracker(), cfg)
