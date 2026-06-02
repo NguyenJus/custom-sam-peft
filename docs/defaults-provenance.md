@@ -122,6 +122,7 @@ Legend letters used in the `aug_presets.py` module docstring resolve here.
 | (b) | Domain-tuned project magnitude — no published reference and no recorded internal calibration run. `# tbd: #191` |
 | (c) | Ruifrok & Johnston 2001 / Tellez et al. 2018 — H&E stain-jitter rationale; exact sigma magnitudes are domain-tuned project choices with no published reference. `# tbd: #191` |
 | (d) | Laterality-driven locked-off — see `LOCKED_OFF` map; clinically or structurally meaningful orientation; augmentation disabled by design. |
+| (e) | Augmentation omitted at this preset's intensity tier — recipe choice; no citation. |
 
 ### Augmentation knob values
 
