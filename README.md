@@ -35,29 +35,31 @@ Already on a GPU pod? Skip the pip-install wait — see [cloud/docker/README.md]
 
 ## Quickstart
 
-New here? The fastest path is the interactive setup wizard: `custom-sam-peft init --interactive` auto-detects your COCO data paths, calibrates VRAM presets for your GPU, and writes a ready-to-train config. Then hand that config to `run`.
+New here? The fastest path is the interactive setup wizard: `csp init --interactive` auto-detects your COCO data paths, calibrates VRAM presets for your GPU, and writes a ready-to-train config. Then hand that config to `run`.
+
+The CLI installs under two names — the short `csp` (used throughout this README) and `custom-sam-peft`. They're identical; use whichever you prefer.
 
 ```bash
 # Install
 uv sync --all-extras
 
 # Sanity check the CLI
-uv run custom-sam-peft --help
-uv run custom-sam-peft doctor
+uv run csp --help
+uv run csp doctor
 
 # Generate a config interactively (recommended) — auto-detects your COCO data
 # paths, calibrates VRAM presets, and walks you through PEFT method + key knobs
-uv run custom-sam-peft init --interactive
+uv run csp init --interactive
 # ...or non-interactively from a template:
-uv run custom-sam-peft init --template coco-text-qlora --output config.yaml
+uv run csp init --template coco-text-qlora --output config.yaml
 
 # Train, then eval and export in one shot (recommended)
-uv run custom-sam-peft run config.yaml
+uv run csp run config.yaml
 
 # Or run steps individually:
-uv run custom-sam-peft train config.yaml          # train only
-uv run custom-sam-peft train config.yaml --eval   # train + eval
-uv run custom-sam-peft train config.yaml --eval --export  # same as `run`
+uv run csp train config.yaml          # train only
+uv run csp train config.yaml --eval   # train + eval
+uv run csp train config.yaml --eval --export  # same as `run`
 ```
 
 `run cfg.yaml` is shorthand for `train cfg.yaml --eval --export`.
@@ -81,16 +83,16 @@ See [cloud/docker/README.md](cloud/docker/README.md) for the full CLI and Jupyte
 
 | Command | Status |
 | --- | --- |
-| `custom-sam-peft run CONFIG [--resume PATH] [-v]` | Functional — shorthand for `train --eval --export` |
-| `custom-sam-peft train CONFIG [--eval] [--export] [--override key=val]... [--resume PATH] [-v]` | Functional |
-| `custom-sam-peft eval --config CONFIG --checkpoint PATH [--split val\|test] [--export] [--output PATH] [--interactive]` | Functional (LoRA + QLoRA adapters) |
-| `custom-sam-peft predict --images DIR --prompts "a,b,c" [--checkpoint PATH] [--output PATH] [--visualize] [--interactive]` | Functional |
-| `custom-sam-peft export --checkpoint PATH [--merge] [--output PATH] [--config PATH]` | Functional |
-| `custom-sam-peft init [--interactive] [--template NAME] [--preset NAME] [--output PATH] [--force]` | Functional |
-| `custom-sam-peft calibrate --config CONFIG [--output PATH] [--force]` | Functional |
-| `custom-sam-peft doctor [--config PATH] [--weights-path PATH] [--json]` | Functional |
+| `csp run CONFIG [--resume PATH] [-v]` | Functional — shorthand for `train --eval --export` |
+| `csp train CONFIG [--eval] [--export] [--override key=val]... [--resume PATH] [-v]` | Functional |
+| `csp eval --config CONFIG --checkpoint PATH [--split val\|test] [--export] [--output PATH] [--interactive]` | Functional (LoRA + QLoRA adapters) |
+| `csp predict --images DIR --prompts "a,b,c" [--checkpoint PATH] [--output PATH] [--visualize] [--interactive]` | Functional |
+| `csp export --checkpoint PATH [--merge] [--output PATH] [--config PATH]` | Functional |
+| `csp init [--interactive] [--template NAME] [--preset NAME] [--output PATH] [--force]` | Functional |
+| `csp calibrate --config CONFIG [--output PATH] [--force]` | Functional |
+| `csp doctor [--config PATH] [--weights-path PATH] [--json]` | Functional |
 
-Most commands accept more flags than shown — run `custom-sam-peft <command> --help`
+Most commands accept more flags than shown — run `csp <command> --help`
 for the full list.
 
 `run CONFIG` is equivalent to `train CONFIG --eval --export`; use the individual flags when you want only some steps.
