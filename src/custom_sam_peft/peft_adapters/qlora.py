@@ -274,7 +274,7 @@ def apply_qlora(wrapper: Sam3Wrapper, cfg: PEFTConfig) -> Sam3Wrapper:
     base = cast(nn.Module, wrapper.model.model)
     _quantize_base(base, cfg)
     _freeze_non_adapter(base)
-    peft_base, lora_param_names = _inject_lora_adapters(base, cfg)
+    peft_base, mha_names = _inject_lora_adapters(base, cfg)
 
     wrapper.model.model = peft_base
     wrapper.peft_model = cast(_PeftModel, peft_base)
@@ -284,14 +284,14 @@ def apply_qlora(wrapper: Sam3Wrapper, cfg: PEFTConfig) -> Sam3Wrapper:
     ratio = trainable / total if total else 0.0
     logger.info(
         "QLoRA: trainable=%d (%.2f%%) of %d "
-        "(lora_scope=%s, quant_type=%s, compute_dtype=%s, n_param_targets=%d)",
+        "(lora_scope=%s, quant_type=%s, compute_dtype=%s, n_mha_targets=%d)",
         trainable,
         100 * ratio,
         total,
         cfg.scope if cfg.target_modules is None else "<override>",
         cfg.qlora.quant_type,
         cfg.qlora.compute_dtype,
-        len(lora_param_names),
+        len(mha_names),
     )
     if ratio > 0.10:
         logger.warning(
