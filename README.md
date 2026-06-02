@@ -10,6 +10,8 @@ consumer GPU.
 
 > **⚠️ Work in progress.**
 > An active development snapshot — **the code runs**, but it hasn't been validated end-to-end on production workloads. The CLI surfaces (`train`, `run`, `eval`, `predict`, `export`, `init`, `doctor`, `calibrate`) exercise real subsystems (LoRA / QLoRA adapters, TensorBoard / W&B tracking). Expect breaking changes; pin to a tagged release if you need stability.
+>
+> See the [CHANGELOG](CHANGELOG.md) for release history.
 
 ## Train in Colab
 
@@ -132,7 +134,7 @@ GPU test tiers and automation live in [`README-dev.md`](docs/README-dev.md).
 
 ### Configuration
 
-Every YAML config field is documented in [`docs/config-schema.md`](docs/config-schema.md). The schema covers all user-settable fields across the `run`, `model`, `data`, `peft`, `training`, `eval`, and `export` sections, with types, defaults, and layer labels (common vs. advanced).
+Every YAML config field is documented in [`docs/config-schema.md`](docs/config-schema.md). The schema covers all user-settable fields across the `run`, `model`, `data`, `peft`, `training`, `eval`, and `export` sections, with types, defaults, and layer labels (common vs. advanced). See the [CHANGELOG](CHANGELOG.md) for release history and config field-rename notes.
 
 ### Repo layout
 
