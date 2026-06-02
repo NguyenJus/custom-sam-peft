@@ -9,10 +9,10 @@ from typing import Any
 import pytest
 import torch
 
+import custom_sam_peft.train.loop as loop_mod
 from custom_sam_peft.eval._artifacts import EvalArtifacts
 from custom_sam_peft.peft_adapters.lora import apply_lora
 from custom_sam_peft.tracking.noop import NoopTracker
-from custom_sam_peft.train.loop import _HostRamLow, run_epoch
 from custom_sam_peft.train.trainer import Trainer
 from tests.fixtures.tiny_sam3_lora_stub import make_stub_wrapper
 from tests.integration.test_trainer_evaluator_seam import _make_cfg, _TinyDataset
@@ -38,10 +38,8 @@ def test_run_epoch_flushes_and_raises_host_ram_low(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """When available host RAM drops below the floor, a full-state checkpoint is
-    flushed and _HostRamLow is raised at the first step past the threshold."""
+    flushed and loop_mod._HostRamLow is raised at the first step past the threshold."""
     import psutil
-
-    import custom_sam_peft.train.loop as loop_mod
 
     # Floor is 4 GB; report only 1 GB available → guard should fire after step 1.
     floor_bytes = int(4e9)
@@ -64,8 +62,8 @@ def test_run_epoch_flushes_and_raises_host_ram_low(
     optimizer = torch.optim.AdamW([p for p in wrapper.parameters() if p.requires_grad], lr=1e-4)
     scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda=lambda s: 1.0)
 
-    with pytest.raises(_HostRamLow) as exc:
-        run_epoch(
+    with pytest.raises(loop_mod._HostRamLow) as exc:
+        loop_mod.run_epoch(
             wrapper,
             _loader(ds),
             optimizer,
@@ -102,9 +100,7 @@ def test_run_epoch_flushes_and_raises_host_ram_low(
 def test_run_epoch_no_raise_when_ram_above_floor(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """When available RAM is well above the floor, no _HostRamLow is raised."""
-    import custom_sam_peft.train.loop as loop_mod
-
+    """When available RAM is well above the floor, no loop_mod._HostRamLow is raised."""
     # Floor is 1 GB; report 32 GB available → guard must NOT fire.
     floor_bytes = int(1e9)
     available_bytes = int(32e9)
@@ -121,7 +117,7 @@ def test_run_epoch_no_raise_when_ram_above_floor(
     scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda=lambda s: 1.0)
 
     # Must NOT raise.
-    gs, _ = run_epoch(
+    gs, _ = loop_mod.run_epoch(
         wrapper,
         _loader(ds),
         optimizer,
@@ -149,8 +145,6 @@ def test_run_epoch_no_raise_when_available_equals_floor(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """available == floor must NOT fire the guard (check is strict <)."""
-    import custom_sam_peft.train.loop as loop_mod
-
     floor_bytes = int(4e9)
     available_bytes = floor_bytes  # exactly at the floor
     monkeypatch.setattr(loop_mod.psutil, "virtual_memory", lambda: _fake_vmem(available_bytes))
@@ -166,7 +160,7 @@ def test_run_epoch_no_raise_when_available_equals_floor(
     scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda=lambda s: 1.0)
 
     # Must NOT raise — available == floor is not below the floor.
-    gs, _ = run_epoch(
+    gs, _ = loop_mod.run_epoch(
         wrapper,
         _loader(ds),
         optimizer,
@@ -189,8 +183,6 @@ def test_run_epoch_raises_when_available_is_floor_minus_one(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """available == floor - 1 must fire the guard (strictly below the floor)."""
-    import custom_sam_peft.train.loop as loop_mod
-
     floor_bytes = int(4e9)
     available_bytes = floor_bytes - 1  # one byte below the floor
     monkeypatch.setattr(loop_mod.psutil, "virtual_memory", lambda: _fake_vmem(available_bytes))
@@ -205,8 +197,8 @@ def test_run_epoch_raises_when_available_is_floor_minus_one(
     optimizer = torch.optim.AdamW([p for p in wrapper.parameters() if p.requires_grad], lr=1e-4)
     scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda=lambda s: 1.0)
 
-    with pytest.raises(_HostRamLow) as exc:
-        run_epoch(
+    with pytest.raises(loop_mod._HostRamLow) as exc:
+        loop_mod.run_epoch(
             wrapper,
             _loader(ds),
             optimizer,
@@ -234,8 +226,6 @@ def test_run_epoch_guard_disabled_when_none(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """When host_ram_floor_bytes=None, the guard is off even if RAM reports 0 available."""
-    import custom_sam_peft.train.loop as loop_mod
-
     # Report 0 bytes available — the guard must still NOT fire when disabled.
     monkeypatch.setattr(loop_mod.psutil, "virtual_memory", lambda: _fake_vmem(0))
 
@@ -250,7 +240,7 @@ def test_run_epoch_guard_disabled_when_none(
     scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda=lambda s: 1.0)
 
     # host_ram_floor_bytes=None → disabled; must complete normally.
-    gs, _ = run_epoch(
+    gs, _ = loop_mod.run_epoch(
         wrapper,
         _loader(ds),
         optimizer,
@@ -278,8 +268,6 @@ def test_host_ram_guard_reads_flush_extra_at_fire_time(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """flush_extra is evaluated when the guard fires, not at epoch start."""
-    import custom_sam_peft.train.loop as loop_mod
-
     floor_bytes = int(4e9)
     available_bytes = int(1e9)
     monkeypatch.setattr(loop_mod.psutil, "virtual_memory", lambda: _fake_vmem(available_bytes))
@@ -309,8 +297,8 @@ def test_host_ram_guard_reads_flush_extra_at_fire_time(
         calls.append(snapshot)
         return snapshot
 
-    with pytest.raises(_HostRamLow):
-        run_epoch(
+    with pytest.raises(loop_mod._HostRamLow):
+        loop_mod.run_epoch(
             wrapper,
             _loader(ds),
             optimizer,
@@ -336,18 +324,16 @@ def test_host_ram_guard_reads_flush_extra_at_fire_time(
 
 
 # ---------------------------------------------------------------------------
-# Trainer integration: _HostRamLow → graceful EvalArtifacts (exit-0 path)
+# Trainer integration: loop_mod._HostRamLow → graceful EvalArtifacts (exit-0 path)
 # ---------------------------------------------------------------------------
 
 
 def test_trainer_fit_returns_graceful_artifacts_on_host_ram_low(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Trainer.fit() with low-RAM condition catches _HostRamLow and returns graceful
+    """Trainer.fit() with low-RAM condition catches loop_mod._HostRamLow and returns graceful
     EvalArtifacts: checkpoint_path exists, final_metrics is None, time_limit_stop is None,
     host_ram_stop carries the flushed step, run completes without raising."""
-    import custom_sam_peft.train.loop as loop_mod
-
     floor_bytes = int(4e9)  # 4 GB floor
     available_bytes = int(1e9)  # 1 GB available → guard fires
     monkeypatch.setattr(loop_mod.psutil, "virtual_memory", lambda: _fake_vmem(available_bytes))
@@ -410,9 +396,7 @@ def test_train_hyperparams_host_ram_floor_gb_zero_disables() -> None:
 
 def test_run_epoch_psutil_probe_fail_open(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """If psutil.virtual_memory() raises, the run continues without crashing
-    and without firing _HostRamLow (fail-open: probe error skips that step's check)."""
-    import custom_sam_peft.train.loop as loop_mod
-
+    and without firing loop_mod._HostRamLow (fail-open: probe error skips that step's check)."""
     floor_bytes = int(4e9)
 
     def _raise_vmem() -> None:
@@ -431,7 +415,7 @@ def test_run_epoch_psutil_probe_fail_open(tmp_path: Path, monkeypatch: pytest.Mo
     scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda=lambda s: 1.0)
 
     # Must complete normally — probe failure must not crash training.
-    gs, _ = run_epoch(
+    gs, _ = loop_mod.run_epoch(
         wrapper,
         _loader(ds),
         optimizer,
@@ -454,8 +438,6 @@ def test_trainer_disabled_when_floor_gb_zero(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """host_ram_floor_gb <= 0 disables the guard; run completes normally even with 0 RAM."""
-    import custom_sam_peft.train.loop as loop_mod
-
     monkeypatch.setattr(loop_mod.psutil, "virtual_memory", lambda: _fake_vmem(0))
 
     ds = _TinyDataset()

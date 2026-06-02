@@ -465,7 +465,6 @@ def test_ctrl_c_writes_nothing(tmp_path, monkeypatch) -> None:
 
 
 def test_vram_autosize_runs_calibration_on_consent(monkeypatch) -> None:
-    import custom_sam_peft.cli.setup_wizard as sw
     from custom_sam_peft.presets import PresetDecision
 
     decision = PresetDecision(
@@ -525,8 +524,6 @@ def test_vram_autosize_applies_config_patch(monkeypatch) -> None:
 
 
 def test_vram_autosize_falls_back_to_analytic_then_manual(monkeypatch) -> None:
-    import custom_sam_peft.cli.setup_wizard as sw
-
     def _boom(**kw):
         raise RuntimeError("probe failed")
 

@@ -396,7 +396,7 @@ def test_prose_defining_class_rekey(tmp_path: Path) -> None:
 # Phase 2 tests
 # ---------------------------------------------------------------------------
 
-import yaml as _yaml  # noqa: E402,F401 — PyYAML is a base dependency; mid-file per-task append
+import yaml  # noqa: E402,F401 — PyYAML is a base dependency; mid-file per-task append  # lgtm[py/unused-import]
 
 from custom_sam_peft._provenance_check import (  # noqa: E402
     check_table_section,

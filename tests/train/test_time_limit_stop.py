@@ -8,10 +8,10 @@ from typing import Any
 import pytest
 import torch
 
+import custom_sam_peft.train.loop as loop_mod
 from custom_sam_peft.eval._artifacts import EvalArtifacts
 from custom_sam_peft.peft_adapters.lora import apply_lora
 from custom_sam_peft.tracking.noop import NoopTracker
-from custom_sam_peft.train.loop import _TimeLimitReached, run_epoch
 from custom_sam_peft.train.trainer import Trainer
 from tests.fixtures.tiny_sam3_lora_stub import make_stub_wrapper
 from tests.integration.test_trainer_evaluator_seam import _make_cfg, _TinyDataset
@@ -24,7 +24,7 @@ def _loader(ds: _TinyDataset) -> list[dict[str, object]]:
 
 
 def test_run_epoch_flushes_and_raises_on_past_deadline(tmp_path: Path) -> None:
-    """A deadline already in the past flushes step_<N>/ and raises _TimeLimitReached."""
+    """A deadline already in the past flushes step_<N>/ and raises loop_mod._TimeLimitReached."""
     ds = _TinyDataset()
     wrapper = make_stub_wrapper(dim=8, working=True)
     cfg = _make_cfg(tmp_path)
@@ -35,8 +35,8 @@ def test_run_epoch_flushes_and_raises_on_past_deadline(tmp_path: Path) -> None:
     optimizer = torch.optim.AdamW([p for p in wrapper.parameters() if p.requires_grad], lr=1e-4)
     scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda=lambda s: 1.0)
 
-    with pytest.raises(_TimeLimitReached) as exc:
-        run_epoch(
+    with pytest.raises(loop_mod._TimeLimitReached) as exc:
+        loop_mod.run_epoch(
             wrapper,
             _loader(ds),
             optimizer,
@@ -70,8 +70,6 @@ def test_fit_stops_flushes_and_skips_finalize(
         update={"train": cfg.train.model_copy(update={"time_limit": "2h30m", "epochs": 50})}
     )
     apply_lora(wrapper, cfg.peft)
-
-    import custom_sam_peft.train.loop as loop_mod
 
     monkeypatch.setattr(loop_mod.time, "monotonic", lambda: float("inf"))
     trainer = Trainer(wrapper, ds, ds, NoopTracker(), cfg)
@@ -136,8 +134,8 @@ def test_flush_extra_reads_live_values_not_epoch_start_snapshot(tmp_path: Path) 
         calls.append(snapshot)
         return snapshot
 
-    with pytest.raises(_TimeLimitReached):
-        run_epoch(
+    with pytest.raises(loop_mod._TimeLimitReached):
+        loop_mod.run_epoch(
             wrapper,
             _loader(ds),
             optimizer,
