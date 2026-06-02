@@ -167,7 +167,7 @@ Experiment tracking backend configuration.
 
 | Field | Type | Default | Layer | Description | YAGNI rationale |
 | --- | --- | --- | --- | --- | --- |
-| `tracking.backend` | `"tensorboard"` \| `"wandb"` \| `"none"` | `"tensorboard"` | common | Which tracking backend to use for logging scalars and images. | Audit §E: 4/4 examples set it; backend depends on team tooling. |
+| `tracking.backend` | `"local"` \| `"tensorboard"` \| `"wandb"` \| `"none"` | `"local"` | common | Which tracking backend to use for logging scalars and images. `local` writes `metrics.jsonl` with no heavy deps; `tensorboard` requires the `[tensorboard]` extra. | Audit §E: 4/4 examples set it; backend depends on team tooling. |
 | `tracking.wandb.project` | str | `"custom_sam_peft"` | advanced | Weights & Biases project name (only used when `tracking.backend == "wandb"`). | Audit §E: 0 non-test hits; only needed when using W&B. |
 | `tracking.wandb.entity` | str \| null | `null` | advanced | Weights & Biases team/user entity; `null` uses the default W&B entity. | Audit §E: 0 non-test hits; only needed for W&B team workspaces. |
 
