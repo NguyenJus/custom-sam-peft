@@ -11,7 +11,7 @@ consumer GPU.
 > **⚠️ Work in progress.**
 > An active development snapshot — **the code runs**, but it hasn't been validated end-to-end on production workloads. The CLI surfaces (`train`, `run`, `eval`, `predict`, `export`, `init`, `doctor`, `calibrate`) exercise real subsystems (LoRA / QLoRA adapters, TensorBoard / W&B tracking). Expect breaking changes; pin to a tagged release if you need stability.
 
-## Beginner — train in Colab
+## Train in Colab
 
 Train a custom segmentation model in your browser via Google Colab. No local GPU setup required.
 
@@ -33,9 +33,9 @@ summary, sample mask overlays, and a one-line download command.
 For RunPod, see [cloud/runpod/README.md](cloud/runpod/README.md).
 Already on a GPU pod? Skip the pip-install wait — see [cloud/docker/README.md](cloud/docker/README.md).
 
-## Advanced
+## Quickstart
 
-### Quickstart
+New here? The fastest path is the interactive setup wizard: `custom-sam-peft init --interactive` auto-detects your COCO data paths, calibrates VRAM presets for your GPU, and writes a ready-to-train config. Then hand that config to `run`.
 
 ```bash
 # Install
@@ -62,7 +62,9 @@ uv run custom-sam-peft train config.yaml --eval --export  # same as `run`
 
 `run cfg.yaml` is shorthand for `train cfg.yaml --eval --export`.
 
-#### From the prebuilt image (no local Python install required)
+## Advanced
+
+### From the prebuilt image (no local Python install required)
 
 ```bash
 docker run --gpus all --rm \
