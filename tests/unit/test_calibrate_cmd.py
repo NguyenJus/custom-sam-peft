@@ -43,6 +43,7 @@ data:
 peft:
   method: {method}
   r: {r}
+  alpha: {2 * r}
 
 train:
   epochs: 1
@@ -718,3 +719,31 @@ def test_run_calibration_large_aim_all_probes_oom_raises(
             output=tmp_path / "c.json",
             force=True,
         )
+
+
+def test_write_and_read_chosen_alpha_round_trip(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from custom_sam_peft.cli import calibrate_cmd
+
+    _patch_probe(monkeypatch, tmp_path=tmp_path)
+    out = tmp_path / "cache.json"
+    calibrate_cmd._write_cache_v3(
+        out,
+        gpu_name="X",
+        total=int(16 * _GB),
+        a_fixed=1,
+        a_per_class=1,
+        peak=123,
+        method="lora",
+        r=8,
+        alpha=16,
+        batch=1,
+        classes_per_forward=8,
+    )
+    data = json.loads(out.read_text())
+    assert data["chosen_alpha"] == 16
+    decision = calibrate_cmd._decision_from_cache(out, k_cap=16)
+    assert decision is not None
+    assert decision.r == 8
+    assert decision.alpha == 16

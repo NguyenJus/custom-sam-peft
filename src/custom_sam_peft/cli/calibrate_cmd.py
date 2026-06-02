@@ -174,6 +174,7 @@ def _apply_config_rewrite(config: Path, *, decision: PresetDecision) -> None:
             config,
             method=decision.method,
             r=decision.r,
+            alpha=decision.alpha,
             batch_size=decision.batch_size,
             grad_accum_steps=decision.grad_accum_steps,
             classes_per_forward=decision.classes_per_forward,
@@ -253,6 +254,7 @@ def _write_cache_v3(
     peak: int,
     method: str | None = None,
     r: int | None = None,
+    alpha: int | None = None,
     batch: int | None = None,
     classes_per_forward: int | None = None,
 ) -> None:
@@ -277,6 +279,8 @@ def _write_cache_v3(
         payload["chosen_method"] = method
     if r is not None:
         payload["chosen_r"] = int(r)
+    if alpha is not None:
+        payload["chosen_alpha"] = int(alpha)
     if batch is not None:
         payload["chosen_batch"] = int(batch)
     if classes_per_forward is not None:
@@ -307,6 +311,7 @@ def _decision_from_cache(output: Path, k_cap: int) -> PresetDecision | None:
         return None
     method = data["chosen_method"]
     r = int(data["chosen_r"])
+    alpha = int(data.get("chosen_alpha", 2 * r))
     batch = int(data["chosen_batch"])
     k = min(int(data["chosen_classes_per_forward"]), k_cap)
     peak = int(data["peak_memory_bytes_at_probe"])
@@ -318,6 +323,7 @@ def _decision_from_cache(output: Path, k_cap: int) -> PresetDecision | None:
     return PresetDecision(
         method=method,
         r=r,
+        alpha=alpha,
         batch_size=batch,
         grad_accum_steps=max(1, 16 // batch),
         classes_per_forward=k,
