@@ -446,9 +446,7 @@ def extract_preset_cell_lines(file_path: Path) -> list[CellLine]:
     for span in spans:
         in_span.update(span)
     for idx, line in enumerate(lines):
-        if idx in in_span and _DICT_VALUE_LINE.match(line):
-            cells.append(CellLine(text=line, lineno=idx + 1))
-        elif _ALIAS_LINE.match(line):
+        if (idx in in_span and _DICT_VALUE_LINE.match(line)) or _ALIAS_LINE.match(line):
             cells.append(CellLine(text=line, lineno=idx + 1))
     return cells
 
@@ -550,8 +548,7 @@ def check_yaml_section(
                 location=f"{basename}:{dotted}",
                 problem="template scalar echoes a schema default but has no cross-link row",
                 remediation=(
-                    "add a `cross-link` row to the "
-                    "`## cli/templates/config_full.yaml` section"
+                    "add a `cross-link` row to the `## cli/templates/config_full.yaml` section"
                 ),
             )
         )
@@ -587,6 +584,69 @@ def check_table_section(section: Section, file_path: Path) -> list[ProvenanceVio
                             ),
                         )
                     )
+    return violations
+
+
+DOC_REL_PATH = "docs/defaults-provenance.md"
+
+
+def schema_default_dotted_paths(repo_root: Path) -> set[str]:
+    """Dotted YAML paths for every pydantic field that has a default, from the schema.
+
+    Walks ``custom_sam_peft.config.schema.RunConfig`` (the root config model) and
+    yields the dotted path of each field whose model field has a default. Used
+    only for Assertion 3; imported lazily so the unit tests that pass explicit
+    schema-default sets do not need the real schema importable.
+    """
+    from pydantic import BaseModel
+
+    from custom_sam_peft.config.schema import RunConfig
+
+    paths: set[str] = set()
+
+    def walk(model: type[BaseModel], prefix: str) -> None:
+        for name, field in model.model_fields.items():
+            dotted = f"{prefix}.{name}" if prefix else name
+            annotation = field.annotation
+            nested = annotation
+            # Unwrap Optional[...] / X | None to find a nested BaseModel.
+            args = getattr(annotation, "__args__", ())
+            for arg in args:
+                if isinstance(arg, type) and issubclass(arg, BaseModel):
+                    nested = arg
+                    break
+            if isinstance(nested, type) and issubclass(nested, BaseModel):
+                walk(nested, dotted)
+            else:
+                has_default = (
+                    field.default is not None or field.default_factory is not None
+                ) or not field.is_required()
+                if has_default:
+                    paths.add(dotted)
+
+    walk(RunConfig, "")
+    return paths
+
+
+def run_all_checks(repo_root: Path) -> list[ProvenanceViolation]:
+    """Run all three assertions over the real repo; return ALL violations."""
+    doc_text = (repo_root / DOC_REL_PATH).read_text(encoding="utf-8")
+    violations: list[ProvenanceViolation] = []
+    schema_paths: set[str] | None = None
+    for section in discover_sections(doc_text):
+        kind = classify_section(section, repo_root)
+        if kind == "prose-narrative":
+            continue
+        path = resolve_section_path(section.header, repo_root)
+        if path is not None:
+            if kind == "prose":
+                violations.extend(check_prose_section(section, path))
+            elif kind == "table":
+                violations.extend(check_table_section(section, path))
+            elif kind == "yaml":
+                if schema_paths is None:
+                    schema_paths = schema_default_dotted_paths(repo_root)
+                violations.extend(check_yaml_section(section, path, schema_paths))
     return violations
 
 

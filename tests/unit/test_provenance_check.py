@@ -396,7 +396,7 @@ def test_prose_defining_class_rekey(tmp_path: Path) -> None:
 # Phase 2 tests
 # ---------------------------------------------------------------------------
 
-import yaml as _yaml  # noqa: F401 — PyYAML is a base dependency
+import yaml as _yaml  # noqa: E402,F401 — PyYAML is a base dependency; mid-file per-task append
 
 from custom_sam_peft._provenance_check import (  # noqa: E402
     check_table_section,
@@ -404,41 +404,36 @@ from custom_sam_peft._provenance_check import (  # noqa: E402
     extract_preset_cell_lines,
     parse_doc_legend_letters,
     recognize_cell_tag,
+    run_all_checks,
     yaml_scalar_dotted_paths,
 )
 
 
 def test_extract_preset_cell_lines_includes_legacy_and_alias(tmp_path: Path) -> None:
     src = (
-        'PRESET_TABLE = {\n'
+        "PRESET_TABLE = {\n"
         '    ("a", "b"): {\n'
         '        "k": 1,  # cite: (A)\n'
-        '    },\n'
-        '}\n'
+        "    },\n"
+        "}\n"
         'PRESET_TABLE[("c", "d")] = dict(PRESET_TABLE[("a", "b")])  # cite: (G)\n'
-        '_LEGACY_DEFAULTS: dict[str, Any] = {\n'
+        "_LEGACY_DEFAULTS: dict[str, Any] = {\n"
         '    "w": 1.0,  # cite: (B)\n'
-        '}\n'
+        "}\n"
     )
     f = tmp_path / "presets.py"
     f.write_text(src)
     cells = extract_preset_cell_lines(f)
     texts = [c.text for c in cells]
     assert any('"k": 1' in t for t in texts)
-    assert any("PRESET_TABLE[(\"c\", \"d\")]" in t for t in texts)  # alias line
+    assert any('PRESET_TABLE[("c", "d")]' in t for t in texts)  # alias line
     assert any('"w": 1.0' in t for t in texts)  # _LEGACY_DEFAULTS cell
     # Each cell carries its 1-based line number.
     assert all(c.lineno >= 1 for c in cells)
 
 
 def test_parse_doc_legend_letters() -> None:
-    body = (
-        "### Legend\n\n"
-        "| Letter | Meaning |\n"
-        "| --- | --- |\n"
-        "| (a) | domain |\n"
-        "| (e) | recipe |\n"
-    )
+    body = "### Legend\n\n| Letter | Meaning |\n| --- | --- |\n| (a) | domain |\n| (e) | recipe |\n"
     assert parse_doc_legend_letters(body) == {"a", "e"}
 
     cite_body = (
@@ -449,6 +444,28 @@ def test_parse_doc_legend_letters() -> None:
         "| H | x | y |\n"
     )
     assert parse_doc_legend_letters(cite_body) == {"A", "H"}
+
+
+def test_run_all_checks_aggregates_and_dispatches(tmp_path: Path) -> None:
+    # Build a tiny repo: one prose file with a missing doc row.
+    (tmp_path / "src/custom_sam_peft/config").mkdir(parents=True)
+    (tmp_path / "src/custom_sam_peft/config/schema.py").write_text(
+        "from pydantic import BaseModel, Field\n\n\n"
+        "class C(BaseModel):\n    a: int = Field(default=3)\n"
+    )
+    (tmp_path / "docs").mkdir(parents=True)
+    (tmp_path / "docs/defaults-provenance.md").write_text(
+        "# Defaults Provenance\n\n"
+        "## config/schema.py\n\n"
+        "| Location | Value | Tag | Full reference | Verifying quote | Notes |\n"
+        "| --- | --- | --- | --- | --- | --- |\n"
+        # no row for C.a -> one code->doc violation expected
+        "\n"
+        "## Verification Standard\n\nnarrative, no check.\n"
+    )
+    violations = run_all_checks(tmp_path)
+    assert len(violations) == 1
+    assert "config/schema.py:C.a" in str(violations[0])
 
 
 def test_yaml_scalar_dotted_paths_flattens(tmp_path: Path) -> None:
@@ -498,7 +515,7 @@ def test_yaml_present_crosslink_passes(tmp_path: Path) -> None:
 
 def _table_module(tmp_path: Path, cells: str) -> Path:
     f = tmp_path / "aug_presets.py"
-    f.write_text(f"PRESET_TABLE = {{\n    (\"a\", \"b\"): {{\n{cells}    }},\n}}\n")
+    f.write_text(f'PRESET_TABLE = {{\n    ("a", "b"): {{\n{cells}    }},\n}}\n')
     return f
 
 
