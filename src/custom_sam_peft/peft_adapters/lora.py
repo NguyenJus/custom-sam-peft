@@ -7,9 +7,9 @@ Public entry points:
   merge_lora(wrapper) -> Sam3Wrapper        # fold adapters into base
 
 SCOPE_TARGETS maps the LoraScope literal to a list of regex patterns matched
-against `base.named_modules()` paths. It is the SINGLE point that encodes
-SAM 3.1's attention module naming; if Meta renames modules, only this dict
-(and a few stub fixtures) needs to change.
+against `base.named_modules()` paths. SCOPE_TARGETS and SCOPE_TARGET_PARAMETERS
+together encode SAM 3.1's attention naming; if Meta renames modules, only these
+dicts (and a few stub fixtures) need to change.
 """
 
 from __future__ import annotations

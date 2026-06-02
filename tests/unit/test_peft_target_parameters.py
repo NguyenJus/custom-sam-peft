@@ -49,10 +49,6 @@ class _MiniBase(nn.Module):
         self.transformer.decoder.layers = nn.ModuleList([layer])
 
 
-def _real_paths() -> list[str]:
-    return [n for n, _ in _MiniBase().named_parameters()]
-
-
 def test_resolve_empty_for_legacy_scope_returns_empty_no_error() -> None:
     base = _MiniBase()
     got = _resolve_target_parameters(base, PEFTConfig(method="lora", scope="vision_decoder"))
@@ -74,6 +70,15 @@ def test_resolve_empty_list_override_is_valid() -> None:
     base = _MiniBase()
     cfg = PEFTConfig(method="lora", scope="vision_decoder_concept", target_parameters=[])
     assert _resolve_target_parameters(base, cfg) == []
+
+
+def test_resolve_concept_scope_matches_inproj_from_mini_base() -> None:
+    base = _MiniBase()
+    cfg = PEFTConfig(method="lora", scope="vision_decoder_concept")
+    got = _resolve_target_parameters(base, cfg)
+    assert "transformer.decoder.layers.0.ca_text.in_proj_weight" in got
+    assert "transformer.decoder.layers.0.self_attn.in_proj_weight" in got
+    assert len(got) == 2
 
 
 def test_resolve_non_empty_no_match_raises_valueerror() -> None:
