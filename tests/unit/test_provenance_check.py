@@ -324,6 +324,57 @@ def test_prose_stale_module_row_is_orphan(tmp_path: Path) -> None:
     assert "BASE_ACTIVATION_AT_1024" in str(violations[0])
 
 
+def test_surface_terminates_on_container_cycle(tmp_path: Path) -> None:
+    # A mutual cycle: A.b defaults to B() and B.a defaults to A().
+    # Without the cycle guard this would cause infinite recursion / non-termination.
+    # The guard is per-descent-path, so both classes still emit their own leaf fields.
+    src = """
+from pydantic import BaseModel, Field
+
+
+class A(BaseModel):
+    x: int = Field(default=1)
+    b: object = Field(default_factory=B)
+
+
+class B(BaseModel):
+    y: int = Field(default=2)
+    a: object = Field(default_factory=A)
+"""
+    f = tmp_path / "cycle.py"
+    f.write_text(src)
+    # Must return without RecursionError / hanging.
+    surface = extract_default_surface(f)
+    # Each class's own leaf fields must be present.
+    assert "A.x" in surface
+    assert "B.y" in surface
+    # The container fields themselves are suppressed (they're container references).
+    assert "A.b" not in surface
+    assert "B.a" not in surface
+
+
+def test_prose_required_when_value_is_not_exempt(tmp_path: Path) -> None:
+    # A Value cell like "field is required when X enabled" contains "required" but
+    # does NOT start with it; the tightened startswith check must NOT exempt such a
+    # row from the orphan check (the old `in` check would have wrongly exempted it).
+    f = tmp_path / "schema.py"
+    f.write_text(
+        "from pydantic import BaseModel, Field\n\n\n"
+        "class C(BaseModel):\n    a: int = Field(default=3)\n"
+    )
+    # "field is required only when mask_decoder enabled" — contains "required" mid-string.
+    gone_row = (
+        "| `schema.py:C.gone` | `field is required only when mask_decoder enabled`"
+        " | `# cite: y` | — | — | n |\n"
+    )
+    body = _prose_doc_body("| `schema.py:C.a` | `3` | `# cite: x` | — | — | n |\n" + gone_row)
+    section = Section(header="schema.py", body=body)
+    violations = check_prose_section(section, f)
+    # C.gone is an orphan; "field is required only when ..." must NOT exempt it.
+    assert len(violations) == 1
+    assert "C.gone" in str(violations[0])
+
+
 def test_prose_defining_class_rekey(tmp_path: Path) -> None:
     # Outer-rooted doc rows (TrainHyperparams.early_stop.*) are re-keyed to the
     # defining-class form (EarlyStopConfig.*) before matching the surface.

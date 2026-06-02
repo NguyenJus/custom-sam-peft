@@ -98,8 +98,11 @@ class DocRow:
     """A parsed doc table row, relative to its section (amended #192).
 
     ``value`` is the raw **Value** cell text (used for the required-field
-    exemption); ``is_subscript_key`` flags Location keys an AST surface cannot
-    emit (a bare symbol containing ``[`` or ``(``).
+    exemption).  ``is_subscript_key`` flags a bare symbol that contains ``[``
+    (a subscript/call-path key the AST surface cannot emit).
+    ``is_in_function_literal`` flags a ``symbol (<note>)`` parenthetical with
+    NO ``[`` before the paren — indicating a literal embedded inside a function
+    body rather than a module- or class-level default.
     """
 
     symbol: str
@@ -209,6 +212,11 @@ def _nested_container_name(value: ast.expr | None) -> str | None:
     """Class name if the default/default_factory references a config class, else None.
 
     Handles ``Field(default_factory=X)``, ``Field(default=X())``, and bare ``= X()``.
+
+    Deliberate limitations (no real schema field uses these forms today):
+    - ``= SomeConfig`` (bare class reference without a call) is NOT detected.
+    - ``Field(default_factory=lambda: X())`` is NOT detected (lambda body not walked).
+    Future container fields using those forms would be silently treated as plain leaves.
     """
     if value is None:
         return None
@@ -286,7 +294,7 @@ def extract_default_surface(file_path: Path) -> set[str]:
 
     # (2) Class-body field defaults — suppress nested containers + recurse;
     #     defining-class keying; required + override-mirror handling.
-    def recurse(class_node: ast.ClassDef) -> None:
+    def recurse(class_node: ast.ClassDef, path: frozenset[str]) -> None:
         for stmt in class_node.body:
             target = _field_target_name(stmt)
             if target is None or target == "model_config":
@@ -296,8 +304,9 @@ def extract_default_surface(file_path: Path) -> set[str]:
                 continue
             nested = _nested_container_name(value)
             if nested in classes:
-                recurse(classes[nested])  # local container -> recurse, suppress leaf
-                continue
+                if nested not in path:  # cycle guard: skip if already on descent path
+                    recurse(classes[nested], path | {nested})
+                continue  # suppress leaf regardless (container, cyclic or not)
             if _looks_like_container(nested):
                 continue  # imported container -> suppress (leaves in its own section)
             if class_node.name in OVERRIDE_MIRROR_CLASSES:
@@ -306,7 +315,7 @@ def extract_default_surface(file_path: Path) -> set[str]:
 
     for node in tree.body:
         if isinstance(node, ast.ClassDef):
-            recurse(node)
+            recurse(node, frozenset({node.name}))
     return surface
 
 
@@ -323,6 +332,11 @@ def module_assign_names(file_path: Path) -> set[str]:
 
 
 # Outer-rooted doc rows re-keyed to defining-class form (single keying rule).
+# Phase-1→Phase-4 bridge: this map exists only because the current doc rows use
+# 3-level outer-path keying (e.g. ``TrainHyperparams.early_stop.enabled``).
+# Once Phase-4 Task 4.6 re-keys those rows to defining-class form
+# (``EarlyStopConfig.enabled``), delete this map — or replace it with an
+# assertion that fails if any surviving doc row still contains a 3-level path.
 _REKEY_PREFIXES: dict[str, str] = {
     "TrainHyperparams.early_stop.": "EarlyStopConfig.",
     "TrainHyperparams.lr_decay_on_plateau.": "LrDecayOnPlateauConfig.",
@@ -374,7 +388,7 @@ def check_prose_section(section: Section, file_path: Path) -> list[ProvenanceVio
     for row in rows:
         if row.is_in_function_literal or row.is_subscript_key:
             continue
-        if "required" in row.value.lower():
+        if row.value.lower().startswith("required"):
             continue  # required-field exemption
         symbol = _rekey_to_defining_class(row.symbol)
         if symbol in surface:
