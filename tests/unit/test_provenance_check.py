@@ -397,6 +397,7 @@ def test_prose_defining_class_rekey(tmp_path: Path) -> None:
 # ---------------------------------------------------------------------------
 
 from custom_sam_peft._provenance_check import (  # noqa: E402
+    check_table_section,
     extract_preset_cell_lines,
     parse_doc_legend_letters,
     recognize_cell_tag,
@@ -444,6 +445,43 @@ def test_parse_doc_legend_letters() -> None:
         "| H | x | y |\n"
     )
     assert parse_doc_legend_letters(cite_body) == {"A", "H"}
+
+
+def _table_module(tmp_path: Path, cells: str) -> Path:
+    f = tmp_path / "aug_presets.py"
+    f.write_text(f"PRESET_TABLE = {{\n    (\"a\", \"b\"): {{\n{cells}    }},\n}}\n")
+    return f
+
+
+def _legend_body(letters: str) -> str:
+    rows = "".join(f"| ({c}) | meaning |\n" for c in letters)
+    return "### Legend\n\n| Letter | Meaning |\n| --- | --- |\n" + rows
+
+
+def test_table_all_cells_tagged_and_resolved_passes(tmp_path: Path) -> None:
+    f = _table_module(tmp_path, '        "k": 1,  # (a)\n')
+    section = Section(header="data/aug_presets.py", body=_legend_body("a"))
+    assert check_table_section(section, f) == []
+
+
+def test_table_untagged_cell_fails(tmp_path: Path) -> None:
+    f = _table_module(tmp_path, '        "k": 1,\n')
+    section = Section(header="data/aug_presets.py", body=_legend_body("a"))
+    violations = check_table_section(section, f)
+    assert len(violations) == 1
+    msg = str(violations[0])
+    assert "aug_presets.py:" in msg
+    assert "untagged" in msg
+
+
+def test_table_undefined_legend_letter_fails(tmp_path: Path) -> None:
+    f = _table_module(tmp_path, '        "k": 1,  # (z)\n')
+    section = Section(header="data/aug_presets.py", body=_legend_body("a"))  # no (z)
+    violations = check_table_section(section, f)
+    assert len(violations) == 1
+    msg = str(violations[0])
+    assert "z" in msg
+    assert "undefined legend letter" in msg
 
 
 def test_recognize_cell_tag_forms() -> None:

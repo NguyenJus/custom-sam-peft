@@ -500,6 +500,38 @@ def recognize_cell_tag(line: str) -> CellTag | None:
     return None
 
 
+def check_table_section(section: Section, file_path: Path) -> list[ProvenanceViolation]:
+    """Assertion 2: every preset-table cell carries a tag; legend letters resolve."""
+    file_disp = _unescape_md(section.header).strip()
+    defined_letters = parse_doc_legend_letters(section.body)
+    violations: list[ProvenanceViolation] = []
+    for cell in extract_preset_cell_lines(file_path):
+        tag = recognize_cell_tag(cell.text)
+        if tag is None:
+            violations.append(
+                ProvenanceViolation(
+                    location=f"{file_disp}:{cell.lineno}",
+                    problem="untagged preset cell",
+                    remediation="add a legend letter, `# cite:`, or `# tbd:` tag",
+                )
+            )
+            continue
+        if tag["kind"] == "legend":
+            for letter in tag["letters"]:
+                if letter not in defined_letters:
+                    violations.append(
+                        ProvenanceViolation(
+                            location=f"{file_disp}:{cell.lineno}",
+                            problem=f"undefined legend letter `{letter}`",
+                            remediation=(
+                                f"define it in the legend under `## {file_disp}` "
+                                "in docs/defaults-provenance.md"
+                            ),
+                        )
+                    )
+    return violations
+
+
 def discover_sections(doc_text: str) -> list[Section]:
     """Split the doc into ``## <header>`` sections (body excludes the header line)."""
     matches = list(_H2.finditer(doc_text))
