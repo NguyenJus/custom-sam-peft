@@ -1,8 +1,12 @@
 # Defaults Provenance
 
 This document is the source of truth for the provenance of every trust-bearing
-default hyperparameter in `custom-sam-peft`. Inline `# cite:` / `# tbd:` tags in
-the code are deliberately terse pointers into the rows below.
+default hyperparameter in `custom-sam-peft`. This document is the **home** for
+provenance; inline `# cite:` / `# tbd:` tags in the code are **no longer the
+primary code↔doc pointer**. A small curated set of head-turner defaults retains
+an inline note purely as a reader's "wait, that's intentional" guard, not as the
+canonical provenance pointer. A CI completeness check
+(`tests/test_defaults_provenance.py`) keeps this registry in sync with the code.
 
 Umbrella `# tbd:` tracker: #191
 (Every `# tbd: #191` tag and row points there.)
@@ -23,8 +27,9 @@ Row schema (every section uses these six columns):
 
 - **Location** — `file:symbol`.
 - **Value** — the literal default.
-- **Tag** — the inline tag class applied (mirrors the code), or `index-only` for
-  untagged self-evident structural/string defaults.
+- **Tag** — the provenance class of the row — one of `cite`, `tbd`, `index-only`,
+  or `cross-link`. This is the row's classification in this registry; it no
+  longer mirrors an inline code tag (most defaults now carry no inline tag).
 - **Full reference** — authors, year, arXiv/DOI, exact Eq./Table/Fig.; or the
   upstream-doc URL + pinned version (framework defaults); or repo file/line
   (reference-impl).
