@@ -416,6 +416,9 @@ class CellLine:
 
 
 # A value line inside a dict literal: ``"key": <value>,`` (optionally tagged).
+# Assumes PRESET_TABLE/_LEGACY_DEFAULTS keys at nesting level 1 are tuples (not
+# strings), so only true value cells match _DICT_VALUE_LINE — not intermediate
+# string-keyed sub-dict openers.
 _DICT_VALUE_LINE = re.compile(r'^\s*"[^"]+"\s*:\s*.+,?\s*(#.*)?$')
 # A module-level alias assignment line in losses/presets.py.
 _ALIAS_LINE = re.compile(r"^\s*PRESET_TABLE\[\(.+\)\]\s*=\s*dict\(.+\)")
@@ -467,7 +470,7 @@ def parse_doc_legend_letters(section_body: str) -> set[str]:
             letters.add(m.group(1))
             continue
         m = _LEGEND_ROW_PLAIN.match(line)
-        if m is not None and m.group(1) not in {"L"}:  # skip the "Letter" header
+        if m is not None:
             letters.add(m.group(1))
     return letters
 
@@ -597,6 +600,10 @@ def schema_default_dotted_paths(repo_root: Path) -> set[str]:
     yields the dotted path of each field whose model field has a default. Used
     only for Assertion 3; imported lazily so the unit tests that pass explicit
     schema-default sets do not need the real schema importable.
+
+    Recursion into nested BaseModel fields is unconditional, so a nested
+    sub-field's default requires a cross-link even when its parent field is
+    itself required (has no default).
     """
     from pydantic import BaseModel
 

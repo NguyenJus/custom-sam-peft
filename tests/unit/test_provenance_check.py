@@ -563,3 +563,24 @@ def test_recognize_cell_tag_forms() -> None:
     # No tag => None.
     assert recognize_cell_tag('"x": 1,') is None
     assert recognize_cell_tag('"vflip": False,') is None
+
+
+def test_extract_preset_cell_lines_multiple_tuple_key_entries(tmp_path: Path) -> None:
+    # Two tuple-key entries: the inner `},` closes must NOT prematurely end the
+    # top-level span; all cells from both entries are collected.
+    src = (
+        "PRESET_TABLE = {\n"
+        '    ("a", "b"): {\n'
+        '        "k": 1,  # (a)\n'
+        "    },\n"
+        '    ("c", "d"): {\n'
+        '        "m": 2,  # (a)\n'
+        "    },\n"
+        "}\n"
+    )
+    f = tmp_path / "aug_presets.py"
+    f.write_text(src)
+    texts = [c.text for c in extract_preset_cell_lines(f)]
+    assert any('"k": 1' in t for t in texts)
+    assert any('"m": 2' in t for t in texts)
+    assert not any('("a", "b")' in t for t in texts)  # tuple-key lines are not cells
