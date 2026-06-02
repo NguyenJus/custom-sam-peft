@@ -747,3 +747,90 @@ def test_write_and_read_chosen_alpha_round_trip(
     assert decision is not None
     assert decision.r == 8
     assert decision.alpha == 16
+
+
+def _write_config_with_alpha(path: Path, *, method: str, r: int, alpha: int, k: int) -> None:
+    """Write config with a specific alpha (overrides the default 2*r written by _write_config)."""
+    _write_config(path, method=method, r=r, k=k)
+    # _write_config already emits `  alpha: {2*r}`; replace it with the desired value.
+    text = path.read_text().replace(f"  alpha: {2 * r}\n", f"  alpha: {alpha}\n")
+    path.write_text(text)
+
+
+def test_calibrate_reduce_coscales_alpha_and_warns(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import yaml
+
+    from custom_sam_peft.cli import calibrate_cmd
+
+    _patch_probe(monkeypatch, tmp_path=tmp_path, gpu_name="SmallGPU", total=int(16 * _GB))
+    _write_config_with_alpha(tmp_path / "config.yaml", method="lora", r=64, alpha=128, k=16)
+
+    def _probe(**kw):
+        if kw["r"] > 16 or kw["batch"] > 1 or kw["k_eff"] > 1:
+            raise torch.cuda.OutOfMemoryError("synthetic")
+        return _synthetic_peak(**kw)
+
+    monkeypatch.setattr(calibrate_cmd, "_run_probe", _probe)
+    monkeypatch.chdir(tmp_path)
+    out = tmp_path / ".custom_sam_peft_calibration.json"
+    decision = calibrate_cmd.run_calibration(
+        config=tmp_path / "config.yaml", output=out, force=True
+    )
+    assert decision.r <= 16
+    assert decision.alpha == 2 * decision.r
+    cfg = yaml.safe_load((tmp_path / "config.yaml").read_text())
+    assert cfg["peft"]["alpha"] == decision.alpha
+    assert json.loads(out.read_text())["chosen_alpha"] == decision.alpha
+
+
+def test_calibrate_no_reduction_leaves_alpha_untouched_no_warn(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import yaml
+
+    from custom_sam_peft.cli import calibrate_cmd
+
+    # Use a card that fits r=16/batch=1/K=1 but OOMs anything larger, so calibration
+    # neither reduces nor climbs r — the configured alpha=32 must be preserved verbatim.
+    _patch_probe(monkeypatch, tmp_path=tmp_path, gpu_name="MidGPU", total=int(16 * _GB))
+    _write_config_with_alpha(tmp_path / "config.yaml", method="lora", r=16, alpha=32, k=16)
+
+    def _probe(**kw):
+        if kw["r"] > 16 or kw["batch"] > 1 or kw["k_eff"] > 1:
+            raise torch.cuda.OutOfMemoryError("synthetic")
+        return _synthetic_peak(**kw)
+
+    monkeypatch.setattr(calibrate_cmd, "_run_probe", _probe)
+    monkeypatch.chdir(tmp_path)
+    out = tmp_path / ".custom_sam_peft_calibration.json"
+    decision = calibrate_cmd.run_calibration(
+        config=tmp_path / "config.yaml", output=out, force=True
+    )
+    assert decision.r == 16
+    assert decision.alpha == 32
+    cfg = yaml.safe_load((tmp_path / "config.yaml").read_text())
+    assert cfg["peft"]["alpha"] == 32
+
+
+def test_calibrate_custom_ratio_preserved(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """§7a.3(a): a non-2r ratio is preserved (NOT forced to alpha=2r)."""
+    from custom_sam_peft.cli import calibrate_cmd
+
+    _patch_probe(monkeypatch, tmp_path=tmp_path, gpu_name="SmallGPU", total=int(16 * _GB))
+    _write_config_with_alpha(tmp_path / "config.yaml", method="lora", r=64, alpha=64, k=16)
+
+    def _probe(**kw):
+        if kw["r"] > 8 or kw["batch"] > 1 or kw["k_eff"] > 1:
+            raise torch.cuda.OutOfMemoryError("synthetic")
+        return _synthetic_peak(**kw)
+
+    monkeypatch.setattr(calibrate_cmd, "_run_probe", _probe)
+    monkeypatch.chdir(tmp_path)
+    out = tmp_path / ".custom_sam_peft_calibration.json"
+    decision = calibrate_cmd.run_calibration(
+        config=tmp_path / "config.yaml", output=out, force=True
+    )
+    assert decision.r == 8
+    assert decision.alpha == 8

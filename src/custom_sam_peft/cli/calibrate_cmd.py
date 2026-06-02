@@ -436,6 +436,8 @@ def run_calibration(*, config: Path, output: Path, force: bool) -> PresetDecisio
     cfg = load_config(config)
     method = cfg.peft.method
     r = cfg.peft.r
+    cfg_r = cfg.peft.r
+    cfg_alpha = cfg.peft.alpha
     k_cap = min(cfg.train.multiplex.classes_per_forward, MULTIPLEX_CAP)
     batch = cfg.train.batch_size
 
@@ -479,6 +481,20 @@ def run_calibration(*, config: Path, output: Path, force: bool) -> PresetDecisio
         k_cap=k_cap,
     )
 
+    # Co-scale alpha to preserve the configured alpha:r ratio when autosize reduced r.
+    # Justified by the existing alpha=2r citation (LoRA Hu 2021 §4.1); no new # tbd:.
+    # No-op (byte-identical to today) when r is not reduced (spec §7a.3(d)).
+    if r < cfg_r:
+        alpha_final = round(cfg_alpha * r / cfg_r)
+        alpha_final = max(1, alpha_final)  # PositiveInt invariant
+        typer.echo(
+            f"WARNING: VRAM autosize reduced LoRA rank r {cfg_r}->{r} to fit {gpu_name}; "
+            f"alpha co-scaled {cfg_alpha}->{alpha_final} to preserve alpha/r scaling.",
+            err=True,
+        )
+    else:
+        alpha_final = cfg_alpha
+
     # Persist the measured peak AND the empirically-chosen sizing (Correction B). The
     # chosen_* keys make this confirmed config authoritative on every later cache-fresh
     # read, so a re-run never reverts to the analytic aim.
@@ -491,6 +507,7 @@ def run_calibration(*, config: Path, output: Path, force: bool) -> PresetDecisio
         peak=peak,
         method=method,
         r=r,
+        alpha=alpha_final,
         batch=batch,
         classes_per_forward=k,
     )
@@ -504,6 +521,7 @@ def run_calibration(*, config: Path, output: Path, force: bool) -> PresetDecisio
     decision = PresetDecision(
         method=method,
         r=r,
+        alpha=alpha_final,
         batch_size=batch,
         grad_accum_steps=max(1, 16 // batch),
         classes_per_forward=k,
