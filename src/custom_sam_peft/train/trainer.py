@@ -544,7 +544,8 @@ class Trainer:
             best_metric_value=self._best_metric_value,
             scheduler_kind=self._scheduler_kind,
         )
-        self._log_image_panel(val_examples, class_names, step)
+        if self.tracker.wants_images:
+            self._log_image_panel(val_examples, class_names, step)
 
     def _probe_predict_budget(self) -> None:
         """Empirically measure the model's predict VRAM footprint and warn if it exceeds budget.
