@@ -43,16 +43,12 @@ def _stub_cuda(monkeypatch, *, available=True, cap=(12, 0), total_gb=16, can_lau
 )
 def test_satisfied_tiers(monkeypatch, cap, total_gb, expected):
     _stub_cuda(monkeypatch, cap=cap, total_gb=total_gb)
-    from tests.conftest import _satisfied_tiers
-
-    assert _satisfied_tiers() == expected
+    assert cf._satisfied_tiers() == expected
 
 
 def test_satisfied_tiers_empty_without_cuda(monkeypatch):
     _stub_cuda(monkeypatch, available=False)
-    from tests.conftest import _satisfied_tiers
-
-    assert _satisfied_tiers() == set()
+    assert cf._satisfied_tiers() == set()
 
 
 # ---------------------------------------------------------------------------
@@ -61,14 +57,12 @@ def test_satisfied_tiers_empty_without_cuda(monkeypatch):
 
 
 def test_has_compatible_gpu_gate_is_cc_75(monkeypatch):
-    from tests.conftest import _has_compatible_gpu
-
     _stub_cuda(monkeypatch, cap=(6, 1))
-    assert _has_compatible_gpu() is False
+    assert cf._has_compatible_gpu() is False
     _stub_cuda(monkeypatch, cap=(7, 5))
-    assert _has_compatible_gpu() is True
+    assert cf._has_compatible_gpu() is True
     _stub_cuda(monkeypatch, cap=(12, 0))
-    assert _has_compatible_gpu() is True
+    assert cf._has_compatible_gpu() is True
 
 
 # ---------------------------------------------------------------------------
@@ -100,9 +94,7 @@ def _make_skip_predicate_cases():
 )
 def test_should_skip_helper(marker_tier, satisfied, should_skip, reason_substr):
     """_should_skip returns a skip-reason string when the tier is unmet, else None."""
-    from tests.conftest import _should_skip
-
-    result = _should_skip(marker_tier, satisfied)
+    result = cf._should_skip(marker_tier, satisfied)
     if should_skip:
         assert result is not None, f"expected skip for {marker_tier!r} on {satisfied!r}"
         if reason_substr is not None:

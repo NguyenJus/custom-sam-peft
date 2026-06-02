@@ -18,7 +18,6 @@ import torch
 
 import custom_sam_peft.train.runner as _runner_mod
 from custom_sam_peft.config.loader import load_config
-from custom_sam_peft.train.runner import run_training
 from tests.gpu.conftest import _bnb_available, _RecordingTracker
 
 pytestmark = [
@@ -57,7 +56,7 @@ def test_qlora_load_into_attached_peft_model(
     )
 
     # Capture the live wrapper after apply_qlora attaches the PeftModel.
-    # We monkeypatch the peft factory call inside run_training by intercepting
+    # We monkeypatch the peft factory call inside _runner_mod.run_training by intercepting
     # load_sam31 to stash the wrapper reference after PEFT is applied.
     captured: dict[str, Any] = {}
 
@@ -72,7 +71,7 @@ def test_qlora_load_into_attached_peft_model(
 
     tracker = _RecordingTracker()
     monkeypatch.setattr("custom_sam_peft.train.runner.build_tracker", lambda *_a, **_kw: tracker)
-    run_training(cfg)
+    _runner_mod.run_training(cfg)
 
     # Locate the adapter written by close_out (run_dir/adapter).
     runs = sorted(tmp_path.glob("gpu-smoke-qlora-*"))
@@ -81,7 +80,7 @@ def test_qlora_load_into_attached_peft_model(
     assert adapter_dir.is_dir(), f"close_out wrote no adapter dir under {runs[-1]}"
 
     wrapper = captured.get("wrapper")
-    assert wrapper is not None, "failed to capture wrapper from run_training"
+    assert wrapper is not None, "failed to capture wrapper from _runner_mod.run_training"
     assert wrapper.peft_model is not None, "wrapper.peft_model is None after training"
 
     # Simulate the close_out best-restore: call load_adapter on the wrapper
