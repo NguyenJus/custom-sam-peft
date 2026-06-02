@@ -221,7 +221,7 @@ def _freeze_non_adapter(model: nn.Module) -> None:
         param.requires_grad = False
 
 
-def _inject_lora_adapters(model: nn.Module, cfg: PEFTConfig) -> nn.Module:
+def _inject_lora_adapters(model: nn.Module, cfg: PEFTConfig) -> tuple[nn.Module, list[str]]:
     """Wrap *model* in a PeftModel with LoRA adapters on its Linear4bit layers.
 
     Sets ``model.is_loaded_in_4bit = True`` before calling ``get_peft_model``
@@ -230,7 +230,12 @@ def _inject_lora_adapters(model: nn.Module, cfg: PEFTConfig) -> nn.Module:
     Linear path whose ``merge()`` blindly does ``weight.data += delta`` on
     packed 4-bit storage, causing a shape-mismatch RuntimeError.
 
-    Returns the resulting ``PeftModel`` (a new object wrapping *model*).
+    Returns:
+        A 2-tuple ``(peft_model, lora_param_names)`` where ``peft_model`` is the
+        resulting ``PeftModel`` (a new object wrapping *model*) and
+        ``lora_param_names`` is the resolved list of target parameter names used
+        to build the ``LoraConfig`` — the authoritative single source of truth for
+        the logged ``n_param_targets`` count.
     """
     bnb = _import_bnb()
 
@@ -248,7 +253,7 @@ def _inject_lora_adapters(model: nn.Module, cfg: PEFTConfig) -> nn.Module:
         task_type=None,
     )
     model.is_loaded_in_4bit = True  # type: ignore[assignment]
-    return get_peft_model(model, lora_cfg)  # type: ignore[arg-type]
+    return get_peft_model(model, lora_cfg), lora_param_names  # type: ignore[arg-type]
 
 
 @register("peft", "qlora")
@@ -267,10 +272,9 @@ def apply_qlora(wrapper: Sam3Wrapper, cfg: PEFTConfig) -> Sam3Wrapper:
     from peft import PeftModel as _PeftModel
 
     base = cast(nn.Module, wrapper.model.model)
-    lora_param_names = _resolve_target_parameters(base, cfg)
     _quantize_base(base, cfg)
     _freeze_non_adapter(base)
-    peft_base = _inject_lora_adapters(base, cfg)
+    peft_base, lora_param_names = _inject_lora_adapters(base, cfg)
 
     wrapper.model.model = peft_base
     wrapper.peft_model = cast(_PeftModel, peft_base)
