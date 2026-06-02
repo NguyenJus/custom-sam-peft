@@ -786,7 +786,7 @@ def test_calibrate_reduce_coscales_alpha_and_warns(
 
 
 def test_calibrate_no_reduction_leaves_alpha_untouched_no_warn(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     import yaml
 
@@ -812,6 +812,7 @@ def test_calibrate_no_reduction_leaves_alpha_untouched_no_warn(
     assert decision.alpha == 32
     cfg = yaml.safe_load((tmp_path / "config.yaml").read_text())
     assert cfg["peft"]["alpha"] == 32
+    assert "alpha co-scaled" not in capsys.readouterr().err
 
 
 def test_calibrate_custom_ratio_preserved(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

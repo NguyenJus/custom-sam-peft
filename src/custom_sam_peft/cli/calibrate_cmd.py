@@ -436,6 +436,8 @@ def run_calibration(*, config: Path, output: Path, force: bool) -> PresetDecisio
     cfg = load_config(config)
     method = cfg.peft.method
     r = cfg.peft.r
+    # cfg_r / cfg_alpha: immutable pre-climb snapshots of the configured values, used
+    # by the co-scale guard below (the working `r` is reassigned by _confirm_and_climb).
     cfg_r = cfg.peft.r
     cfg_alpha = cfg.peft.alpha
     k_cap = min(cfg.train.multiplex.classes_per_forward, MULTIPLEX_CAP)
@@ -493,6 +495,10 @@ def run_calibration(*, config: Path, output: Path, force: bool) -> PresetDecisio
             err=True,
         )
     else:
+        # r == cfg_r (unchanged) or r > cfg_r (autosize climbed above the configured
+        # rank on a larger GPU): spec §7a.3(d) co-scales alpha ONLY on reduction, so
+        # alpha keeps its configured value here. Intentional asymmetry — do not change
+        # to `r != cfg_r` without a spec amendment.
         alpha_final = cfg_alpha
 
     # Persist the measured peak AND the empirically-chosen sizing (Correction B). The
