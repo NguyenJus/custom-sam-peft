@@ -334,7 +334,7 @@ def test_preset_decision_float16_round_trips() -> None:
 def test_decide_preset_selects_float16_below_cc80(
     monkeypatch: pytest.MonkeyPatch, _force_cuda_available: None
 ) -> None:
-    """On CC<8.0 hardware (below the CC 8.0 / Ampere floor) decide_preset must pick float16."""
+    """On CC<8.0 hardware (here stubbed at CC 6.1) decide_preset must pick float16."""
     # Use 40 GiB so a preset fits even at K_eff=MULTIPLEX_CAP (16).
     _stub_gpu(monkeypatch, int(40 * _GB), cc=(6, 1))
     decision = decide_preset()

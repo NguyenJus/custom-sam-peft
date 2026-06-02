@@ -38,8 +38,18 @@ it does not automatically satisfy lower tiers.
   T4 floor; also satisfied by RTX 5070 Ti at CC 12.0 / 16 GB).
 - **Dtype note:** **bf16 is coerced to fp16 below CC 8.0**. Tests in this tier
   run in fp16 on a real T4 (CC 7.5) and in fp16-compatible mode on a 5070 Ti.
-  They must not assert bf16-faithful numerics (that is `gpu_bf16`'s role).
-- **Count:** **33 tests** across `tests/integration/`, `tests/predict/`, and
+  They must not assert bf16-faithful numerics (that is `gpu_bf16`'s role). The
+  coercion is confirmed on a real Colab T4 (2026-06-01, finding #139) — see
+  [`gpu-evidence-colab-t4.md`](gpu-evidence-colab-t4.md).
+- **Flash-attention note:** below CC 8.0 there is no Flash attention, so SAM 3.1
+  self-attn falls back to the math kernel, which **materializes the full H·N²
+  score matrix**. At 1008px this is ~12.8 GiB in one allocation — fine for a
+  single-class (B=1/K=1) forward but it OOMs the T4 for **multiplex (K ≥ 8)
+  forward**. Multiplex forward is therefore *not guaranteed on a real T4*; it is
+  a `gpu_bf16` (Flash-card) capability. The **guaranteed T4 floor is the
+  B=1/K=1 single-class forward** plus LoRA/QLoRA training. Confirmed on Colab
+  2026-06-01 (#212) — see [`gpu-evidence-colab-t4.md`](gpu-evidence-colab-t4.md).
+- **Count:** **31 tests** across `tests/integration/`, `tests/predict/`, and
   `tests/gpu/`.
 - **Cadence guidance:** run before a tagged release, or when the training
   runner / tracker / optimizer code changes land.
@@ -52,7 +62,12 @@ it does not automatically satisfy lower tiers.
   12.0 satisfies this; a T4 at CC 7.5 does NOT).
 - **Dtype note:** these tests exercise **non-coerced, faithful bf16 numerics**.
   They are inappropriate on any card that silently downcasts bf16 to fp16.
-- **Count:** **1 test** (`tests/gpu/test_bf16_faithful.py`).
+- **Flash-attention note:** this tier also carries the **multiplex (K ≥ 8)
+  forward** tests, which need Flash attention (CC ≥ 8.0) to avoid materializing
+  a ~12.8 GiB self-attn score matrix at 1008px — they OOM a real T4 (#212).
+- **Count:** **3 tests** (`tests/gpu/test_bf16_faithful.py`;
+  `tests/gpu/test_multiplex_vram.py`; the K=8 multiplex forward in
+  `tests/integration/test_load_sam31_real.py`).
 - **Runner invocation:** `bash scripts/run_gpu_tests.sh bf16`
 
 ### `gpu_xl` — large-VRAM band (VRAM > 16 GB)
@@ -133,8 +148,8 @@ Per-tier test counts and typical runtimes:
 
 | Tier | Tests collected | Typical runtime |
 |------|-----------------|-----------------|
-| `gpu_t4` | 33 | ~15–25 min on 5070 Ti / ~30–40 min on T4 |
-| `gpu_bf16` | 1 | < 1 min on 5070 Ti |
+| `gpu_t4` | 31 | ~15–25 min on 5070 Ti / ~30–40 min on T4 |
+| `gpu_bf16` | 3 | < 5 min on 5070 Ti |
 | `gpu_xl` | 0 (currently empty) | — |
 
 The script uses `"${PYTHON:-python}" -m pytest` rather than bare `pytest` so
@@ -147,7 +162,7 @@ the runner picks the same interpreter that `pip install -e .` populated — bare
 T4 (Tesla T4, 16 GB VRAM, Turing architecture, CC 7.5) is the validated
 ceiling for training-smoke tests. The VRAM ceilings in the two smoke configs
 are calibrated to T4: 14 GB for LoRA (`configs/examples/gpu_smoke_lora.yaml`,
-asserted at `tests/gpu/test_real_train_overfits.py:32`) and 10 GB for QLoRA
+asserted at `tests/gpu/test_real_train_overfits.py:44`) and 10 GB for QLoRA
 (`configs/examples/gpu_smoke_qlora.yaml`, asserted at
 `tests/gpu/test_real_train_qlora.py:34`). These ceilings are not aspirational
 targets — they are the measured peak usage under the current training
