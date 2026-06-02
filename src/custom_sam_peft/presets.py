@@ -93,13 +93,14 @@ class PresetDecision:
     provenance: Literal["calibrated", "analytic"]
     cache_path: Path | None
     calibrated_at: str | None  # ISO 8601 string when provenance == "calibrated", None otherwise
+    alpha: int = 32  # cite: LoRA (Hu 2021) §4.1 (alpha = 2r); co-scaled by calibrate autosize
 
     @property
     def config_patch(self) -> dict[str, dict[str, object]]:
         """The 3-section dict the deep-merge consumer expects."""
         return {
             "model": {"dtype": self.dtype},
-            "peft": {"method": self.method, "r": self.r},
+            "peft": {"method": self.method, "r": self.r, "alpha": self.alpha},
             "train": {
                 "batch_size": self.batch_size,
                 "grad_accum_steps": self.grad_accum_steps,

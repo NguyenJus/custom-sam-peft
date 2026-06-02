@@ -41,9 +41,13 @@ class _DecoderAttn(nn.Module):
 
 
 class _DecoderLayer(nn.Module):
-    def __init__(self, dim: int = 8) -> None:
+    def __init__(self, dim: int = 8, n_heads: int = 2) -> None:
         super().__init__()
-        self.self_attn = _DecoderAttn(dim)
+        # Genuine torch MHA so in_proj_weight (a bare nn.Parameter) exists, mirroring
+        # SAM 3.1's decoder ca_text/self_attn. cross_attn stays a non-MHA attention so
+        # it is the negative control for the in_proj parameter axis.
+        self.ca_text = nn.MultiheadAttention(dim, n_heads, batch_first=True)
+        self.self_attn = nn.MultiheadAttention(dim, n_heads, batch_first=True)
         self.cross_attn = _DecoderAttn(dim)
 
 
@@ -134,5 +138,23 @@ FIXTURE_SCOPE_PATTERNS: dict[str, list[str]] = {
         r"vision_trunk\.blocks\.\d+\.attn\.(qkv|proj)$",
         r"transformer_decoder\.layers\.\d+\.(self_attn|cross_attn)\.out_proj$",
     ],
+    "vision_decoder_concept": [
+        r"vision_trunk\.blocks\.\d+\.attn\.(qkv|proj)$",
+        # De-overlapped (spec §4.2): only cross_attn (non-MHA, genuine nn.Linear
+        # out_proj) is targeted generically here. The self_attn/ca_text out_proj is
+        # adapted by peft's lora.MultiheadAttention via FIXTURE_SCOPE_MHA_MODULES, so it
+        # must NOT be double-targeted in the generic axis.
+        r"transformer_decoder\.layers\.\d+\.cross_attn\.out_proj$",
+    ],
     "all": [r".*"],
+}
+
+# Parallel to the production SCOPE_MHA_MODULES, but with the fixture's truncated
+# `transformer_decoder` prefix. Drives the MHA-module axis on the stub: naming these
+# nn.MultiheadAttention modules makes peft adapt their in_proj_weight + out_proj.
+FIXTURE_SCOPE_MHA_MODULES: dict[str, list[str]] = {
+    "vision_decoder_concept": [
+        r"transformer_decoder\.layers\.\d+\.ca_text$",
+        r"transformer_decoder\.layers\.\d+\.self_attn$",
+    ],
 }

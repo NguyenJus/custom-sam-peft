@@ -30,7 +30,7 @@ from torch import nn
 from custom_sam_peft._registry import register
 from custom_sam_peft.config.schema import Dtype, PEFTConfig, QLoRAConfig
 from custom_sam_peft.models.sam3 import Sam3Wrapper
-from custom_sam_peft.peft_adapters.lora import _resolve_targets
+from custom_sam_peft.peft_adapters.lora import _resolve_mha_modules, _resolve_targets
 from custom_sam_peft.runtime._runtime import coerce_dtype_for_capability
 
 logger = logging.getLogger(__name__)
@@ -221,7 +221,7 @@ def _freeze_non_adapter(model: nn.Module) -> None:
         param.requires_grad = False
 
 
-def _inject_lora_adapters(model: nn.Module, cfg: PEFTConfig) -> nn.Module:
+def _inject_lora_adapters(model: nn.Module, cfg: PEFTConfig) -> tuple[nn.Module, list[str]]:
     """Wrap *model* in a PeftModel with LoRA adapters on its Linear4bit layers.
 
     Sets ``model.is_loaded_in_4bit = True`` before calling ``get_peft_model``
@@ -230,23 +230,30 @@ def _inject_lora_adapters(model: nn.Module, cfg: PEFTConfig) -> nn.Module:
     Linear path whose ``merge()`` blindly does ``weight.data += delta`` on
     packed 4-bit storage, causing a shape-mismatch RuntimeError.
 
-    Returns the resulting ``PeftModel`` (a new object wrapping *model*).
+    Returns:
+        A 2-tuple ``(peft_model, mha_names)`` where ``peft_model`` is the
+        resulting ``PeftModel`` (a new object wrapping *model*) and ``mha_names``
+        is the resolved list of MHA module names unioned into ``target_modules`` —
+        the authoritative single source of truth for the logged ``n_mha_targets``
+        count.
     """
     bnb = _import_bnb()
 
     from peft import LoraConfig, get_peft_model
 
     lora_target_names = _resolve_targets(model, cfg, linear_types=(bnb.nn.Linear4bit,))
+    mha_names = _resolve_mha_modules(model, cfg)
+    target_modules = lora_target_names + [n for n in mha_names if n not in lora_target_names]
     lora_cfg = LoraConfig(
         r=cfg.r,
         lora_alpha=cfg.alpha,
         lora_dropout=cfg.dropout,
-        target_modules=lora_target_names,
+        target_modules=target_modules,
         bias=cfg.bias,
         task_type=None,
     )
     model.is_loaded_in_4bit = True  # type: ignore[assignment]
-    return get_peft_model(model, lora_cfg)  # type: ignore[arg-type]
+    return get_peft_model(model, lora_cfg), mha_names  # type: ignore[arg-type]
 
 
 @register("peft", "qlora")
@@ -267,7 +274,7 @@ def apply_qlora(wrapper: Sam3Wrapper, cfg: PEFTConfig) -> Sam3Wrapper:
     base = cast(nn.Module, wrapper.model.model)
     _quantize_base(base, cfg)
     _freeze_non_adapter(base)
-    peft_base = _inject_lora_adapters(base, cfg)
+    peft_base, mha_names = _inject_lora_adapters(base, cfg)
 
     wrapper.model.model = peft_base
     wrapper.peft_model = cast(_PeftModel, peft_base)
@@ -276,13 +283,15 @@ def apply_qlora(wrapper: Sam3Wrapper, cfg: PEFTConfig) -> Sam3Wrapper:
     total = sum(p.numel() for p in peft_base.parameters())
     ratio = trainable / total if total else 0.0
     logger.info(
-        "QLoRA: trainable=%d (%.2f%%) of %d (lora_scope=%s, quant_type=%s, compute_dtype=%s)",
+        "QLoRA: trainable=%d (%.2f%%) of %d "
+        "(lora_scope=%s, quant_type=%s, compute_dtype=%s, n_mha_targets=%d)",
         trainable,
         100 * ratio,
         total,
         cfg.scope if cfg.target_modules is None else "<override>",
         cfg.qlora.quant_type,
         cfg.qlora.compute_dtype,
+        len(mha_names),
     )
     if ratio > 0.10:
         logger.warning(

@@ -96,7 +96,7 @@ Optimizer = Literal["adamw", "adamw8bit", "auto"]
 LRSchedule = Literal["constant", "cosine", "linear", "plateau"]
 TrackerBackend = Literal["tensorboard", "wandb", "none"]
 TextPromptMode = Literal["present", "all", "present_plus_negatives", "sampled_fixed_k"]
-LoraScope = Literal["vision", "vision_decoder", "all"]
+LoraScope = Literal["vision", "vision_decoder", "vision_decoder_concept", "all"]
 EvalMode = Literal["full", "lite"]
 
 
@@ -490,10 +490,16 @@ class QLoRAConfig(_Strict):
 
 class PEFTConfig(_Strict):
     method: PEFTMethod
-    r: PositiveInt = 16
-    alpha: PositiveInt = 32
-    dropout: float = Field(default=0.05, ge=0.0, lt=1.0)
-    scope: LoraScope = "vision_decoder"
+    r: PositiveInt = 16  # cite: LoRA (Hu 2021) arXiv:2106.09685 §4.1; alpha=2r convention
+    alpha: PositiveInt = 32  # cite: LoRA (Hu 2021) §4.1 "we simply set alpha to the first r we try"
+    dropout: float = Field(default=0.05, ge=0.0, lt=1.0)  # tbd: #191 (LoRA varies 0.0-0.1)
+    scope: LoraScope = "vision_decoder_concept"
+    # tbd: #230 (project-chosen SAM 3.1 concept scope; default flipped from
+    #      vision_decoder so the shipped default can learn niche TEXT concepts —
+    #      vision_decoder freezes ca_text/self_attn in_proj. Reproducibility: a config
+    #      without an explicit peft.scope now additionally adapts ca_text/self_attn
+    #      in_proj; configs pinning vision/vision_decoder/all are unaffected. See
+    #      research note §4, §7.)
     # --- advanced ---
     target_modules: list[str] | None = Field(
         default=None,

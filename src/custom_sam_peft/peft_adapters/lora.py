@@ -6,10 +6,13 @@ Public entry points:
   load_lora(wrapper, dirpath) -> Sam3Wrapper  # restore from disk
   merge_lora(wrapper) -> Sam3Wrapper        # fold adapters into base
 
+SCOPE_TARGETS and SCOPE_MHA_MODULES together encode SAM 3.1's attention naming;
+if Meta renames modules, only these dicts (and a few stub fixtures) need to change.
 SCOPE_TARGETS maps the LoraScope literal to a list of regex patterns matched
-against `base.named_modules()` paths. It is the SINGLE point that encodes
-SAM 3.1's attention module naming; if Meta renames modules, only this dict
-(and a few stub fixtures) needs to change.
+against nn.Linear modules in `base.named_modules()`. SCOPE_MHA_MODULES maps the
+LoraScope literal to a list of regex patterns matched against nn.MultiheadAttention
+modules, whose names are unioned into target_modules so peft dispatches them to its
+lora.MultiheadAttention layer (adapting both in_proj_weight and out_proj, with dropout).
 """
 
 from __future__ import annotations
@@ -54,9 +57,32 @@ SCOPE_TARGETS: dict[str, list[str]] = {
         r"transformer\.decoder\.layers\.\d+\.(self_attn|cross_attn|ca_text)\.out_proj$",
         r"transformer\.decoder\.layers\.\d+\.linear[12]$",
     ],
+    # vision_decoder's generic-module set MINUS the self_attn/ca_text out_proj
+    # alternatives (peft's lora.MultiheadAttention adapts those out_proj internally when
+    # the MHA module is targeted via SCOPE_MHA_MODULES; double-targeting must be avoided).
+    # cross_attn is a RoPEAttention (genuine nn.Linear out_proj), so it stays generic.
+    # New default scope (schema.py). See spec #230 §4.2, §5.1.
+    "vision_decoder_concept": [
+        r"backbone\.vision_backbone\.trunk\.blocks\.\d+\.attn\.(qkv|proj)$",
+        r"transformer\.decoder\.layers\.\d+\.cross_attn\.out_proj$",
+        r"transformer\.decoder\.layers\.\d+\.linear[12]$",
+    ],
     # Every nn.Linear in the tree. Existing intentional over-match; narrowing
     # is deferred (see TODO history in PRs #4 / #7).
     "all": [r".*"],
+}
+
+# Parallel to SCOPE_TARGETS: scope -> regexes matched against nn.MultiheadAttention
+# modules in named_modules(). Naming an MHA module makes peft dispatch it to its
+# lora.MultiheadAttention layer, which adapts BOTH in_proj_weight and out_proj (with
+# dropout support). Only the concept scope populates it; absent scopes carry no MHA
+# targets (reproducibility for vision/vision_decoder/all). This is the second
+# single-point-of-contact for SAM 3.1 surface naming alongside SCOPE_TARGETS.
+SCOPE_MHA_MODULES: dict[str, list[str]] = {
+    "vision_decoder_concept": [
+        r"transformer\.decoder\.layers\.\d+\.ca_text$",
+        r"transformer\.decoder\.layers\.\d+\.self_attn$",
+    ],
 }
 
 
@@ -85,6 +111,44 @@ def _resolve_targets(
     return matched
 
 
+def _resolve_mha_modules(base: nn.Module, cfg: PEFTConfig) -> list[str]:
+    """Resolve scope MHA-module patterns against the nn.MultiheadAttention modules.
+
+    Precedence mirrors _resolve_targets:
+      * cfg.target_modules is not None -> return [] (the user's explicit module
+        override owns the module axis; the scope's MHA patterns do not apply).
+      * else -> SCOPE_MHA_MODULES.get(cfg.scope, []) matched against the
+        nn.MultiheadAttention modules in base.named_modules().
+
+    Returns the full matched MHA module names (e.g.
+    'transformer.decoder.layers.0.ca_text') to union into target_modules so peft
+    dispatches them to lora.MultiheadAttention (adapting in_proj_weight + out_proj).
+    Returns [] when the resolved pattern list is empty (legacy scopes) or when
+    target_modules is overridden -- NOT an error. Raises ValueError only when a
+    NON-EMPTY pattern list matches zero MHA modules (a typo or SAM rename), mirroring
+    _resolve_targets' no-match error so the in_proj surface never silently trains
+    nothing.
+    """
+    if cfg.target_modules is not None:
+        return []
+    patterns = SCOPE_MHA_MODULES.get(cfg.scope, [])
+    if not patterns:
+        return []
+    compiled = [re.compile(p) for p in patterns]
+    mha_names = [
+        name for name, module in base.named_modules() if isinstance(module, nn.MultiheadAttention)
+    ]
+    matched = [name for name in mha_names if any(c.search(name) for c in compiled)]
+    if not matched:
+        no_mha = "<no nn.MultiheadAttention modules found>"
+        sample = ", ".join(mha_names[:50]) if mha_names else no_mha
+        raise ValueError(
+            f"apply_lora: no nn.MultiheadAttention modules matched SCOPE_MHA_MODULES "
+            f"patterns {patterns}. MHA modules actually present (first 50): {sample}"
+        )
+    return matched
+
+
 @register("peft", "lora")
 def apply_lora(wrapper: Sam3Wrapper, cfg: PEFTConfig) -> Sam3Wrapper:
     """Freeze SAM 3.1 base and inject LoRA adapters; mutate `wrapper` in place.
@@ -100,6 +164,8 @@ def apply_lora(wrapper: Sam3Wrapper, cfg: PEFTConfig) -> Sam3Wrapper:
 
     base = cast(nn.Module, wrapper.model.model)
     matched_names = _resolve_targets(base, cfg)
+    mha_names = _resolve_mha_modules(base, cfg)
+    target_modules = matched_names + [n for n in mha_names if n not in matched_names]
 
     for p in base.parameters():
         p.requires_grad = False
@@ -108,7 +174,7 @@ def apply_lora(wrapper: Sam3Wrapper, cfg: PEFTConfig) -> Sam3Wrapper:
         r=cfg.r,
         lora_alpha=cfg.alpha,
         lora_dropout=cfg.dropout,
-        target_modules=matched_names,
+        target_modules=target_modules,
         bias=cfg.bias,
         task_type=None,
     )
@@ -121,12 +187,13 @@ def apply_lora(wrapper: Sam3Wrapper, cfg: PEFTConfig) -> Sam3Wrapper:
     total = sum(p.numel() for p in peft_base.parameters())
     ratio = trainable / total if total else 0.0
     logger.info(
-        "LoRA: trainable=%d (%.2f%%) of %d (scope=%s, n_targets=%d)",
+        "LoRA: trainable=%d (%.2f%%) of %d (scope=%s, n_targets=%d, n_mha_targets=%d)",
         trainable,
         100 * ratio,
         total,
         cfg.scope if cfg.target_modules is None else "<override>",
         len(matched_names),
+        len(mha_names),
     )
     if ratio > 0.10:
         logger.warning(
