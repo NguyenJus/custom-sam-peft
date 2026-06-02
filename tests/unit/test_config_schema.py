@@ -187,6 +187,20 @@ def test_peft_bias_invalid_value_rejected() -> None:
         TrainConfig.model_validate(d)
 
 
+def test_peftconfig_target_parameters_defaults_none() -> None:
+    from custom_sam_peft.config.schema import PEFTConfig
+
+    cfg = PEFTConfig(method="lora")
+    assert cfg.target_parameters is None
+
+
+def test_peftconfig_target_parameters_accepts_list() -> None:
+    from custom_sam_peft.config.schema import PEFTConfig
+
+    cfg = PEFTConfig(method="lora", target_parameters=[r"x\.in_proj_weight$"])
+    assert cfg.target_parameters == [r"x\.in_proj_weight$"]
+
+
 def test_peft_target_modules_accepts_explicit_list() -> None:
     d = _minimal_dict()
     d["peft"]["target_modules"] = ["vision_encoder.block0.attn.qkv"]  # type: ignore[index]

@@ -502,6 +502,15 @@ class PEFTConfig(_Strict):
             "apply_lora uses SCOPE_TARGETS[scope]. When set, scope is ignored."
         ),
     )
+    target_parameters: list[str] | None = Field(
+        default=None,
+        description=(
+            "Explicit list of parameter-name patterns to adapt via LoRA "
+            "target_parameters (e.g. nn.MultiheadAttention in_proj_weight). When "
+            "None, apply_lora uses SCOPE_TARGET_PARAMETERS.get(scope, []). When set, "
+            "overrides the scope's parameter patterns; independent of target_modules."
+        ),
+    )
     bias: Literal["none", "all", "lora_only"] = "none"  # cite: framework default (PEFT LoraConfig)
     qlora: QLoRAConfig = Field(default_factory=QLoRAConfig)
 
