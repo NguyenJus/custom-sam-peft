@@ -97,7 +97,7 @@ def test_classify_missing_file_is_hard_fail(tmp_path: Path) -> None:
 
 
 def test_surface_collects_literal_module_consts_and_nested_class_fields(tmp_path: Path) -> None:
-    src = '''
+    src = """
 from __future__ import annotations
 import logging
 from dataclasses import dataclass
@@ -128,7 +128,7 @@ class Cfg(BaseModel):
     plain: int = 5                     # leaf
     inner: Inner = Field(default_factory=Inner)   # local container -> recurse, suppress
     wandb: Wandb = Field(default_factory=Wandb)   # local dataclass container -> recurse
-'''
+"""
     f = tmp_path / "m.py"
     f.write_text(src)
     surface = extract_default_surface(f)
@@ -140,8 +140,8 @@ class Cfg(BaseModel):
         assert excluded not in surface, excluded
     # nested recursion + container suppression (keyed by defining class)
     assert "Inner.k" in surface
-    assert "Cfg.inner" not in surface          # container suppressed, not a leaf
-    assert "Wandb.project" in surface          # dataclass container recursed
+    assert "Cfg.inner" not in surface  # container suppressed, not a leaf
+    assert "Wandb.project" in surface  # dataclass container recursed
     assert "Cfg.wandb" not in surface
     # required field exempt; model_config excluded
     assert "Cfg.epochs" not in surface
@@ -156,7 +156,7 @@ class Cfg(BaseModel):
 
 def test_surface_excludes_override_mirror_real_classes(tmp_path: Path) -> None:
     # The real impl hard-codes OVERRIDE_MIRROR = {"AugmentationOverrides", "LossOverrides"}.
-    src = '''
+    src = """
 from pydantic import BaseModel, Field
 
 
@@ -167,7 +167,7 @@ class LossOverrides(BaseModel):
 
 class TextPromptConfig(BaseModel):
     k: int = Field(default=16)
-'''
+"""
     f = tmp_path / "schema.py"
     f.write_text(src)
     surface = extract_default_surface(f)
@@ -271,4 +271,71 @@ def test_prose_in_function_literal_row_exempt_from_doccode(tmp_path: Path) -> No
         "| `presets.py:_optimizer_bytes (*4 literal)` | `4x` | `# cite: y` | — | — | n |\n"
     )
     section = Section(header="presets.py", body=body)
+    assert check_prose_section(section, f) == []
+
+
+def test_prose_required_field_row_exempt_from_doccode(tmp_path: Path) -> None:
+    # `epochs` is required (no default) -> NOT in the surface; its row's Value cell
+    # marks it `required`, so the row is not an orphan.
+    f = tmp_path / "schema.py"
+    f.write_text("from pydantic import BaseModel\n\n\nclass T(BaseModel):\n    epochs: int\n")
+    body = _prose_doc_body(
+        "| `schema.py:T.epochs` | `required (template slot)` | `# cite: x` | — | — | n |\n"
+    )
+    section = Section(header="schema.py", body=body)
+    assert check_prose_section(section, f) == []
+
+
+def test_prose_subscript_keyed_row_exempt_from_doccode(tmp_path: Path) -> None:
+    # A subscript/call-path key the AST surface cannot emit -> exempt; the
+    # container constant itself gets its own (index-only) row.
+    f = tmp_path / "channel_semantics.py"
+    f.write_text("CHANNEL_SEMANTICS = {'rgb': 1}\n")
+    body = _prose_doc_body(
+        "| `channel_semantics.py:CHANNEL_SEMANTICS` | `{...}` | `index-only` | — | — | n |\n"
+        '| `channel_semantics.py:CHANNEL_SEMANTICS["rgb"].x` | `1` | `# cite: y` | — | — | n |\n'
+    )
+    section = Section(header="channel_semantics.py", body=body)
+    assert check_prose_section(section, f) == []
+
+
+def test_prose_module_constant_row_exempt_even_with_call_rhs(tmp_path: Path) -> None:
+    # `_HED = np.array(...)` is a Call RHS -> NOT in the literal surface, so it is
+    # not demanded code->doc; but a doc row pointing at it must NOT be an orphan
+    # (it is a real module-level assigned name).
+    f = tmp_path / "transforms.py"
+    f.write_text("import numpy as np\n\n_HED = np.array([[1.0]])\n")
+    body = _prose_doc_body("| `transforms.py:_HED` | `[[1.0]]` | `# cite: x` | — | — | n |\n")
+    section = Section(header="transforms.py", body=body)
+    assert check_prose_section(section, f) == []
+
+
+def test_prose_stale_module_row_is_orphan(tmp_path: Path) -> None:
+    # A doc row naming a module symbol that no longer exists IS an orphan.
+    f = tmp_path / "presets.py"
+    f.write_text("A_FIXED = 0\n")
+    body = _prose_doc_body(
+        "| `presets.py:A_FIXED` | `0` | `# cite: x` | — | — | n |\n"
+        "| `presets.py:BASE_ACTIVATION_AT_1024` | `gone` | `# cite: y` | — | — | n |\n"
+    )
+    section = Section(header="presets.py", body=body)
+    violations = check_prose_section(section, f)
+    assert len(violations) == 1
+    assert "BASE_ACTIVATION_AT_1024" in str(violations[0])
+
+
+def test_prose_defining_class_rekey(tmp_path: Path) -> None:
+    # Outer-rooted doc rows (TrainHyperparams.early_stop.*) are re-keyed to the
+    # defining-class form (EarlyStopConfig.*) before matching the surface.
+    f = tmp_path / "schema.py"
+    f.write_text(
+        "from pydantic import BaseModel, Field\n\n\n"
+        "class EarlyStopConfig(BaseModel):\n    enabled: bool = True\n\n\n"
+        "class TrainHyperparams(BaseModel):\n"
+        "    early_stop: EarlyStopConfig = Field(default_factory=EarlyStopConfig)\n"
+    )
+    body = _prose_doc_body(
+        "| `schema.py:TrainHyperparams.early_stop.enabled` | `True` | `index-only` | — | — | n |\n"
+    )
+    section = Section(header="schema.py", body=body)
     assert check_prose_section(section, f) == []

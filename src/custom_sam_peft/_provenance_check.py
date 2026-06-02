@@ -142,30 +142,40 @@ def parse_prose_rows(body: str, section_header: str) -> list[DocRow]:
         # (e.g. CHANNEL_SEMANTICS["rgb"].x). Detect a '[' anywhere first.
         if "[" in rest:
             rows.append(
-                DocRow(symbol=rest.strip(), is_in_function_literal=False,
-                       value=value, is_subscript_key=True)
+                DocRow(
+                    symbol=rest.strip(),
+                    is_in_function_literal=False,
+                    value=value,
+                    is_subscript_key=True,
+                )
             )
             continue
         lit = _LITERAL_SUFFIX.match(rest)
         if lit is not None:
             # ``symbol (<note>)`` with no bracket -> in-function literal.
             rows.append(
-                DocRow(symbol=lit.group("symbol").strip(), is_in_function_literal=True,
-                       value=value, is_subscript_key=False)
+                DocRow(
+                    symbol=lit.group("symbol").strip(),
+                    is_in_function_literal=True,
+                    value=value,
+                    is_subscript_key=False,
+                )
             )
         else:
             rows.append(
-                DocRow(symbol=rest.strip(), is_in_function_literal=False,
-                       value=value, is_subscript_key=False)
+                DocRow(
+                    symbol=rest.strip(),
+                    is_in_function_literal=False,
+                    value=value,
+                    is_subscript_key=False,
+                )
             )
     return rows
 
 
 # Override-mirror config classes: all fields default to None ("inherit from the
 # preset table"); their value provenance lives in the TABLE modules, not prose.
-OVERRIDE_MIRROR_CLASSES: frozenset[str] = frozenset(
-    {"AugmentationOverrides", "LossOverrides"}
-)
+OVERRIDE_MIRROR_CLASSES: frozenset[str] = frozenset({"AugmentationOverrides", "LossOverrides"})
 _ALIAS_BASES: frozenset[str] = frozenset({"Literal", "Union", "Optional"})
 _LITERAL_NODES = (ast.Constant, ast.Tuple, ast.List, ast.Dict, ast.Set)
 
@@ -202,8 +212,7 @@ def _nested_container_name(value: ast.expr | None) -> str | None:
     """
     if value is None:
         return None
-    if _is_field_call(value):
-        assert isinstance(value, ast.Call)
+    if isinstance(value, ast.Call) and _is_field_call(value):
         for kw in value.keywords:
             if kw.arg == "default_factory" and isinstance(kw.value, ast.Name):
                 return kw.value.id
@@ -228,8 +237,7 @@ def _is_required_field(value: ast.expr | None) -> bool:
     """A no-default field: AnnAssign w/o value, or Field(...) w/o default*/factory."""
     if value is None:
         return True
-    if _is_field_call(value):
-        assert isinstance(value, ast.Call)
+    if isinstance(value, ast.Call) and _is_field_call(value):
         return not any(kw.arg in ("default", "default_factory") for kw in value.keywords)
     return False
 
@@ -255,18 +263,14 @@ def extract_default_surface(file_path: Path) -> set[str]:
     See the design spec's "default surface" definition (authoritative).
     """
     tree = ast.parse(file_path.read_text(encoding="utf-8"))
-    classes: dict[str, ast.ClassDef] = {
-        n.name: n for n in tree.body if isinstance(n, ast.ClassDef)
-    }
+    classes: dict[str, ast.ClassDef] = {n.name: n for n in tree.body if isinstance(n, ast.ClassDef)}
     surface: set[str] = set()
 
     # (1) Module-level constants — literal RHS only, with exclusions.
     for node in tree.body:
         targets_values: list[tuple[str, ast.expr | None]] = []
         if isinstance(node, ast.Assign):
-            targets_values = [
-                (t.id, node.value) for t in node.targets if isinstance(t, ast.Name)
-            ]
+            targets_values = [(t.id, node.value) for t in node.targets if isinstance(t, ast.Name)]
         elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
             targets_values = [(node.target.id, node.value)]
         for name, value in targets_values:
@@ -318,22 +322,44 @@ def module_assign_names(file_path: Path) -> set[str]:
     return names
 
 
-def check_prose_section(section: Section, file_path: Path) -> list[ProvenanceViolation]:
-    """Assertion 1: symbol<->row bijection over the file's default surface.
+# Outer-rooted doc rows re-keyed to defining-class form (single keying rule).
+_REKEY_PREFIXES: dict[str, str] = {
+    "TrainHyperparams.early_stop.": "EarlyStopConfig.",
+    "TrainHyperparams.lr_decay_on_plateau.": "LrDecayOnPlateauConfig.",
+}
 
-    code->doc: every surface symbol must have a doc row.
-    doc->code: every doc row naming a *surface* symbol must still resolve;
-               rows flagged as in-function literals are exempt in this direction.
+
+def _rekey_to_defining_class(symbol: str) -> str:
+    for prefix, repl in _REKEY_PREFIXES.items():
+        if symbol.startswith(prefix):
+            return repl + symbol[len(prefix) :]
+    return symbol
+
+
+def check_prose_section(section: Section, file_path: Path) -> list[ProvenanceViolation]:
+    """Assertion 1: symbol<->row bijection over the file's default surface (amended #192).
+
+    code->doc: every surface symbol must have a doc row (keyed by defining class).
+    doc->code: every doc row naming a *surface* symbol must still resolve, EXCEPT
+        in-function-literal rows, required-field rows (Value cell says ``required``),
+        subscript/call-path rows (symbol has ``[`` / ``(``), and module-constant rows
+        (bare symbol is any module-level assigned name still present, any RHS).
     """
     file_disp = _unescape_md(section.header).strip()
     surface = extract_default_surface(file_path)
+    module_names = module_assign_names(file_path)
     rows = parse_prose_rows(section.body, section.header)
-    documented_surface_symbols = {r.symbol for r in rows if not r.is_in_function_literal}
+
+    documented: set[str] = set()
+    for row in rows:
+        if row.is_in_function_literal or row.is_subscript_key:
+            continue
+        documented.add(_rekey_to_defining_class(row.symbol))
 
     violations: list[ProvenanceViolation] = []
 
     # code->doc
-    for symbol in sorted(surface - documented_surface_symbols):
+    for symbol in sorted(surface - documented):
         violations.append(
             ProvenanceViolation(
                 location=f"{file_disp}:{symbol}",
@@ -344,18 +370,24 @@ def check_prose_section(section: Section, file_path: Path) -> list[ProvenanceVio
             )
         )
 
-    # doc->code (skip in-function-literal rows)
+    # doc->code (apply all four exemptions)
     for row in rows:
-        if row.is_in_function_literal:
+        if row.is_in_function_literal or row.is_subscript_key:
             continue
-        if row.symbol not in surface:
-            violations.append(
-                ProvenanceViolation(
-                    location=f"{file_disp}:{row.symbol}",
-                    problem="stale/orphaned provenance row",
-                    remediation=("remove or update the row in docs/defaults-provenance.md"),
-                )
+        if "required" in row.value.lower():
+            continue  # required-field exemption
+        symbol = _rekey_to_defining_class(row.symbol)
+        if symbol in surface:
+            continue
+        if "." not in symbol and symbol in module_names:
+            continue  # module-constant exemption (documented Call/BinOp constants)
+        violations.append(
+            ProvenanceViolation(
+                location=f"{file_disp}:{row.symbol}",
+                problem="stale/orphaned provenance row",
+                remediation=("remove or update the row in docs/defaults-provenance.md"),
             )
+        )
     return violations
 
 
