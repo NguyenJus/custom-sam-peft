@@ -94,7 +94,7 @@ def test_calibrate_writes_cache_with_schema_v3(
     from custom_sam_peft.cli import calibrate_cmd
 
     _patch_probe(monkeypatch, tmp_path=tmp_path)
-    monkeypatch.setattr(calibrate_cmd, "_run_probe", lambda **kw: _synthetic_peak(**kw))
+    monkeypatch.setattr(calibrate_cmd, "_run_probe", _synthetic_peak)
     monkeypatch.chdir(tmp_path)
     result = runner.invoke(app, ["calibrate"])
     assert result.exit_code == 0, result.output
@@ -235,7 +235,7 @@ def test_calibrate_force_overwrites_cache(tmp_path: Path, monkeypatch: pytest.Mo
     from custom_sam_peft.cli import calibrate_cmd
 
     _patch_probe(monkeypatch, tmp_path=tmp_path)
-    monkeypatch.setattr(calibrate_cmd, "_run_probe", lambda **kw: _synthetic_peak(**kw))
+    monkeypatch.setattr(calibrate_cmd, "_run_probe", _synthetic_peak)
     monkeypatch.chdir(tmp_path)
     cache = tmp_path / ".custom_sam_peft_calibration.json"
     cache.write_text('{"stale": true}')
@@ -334,7 +334,7 @@ def test_calibrate_rewrites_config_in_place_annotated(
     from custom_sam_peft.cli import calibrate_cmd
 
     _patch_probe(monkeypatch)
-    monkeypatch.setattr(calibrate_cmd, "_run_probe", lambda **kw: _synthetic_peak(**kw))
+    monkeypatch.setattr(calibrate_cmd, "_run_probe", _synthetic_peak)
     monkeypatch.chdir(tmp_path)
     cfg_path = tmp_path / "config.yaml"
     _write_config(cfg_path, method="lora", r=16, k=16)
@@ -354,7 +354,7 @@ def test_calibrate_auto_inits_when_no_config(
     from custom_sam_peft.cli import calibrate_cmd
 
     _patch_probe(monkeypatch)
-    monkeypatch.setattr(calibrate_cmd, "_run_probe", lambda **kw: _synthetic_peak(**kw))
+    monkeypatch.setattr(calibrate_cmd, "_run_probe", _synthetic_peak)
     monkeypatch.chdir(tmp_path)
     assert not (tmp_path / "config.yaml").exists()
     result = runner.invoke(app, ["calibrate", "--config", "config.yaml"])
@@ -391,7 +391,7 @@ def test_run_calibration_stage1_solves_split(
     from custom_sam_peft.cli import calibrate_cmd
 
     _patch_probe(monkeypatch, tmp_path=tmp_path)  # sets cuda stubs + writes config
-    monkeypatch.setattr(calibrate_cmd, "_run_probe", lambda **kw: _synthetic_peak(**kw))
+    monkeypatch.setattr(calibrate_cmd, "_run_probe", _synthetic_peak)
     monkeypatch.chdir(tmp_path)
     out = tmp_path / ".custom_sam_peft_calibration.json"
     calibrate_cmd.run_calibration(config=tmp_path / "config.yaml", output=out, force=True)
@@ -410,7 +410,7 @@ def test_run_calibration_climbs_k_then_batch(
     # Big card: synthetic peaks fit a wide grid -> climb should grow K then batch.
     _patch_probe(monkeypatch, tmp_path=tmp_path, gpu_name="BigGPU", total=int(80 * _GB))
     _write_config(tmp_path / "config.yaml", method="lora", r=16, k=16)
-    monkeypatch.setattr(calibrate_cmd, "_run_probe", lambda **kw: _synthetic_peak(**kw))
+    monkeypatch.setattr(calibrate_cmd, "_run_probe", _synthetic_peak)
     monkeypatch.chdir(tmp_path)
     out = tmp_path / ".custom_sam_peft_calibration.json"
     decision = calibrate_cmd.run_calibration(
@@ -653,7 +653,7 @@ def test_calibrate_non_default_output_uses_calibrated_provenance(
 
     custom_cache = tmp_path / "my_custom_cache.json"
     _patch_probe(monkeypatch, tmp_path=tmp_path)
-    monkeypatch.setattr(calibrate_cmd, "_run_probe", lambda **kw: _synthetic_peak(**kw))
+    monkeypatch.setattr(calibrate_cmd, "_run_probe", _synthetic_peak)
     monkeypatch.chdir(tmp_path)
 
     # Intercept _load_cache (called from inside decide_preset) to capture which

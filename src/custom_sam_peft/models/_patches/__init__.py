@@ -15,7 +15,7 @@ from custom_sam_peft.models._patches import (
     text_pool_dtype,
 )
 
-_ALL_PATCHES = [
+_ALL_PATCHES = [  # lgtm[py/unused-global-variable]
     addmm_act_grad_safe.apply,
     encode_prompt_dtype.apply,
     forward_grounding_skip_matching.apply,

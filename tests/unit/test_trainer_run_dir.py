@@ -25,7 +25,6 @@ from custom_sam_peft.data.base import Example, Instance, TextPrompts
 from custom_sam_peft.eval._artifacts import EvalArtifacts
 from custom_sam_peft.peft_adapters.lora import apply_lora
 from custom_sam_peft.tracking.noop import NoopTracker
-from custom_sam_peft.train.trainer import Trainer
 from tests.fixtures.tiny_sam3_lora_stub import FIXTURE_SCOPE_PATTERNS, make_stub_wrapper
 
 
@@ -94,7 +93,7 @@ def test_fit_uses_caller_provided_run_dir(tmp_path: Path, monkeypatch: pytest.Mo
     monkeypatch.setattr(close_out_mod, "save_merged", lambda model, path: None)
 
     chosen = tmp_path / "explicit-run"
-    trainer = Trainer(model, train_ds, val_ds, tracker, cfg)
+    trainer = trainer_mod.Trainer(model, train_ds, val_ds, tracker, cfg)
     result = trainer.fit(run_dir=chosen)
 
     assert result.run_dir == chosen
@@ -156,7 +155,7 @@ def test_fit_creates_expected_layout(tmp_path: Path) -> None:
         ),
     )
     apply_lora(wrapper, cfg.peft)
-    trainer = Trainer(wrapper, ds, ds, NoopTracker(), cfg)
+    trainer = trainer_mod.Trainer(wrapper, ds, ds, NoopTracker(), cfg)
     run_dir = tmp_path / "layout-test-run"
     result = trainer.fit(run_dir=run_dir)
     rd = result.run_dir
@@ -190,7 +189,6 @@ def test_fit_calls_start_run_once_before_first_log(tmp_path: Path) -> None:
     from custom_sam_peft.data.coco import COCODataset
     from custom_sam_peft.data.transforms import build_eval_transforms, build_train_transforms
     from custom_sam_peft.peft_adapters.lora import apply_lora
-    from custom_sam_peft.train.trainer import Trainer
     from tests.fixtures.tiny_sam3_lora_stub import FIXTURE_SCOPE_PATTERNS, make_stub_wrapper
 
     # Reuse the integration test's tiny_coco directory via the conftest fixture path.
@@ -257,7 +255,7 @@ def test_fit_calls_start_run_once_before_first_log(tmp_path: Path) -> None:
     tracker.log_images.side_effect = lambda *a, **k: order.append("log_images")
     tracker.close.side_effect = lambda: order.append("close")
 
-    Trainer(wrapper, ds_train, ds_val, tracker, cfg).fit()
+    trainer_mod.Trainer(wrapper, ds_train, ds_val, tracker, cfg).fit()
     assert order, "tracker received no calls"
     assert order[0] == "start_run", f"first call was {order[0]!r}, expected start_run"
     assert order[-1] == "close"
@@ -319,7 +317,7 @@ def test_log_image_panel_moves_image_to_model_device() -> None:
         ],
     )
 
-    Trainer._log_image_panel(fake_self, [example], ["cat"], global_step=0)
+    trainer_mod.Trainer._log_image_panel(fake_self, [example], ["cat"], global_step=0)
 
     assert stub.received_image_devices, "model.forward was never called"
     assert all(d.type == "meta" for d in stub.received_image_devices), (
@@ -404,7 +402,7 @@ def test_run_dir_writes_augmentation_pipeline_json(
     apply_lora(wrapper, cfg.peft)
 
     run_dir = tmp_path / "sidecar-run"
-    trainer = Trainer(wrapper, ds_train, ds_val, NoopTracker(), cfg)
+    trainer = trainer_mod.Trainer(wrapper, ds_train, ds_val, NoopTracker(), cfg)
     trainer.fit(run_dir=run_dir)
 
     sidecar = run_dir / "augmentation_pipeline.json"
@@ -500,7 +498,7 @@ def test_run_dir_writes_loss_bundle_json(tmp_path: Path, monkeypatch: pytest.Mon
     apply_lora(wrapper, cfg.peft)
 
     run_dir = tmp_path / "loss-sidecar-run"
-    trainer = Trainer(wrapper, ds_train, ds_val, NoopTracker(), cfg)
+    trainer = trainer_mod.Trainer(wrapper, ds_train, ds_val, NoopTracker(), cfg)
     trainer.fit(run_dir=run_dir)
 
     loss_path = run_dir / "loss_bundle.json"

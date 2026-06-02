@@ -29,10 +29,18 @@ pytestmark = [
 ]
 
 CONFIG_PATH = Path(__file__).resolve().parents[2] / "configs" / "examples" / "gpu_smoke_lora.yaml"
-# Budgets confirmed on RTX 5070 Ti (sm_120) 2026-05-31, 50-step overfit on
-# tiny_coco: loss 0.5222 -> 0.3081 (ratio 0.590 <= 0.70 ceil), peak 4.49 GB
-# (<= 14 GB ceil), ~55 s wall. Comfortable headroom -> no retune (#195).
-LOSS_RATIO_CEIL = 0.70
+# 50-step LoRA overfit ceiling, capability-aware. Training IS a guaranteed T4
+# capability, but fp16 (the coerced dtype below CC 8.0) converges less in 50
+# steps than faithful bf16, so the ceiling is split by band:
+#
+# - bf16 band (CC >= 8.0): confirmed on RTX 5070 Ti (sm_120) 2026-05-31 — loss
+#   0.5222 -> 0.3081 (ratio 0.590 <= 0.70), peak 4.49 GB, ~55 s. No retune (#195).
+# - fp16 band (CC < 8.0, bf16 coerced): one real Colab Tesla T4 (CC 7.5) sample
+#   2026-06-01 (#212) — loss 0.5704 -> 0.4256 (ratio 0.746). The 0.80 ceiling
+#   still requires a meaningful >=20% drop while clearing observed fp16 noise.
+#   tbd: pin with a second confirming T4 sample on current main (#212 follow-up).
+LOSS_RATIO_CEIL_BF16 = 0.70
+LOSS_RATIO_CEIL_FP16 = 0.80
 VRAM_CEIL_GB = 14.0
 
 
@@ -67,8 +75,13 @@ def test_overfits_in_50_steps(
     assert all(math.isfinite(v) for _, s in tracker.scalars for v in s.values()), (
         "non-finite scalar logged during training"
     )
-    assert losses[-1] <= LOSS_RATIO_CEIL * losses[0], (
-        f"loss did not drop enough: start={losses[0]:.4f} end={losses[-1]:.4f}"
+    # Pick the ceiling for the running card's effective dtype band: fp16 below
+    # CC 8.0 (bf16 is coerced there), faithful bf16 at/above it.
+    cc = torch.cuda.get_device_capability(0)
+    loss_ratio_ceil = LOSS_RATIO_CEIL_FP16 if cc < (8, 0) else LOSS_RATIO_CEIL_BF16
+    assert losses[-1] <= loss_ratio_ceil * losses[0], (
+        f"loss did not drop enough (cc={cc[0]}.{cc[1]}, ceil={loss_ratio_ceil}): "
+        f"start={losses[0]:.4f} end={losses[-1]:.4f}"
     )
     assert peak_vram_gb <= VRAM_CEIL_GB, (
         f"peak VRAM {peak_vram_gb:.2f}GB exceeded ceiling {VRAM_CEIL_GB}GB"

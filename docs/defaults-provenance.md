@@ -1,8 +1,12 @@
 # Defaults Provenance
 
 This document is the source of truth for the provenance of every trust-bearing
-default hyperparameter in `custom-sam-peft`. Inline `# cite:` / `# tbd:` tags in
-the code are deliberately terse pointers into the rows below.
+default hyperparameter in `custom-sam-peft`. This document is the **home** for
+provenance; inline `# cite:` / `# tbd:` tags in the code are **no longer the
+primary code↔doc pointer**. A small curated set of head-turner defaults retains
+an inline note purely as a reader's "wait, that's intentional" guard, not as the
+canonical provenance pointer. A CI completeness check
+(`tests/test_defaults_provenance.py`) keeps this registry in sync with the code.
 
 Umbrella `# tbd:` tracker: #191
 (Every `# tbd: #191` tag and row points there.)
@@ -23,8 +27,9 @@ Row schema (every section uses these six columns):
 
 - **Location** — `file:symbol`.
 - **Value** — the literal default.
-- **Tag** — the inline tag class applied (mirrors the code), or `index-only` for
-  untagged self-evident structural/string defaults.
+- **Tag** — the provenance class of the row — one of `cite`, `tbd`, `index-only`,
+  or `cross-link`. This is the row's classification in this registry; it no
+  longer mirrors an inline code tag (most defaults now carry no inline tag).
 - **Full reference** — authors, year, arXiv/DOI, exact Eq./Table/Fig.; or the
   upstream-doc URL + pinned version (framework defaults); or repo file/line
   (reference-impl).
@@ -78,10 +83,10 @@ Row schema (every section uses these six columns):
 | `config/schema.py:PEFTConfig.r` | `16` | `# cite: LoRA (Hu 2021) arXiv:2106.09685 §4.1` | Hu et al. 2021, "LoRA: Low-Rank Adaptation of Large Language Models", arXiv:2106.09685, §4.1. Paper explores r=1,2,4,8,64 (Table 6); common practice for vision models is r=8–16. | "we simply set α to the first r we try and do not tune it" (§4.1). | r=16 is a repo-chosen mid-range value within the range explored. alpha=32=2×r follows the α=first-r convention. |
 | `config/schema.py:PEFTConfig.alpha` | `32` | `# cite: LoRA (Hu 2021) arXiv:2106.09685 §4.1` | Hu et al. 2021, arXiv:2106.09685, §4.1. | "we simply set α to the first r we try and do not tune it" — setting alpha=32 with r=16 follows this convention (alpha=2r, a common variant since the paper's statement means alpha tracks the initial r tried). | alpha=2r is a common practical convention that extends the paper's "alpha=first r" guideline. |
 | `config/schema.py:PEFTConfig.dropout` | `0.05` | `# tbd: #191` | — | — | LoRA paper uses 0.0–0.1 depending on task (Table 11: 0.1 for GPT-2); 0.05 is a repo-chosen midpoint. No internal run recorded. Tracking via #191. |
-| `config/schema.py:PEFTConfig.scope` | `"vision_decoder"` | `# tbd: #191` | — | — | Project-chosen scope covering SAM 3.1 vision trunk + transformer decoder. Rationale: vision_decoder hits the attention and decoder FFN linears most relevant to open-vocab adaptation. No ablation recorded. Tracking via #191. |
+| `config/schema.py:PEFTConfig.scope` | `"vision_decoder_concept"` | `# tbd: #191` | See `docs/research/2026-06-01-issue-230-peft-adaptation-surface-lit-review.md` §4, §7. | — | Project-chosen SAM 3.1 concept scope (#230). Superset of `vision_decoder` that additionally adapts the `ca_text`/`self_attn` `in_proj` projections so the shipped default can learn niche TEXT concepts; plain `vision_decoder` freezes those. Default flipped from `vision_decoder` (which only hits vision-trunk + decoder-FFN linears) per the #230 research note. No ablation recorded. Tracking via #191. |
 | `config/schema.py:PEFTConfig.bias` | `"none"` | `# cite: framework default` | HuggingFace PEFT `LoraConfig` default: `bias="none"`. URL: <https://huggingface.co/docs/peft/package_reference/lora> | Default in PEFT LoraConfig is `bias="none"`. | Standard PEFT convention; not training training the bias terms keeps parameter count minimal. |
 | `config/schema.py:MultiplexConfig.classes_per_forward` | `16` | `# cite: models/sam3.py:MULTIPLEX_CAP` | `src/custom_sam_peft/models/sam3.py` line 116: `MULTIPLEX_CAP: int = 16` | `MULTIPLEX_CAP: int = 16` — hard cap from SAM 3.1 model head. | Default=cap means maximum throughput per forward pass. Upper bound enforced by Field(le=16). |
-| `config/schema.py:TrainHyperparams.epochs` | `required (template $epochs slot)` | `# cite: SAMed (Zhang & Liu 2023)` / `# tbd: #193` | See "Reference Training Profile" section below. | See "Reference Training Profile" section below. | Required field; no schema default. The shipped default lives in the `config_full.yaml` `$epochs` slot, set by the `init` flow. Provenance is the SAMed convergence anchor (see Reference Training Profile), not a single inline citation. |
+| `config/schema.py:TrainHyperparams.epochs` | `required (template $epochs slot)` | `# cite: SAMed (Zhang & Liu 2023)` | See "Reference Training Profile" section below. | See "Reference Training Profile" section below. | Required field; no schema default. The shipped default lives in the `config_full.yaml` `$epochs` slot, set by the `init` flow. Provenance is the SAMed convergence anchor (see Reference Training Profile), not a single inline citation. #193's runtime confirmation (5070 Ti + Colab T4 per-step proxies) is now recorded in that section; the `# tbd: #193` tag is therefore resolved. |
 | `config/schema.py:TrainHyperparams.batch_size` | `1` | `# tbd: #191` | — | — | VRAM-driven engineering choice; effective batch = batch_size×grad_accum_steps. Cross-ref presets.py memory model. Tracking via #191. |
 | `config/schema.py:TrainHyperparams.grad_accum_steps` | `8` | `# tbd: #191` | — | — | VRAM-driven; effective batch = 1×8=8. Cross-ref presets.py memory model. Tracking via #191. |
 | `config/schema.py:TrainHyperparams.optimizer` | `"auto"` | `# cite: AdamW (Loshchilov 2019) arXiv:1711.05101` | Loshchilov & Hutter 2019, "Decoupled Weight Decay Regularization", arXiv:1711.05101, ICLR 2019. Algorithm 2 (AdamW). | "The main contribution of this paper is to improve regularization in Adam by decoupling the weight decay from the gradient-based update." (§2) | "auto" resolves to `adamw` (LoRA) or `adamw8bit` (QLoRA) at trainer construction via `peft_adapters/__init__.py:recommended_optimizer()`. |
@@ -109,6 +114,25 @@ Row schema (every section uses these six columns):
 | `config/schema.py:EvalConfig.visualize` | `True` | `# tbd: #191` | — | — | Repo-chosen default. Tracking via #191. |
 | `config/schema.py:EvalConfig.visualize_count` | `10` | `# tbd: #191` | — | — | Repo-chosen number of visualized samples. Tracking via #191. |
 | `config/schema.py:TrackingConfig.backend` | `"tensorboard"` | `index-only` | — | — | Structural tracker-backend literal; not trust-bearing. |
+| `config/schema.py:AugmentationsConfig.preset` | `"natural"` | `index-only` | — | — | Default augmentation preset; structural (mirrors LossConfig.preset). |
+| `config/schema.py:AugmentationsConfig.intensity` | `"medium"` | `index-only` | — | — | Default augmentation intensity tier; structural. |
+| `config/schema.py:LossConfig.preset` | `"natural"` | `index-only` | — | — | Default loss preset; structural. |
+| `config/schema.py:LossConfig.class_imbalance` | `"balanced"` | `index-only` | — | — | Default class-imbalance tier; structural. |
+| `config/schema.py:ModelConfig.revision` | `None` | `index-only` | — | — | `None`-sentinel: no pinned HF revision unless set. |
+| `config/schema.py:ModelConfig.device` | `None` | `index-only` | — | — | `None`-sentinel: auto-select device unless set. |
+| `config/schema.py:LimitConfig.train` | `None` | `index-only` | — | — | `None`-sentinel: no train-split limit. |
+| `config/schema.py:LimitConfig.val` | `None` | `index-only` | — | — | `None`-sentinel: no val-split limit. |
+| `config/schema.py:ValSplitConfig.seed` | `None` | `index-only` | — | — | `None`-sentinel: inherits run.seed at resolve time. |
+| `config/schema.py:HFDatasetConfig.split_val` | `None` | `index-only` | — | — | `None`-sentinel: no separate HF val split unless set. |
+| `config/schema.py:DataConfig.val` | `None` | `index-only` | — | — | `None`-sentinel: no-val mode unless set. |
+| `config/schema.py:DataConfig.val_split` | `None` | `index-only` | — | — | `None`-sentinel: auto-split off unless set. |
+| `config/schema.py:DataConfig.normalize` | `None` | `index-only` | — | — | `None`-sentinel: resolved from channel semantics unless set. |
+| `config/schema.py:DataConfig.test` | `None` | `index-only` | — | — | `None`-sentinel: optional test split. |
+| `config/schema.py:DataConfig.hf` | `None` | `index-only` | — | — | `None`-sentinel: required only when format == "hf". |
+| `config/schema.py:PEFTConfig.target_modules` | `None` | `index-only` | — | — | `None`-sentinel: uses SCOPE_TARGETS[scope] when None. |
+| `config/schema.py:TrainHyperparams.save_every` | `None` | `index-only` | — | — | `None`-sentinel: auto-resolves to one checkpoint/epoch. |
+| `config/schema.py:TrainHyperparams.eval_every` | `None` | `index-only` | — | — | `None`-sentinel: auto-resolves to one eval/epoch. |
+| `config/schema.py:TrainHyperparams.host_ram_floor_gb` | `2.0` | `# tbd:` | — | — | Heuristic host-RAM floor (GB) for the graceful-stop guard; tune empirically. No internal calibration run recorded. |
 
 ## data/aug_presets.py
 
@@ -122,6 +146,7 @@ Legend letters used in the `aug_presets.py` module docstring resolve here.
 | (b) | Domain-tuned project magnitude — no published reference and no recorded internal calibration run. `# tbd: #191` |
 | (c) | Ruifrok & Johnston 2001 / Tellez et al. 2018 — H&E stain-jitter rationale; exact sigma magnitudes are domain-tuned project choices with no published reference. `# tbd: #191` |
 | (d) | Laterality-driven locked-off — see `LOCKED_OFF` map; clinically or structurally meaningful orientation; augmentation disabled by design. |
+| (e) | Augmentation omitted at this preset's intensity tier — recipe choice; no citation. |
 
 ### Augmentation knob values
 
@@ -154,6 +179,7 @@ Rows are grouped by `(knob, distinct-value)`; presets that use the value are lis
 
 | Location | Value | Tag | Full reference | Verifying quote | Notes |
 | --- | --- | --- | --- | --- | --- |
+| `data/channel_semantics.py:CHANNEL_SEMANTICS` | `{rgb, rgba, grayscale, freeform profiles}` | `index-only` | — | — | Container registry; per-key `normalize_default` values are documented by the four `CHANNEL_SEMANTICS["…"].normalize_default` rows below. |
 | `data/channel_semantics.py:_IMAGENET_MEAN` | `(0.485, 0.456, 0.406)` | `# cite: ImageNet-1k stats (torchvision)` | torchvision `_presets.py` lines 52–53 (ImageClassification defaults). URL: <https://github.com/pytorch/vision/blob/main/torchvision/transforms/_presets.py> | `mean: tuple[float, ...] = (0.485, 0.456, 0.406)` | ImageNet-1k per-channel training-set means; same values verified in `config/schema.py:NormalizeConfig.mean`. Used by `rgb` and `rgba` profiles (unpacked via `*_IMAGENET_MEAN`). |
 | `data/channel_semantics.py:_IMAGENET_STD` | `(0.229, 0.224, 0.225)` | `# cite: ImageNet-1k stats (torchvision)` | torchvision `_presets.py` lines 52–53. URL: <https://github.com/pytorch/vision/blob/main/torchvision/transforms/_presets.py> | `std: tuple[float, ...] = (0.229, 0.224, 0.225)` | ImageNet-1k per-channel training-set standard deviations; same values verified in `config/schema.py:NormalizeConfig.std`. Used by `rgb` and `rgba` profiles. |
 | `data/channel_semantics.py:CHANNEL_SEMANTICS["rgb"].normalize_default` | `(_IMAGENET_MEAN, _IMAGENET_STD)` | `# cite: ImageNet-1k stats (torchvision)` | (See `_IMAGENET_MEAN`/`_IMAGENET_STD` rows above.) | — | Passthrough RGB profile; inherits the two module-level constants directly. |
@@ -165,11 +191,14 @@ Rows are grouped by `(knob, distinct-value)`; presets that use the value are lis
 
 | Location | Value | Tag | Full reference | Verifying quote | Notes |
 | --- | --- | --- | --- | --- | --- |
+| `data/transforms.py:KNOWN_PROCESSOR_STATS` | `{"facebook/sam3.1": ([0.5,0.5,0.5],[0.5,0.5,0.5])}` | `# cite: empirically verified 2026-05-30 (Sam3ImageProcessor)` | `AutoImageProcessor.from_pretrained("facebook/sam3.1")` → `Sam3ImageProcessor`, image_mean/std = (0.5,0.5,0.5). Same verification as the `["facebook/sam3.1"]` subscript row below. | `Sam3ImageProcessor (0.5,0.5,0.5) (0.5,0.5,0.5)` — live output 2026-05-30. | Container constant; the per-key value is also documented by the subscript row. |
 | `data/transforms.py:KNOWN_PROCESSOR_STATS["facebook/sam3.1"]` | `([0.5, 0.5, 0.5], [0.5, 0.5, 0.5])` | `# cite: empirically verified 2026-05-30 (Sam3ImageProcessor)` | `AutoImageProcessor.from_pretrained("facebook/sam3.1")` → `Sam3ImageProcessor`, `image_mean=(0.5, 0.5, 0.5)`, `image_std=(0.5, 0.5, 0.5)`. Verified via live HF cache 2026-05-30 (issue #86). | `Sam3ImageProcessor (0.5, 0.5, 0.5) (0.5, 0.5, 0.5)` — live output. | Corrects the 2026-05-21 audit's wrong ImageNet claim. Closes issue #86. |
 | `data/transforms.py:_STATS_DIVERGENCE_ATOL` | `1e-3` | `# cite: empirical (tolerance chosen to catch [0.5,0.5,0.5] drift)` | Project engineering choice — inline comment rationale: "Loose enough to absorb float-serialization noise; tight enough to catch a real change (e.g. `[0.5, 0.5, 0.5]` diverges by >=0.014 per channel)." | — | The `[0.5, 0.5, 0.5]` reference (0.014 delta per channel) establishes that 1e-3 provides a 14× safety margin over the known bad value while absorbing sub-LSB float-serialization noise. |
 | `data/transforms.py:_HED_FROM_RGB_MATRIX` | `[[0.65,0.70,0.29],[0.07,0.99,0.11],[0.27,0.57,0.78]]` | `# cite: Ruifrok & Johnston 2001` | Ruifrok & Johnston 2001, "Quantification of histochemical staining by color deconvolution", Anal Quant Cytol Histol 23(4):291–299. PMID 11531144. doi:[10.1097/00000372-200112000-00001](https://doi.org/10.1097/00000372-200112000-00001) | Table 1 stain OD vectors (2-decimal representation): H = [0.65, 0.70, 0.29], E = [0.07, 0.99, 0.11], DAB = [0.27, 0.57, 0.78]. | Rows are the published OD (optical density) basis vectors for H, E, DAB from Table 1 of the paper, rounded to 2 decimal places. Matches the standard 2-decimal form widely reproduced in color-deconvolution implementations. The matrix `_HED_FROM_RGB_MATRIX` is used as the forward map (HED→OD, i.e. `rgb_from_hed` direction); its inverse `_HED_FROM_RGB_INV` is the deconvolution transform (OD→HED). The variable name reflects the math role of the inverse, not the literal matrix. |
 | `data/transforms.py:_GAUSS_NOISE_MAX_VAR` | `0.05` | `# tbd: #191` | — | — | Magnitude→Albumentations projection ceiling for `std_range` in `A.GaussNoise`; spec §8.1 reference is internal only. Tracking via #191. |
 | `data/transforms.py:_GAUSS_BLUR_MAX_SIGMA` | `3.0` | `# tbd: #191` | — | — | Magnitude→Albumentations projection ceiling for `sigma_limit` in `A.GaussianBlur`; spec §8.1 reference is internal only. Tracking via #191. |
+| `data/transforms.py:_warned_non3ch_photometric` | `False` | `index-only` | — | — | Module-level one-time-warning runtime flag; off by default. Not trust-bearing. |
+| `data/transforms.py:_warned_freeform` | `False` | `index-only` | — | — | Module-level one-time-warning runtime flag; off by default. Not trust-bearing. |
 
 ## presets.py
 
@@ -181,14 +210,18 @@ Rows are grouped by `(knob, distinct-value)`; presets that use the value are lis
 | `presets.py:D_OUT` | `768` | `# cite: empirical (#148/#179 VRAM calibration)` | Same as LORA\_LAYERS — average output feature dim across LoRA targets measured during #148/#179 calibration runs. | — | empirical calibration. |
 | `presets.py:Q_OVERHEAD` | `64 MiB` | `# cite: empirical (#148/#179 VRAM calibration)` | bitsandbytes NF4 per-block scale + zero-point overhead; magnitude calibrated in #148/#179. | — | empirical calibration. NF4 stores per-block quantization metadata (scale/offset); the 64 MiB figure was set during VRAM probe runs. |
 | `presets.py:WORKSPACE_BYTES` | `256 MiB` | `# cite: empirical (#148/#179 VRAM calibration)` | cuDNN workspace + autograd graph + tmp buffers headroom; calibrated in #148/#179 (spec §3). | — | empirical calibration. |
-| `presets.py:BASE_ACTIVATION_AT_1024` | `int(1.5 * GB)` | `# cite: empirical (#148/#179 VRAM calibration)` | Analytic seed for per-example activation bytes at image\_size=1024; calibrated in #148/#179. Superseded by calibration cache when present. | — | empirical calibration seed. |
 | `presets.py:forward_only_factor` | `0.25` | `# cite: empirical (#148/#179 VRAM calibration)` | Forward-only eval memory is ~1/4 of the train-step probe (train = forward + backward + retained graph; eval = forward only, no retained graph). Calibrated in #148/#179 (spec §8). | — | empirical calibration. Note: K (classes\_per\_forward) is folded into this factor empirically rather than computed analytically (spec §8 / decide\_eval\_batch\_size docstring). |
 | `presets.py:_SAM3_PATCH` | `14` | `# cite: sam3/model_builder.py` | `sam3/model_builder.py` line 82: `patch_size=14` in the hiera-large backbone constructor. Existing block comment: "SAM 3.1 vision backbone (hiera-large), from sam3/model\_builder.py." | `patch_size=14` — hiera-large vision backbone constructor argument. | Reference-implementation value; patch size governs token count N=(image\_size//patch)^2 used in `_attention_bytes_per_example`. |
 | `presets.py:_SAM3_HEADS` | `16` | `# cite: sam3/model_builder.py` | `sam3/model_builder.py` line 85: `num_heads=16` in the hiera-large backbone constructor. Same block comment as `_SAM3_PATCH`. | `num_heads=16` — hiera-large vision backbone constructor argument. | Reference-implementation value; head count H used in `_attention_bytes_per_example`: H\*N^2\*4 bytes. |
 | `presets.py:_bytes_per_param_for_method (2.0)` | `2.0 B/param` | `# cite: framework default` | PyTorch dtype sizes: `torch.bfloat16` and `torch.float16` are 16-bit = 2 bytes per element. URL: <https://pytorch.org/docs/stable/tensors.html> | "torch.bfloat16: 16-bit Brain floating point" / "torch.float16: 16-bit half-precision floating point" — each is 2 bytes. | Standard bf16/fp16 dtype width; not project-specific. |
 | `presets.py:_bytes_per_param_for_method (0.5)` | `0.5 B/param` | `# cite: framework default` | bitsandbytes NF4 quantization: 4-bit storage = 0.5 bytes per parameter. bitsandbytes docs / QLoRA paper (Dettmers 2023, arXiv:2305.14314 §3): "4-bit NormalFloat Quantization". | "4-bit NormalFloat" — 4 bits per parameter = 0.5 bytes. | Standard NF4 storage width; not project-specific. |
 | `presets.py:_optimizer_bytes (*4 literal)` | `4× adapter_bytes` | `# cite: framework default` | AdamW optimizer state = fp32 first moment m + fp32 second moment v + fp32 master copy = 3 × 4 B/param = 12 B/param for a bf16 2 B/param adapter → ratio = 12/2 = 6×. However, if master copy is omitted (mixed-precision AdamW without separate master weights), state = m + v = 2 × 4 B = 8 B/param → ratio = 8/2 = 4×. The `*4` literal implements the 8 B/param (m+v only) variant. Loshchilov & Hutter 2019, arXiv:1711.05101. PyTorch `torch.optim.AdamW` stores m and v in fp32 by default. | "AdamW state on the bf16 adapter — fp32 m, fp32 v, fp32 master copy. Adapter weights are 2 B/param; state is 8 B/param -> 4x adapter\_bytes." (presets.py inline comment). | No `ADAMW_STATE_MULT` symbol exists in the codebase (`rg -n 'ADAMW_STATE_MULT' src/` returns nothing) — the issue/plan mislabeled the literal; it is just `* 4` directly in `_optimizer_bytes`. The `*4` = 8 B/param ÷ 2 B/param (bf16 adapter) = the m+v fp32 state ratio. |
-| `presets.py:CACHE_SCHEMA_VERSION` | `2` | `index-only` | — | — | Internal cache versioning integer; not trust-bearing. Incremented when the cache JSON schema changes in a backward-incompatible way. |
+| `presets.py:PresetDecision.alpha` | `32` | `cross-link` | See `config/schema.py:PEFTConfig.alpha` row. | — | The autosize decision's chosen LoRA alpha; defaults to the schema `PEFTConfig.alpha` value (32 = 2×r). The calibrate autosize path co-scales it alongside `r` on VRAM-driven rank reduction (#230), so the emitted `config_patch` carries the co-scaled alpha. |
+| `presets.py:CACHE_SCHEMA_VERSION` | `3` | `index-only` | — | — | Internal cache versioning integer; not trust-bearing. Incremented when the cache JSON schema changes in a backward-incompatible way. |
+| `presets.py:A_FIXED` | `0` | `# cite: #204` | PR #204 (VRAM K-autosize split activation model) — K-invariant vision-encoder (hiera-large) activation per image, clamped to 0 as the flash-baseline residual sits below the STATIC conservatism margin. | (See presets.py block comment "A_FIXED clamps to 0".) | #204 split-activation calibration constant; superseded by the calibration cache. `# tbd: #204` if a crisper citation is wanted. |
+| `presets.py:A_PER_CLASS` | `1_248_840_021` | `# cite: #204` | PR #204 — decoder/mask-head activation per (image×class), two-point split measured on RTX 5070 Ti @1008px (see presets.py "Split activation seeds" comment + scripts/_derive_preset_constants.py). | `A_PER_CLASS = 1_248_840_021  # 1.163 GiB decoder activation per class @1008px` | #204 split-activation calibration constant. |
+| `presets.py:CACHE_FILENAME` | `".custom_sam_peft_calibration.json"` | `index-only` | — | — | Structural calibration-cache filename; not trust-bearing. |
+| `presets.py:_CUDA_HINT` | `(CUDA-required help string)` | `index-only` | — | — | Structural user-facing error message; not trust-bearing. |
 
 ## cli/templates/config_full.yaml
 
@@ -198,11 +231,14 @@ same symbol. This section cross-links the template slot to its schema row.
 | Location | Value | Tag | Full reference | Verifying quote | Notes |
 | --- | --- | --- | --- | --- | --- |
 | `config_full.yaml:run.seed` | `42` | `cross-link` | See `config/schema.py:RunConfig.seed` row. | — | Template echo of the schema default. |
+| `config_full.yaml:run.output_dir` | `"./runs"` | `cross-link` | See `config/schema.py:RunConfig.output_dir` row. | — | Template echo of the schema default. |
 | `config_full.yaml:model.dtype` | `bfloat16` | `cross-link` | See `config/schema.py:ModelConfig.dtype` row. | — | Template echo of the schema default. |
 | `config_full.yaml:data.text_prompt.mode` | `present_plus_negatives` | `cross-link` | See `config/schema.py:TextPromptConfig.mode` row. | — | DIFFERS from schema default (`present`). Template ships `present_plus_negatives` to pair with `negatives_per_image: 4`; schema default is the conservative `present` (0 negatives). |
 | `config_full.yaml:data.text_prompt.negatives_per_image` | `4` | `cross-link` | See `config/schema.py:TextPromptConfig.negatives_per_image` row. | — | DIFFERS from schema default (`0`). Template ships `4` per the field-description rationale: "leaves headroom for typical COCO present-class counts (~3-7 per image)". Schema default is `0` (conservative starting point before negative-mining is enabled). |
 | `config_full.yaml:data.normalize.mean` | `[0.5, 0.5, 0.5]` | `cross-link` | See `config/schema.py:NormalizeConfig.mean` row. | — | Template echo of the schema default. |
 | `config_full.yaml:data.normalize.std` | `[0.5, 0.5, 0.5]` | `cross-link` | See `config/schema.py:NormalizeConfig.std` row. | — | Template echo of the schema default. |
+| `config_full.yaml:data.augmentations.preset` | `$aug_preset` | `cross-link` | See `config/schema.py:AugmentationsConfig.preset` row. | — | Placeholder filled by the `init` flow; schema default is `natural`. |
+| `config_full.yaml:data.augmentations.intensity` | `$aug_intensity` | `cross-link` | See `config/schema.py:AugmentationsConfig.intensity` row. | — | Placeholder filled by the `init` flow; schema default is `medium`. |
 | `config_full.yaml:peft.r` | `16` | `cross-link` | See `config/schema.py:PEFTConfig.r` row. | — | Template echo of the schema default. |
 | `config_full.yaml:peft.alpha` | `32` | `cross-link` | See `config/schema.py:PEFTConfig.alpha` row. | — | Template echo of the schema default. |
 | `config_full.yaml:peft.dropout` | `0.05` | `cross-link` | See `config/schema.py:PEFTConfig.dropout` row. | — | Template echo of the schema default. |
@@ -210,7 +246,11 @@ same symbol. This section cross-links the template slot to its schema row.
 | `config_full.yaml:train.batch_size` | `1` | `cross-link` | See `config/schema.py:TrainHyperparams.batch_size` row. | — | Template echo of the schema default. |
 | `config_full.yaml:train.grad_accum_steps` | `8` | `cross-link` | See `config/schema.py:TrainHyperparams.grad_accum_steps` row. | — | Template echo of the schema default. |
 | `config_full.yaml:train.learning_rate` | `1.0e-4` | `cross-link` | See `config/schema.py:TrainHyperparams.learning_rate` row. | — | Template echo of the schema default. |
+| `config_full.yaml:train.optimizer` | `auto` | `cross-link` | See `config/schema.py:TrainHyperparams.optimizer` row. | — | Template echo of the schema default. |
 | `config_full.yaml:train.lr_schedule` | `plateau` | `cross-link` | See `config/schema.py:TrainHyperparams.lr_schedule` row. | — | Template echo of the schema default (updated from `cosine` → `plateau` in #197). |
+| `config_full.yaml:train.multiplex.classes_per_forward` | `16` | `cross-link` | See `config/schema.py:MultiplexConfig.classes_per_forward` row. | — | Template echo of the schema default. |
+| `config_full.yaml:train.loss.preset` | `$loss_preset` | `cross-link` | See `config/schema.py:LossConfig.preset` row. | — | Placeholder filled by the `init` flow; schema default is `natural`. |
+| `config_full.yaml:train.loss.class_imbalance` | `$class_imbalance` | `cross-link` | See `config/schema.py:LossConfig.class_imbalance` row. | — | Placeholder filled by the `init` flow; schema default is `balanced`. |
 | `config_full.yaml:train.warmup_steps` | `100` | `cross-link` | See `config/schema.py:TrainHyperparams.warmup_steps` row. | — | Template echo of the schema default. |
 | `config_full.yaml:train.max_grad_norm` | `1.0` | `cross-link` | See `config/schema.py:TrainHyperparams.max_grad_norm` row. | — | Template echo of the schema default. |
 | `config_full.yaml:train.log_every` | `50` | `cross-link` | See `config/schema.py:TrainHyperparams.log_every` row. | — | Template echo of the schema default. |
@@ -252,13 +292,14 @@ same symbol. This section cross-links the template slot to its schema row.
 
 | Location | Value | Tag | Full reference | Verifying quote | Notes |
 | --- | --- | --- | --- | --- | --- |
-| `predict/budget.py:PREDICT_8GB_BUDGET_GB` | `7.0` | `# cite: empirical (8 GB nominal − ~1.0 GB reservation)` | 8 GB nominal − ~1.0 GB driver/CUDA-context reservation; consistent with `presets.py::_headroom_bytes` convention. `# tbd: #142` — replace reservation with a measured figure from a real 8 GB card. | — | CC 7.5 / 8 GB predict footprint budget. The ~1.0 GB reservation matches the headroom convention already in use in `presets.py`. |
+| `predict/budget.py:PREDICT_8GB_BUDGET_GB` | `7.0` | `# cite: empirical (8 GB nominal − ~1.0 GB reservation)` | 8 GB nominal − ~1.0 GB driver/CUDA-context reservation; consistent with `presets.py::_headroom_bytes` convention. `# tbd: #142` — replace reservation with a measured figure from a real 8 GB card. | — | Predict footprint budget for an 8 GB card. The ~1.0 GB reservation matches the headroom convention already in use in `presets.py`. |
 
 ## tests/gpu/test\_qlora\_8gb\_ceiling.py
 
 | Location | Value | Tag | Full reference | Verifying quote | Notes |
 | --- | --- | --- | --- | --- | --- |
-| `tests/gpu/test_qlora_8gb_ceiling.py:QLORA_8GB_CEIL_GB` | `8.0` | `# cite: issue-137 feasibility doc + ~3 GB margin` | measured ~5.0 GB peak (GTX 1080, fp16) in `docs/research/2026-05-24-issue-137-qlora-8gb-feasibility.md`; 8.0 GB target minimum-card envelope (~3 GB margin); `# tbd: #142` confirm on a real 8 GB card. 5070 Ti measured peak: 2.348 GB (fp16, min\_gpu\_qlora, 2026-05-31) — within the 8.0 envelope. | — | CC 7.5 / 8 GB QLoRA train envelope (min\_gpu\_qlora.yaml). |
+| `tests/gpu/test_qlora_8gb_ceiling.py:QLORA_8GB_CEIL_GB` | `8.0` | `# cite: issue-137 feasibility doc + ~3 GB margin` | measured ~5.0 GB peak (fp16, decoder-only scope) in `docs/research/2026-05-24-issue-137-qlora-8gb-feasibility.md`; 8.0 GB target CC 7.5 / 8 GB-card envelope (~3 GB margin); `# tbd: #142` confirm on a real 8 GB card. 5070 Ti measured peak: 2.348 GB (fp16, min\_gpu\_qlora, 2026-05-31) — within the 8.0 envelope. | — | CC 7.5 / 8 GB QLoRA train envelope (min\_gpu\_qlora.yaml). |
+| `tests/gpu/test_qlora_8gb_ceiling.py:LOSS_RATIO_CEIL` | `0.75` | `# tbd:` | — | — | Overfit smoke-test loss-drop ceiling: the 50-step run must drop loss to ≤ 0.75× its first value. Repo-chosen overfit-signal threshold; no external derivation recorded. |
 
 ## Reference Training Profile
 
@@ -286,12 +327,16 @@ The 160-epoch figure is therefore a **convergence anchor** drawn from the publis
 
 At 160 epochs the run no longer fits the original "≤30 min on a 16 GB free-tier Colab T4" window that the earlier framing assumed: 160 epochs is ~16× the previous 10-epoch default, so the run exceeds that window by a wide margin. This is an order-of-magnitude inference from the epoch ratio, **not** a measured figure. The "≤30 min" budget framing is therefore **dropped** in favor of convergence. This reflects the standing design priority for this project: **final accuracy ≫ training speed** — a speed-only benefit is not a sufficient reason to reduce epoch count.
 
-There is **no citable T4 per-step wall-clock figure** in the literature for this configuration. The **T4 sample remains pending a user Colab run** (T4 sample: pending user Colab confirmation (#193)). `# tbd: #193` is therefore **partially resolved**: the 5070 Ti per-step datapoint is now recorded (see below); T4 confirmation is still outstanding.
+There is **no citable T4 per-step wall-clock figure** in the literature for this configuration, so the figure below is an internal measurement, not a citation. `# tbd: #193` is now **resolved**: both the 5070 Ti per-step datapoint and the user's Colab T4 QLoRA sample are recorded below.
 
 **5070 Ti per-step measurement (2026-05-31):** The following wall-clock figures were measured on an **RTX 5070 Ti (CC 12.0, 16 GB)** using `scripts/run_gpu_tests.sh`, running the 50-step `tiny_coco` overfit smokes (`tests/fixtures/tiny_coco/`, 2 images, `batch_size=1`, `grad_accum=1`, 50 gradient updates). These are smoke-test step times — a per-step proxy for the reference profile, **not** the 160-epoch reference profile wall-clock itself (which remains unmeasured):
 
 - **QLoRA** (`test_qlora_overfits_in_50_steps` / `min_gpu_qlora`): 37.6 s / 50 steps ≈ **0.75 s/step**
 - **LoRA** (`test_overfits_in_50_steps` / `gpu_smoke_lora`): 55.0 s / 50 steps ≈ **1.10 s/step**
+
+**T4 per-step measurement (2026-06-01):** Measured by the user on a free-tier **Colab Tesla T4 (CC 7.5, 16 GB)** via `scripts/run_gpu_tests.sh colab-min`, running the same 50-step `min_gpu_qlora` QLoRA smoke (`test_qlora_overfits_in_50_steps`, `tiny_coco`, `batch_size=1`, `grad_accum=1`). Same smoke-test proxy caveat as above — **not** the 160-epoch reference profile wall-clock:
+
+- **QLoRA** (`test_qlora_overfits_in_50_steps` / `min_gpu_qlora`): 317.1 s / 50 steps ≈ **6.34 s/step** (~8.4× the 5070 Ti QLoRA step, as expected for the T4's fp16 band).
 
 No 160-epoch reference profile wall-clock is stated as a measured or completed claim here.
 

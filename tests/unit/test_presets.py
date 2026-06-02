@@ -290,10 +290,20 @@ def test_presetdecision_has_alpha_field_and_in_config_patch() -> None:
     from custom_sam_peft.presets import PresetDecision
 
     d = PresetDecision(
-        method="lora", r=8, alpha=16, batch_size=1, grad_accum_steps=8,
-        classes_per_forward=1, dtype="bfloat16", headroom_bytes=0,
-        predicted_bytes=0, budget_bytes=0, gpu_name="X",
-        provenance="calibrated", cache_path=None, calibrated_at=None,
+        method="lora",
+        r=8,
+        alpha=16,
+        batch_size=1,
+        grad_accum_steps=8,
+        classes_per_forward=1,
+        dtype="bfloat16",
+        headroom_bytes=0,
+        predicted_bytes=0,
+        budget_bytes=0,
+        gpu_name="X",
+        provenance="calibrated",
+        cache_path=None,
+        calibrated_at=None,
     )
     assert d.alpha == 16
     assert d.config_patch["peft"]["alpha"] == 16
@@ -347,7 +357,7 @@ def test_preset_decision_float16_round_trips() -> None:
 def test_decide_preset_selects_float16_below_cc80(
     monkeypatch: pytest.MonkeyPatch, _force_cuda_available: None
 ) -> None:
-    """On CC<8.0 hardware (Pascal/GTX 1080) decide_preset must pick float16."""
+    """On CC<8.0 hardware (here stubbed at CC 6.1) decide_preset must pick float16."""
     # Use 40 GiB so a preset fits even at K_eff=MULTIPLEX_CAP (16).
     _stub_gpu(monkeypatch, int(40 * _GB), cc=(6, 1))
     decision = decide_preset()
@@ -376,7 +386,7 @@ def test_flash_attention_available_by_cc() -> None:
     assert _flash_attention_available((12, 0)) is True  # 5070 Ti dev box
     # cc < (8, 0): assume math backend materializes -> include the attention term.
     assert _flash_attention_available((7, 5)) is False  # Turing (conservative)
-    assert _flash_attention_available((6, 1)) is False  # Pascal (GTX 1080)
+    assert _flash_attention_available((6, 1)) is False  # CC 6.1 (pre-Ampere)
     # Unknown / unreadable cc -> conservative False (safe over-estimate).
     assert _flash_attention_available(None) is False
 

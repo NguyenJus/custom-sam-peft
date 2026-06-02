@@ -20,7 +20,7 @@ def _conftest():
         # At and above the floor
         ((7, 5), True),
         ((8, 0), True),
-        # Old Pascal case that used to pass now fails at the gate
+        # CC 5.0 is below the CC 7.5 floor — fails at the gate
         ((5, 0), False),
     ],
 )
@@ -100,7 +100,7 @@ def test_all_tiers_skipped_without_gpu(monkeypatch) -> None:
     import tests.conftest as conftest
 
     monkeypatch.setattr(conftest, "_has_compatible_gpu", lambda: False)
-    monkeypatch.setattr(conftest, "_satisfied_tiers", lambda: set())
+    monkeypatch.setattr(conftest, "_satisfied_tiers", set)
     for tier in ("gpu_t4", "gpu_bf16", "gpu_xl"):
         item = _FakeItem(tier, "requires_compatible_gpu")
         conftest.pytest_collection_modifyitems(config=None, items=[item])  # type: ignore[arg-type]
