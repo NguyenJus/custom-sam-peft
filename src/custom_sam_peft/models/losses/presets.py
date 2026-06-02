@@ -104,7 +104,7 @@ PRESET_TABLE: dict[tuple[Preset, ClassImbalance], dict[str, Any]] = {
         "focal_alpha": 0.25,  # cite: (A,C)
         "tversky_alpha": 0.5,  # cite: (F)
         "tversky_gamma": 1.0,  # cite: (F)
-        "boundary_weight": 0.0,
+        "boundary_weight": 0.0,  # cite: (B)
     },
     ("natural", "moderate"): {
         "mask_family": "dice_bce",  # cite: (A)
@@ -119,7 +119,7 @@ PRESET_TABLE: dict[tuple[Preset, ClassImbalance], dict[str, Any]] = {
         "focal_alpha": 0.25,  # cite: (A,C)
         "tversky_alpha": 0.5,  # cite: (F)
         "tversky_gamma": 1.0,  # cite: (F)
-        "boundary_weight": 0.0,
+        "boundary_weight": 0.0,  # cite: (B)
     },
     ("natural", "severe"): {
         "mask_family": "focal_dice",  # cite: (A)
@@ -134,7 +134,7 @@ PRESET_TABLE: dict[tuple[Preset, ClassImbalance], dict[str, Any]] = {
         "focal_alpha": 0.25,  # cite: (A,C)
         "tversky_alpha": 0.6,  # cite: (A,E)
         "tversky_gamma": 0.75,  # cite: (D)
-        "boundary_weight": 0.0,
+        "boundary_weight": 0.0,  # cite: (B)
     },
     # ----- medical -----
     ("medical", "balanced"): {
@@ -150,7 +150,7 @@ PRESET_TABLE: dict[tuple[Preset, ClassImbalance], dict[str, Any]] = {
         "focal_alpha": 0.25,  # cite: (A,C)
         "tversky_alpha": 0.6,  # cite: (A,E)
         "tversky_gamma": 0.75,  # cite: (D)
-        "boundary_weight": 0.0,
+        "boundary_weight": 0.0,  # cite: (B)
     },
     ("medical", "moderate"): {
         "mask_family": "focal_tversky",  # cite: (A)
@@ -165,7 +165,7 @@ PRESET_TABLE: dict[tuple[Preset, ClassImbalance], dict[str, Any]] = {
         "focal_alpha": 0.25,  # cite: (A,C)
         "tversky_alpha": 0.7,  # cite: (A,E)
         "tversky_gamma": 0.75,  # cite: (D)
-        "boundary_weight": 0.0,
+        "boundary_weight": 0.0,  # cite: (B)
     },
     ("medical", "severe"): {
         "mask_family": "boundary",  # cite: (A)
@@ -196,7 +196,7 @@ PRESET_TABLE: dict[tuple[Preset, ClassImbalance], dict[str, Any]] = {
         "focal_alpha": 0.25,  # cite: (A,C)
         "tversky_alpha": 0.5,  # cite: (F)
         "tversky_gamma": 1.0,  # cite: (F)
-        "boundary_weight": 0.0,
+        "boundary_weight": 0.0,  # cite: (B)
     },
     ("satellite", "moderate"): {
         "mask_family": "focal_dice",  # cite: (A)
@@ -211,7 +211,7 @@ PRESET_TABLE: dict[tuple[Preset, ClassImbalance], dict[str, Any]] = {
         "focal_alpha": 0.25,  # cite: (A,C)
         "tversky_alpha": 0.6,  # cite: (A,E)
         "tversky_gamma": 0.75,  # cite: (D)
-        "boundary_weight": 0.0,
+        "boundary_weight": 0.0,  # cite: (B)
     },
     ("satellite", "severe"): {
         "mask_family": "focal_tversky",  # cite: (A)
@@ -226,7 +226,7 @@ PRESET_TABLE: dict[tuple[Preset, ClassImbalance], dict[str, Any]] = {
         "focal_alpha": 0.25,  # cite: (A,C)
         "tversky_alpha": 0.7,  # cite: (A,E)
         "tversky_gamma": 0.75,  # cite: (D)
-        "boundary_weight": 0.0,
+        "boundary_weight": 0.0,  # cite: (B)
     },
 }
 
@@ -241,19 +241,19 @@ PRESET_TABLE[("microscopy", "severe")] = dict(PRESET_TABLE[("medical", "severe")
 # ---------------------------------------------------------------------------
 
 _LEGACY_DEFAULTS: dict[str, Any] = {
-    "mask_family": "dice_bce",
-    "box_family": "l1_giou",
-    "obj_family": "focal_bce",
-    "presence_family": "bce",
-    "w_mask": 1.0,
-    "w_box": 0.0,
-    "w_obj": 1.0,
-    "w_presence": 1.0,
-    "focal_gamma": 2.0,
-    "focal_alpha": 0.25,
-    "tversky_alpha": 0.5,  # neutral — Dice-equivalent; ignored by dice_bce
-    "tversky_gamma": 1.0,  # neutral — Tversky-equivalent; ignored by dice_bce
-    "boundary_weight": 0.0,
+    "mask_family": "dice_bce",  # cite: (B)
+    "box_family": "l1_giou",  # cite: (B)
+    "obj_family": "focal_bce",  # cite: (B)
+    "presence_family": "bce",  # cite: (B)
+    "w_mask": 1.0,  # cite: (B)
+    "w_box": 0.0,  # cite: (B)
+    "w_obj": 1.0,  # cite: (B)
+    "w_presence": 1.0,  # cite: (B)
+    "focal_gamma": 2.0,  # cite: (A,C)
+    "focal_alpha": 0.25,  # cite: (A,C)
+    "tversky_alpha": 0.5,  # cite: (F)  (neutral — Dice-equivalent; ignored by dice_bce)
+    "tversky_gamma": 1.0,  # cite: (F)  (neutral — Tversky-equivalent; ignored by dice_bce)
+    "boundary_weight": 0.0,  # cite: (B)
 }
 
 
