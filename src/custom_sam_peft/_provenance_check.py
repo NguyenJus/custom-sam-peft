@@ -405,6 +405,73 @@ def check_prose_section(section: Section, file_path: Path) -> list[ProvenanceVio
     return violations
 
 
+@dataclass(frozen=True)
+class CellLine:
+    """A preset-table value line: source text + 1-based line number."""
+
+    text: str
+    lineno: int
+
+
+# A value line inside a dict literal: ``"key": <value>,`` (optionally tagged).
+_DICT_VALUE_LINE = re.compile(r'^\s*"[^"]+"\s*:\s*.+,?\s*(#.*)?$')
+# A module-level alias assignment line in losses/presets.py.
+_ALIAS_LINE = re.compile(r"^\s*PRESET_TABLE\[\(.+\)\]\s*=\s*dict\(.+\)")
+
+
+def _dict_literal_spans(lines: list[str], dict_names: tuple[str, ...]) -> list[range]:
+    """Return line-index ranges (0-based, exclusive end) of named top-level dict literals.
+
+    A dict opens on a line matching ``<name>...= {`` and closes on the first
+    line that is exactly ``}`` (top-level, no leading whitespace).
+    """
+    spans: list[range] = []
+    for i, line in enumerate(lines):
+        if any(re.match(rf"^{re.escape(name)}\b.*=\s*\{{\s*$", line) for name in dict_names):
+            for j in range(i + 1, len(lines)):
+                if lines[j].rstrip() == "}":
+                    spans.append(range(i + 1, j))
+                    break
+    return spans
+
+
+def extract_preset_cell_lines(file_path: Path) -> list[CellLine]:
+    """All preset-table value lines for Assertion 2 (PRESET_TABLE + aliases + _LEGACY_DEFAULTS)."""
+    lines = file_path.read_text(encoding="utf-8").splitlines()
+    cells: list[CellLine] = []
+    spans = _dict_literal_spans(lines, ("PRESET_TABLE", "_LEGACY_DEFAULTS"))
+    in_span: set[int] = set()
+    for span in spans:
+        in_span.update(span)
+    for idx, line in enumerate(lines):
+        if idx in in_span and _DICT_VALUE_LINE.match(line):
+            cells.append(CellLine(text=line, lineno=idx + 1))
+        elif _ALIAS_LINE.match(line):
+            cells.append(CellLine(text=line, lineno=idx + 1))
+    return cells
+
+
+_LEGEND_ROW_BARE = re.compile(r"^\|\s*\(([A-Za-z])\)\s*\|")
+_LEGEND_ROW_PLAIN = re.compile(r"^\|\s*([A-Za-z])\s*\|")
+
+
+def parse_doc_legend_letters(section_body: str) -> set[str]:
+    """Collect legend letters defined in a table module's doc legend sub-table.
+
+    Accepts both ``| (a) | … |`` (aug) and ``| A | … |`` (losses) row forms.
+    """
+    letters: set[str] = set()
+    for line in section_body.splitlines():
+        m = _LEGEND_ROW_BARE.match(line)
+        if m is not None:
+            letters.add(m.group(1))
+            continue
+        m = _LEGEND_ROW_PLAIN.match(line)
+        if m is not None and m.group(1) not in {"L"}:  # skip the "Letter" header
+            letters.add(m.group(1))
+    return letters
+
+
 class CellTag(TypedDict):
     """A recognized inline tag on a preset-table value line."""
 

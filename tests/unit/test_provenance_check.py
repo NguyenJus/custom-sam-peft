@@ -396,7 +396,54 @@ def test_prose_defining_class_rekey(tmp_path: Path) -> None:
 # Phase 2 tests
 # ---------------------------------------------------------------------------
 
-from custom_sam_peft._provenance_check import recognize_cell_tag  # noqa: E402
+from custom_sam_peft._provenance_check import (  # noqa: E402
+    extract_preset_cell_lines,
+    parse_doc_legend_letters,
+    recognize_cell_tag,
+)
+
+
+def test_extract_preset_cell_lines_includes_legacy_and_alias(tmp_path: Path) -> None:
+    src = (
+        'PRESET_TABLE = {\n'
+        '    ("a", "b"): {\n'
+        '        "k": 1,  # cite: (A)\n'
+        '    },\n'
+        '}\n'
+        'PRESET_TABLE[("c", "d")] = dict(PRESET_TABLE[("a", "b")])  # cite: (G)\n'
+        '_LEGACY_DEFAULTS: dict[str, Any] = {\n'
+        '    "w": 1.0,  # cite: (B)\n'
+        '}\n'
+    )
+    f = tmp_path / "presets.py"
+    f.write_text(src)
+    cells = extract_preset_cell_lines(f)
+    texts = [c.text for c in cells]
+    assert any('"k": 1' in t for t in texts)
+    assert any("PRESET_TABLE[(\"c\", \"d\")]" in t for t in texts)  # alias line
+    assert any('"w": 1.0' in t for t in texts)  # _LEGACY_DEFAULTS cell
+    # Each cell carries its 1-based line number.
+    assert all(c.lineno >= 1 for c in cells)
+
+
+def test_parse_doc_legend_letters() -> None:
+    body = (
+        "### Legend\n\n"
+        "| Letter | Meaning |\n"
+        "| --- | --- |\n"
+        "| (a) | domain |\n"
+        "| (e) | recipe |\n"
+    )
+    assert parse_doc_legend_letters(body) == {"a", "e"}
+
+    cite_body = (
+        "### Citation legend\n\n"
+        "| Letter | Source | Establishes |\n"
+        "| --- | --- | --- |\n"
+        "| A | x | y |\n"
+        "| H | x | y |\n"
+    )
+    assert parse_doc_legend_letters(cite_body) == {"A", "H"}
 
 
 def test_recognize_cell_tag_forms() -> None:
