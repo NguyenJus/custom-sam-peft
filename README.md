@@ -8,10 +8,8 @@ Parameter-efficient finetuning of [SAM3.1](https://huggingface.co/facebook/sam3.
 on niche image instance-segmentation datasets — runnable on a single
 consumer GPU.
 
-> **⚠️ Work in progress — not ready to run.**
-> v0.7.0 is an active development snapshot. The CLI surfaces (`train`, `eval`, `export`, `run`, `init`, `doctor`) exist and exercise real subsystems (LoRA / QLoRA adapters, W&B tracking), but the project has not been validated end-to-end on production workloads. Expect breaking changes. Use at your own risk; pin to a tagged release if you need stability.
->
-> **What's new in v0.7.0:** schema hardening pass — config fields are validated against a published schema, `lr` has been renamed to `learning_rate`, and `train` now accepts `--eval` / `--export` flags (`run` remains the all-in-one shorthand). See [CHANGELOG.md](CHANGELOG.md) for the full change table and migration notes.
+> **⚠️ Work in progress.**
+> An active development snapshot — **the code runs**, but it hasn't been validated end-to-end on production workloads. The CLI surfaces (`train`, `run`, `eval`, `predict`, `export`, `init`, `doctor`, `calibrate`) exercise real subsystems (LoRA / QLoRA adapters, TensorBoard / W&B tracking). Expect breaking changes; pin to a tagged release if you need stability.
 
 ## Beginner — train in Colab
 
@@ -47,13 +45,19 @@ uv sync --all-extras
 uv run custom-sam-peft --help
 uv run custom-sam-peft doctor
 
+# Generate a config interactively (recommended) — auto-detects your COCO data
+# paths, calibrates VRAM presets, and walks you through PEFT method + key knobs
+uv run custom-sam-peft init --interactive
+# ...or non-interactively from a template:
+uv run custom-sam-peft init --template coco-text-qlora --output config.yaml
+
 # Train, then eval and export in one shot (recommended)
-uv run custom-sam-peft run configs/examples/coco_bbox_qlora.yaml
+uv run custom-sam-peft run config.yaml
 
 # Or run steps individually:
-uv run custom-sam-peft train configs/examples/coco_bbox_qlora.yaml          # train only
-uv run custom-sam-peft train configs/examples/coco_bbox_qlora.yaml --eval   # train + eval
-uv run custom-sam-peft train configs/examples/coco_bbox_qlora.yaml --eval --export  # same as `run`
+uv run custom-sam-peft train config.yaml          # train only
+uv run custom-sam-peft train config.yaml --eval   # train + eval
+uv run custom-sam-peft train config.yaml --eval --export  # same as `run`
 ```
 
 `run cfg.yaml` is shorthand for `train cfg.yaml --eval --export`.
@@ -77,13 +81,20 @@ See [cloud/docker/README.md](cloud/docker/README.md) for the full CLI and Jupyte
 | --- | --- |
 | `custom-sam-peft run CONFIG [--resume PATH] [-v]` | Functional — shorthand for `train --eval --export` |
 | `custom-sam-peft train CONFIG [--eval] [--export] [--override key=val]... [--resume PATH] [-v]` | Functional |
-| `custom-sam-peft eval --config CONFIG --checkpoint PATH [--split val\|test] [--output PATH] [--save-predictions]` | Functional (LoRA adapters only) |
+| `custom-sam-peft eval --config CONFIG --checkpoint PATH [--split val\|test] [--export] [--output PATH] [--interactive]` | Functional (LoRA + QLoRA adapters) |
+| `custom-sam-peft predict --images DIR --prompts "a,b,c" [--checkpoint PATH] [--output PATH] [--visualize] [--interactive]` | Functional |
 | `custom-sam-peft export --checkpoint PATH [--merge] [--output PATH] [--config PATH]` | Functional |
-| `custom-sam-peft init [--template coco-text-lora\|coco-text-qlora] [--output PATH] [--force]` | Functional |
-| `custom-sam-peft doctor [--weights-path PATH] [--json]` | Functional |
+| `custom-sam-peft init [--interactive] [--template NAME] [--preset NAME] [--output PATH] [--force]` | Functional |
+| `custom-sam-peft calibrate --config CONFIG [--output PATH] [--force]` | Functional |
+| `custom-sam-peft doctor [--config PATH] [--weights-path PATH] [--json]` | Functional |
+
+Most commands accept more flags than shown — run `custom-sam-peft <command> --help`
+for the full list.
 
 `run CONFIG` is equivalent to `train CONFIG --eval --export`; use the individual flags when you want only some steps.
 
+`init --interactive` launches the setup wizard (auto-detected data paths, VRAM-calibrated
+presets, guided knobs); `eval` and `predict` accept `--interactive` for guided one-off runs.
 `coco-bbox` and `hf-text` init templates are deferred (see `logs/TODO.md`).
 
 #### Run inference on your images
@@ -97,31 +108,27 @@ uv run csp predict \
   --output out/
 ```
 
-This produces `out/predictions.json` (COCO-flat), `out/image_id_map.json` (id → source path), and `out/run.json` (reproducibility metadata). Pass `--checkpoint path/to/adapter/` to apply a LoRA or QLoRA adapter (auto-detected); add `--visualize` to write per-image overlays. See `csp predict --help` for every flag.
+This produces `out/predictions.json` (COCO-flat), `out/image_id_map.json` (id → source path), and `out/run.json` (reproducibility metadata). Pass `--checkpoint path/to/adapter/` to apply a LoRA or QLoRA adapter (auto-detected); add `--visualize` to write per-image overlays. Not sure of the arguments? `csp predict --interactive` builds the command for you. See `csp predict --help` for every flag.
 
 ### What's supported in v0
 
 | | v0 | Deferred |
 | --- | --- | --- |
 | Model | SAM3.1 | SAM3 |
-| Prompts | text, bounding boxes | points, masks |
 | Data | static images, COCO + HF datasets | video |
 | Output | instance segmentation | semantic segmentation |
 | Distribution | single GPU | Ray Train, Argo workflows |
 | PEFT | LoRA, QLoRA | other PEFT methods |
 | Tracking | TensorBoard, W&B, none | — |
 
-### v0 Training scope
+### Testing
 
-v0 trains **text-prompts only**. Ground-truth bounding boxes are used as a curriculum hint during training (increasing probability of box-only forward passes), not as a primary prompt. `prompt_mode='bbox'` is rejected at training time (see logs/TODO.md for deferred bbox-prompt-training spec).
-
-For testing: run `pytest -m integration` for end-to-end stub tests, or `pytest -m gpu` if you have a CUDA GPU and a local SAM 3.1 checkpoint.
+Run `pytest -m integration` for end-to-end stub tests (CPU, no checkpoint needed).
+GPU test tiers and automation live in [`README-dev.md`](docs/README-dev.md).
 
 ### Configuration
 
 Every YAML config field is documented in [`docs/config-schema.md`](docs/config-schema.md). The schema covers all user-settable fields across the `run`, `model`, `data`, `peft`, `training`, `eval`, and `export` sections, with types, defaults, and layer labels (common vs. advanced).
-
-Quick reference for the most-changed field in v0.7.0: `lr` has been renamed to `learning_rate` (under `training`). See [CHANGELOG.md](CHANGELOG.md) for the full rename table.
 
 ### Repo layout
 
