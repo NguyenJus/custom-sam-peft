@@ -146,3 +146,53 @@ def test_fit_with_val_ds_none_does_not_log_image_panel(tmp_path: Path, tiny_coco
     trainer = Trainer(wrapper, ds_train, None, tracker, cfg)
     trainer.fit(run_dir=run_dir)
     tracker.log_images.assert_not_called()
+
+
+def test_config_yaml_round_trips_through_load_config(tmp_path: Path, tiny_coco_dir: Path) -> None:
+    """config.yaml written by the trainer must reload cleanly via load_config.
+
+    Regression for the bug where val_source provenance was injected into
+    cfg_dict BEFORE writing config.yaml, causing TrainConfig (extra="forbid")
+    to reject the extra key on finalize/resume reload.
+    """
+    from custom_sam_peft.config.loader import load_config
+
+    cfg = _cfg(tmp_path, tiny_coco_dir)
+    ds_train = _ds_train(tiny_coco_dir)
+    wrapper = make_stub_wrapper(dim=8, working=True)
+    apply_lora(wrapper, cfg.peft)
+    run_dir = tmp_path / f"{cfg.run.name}-roundtrip"
+    run_dir.mkdir(parents=True)
+    # Place a val_source.json so the trainer's provenance-injection branch fires.
+    (run_dir / "val_source.json").write_text(
+        json.dumps(
+            {
+                "mode": "none",
+                "fraction_requested": None,
+                "seed_used": None,
+                "realized_fraction": None,
+                "n_train": None,
+                "n_val": None,
+                "per_class_counts": None,
+                "missing_in_val": None,
+                "train_ids": None,
+                "val_ids": None,
+            }
+        )
+    )
+    trainer = Trainer(wrapper, ds_train, None, build_tracker(cfg), cfg)
+    trainer.fit(run_dir=run_dir)
+
+    config_path = run_dir / "config.yaml"
+    assert config_path.exists(), "trainer must write config.yaml"
+
+    import yaml as _yaml
+
+    written = _yaml.safe_load(config_path.read_text())
+    assert "val_source" not in written, (
+        "config.yaml must not contain val_source — it breaks TrainConfig round-trip"
+    )
+
+    # Must not raise — this is the exact call path used by --finalize/--resume.
+    reloaded = load_config(config_path)
+    assert isinstance(reloaded, type(cfg))
