@@ -181,6 +181,7 @@ def run_init(
                 output,
                 method=decision.method,
                 r=decision.r,
+                alpha=decision.alpha,
                 batch_size=decision.batch_size,
                 grad_accum_steps=decision.grad_accum_steps,
                 classes_per_forward=decision.classes_per_forward,

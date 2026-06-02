@@ -286,6 +286,29 @@ def test_preset_decision_config_patch_3_sections() -> None:
     assert patch["model"]["dtype"] == "bfloat16"
 
 
+def test_presetdecision_has_alpha_field_and_in_config_patch() -> None:
+    from custom_sam_peft.presets import PresetDecision
+
+    d = PresetDecision(
+        method="lora",
+        r=8,
+        alpha=16,
+        batch_size=1,
+        grad_accum_steps=8,
+        classes_per_forward=1,
+        dtype="bfloat16",
+        headroom_bytes=0,
+        predicted_bytes=0,
+        budget_bytes=0,
+        gpu_name="X",
+        provenance="calibrated",
+        cache_path=None,
+        calibrated_at=None,
+    )
+    assert d.alpha == 16
+    assert d.config_patch["peft"]["alpha"] == 16
+
+
 def test_decide_preset_requires_cuda(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
     with pytest.raises(RuntimeError, match="CUDA"):

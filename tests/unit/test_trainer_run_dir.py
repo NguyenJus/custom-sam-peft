@@ -142,7 +142,9 @@ def test_fit_creates_expected_layout(tmp_path: Path) -> None:
             train=DataSplit(annotations="a.json", images="i"),
             val=DataSplit(annotations="a.json", images="i"),
         ),
-        peft=PEFTConfig(method="lora", target_modules=FIXTURE_SCOPE_PATTERNS["vision"]),
+        peft=PEFTConfig(
+            method="lora", scope="vision", target_modules=FIXTURE_SCOPE_PATTERNS["vision"]
+        ),
         train=TrainHyperparams(
             epochs=1,
             grad_accum_steps=1,

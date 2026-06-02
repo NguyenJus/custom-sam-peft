@@ -174,6 +174,7 @@ def _apply_config_rewrite(config: Path, *, decision: PresetDecision) -> None:
             config,
             method=decision.method,
             r=decision.r,
+            alpha=decision.alpha,
             batch_size=decision.batch_size,
             grad_accum_steps=decision.grad_accum_steps,
             classes_per_forward=decision.classes_per_forward,
@@ -253,6 +254,7 @@ def _write_cache_v3(
     peak: int,
     method: str | None = None,
     r: int | None = None,
+    alpha: int | None = None,
     batch: int | None = None,
     classes_per_forward: int | None = None,
 ) -> None:
@@ -277,6 +279,8 @@ def _write_cache_v3(
         payload["chosen_method"] = method
     if r is not None:
         payload["chosen_r"] = int(r)
+    if alpha is not None:
+        payload["chosen_alpha"] = int(alpha)
     if batch is not None:
         payload["chosen_batch"] = int(batch)
     if classes_per_forward is not None:
@@ -307,6 +311,7 @@ def _decision_from_cache(output: Path, k_cap: int) -> PresetDecision | None:
         return None
     method = data["chosen_method"]
     r = int(data["chosen_r"])
+    alpha = int(data.get("chosen_alpha", 2 * r))
     batch = int(data["chosen_batch"])
     k = min(int(data["chosen_classes_per_forward"]), k_cap)
     peak = int(data["peak_memory_bytes_at_probe"])
@@ -318,6 +323,7 @@ def _decision_from_cache(output: Path, k_cap: int) -> PresetDecision | None:
     return PresetDecision(
         method=method,
         r=r,
+        alpha=alpha,
         batch_size=batch,
         grad_accum_steps=max(1, 16 // batch),
         classes_per_forward=k,
@@ -430,6 +436,10 @@ def run_calibration(*, config: Path, output: Path, force: bool) -> PresetDecisio
     cfg = load_config(config)
     method = cfg.peft.method
     r = cfg.peft.r
+    # cfg_r / cfg_alpha: immutable pre-climb snapshots of the configured values, used
+    # by the co-scale guard below (the working `r` is reassigned by _confirm_and_climb).
+    cfg_r = cfg.peft.r
+    cfg_alpha = cfg.peft.alpha
     k_cap = min(cfg.train.multiplex.classes_per_forward, MULTIPLEX_CAP)
     batch = cfg.train.batch_size
 
@@ -473,6 +483,24 @@ def run_calibration(*, config: Path, output: Path, force: bool) -> PresetDecisio
         k_cap=k_cap,
     )
 
+    # Co-scale alpha to preserve the configured alpha:r ratio when autosize reduced r.
+    # Justified by the existing alpha=2r citation (LoRA Hu 2021 §4.1); no new # tbd:.
+    # No-op (byte-identical to today) when r is not reduced (spec §7a.3(d)).
+    if r < cfg_r:
+        alpha_final = round(cfg_alpha * r / cfg_r)
+        alpha_final = max(1, alpha_final)  # PositiveInt invariant
+        typer.echo(
+            f"WARNING: VRAM autosize reduced LoRA rank r {cfg_r}->{r} to fit {gpu_name}; "
+            f"alpha co-scaled {cfg_alpha}->{alpha_final} to preserve alpha/r scaling.",
+            err=True,
+        )
+    else:
+        # r == cfg_r (unchanged) or r > cfg_r (autosize climbed above the configured
+        # rank on a larger GPU): spec §7a.3(d) co-scales alpha ONLY on reduction, so
+        # alpha keeps its configured value here. Intentional asymmetry — do not change
+        # to `r != cfg_r` without a spec amendment.
+        alpha_final = cfg_alpha
+
     # Persist the measured peak AND the empirically-chosen sizing (Correction B). The
     # chosen_* keys make this confirmed config authoritative on every later cache-fresh
     # read, so a re-run never reverts to the analytic aim.
@@ -485,6 +513,7 @@ def run_calibration(*, config: Path, output: Path, force: bool) -> PresetDecisio
         peak=peak,
         method=method,
         r=r,
+        alpha=alpha_final,
         batch=batch,
         classes_per_forward=k,
     )
@@ -498,6 +527,7 @@ def run_calibration(*, config: Path, output: Path, force: bool) -> PresetDecisio
     decision = PresetDecision(
         method=method,
         r=r,
+        alpha=alpha_final,
         batch_size=batch,
         grad_accum_steps=max(1, 16 // batch),
         classes_per_forward=k,

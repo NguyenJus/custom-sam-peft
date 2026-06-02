@@ -64,6 +64,7 @@ def test_rewrite_sizing_block_annotation_present(tmp_path: Path) -> None:
         cfg_path,
         method="qlora",
         r=8,
+        alpha=4,
         batch_size=2,
         grad_accum_steps=4,
         classes_per_forward=16,
@@ -84,6 +85,7 @@ def test_rewrite_sizing_block_values_changed(tmp_path: Path) -> None:
         cfg_path,
         method="qlora",
         r=8,
+        alpha=4,
         batch_size=2,
         grad_accum_steps=4,
         classes_per_forward=16,
@@ -108,6 +110,7 @@ def test_rewrite_sizing_block_unrelated_lines_survive(tmp_path: Path) -> None:
         cfg_path,
         method="qlora",
         r=8,
+        alpha=4,
         batch_size=2,
         grad_accum_steps=4,
         classes_per_forward=16,
@@ -123,7 +126,7 @@ def test_rewrite_sizing_block_unrelated_lines_survive(tmp_path: Path) -> None:
     # peft section comment must survive
     assert "# peft section comment" in body
     # Unrelated fields must survive
-    assert "alpha: 32" in body
+    assert "alpha: 4" in body  # alpha is now a rewrite target; value becomes the passed alpha=4
     assert "dropout: 0.05" in body
     assert "learning_rate: 1.0e-4" in body
     assert "epochs: 10" in body
@@ -138,6 +141,7 @@ def test_rewrite_sizing_block_still_parses_via_load_config(tmp_path: Path) -> No
         cfg_path,
         method="qlora",
         r=8,
+        alpha=4,
         batch_size=2,
         grad_accum_steps=4,
         classes_per_forward=16,
@@ -215,6 +219,7 @@ def test_rewrite_depth_aware_nested_key_untouched(tmp_path: Path) -> None:
         cfg_path,
         method="qlora",
         r=8,
+        alpha=4,
         batch_size=2,
         grad_accum_steps=4,
         classes_per_forward=16,
@@ -287,6 +292,7 @@ def test_rewrite_missing_key_raises_value_error(tmp_path: Path) -> None:
             cfg_path,
             method="qlora",
             r=8,
+            alpha=4,
             batch_size=2,
             grad_accum_steps=4,
             classes_per_forward=16,
@@ -310,6 +316,7 @@ def test_rewrite_annotation_idempotent(tmp_path: Path) -> None:
             cfg_path,
             method="qlora",
             r=8,
+            alpha=4,
             batch_size=2,
             grad_accum_steps=4,
             classes_per_forward=16,
@@ -338,6 +345,7 @@ def test_rewrite_against_real_rendered_template(tmp_path: Path) -> None:
         out,
         method="qlora",
         r=32,
+        alpha=64,
         batch_size=4,
         grad_accum_steps=2,
         classes_per_forward=16,
@@ -358,6 +366,7 @@ def test_rewrite_against_real_rendered_template(tmp_path: Path) -> None:
         out,
         method="lora",
         r=8,
+        alpha=16,
         batch_size=1,
         grad_accum_steps=8,
         classes_per_forward=16,
@@ -384,6 +393,7 @@ model:
 peft:
   method: lora
   r: 8
+  alpha: 16
 train:
   batch_size: 1
   grad_accum_steps: 16
@@ -400,6 +410,7 @@ def test_rewrite_writes_classes_per_forward(tmp_path: Path) -> None:
         p,
         method="qlora",
         r=16,
+        alpha=32,
         batch_size=4,
         grad_accum_steps=4,
         classes_per_forward=8,
@@ -422,6 +433,7 @@ def test_rewritten_config_validates_within_bounds(tmp_path: Path) -> None:
         cfg_path,
         method="lora",
         r=16,
+        alpha=32,
         batch_size=2,
         grad_accum_steps=8,
         classes_per_forward=16,
@@ -431,6 +443,35 @@ def test_rewritten_config_validates_within_bounds(tmp_path: Path) -> None:
 
     cfg = load_config(cfg_path)
     assert cfg.train.multiplex.classes_per_forward == 16
+
+
+def test_rewrite_sizing_block_rewrites_peft_alpha(tmp_path: Path) -> None:
+    import yaml
+
+    from custom_sam_peft.cli._config_rewrite import _rewrite_sizing_block
+
+    cfg = tmp_path / "c.yaml"
+    cfg.write_text(
+        "model:\n  dtype: bfloat16\n"
+        "peft:\n  method: lora\n  r: 16\n  alpha: 32  # keep comment\n"
+        "train:\n  batch_size: 1\n  grad_accum_steps: 8\n"
+        "  multiplex:\n    classes_per_forward: 16\n"
+    )
+    _rewrite_sizing_block(
+        cfg,
+        method="lora",
+        r=8,
+        alpha=16,
+        batch_size=1,
+        grad_accum_steps=8,
+        classes_per_forward=16,
+        dtype="bfloat16",
+        annotation="# calibrated 2026-06-01",
+    )
+    parsed = yaml.safe_load(cfg.read_text())
+    assert parsed["peft"]["r"] == 8
+    assert parsed["peft"]["alpha"] == 16
+    assert "# keep comment" in cfg.read_text()  # inline comment preserved
 
 
 def test_rewrite_missing_multiplex_block_raises(tmp_path: Path) -> None:
@@ -446,6 +487,7 @@ def test_rewrite_missing_multiplex_block_raises(tmp_path: Path) -> None:
             p,
             method="qlora",
             r=16,
+            alpha=32,
             batch_size=4,
             grad_accum_steps=4,
             classes_per_forward=8,
