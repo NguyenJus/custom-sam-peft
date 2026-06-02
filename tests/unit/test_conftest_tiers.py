@@ -2,7 +2,7 @@
 
 Tests _satisfied_tiers() set probe and _has_compatible_gpu() CC 7.5 gate.
 The 5070 Ti (CC 12.0, 16 GB) satisfies gpu_t4 AND gpu_bf16; the T4 (CC 7.5,
-16 GB) satisfies only gpu_t4; Pascal (CC 6.1) satisfies neither.
+16 GB) satisfies only gpu_t4; CC 6.1 (below CC 7.5 floor) satisfies neither.
 """
 
 from __future__ import annotations
@@ -39,7 +39,7 @@ def _stub_cuda(monkeypatch, *, available=True, cap=(12, 0), total_gb=16, can_lau
     [
         ((12, 0), 16, {"gpu_t4", "gpu_bf16"}),  # 5070 Ti
         ((7, 5), 16, {"gpu_t4"}),  # T4
-        ((6, 1), 8, set()),  # Pascal -> nothing (gate is CC 7.5)
+        ((6, 1), 8, set()),  # CC 6.1 -> nothing (below CC 7.5 floor)
         ((8, 0), 24, {"gpu_xl"}),  # >16 GB -> xl only
     ],
 )

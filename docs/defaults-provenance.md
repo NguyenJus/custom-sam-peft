@@ -252,13 +252,13 @@ same symbol. This section cross-links the template slot to its schema row.
 
 | Location | Value | Tag | Full reference | Verifying quote | Notes |
 | --- | --- | --- | --- | --- | --- |
-| `predict/budget.py:PREDICT_8GB_BUDGET_GB` | `7.0` | `# cite: empirical (8 GB nominal − ~1.0 GB reservation)` | 8 GB nominal − ~1.0 GB driver/CUDA-context reservation; consistent with `presets.py::_headroom_bytes` convention. `# tbd: #142` — replace reservation with a measured figure from a real 8 GB card. | — | CC 7.5 / 8 GB predict footprint budget. The ~1.0 GB reservation matches the headroom convention already in use in `presets.py`. |
+| `predict/budget.py:PREDICT_8GB_BUDGET_GB` | `7.0` | `# cite: empirical (8 GB nominal − ~1.0 GB reservation)` | 8 GB nominal − ~1.0 GB driver/CUDA-context reservation; consistent with `presets.py::_headroom_bytes` convention. `# tbd: #142` — replace reservation with a measured figure from a real 8 GB card. | — | Predict footprint budget for an 8 GB card. The ~1.0 GB reservation matches the headroom convention already in use in `presets.py`. |
 
 ## tests/gpu/test\_qlora\_8gb\_ceiling.py
 
 | Location | Value | Tag | Full reference | Verifying quote | Notes |
 | --- | --- | --- | --- | --- | --- |
-| `tests/gpu/test_qlora_8gb_ceiling.py:QLORA_8GB_CEIL_GB` | `8.0` | `# cite: issue-137 feasibility doc + ~3 GB margin` | measured ~5.0 GB peak (GTX 1080, fp16) in `docs/research/2026-05-24-issue-137-qlora-8gb-feasibility.md`; 8.0 GB target minimum-card envelope (~3 GB margin); `# tbd: #142` confirm on a real 8 GB card. 5070 Ti measured peak: 2.348 GB (fp16, min\_gpu\_qlora, 2026-05-31) — within the 8.0 envelope. | — | CC 7.5 / 8 GB QLoRA train envelope (min\_gpu\_qlora.yaml). |
+| `tests/gpu/test_qlora_8gb_ceiling.py:QLORA_8GB_CEIL_GB` | `8.0` | `# cite: issue-137 feasibility doc + ~3 GB margin` | measured ~5.0 GB peak (fp16, decoder-only scope) in `docs/research/2026-05-24-issue-137-qlora-8gb-feasibility.md`; 8.0 GB target CC 7.5 / 8 GB-card envelope (~3 GB margin); `# tbd: #142` confirm on a real 8 GB card. 5070 Ti measured peak: 2.348 GB (fp16, min\_gpu\_qlora, 2026-05-31) — within the 8.0 envelope. | — | CC 7.5 / 8 GB QLoRA train envelope (min\_gpu\_qlora.yaml). |
 
 ## Reference Training Profile
 

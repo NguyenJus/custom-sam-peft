@@ -33,12 +33,13 @@ Effective   : torch.float16
 Coerced     : True  (bf16->fp16 expected on CC < 8.0)
 ```
 
-The capture was taken against `origin/main`, whose warning still named
-`Pascal (GTX 1080)` as the example sub-8.0 card. This PR refreshes that trailing
-example in `_runtime.py` to name the **Turing Tesla T4 (CC 7.5)** — Pascal was
-dropped as supported hardware in #211 — so a re-run on this branch prints the T4
-phrasing. The coercion behaviour itself (the `(7, 5)` capability and the
-`bfloat16 → float16` downcast) is unchanged.
+The capture was taken during the Colab run against a checkout whose warning
+still named `Pascal (GTX 1080)` as the example sub-8.0 card. That trailing
+example clause is cosmetic: #228 generalized the warning to drop all
+specific-card names, and this branch inherits that wording — current
+`_runtime.py` emits `… (< 8.0, below the CC 8.0 / Ampere floor for native
+bf16); coercing to float16` with no card named. The coercion behaviour itself
+(the `(7, 5)` capability and the `bfloat16 → float16` downcast) is unchanged.
 
 The surrounding stack also independently reports the same capability floor — SAM
 3.1 disables Flash Attention on the T4 (`UserWarning: Flash Attention is disabled

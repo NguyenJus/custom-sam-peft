@@ -9,7 +9,27 @@ from __future__ import annotations
 import pytest
 import torch
 
-from custom_sam_peft.oom import OomDecision, OomEvent, OomLadder
+from custom_sam_peft.oom import OomDecision, OomEvent, OomLadder, is_cuda_oom
+
+
+@pytest.mark.parametrize(
+    ("exc", "expected"),
+    [
+        (torch.cuda.OutOfMemoryError("CUDA out of memory"), True),
+        (RuntimeError("CUDA out of memory. Tried to allocate 2 GiB"), True),
+        (RuntimeError("CUDA error: out of memory"), True),
+        (RuntimeError("CUDA driver error: device not ready"), True),
+        (RuntimeError("cuBLAS error: CUBLAS_STATUS_ALLOC_FAILED"), True),
+        (RuntimeError("shape '[4, 3]' is invalid for input of size 5"), False),
+        (ValueError("bad config"), False),
+        (KeyboardInterrupt(), False),
+    ],
+)
+def test_is_cuda_oom_matches_clean_and_dirty_oom(exc: BaseException, expected: bool) -> None:
+    """is_cuda_oom recognizes both torch.cuda.OutOfMemoryError and the dirty-OOM
+    RuntimeError variants (e.g. WSL2/sm_120 'device not ready'), but NOT genuine
+    non-OOM errors. (#208)"""
+    assert is_cuda_oom(exc) is expected
 
 
 def test_decision_sequence_b_then_k_then_floor_then_terminal() -> None:

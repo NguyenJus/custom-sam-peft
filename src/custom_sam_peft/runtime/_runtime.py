@@ -66,7 +66,7 @@ def coerce_dtype_for_capability(
 ) -> torch.dtype:
     """Coerce bfloat16 -> float16 on hardware below compute capability 8.0.
 
-    bf16 is emulated below CC 8.0 (Pascal/Turing/Volta), so we run those cards
+    bf16 is not natively supported below CC 8.0 (Ampere), so we run those cards
     in float16. Only bfloat16 is touched; float16/float32 pass through. Emits a
     one-time warning per process when a coercion happens.
 
@@ -85,8 +85,7 @@ def coerce_dtype_for_capability(
     if not _dtype_coercion_warned:
         logger.warning(
             "Requested bfloat16 on a device with compute capability %s (< 8.0, "
-            "where bf16 is emulated); coercing to float16. This is expected on "
-            "pre-Ampere cards such as the Turing Tesla T4 (CC 7.5).",
+            "below the CC 8.0 / Ampere floor for native bf16); coercing to float16.",
             capability,
         )
         _dtype_coercion_warned = True

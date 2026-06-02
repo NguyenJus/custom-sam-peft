@@ -35,7 +35,6 @@ def test_calibrate_real_activation_in_sane_range(tmp_path: Path) -> None:
     result = runner.invoke(app, ["calibrate", "--force"])
     assert result.exit_code == 0, result.output
     data = json.loads((tmp_path / ".custom_sam_peft_calibration.json").read_text())
-
     assert data["schema_version"] == CACHE_SCHEMA_VERSION
     peak = int(data["peak_memory_bytes_at_probe"])
     total = int(data["gpu_total_memory_bytes"])
