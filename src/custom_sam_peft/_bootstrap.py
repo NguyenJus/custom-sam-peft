@@ -25,11 +25,11 @@ import torch
 # Registration side-effects
 # Each of these imports causes its @register decorator to fire once.
 # ---------------------------------------------------------------------------
-from custom_sam_peft.data import (
+from custom_sam_peft.data import (  # lgtm[py/unused-import]
     coco,  # noqa: F401
     hf,  # noqa: F401
 )
-from custom_sam_peft.peft_adapters import (
+from custom_sam_peft.peft_adapters import (  # lgtm[py/unused-import]
     lora,  # noqa: F401
     qlora,  # noqa: F401
 )
