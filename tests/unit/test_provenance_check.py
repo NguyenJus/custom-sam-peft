@@ -390,3 +390,25 @@ def test_prose_defining_class_rekey(tmp_path: Path) -> None:
     )
     section = Section(header="schema.py", body=body)
     assert check_prose_section(section, f) == []
+
+
+# ---------------------------------------------------------------------------
+# Phase 2 tests
+# ---------------------------------------------------------------------------
+
+from custom_sam_peft._provenance_check import recognize_cell_tag  # noqa: E402
+
+
+def test_recognize_cell_tag_forms() -> None:
+    # Bare aug-style legend letter.
+    assert recognize_cell_tag('"hflip": True,  # (a)') == {"letters": ["a"], "kind": "legend"}
+    # cite-style single + combined legend letters.
+    assert recognize_cell_tag('"x": 1,  # cite: (A)') == {"letters": ["A"], "kind": "legend"}
+    assert recognize_cell_tag('"x": 1,  # cite: (A,C)') == {"letters": ["A", "C"], "kind": "legend"}
+    # Non-legend cite.
+    assert recognize_cell_tag('"x": 1,  # cite: empirical')["kind"] == "cite"
+    # tbd.
+    assert recognize_cell_tag('"x": 1,  # tbd: #191')["kind"] == "tbd"
+    # No tag => None.
+    assert recognize_cell_tag('"x": 1,') is None
+    assert recognize_cell_tag('"vflip": False,') is None

@@ -14,7 +14,7 @@ import ast
 import re
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal
+from typing import Literal, TypedDict
 
 TABLE_MODULES: frozenset[str] = frozenset({"data/aug_presets.py", "models/losses/presets.py"})
 PROSE_NARRATIVE_HEADERS: frozenset[str] = frozenset(
@@ -403,6 +403,34 @@ def check_prose_section(section: Section, file_path: Path) -> list[ProvenanceVio
             )
         )
     return violations
+
+
+class CellTag(TypedDict):
+    """A recognized inline tag on a preset-table value line."""
+
+    kind: str  # "legend" | "cite" | "tbd"
+    letters: list[str]
+
+
+# Bare aug form: ``# (a)`` or ``# (a,b)``. cite form: ``# cite: (A)`` / ``(A,C)``.
+_LEGEND_BARE = re.compile(r"#\s*\(([A-Za-z](?:\s*,\s*[A-Za-z])*)\)\s*$")
+_LEGEND_CITE = re.compile(r"#\s*cite:\s*\(([A-Za-z](?:\s*,\s*[A-Za-z])*)\)")
+_CITE_ANY = re.compile(r"#\s*cite:\s*(\S.*)$")
+_TBD_ANY = re.compile(r"#\s*tbd:\s*(\S.*)$")
+
+
+def recognize_cell_tag(line: str) -> CellTag | None:
+    """Recognize an inline tag on a preset-table value line, or ``None``."""
+    for pat in (_LEGEND_CITE, _LEGEND_BARE):
+        m = pat.search(line)
+        if m is not None:
+            letters = [s.strip() for s in m.group(1).split(",")]
+            return CellTag(kind="legend", letters=letters)
+    if _CITE_ANY.search(line) is not None:
+        return CellTag(kind="cite", letters=[])
+    if _TBD_ANY.search(line) is not None:
+        return CellTag(kind="tbd", letters=[])
+    return None
 
 
 def discover_sections(doc_text: str) -> list[Section]:
