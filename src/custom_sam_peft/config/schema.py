@@ -107,14 +107,14 @@ class _Strict(BaseModel):
 class RunConfig(_Strict):
     name: str
     output_dir: str = "./runs"
-    seed: int = 42  # cite: degenerate-case (arbitrary fixed seed; convention)
+    seed: int = 42
 
 
 class ModelConfig(_Strict):
     name: str = "facebook/sam3.1"
     local_dir: str | None = "models/sam3.1"
     checkpoint_file: str = "sam3.1_multiplex.pt"
-    dtype: Dtype = "bfloat16"  # cite: framework default (torch/HF recommended dtype)
+    dtype: Dtype = "bfloat16"
     # --- advanced ---
     revision: str | None = None
     device: str | None = None
@@ -237,7 +237,7 @@ class TextPromptConfig(_Strict):
             "cap of 16 (k field). Example configs ship 4, which leaves headroom for "
             "typical COCO present-class counts (~3-7 per image)."
         ),
-    )  # cite: empirical (mode='present' default; 0 negatives is the conservative starting point)
+    )
     k: int = Field(default=16, ge=1, le=16)  # cite: models/sam3.py:MULTIPLEX_CAP
 
 
@@ -282,7 +282,7 @@ class NormalizeConfig(_Strict):
             "(e.g. SAR/height already in [0,1]), set this to your data's max (e.g. "
             "1.0); mean/std must be expressed in the same units. See spec §7.2."
         ),
-    )  # cite: framework default (A.Normalize max_pixel_value default 255.0)
+    )
 
     @model_validator(mode="after")
     def _check_ranges(self) -> NormalizeConfig:
@@ -337,7 +337,7 @@ class ValSplitConfig(_Strict):
     Spec: docs/superpowers/specs/2026-05-22-data-no-val-auto-split-design.md §3.1.
     """
 
-    fraction: float = Field(default=0.1, gt=0.0, le=0.5)  # tbd: #191 (10% val; no internal run)
+    fraction: float = Field(default=0.1, gt=0.0, le=0.5)
     seed: int | None = None  # None → inherit run.seed at resolve time
 
 
@@ -358,7 +358,7 @@ class LimitConfig(_Strict):
 
     train: int | float | None = None
     val: int | float | None = None
-    seed: int = 42  # cite: degenerate-case (arbitrary fixed seed; convention)
+    seed: int = 42
     strategy: SubsetStrategy = "random"
 
     @model_validator(mode="before")
@@ -483,17 +483,17 @@ class DataConfig(_Strict):
 
 
 class QLoRAConfig(_Strict):
-    quant_type: QuantType = "nf4"  # cite: QLoRA (Dettmers 2023) arXiv:2305.14314 §3
-    compute_dtype: Dtype = "bfloat16"  # cite: framework default (torch/HF recommended dtype)
-    use_double_quant: bool = False  # tbd: #191 (opt-in; off by default)
+    quant_type: QuantType = "nf4"
+    compute_dtype: Dtype = "bfloat16"
+    use_double_quant: bool = False
 
 
 class PEFTConfig(_Strict):
     method: PEFTMethod
-    r: PositiveInt = 16  # cite: LoRA (Hu 2021) arXiv:2106.09685 §4.1; alpha=2r convention
-    alpha: PositiveInt = 32  # cite: LoRA (Hu 2021) §4.1 "we simply set alpha to the first r we try"
-    dropout: float = Field(default=0.05, ge=0.0, lt=1.0)  # tbd: #191 (LoRA varies 0.0-0.1)
-    scope: LoraScope = "vision_decoder"  # tbd: #191 (project-chosen SAM 3.1 scope)
+    r: PositiveInt = 16
+    alpha: PositiveInt = 32
+    dropout: float = Field(default=0.05, ge=0.0, lt=1.0)
+    scope: LoraScope = "vision_decoder"
     # --- advanced ---
     target_modules: list[str] | None = Field(
         default=None,
@@ -502,7 +502,7 @@ class PEFTConfig(_Strict):
             "apply_lora uses SCOPE_TARGETS[scope]. When set, scope is ignored."
         ),
     )
-    bias: Literal["none", "all", "lora_only"] = "none"  # cite: framework default (PEFT LoraConfig)
+    bias: Literal["none", "all", "lora_only"] = "none"
     qlora: QLoRAConfig = Field(default_factory=QLoRAConfig)
 
 
@@ -521,13 +521,8 @@ class LrDecayOnPlateauConfig(_Strict):
     """Rung-1 reduce-on-plateau knobs. Active only when lr_schedule == "plateau"."""
 
     patience: PositiveInt = 5
-    # cite: Keras ReduceLROnPlateau example 5 (low end of cited 5-10 range);
-    #       research §2, §7.
     factor: PositiveFloat = 0.1
-    # cite: PyTorch ReduceLROnPlateau default 0.1; research §2, §7.
     min_lr: PositiveFloat = 1.0e-6
-    # cite: PyTorch default 0; # tbd: floored at learning_rate/100 to avoid a dead LR;
-    #       research §7.
 
     @field_validator("factor")
     @classmethod
@@ -550,23 +545,19 @@ class EarlyStopConfig(_Strict):
     # existing best-metric key (trainer.py _best_metric_key). Exposed as a seam;
     # only mAP is validated/wired for now.
     min_delta: PositiveFloat = 0.001
-    # cite: early-stop min_delta range 0.001-0.01 (Keras/practitioner);
-    #       # tbd: low end chosen for a noisy mAP; research §5, §7.
     stop_patience: PositiveInt = 10
-    # cite: patience 5-10 (PyTorch ReduceLROnPlateau default 10 / Prechelt 1998);
-    #       # tbd: high end chosen — accuracy ≫ speed; research §5, §7.
 
 
 class TrainHyperparams(_Strict):
     epochs: PositiveInt
-    batch_size: PositiveInt = 1  # tbd: #191 (VRAM-driven; see presets.py memory model)
-    grad_accum_steps: PositiveInt = 8  # tbd: #191 (VRAM-driven; see presets.py)
-    optimizer: Optimizer = "auto"  # cite: AdamW (Loshchilov 2019) arXiv:1711.05101
-    learning_rate: PositiveFloat = 1.0e-4  # tbd: #191 (repo-chosen; see issue #87)
+    batch_size: PositiveInt = 1
+    grad_accum_steps: PositiveInt = 8
+    optimizer: Optimizer = "auto"
+    learning_rate: PositiveFloat = 1.0e-4
     lr_schedule: LRSchedule = "plateau"
     # cite: ReduceLROnPlateau (PyTorch/Keras) + the canonical early-stop pairing
     #       (research §2-§4); # tbd: #197 — the cosine->plateau default flip.
-    warmup_steps: int = Field(default=100, ge=0)  # tbd: #191 (repo-chosen)
+    warmup_steps: int = Field(default=100, ge=0)
     save_every: PositiveInt | None = Field(
         default=None,
         description=(
@@ -575,9 +566,9 @@ class TrainHyperparams(_Strict):
             "so one checkpoint per epoch."
         ),
     )
-    log_every: PositiveInt = 50  # tbd: #191 (repo-chosen)
+    log_every: PositiveInt = 50
     # --- advanced ---
-    max_grad_norm: PositiveFloat = 1.0  # tbd: #191 (standard grad-clip magnitude)
+    max_grad_norm: PositiveFloat = 1.0
     eval_every: PositiveInt | None = Field(
         default=None,
         description=(
@@ -610,9 +601,6 @@ class TrainHyperparams(_Strict):
 
     host_ram_floor_gb: float = Field(
         default=2.0,
-        # tbd: 2.0 GB host-RAM floor is a heuristic — headroom for the OS plus
-        # the full-state checkpoint flush's own transient host allocation to
-        # complete before the OOM killer fires; tune empirically.
         description=(
             "Available host-RAM floor (GB). When psutil.virtual_memory().available "
             "drops below this value at any training step, a full resumable checkpoint "
@@ -625,28 +613,27 @@ class TrainHyperparams(_Strict):
     early_stop: EarlyStopConfig = Field(default_factory=EarlyStopConfig)
 
     loss: LossConfig = Field(default_factory=LossConfig)
-    nan_abort_after: PositiveInt = 20  # tbd: #191 (repo-chosen)
+    nan_abort_after: PositiveInt = 20
     num_workers: int = Field(
         default_factory=lambda: min(4, os.cpu_count() or 1),
         ge=0,
         description="DataLoader workers. 0 disables multiprocessing.",
-    )  # tbd: #191 (min(4, cpu_count); repo-chosen cap)
+    )
     multiplex: MultiplexConfig = Field(default_factory=MultiplexConfig)
 
 
 class EvalConfig(_Strict):
     # --- advanced --- (all eval fields are optional overrides; section defaults are usable as-is)
     iou_thresholds: list[float] = Field(
-        # cite: COCO (Lin 2014) arXiv:1405.0312 §4 IoU sweep [0.5:0.05:0.95]
         default_factory=lambda: [0.5, 0.55, 0.6, 0.65, 0.7, 0.75, 0.8, 0.85, 0.9, 0.95]
     )
-    mode: EvalMode = "full"  # tbd: #191 (project default; full eval)
-    lite_max_images: PositiveInt = 64  # tbd: #191 (repo-chosen lite-mode cap)
+    mode: EvalMode = "full"
+    lite_max_images: PositiveInt = 64
     mask_threshold: float = 0.0  # cite: degenerate-case (logit boundary; sigmoid(0)=0.5)
     save_predictions: bool = False
     batch_size: PositiveInt | Literal["auto"] = "auto"
-    visualize: bool = True  # tbd: #191 (repo-chosen)
-    visualize_count: PositiveInt = 10  # tbd: #191 (repo-chosen)
+    visualize: bool = True
+    visualize_count: PositiveInt = 10
 
 
 # WandbConfig, ExportConfig moved to config._internal (audit Section G).

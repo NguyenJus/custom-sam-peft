@@ -28,8 +28,8 @@ $validation_block
     intensity: $aug_intensity
     $overrides_block
   text_prompt:
-    mode: present_plus_negatives
-    negatives_per_image: 4
+    mode: present_plus_negatives  # differs from schema default `present` — pairs with negatives_per_image
+    negatives_per_image: 4  # differs from schema default `0` — headroom for typical COCO present-class counts
   # remove the `normalize:` block unless overriding for a non-SAM3 backbone —
   # SAM3.1's Sam3ImageProcessor returns (0.5, 0.5, 0.5) — the values below.
   normalize:

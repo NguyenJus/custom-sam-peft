@@ -31,7 +31,7 @@ class MatcherWeights:
 
     lambda_l1: float = 0.0  # cite: degenerate-case (text-only v0: box terms disabled)
     lambda_giou: float = 0.0  # cite: degenerate-case (text-only v0: box terms disabled)
-    lambda_mask: float = 5.0  # tbd: #191 (mask-only matcher cost; no verified source)
+    lambda_mask: float = 5.0
 
 
 @dataclass
