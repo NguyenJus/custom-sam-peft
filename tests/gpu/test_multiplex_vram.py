@@ -3,6 +3,14 @@ choice for image_size=1008 runs without OOM; peak <= 4x predicted_bytes.
 
 The 4x ceiling is a conservative regression guard, not a tightness check -
 see spec §9 for the calibration-constant note.
+
+Tier `gpu_bf16` (CC >= 8.0), NOT `gpu_t4`: full-K multiplex forward at 1008px
+is **not guaranteed on a real Tesla T4**. Below CC 8.0 there is no Flash
+attention, so the SAM 3.1 detection-encoder self-attn falls back to the math
+kernel and materializes the full H·N² score matrix — ~12.8 GiB in a single
+allocation, which OOMs the T4's 14.56 GiB (confirmed on Colab 2026-06-01, #212).
+Multiplex forward is therefore a Flash/bf16-card capability; the T4 guarantee is
+the B=1/K=1 single-class path (tests/integration/test_load_sam31_real.py).
 """
 
 from __future__ import annotations
@@ -18,7 +26,7 @@ from custom_sam_peft.presets import decide_eval_batch_size
 pytestmark = [
     pytest.mark.requires_checkpoint,
     pytest.mark.requires_compatible_gpu,
-    pytest.mark.gpu_t4,
+    pytest.mark.gpu_bf16,
 ]
 
 
