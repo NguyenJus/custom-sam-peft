@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import logging
 import math
+import os
 import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, TextIO
@@ -65,7 +66,9 @@ class LocalTracker:
                 except (json.JSONDecodeError, KeyError, ValueError, TypeError):
                     # Preserve unparseable lines defensively.
                     kept.append(line)
-            metrics_path.write_text("\n".join(kept) + ("\n" if kept else ""))
+            tmp = run_dir / (_METRICS_FILENAME + ".tmp")
+            tmp.write_text("\n".join(kept) + ("\n" if kept else ""))
+            os.replace(tmp, metrics_path)
         self._fh = metrics_path.open("a")
 
     @staticmethod

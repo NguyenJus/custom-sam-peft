@@ -51,9 +51,25 @@ def test_log_scalars_filters_non_finite(tmp_path: Path) -> None:
     t.log_scalars(0, {"loss": float("inf"), "bad": float("nan"), "good": 2.0})
     t.close()
     rows = _read_rows(tmp_path)
-    assert rows == [{"step": 0, "wall_time": rows[0]["wall_time"], "good": 2.0}] or (
-        rows[0]["good"] == 2.0 and "loss" not in rows[0] and "bad" not in rows[0]
-    )
+    assert len(rows) == 1
+    assert rows[0]["step"] == 0
+    assert "wall_time" in rows[0]
+    assert rows[0]["good"] == 2.0
+    assert "loss" not in rows[0]
+    assert "bad" not in rows[0]
+
+
+def test_log_scalars_all_non_finite_writes_row_without_scalars(tmp_path: Path) -> None:
+    t = _tracker()
+    t.start_run(tmp_path, {})
+    t.log_scalars(0, {"bad": float("inf"), "worse": float("nan")})
+    t.close()
+    rows = _read_rows(tmp_path)
+    assert len(rows) == 1
+    assert rows[0]["step"] == 0
+    assert "wall_time" in rows[0]
+    assert "bad" not in rows[0]
+    assert "worse" not in rows[0]
 
 
 def test_log_scalars_before_start_run_raises(tmp_path: Path) -> None:
