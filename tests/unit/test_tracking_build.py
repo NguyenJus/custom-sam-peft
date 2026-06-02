@@ -103,3 +103,15 @@ def test_tracking_config_default_is_local() -> None:
     from custom_sam_peft.config.schema import TrackingConfig
 
     assert TrackingConfig().backend == "local"
+
+
+def test_build_tracker_raises_when_tensorboard_extra_missing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Force the SummaryWriter import to fail at construction time.
+    monkeypatch.setitem(sys.modules, "torch.utils.tensorboard", None)
+
+    from custom_sam_peft.tracking import build_tracker
+
+    with pytest.raises(ImportError, match=r"\[tensorboard\]"):
+        build_tracker(_cfg(tmp_path, "tensorboard"))
