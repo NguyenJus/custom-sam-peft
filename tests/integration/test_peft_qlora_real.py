@@ -15,17 +15,22 @@ via scripts/run_gpu_tests.sh.
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
+from typing import Any, cast
 
 import pytest
 import torch
+from peft import LoraConfig, get_peft_model
 from torch import nn
 
 from custom_sam_peft.config.schema import ModelConfig, PEFTConfig
 from custom_sam_peft.models.sam3 import SAM3_IMAGE_SIZE, load_sam31
-from custom_sam_peft.peft_adapters.lora import merge_lora
+from custom_sam_peft.peft_adapters.lora import _resolve_targets, merge_lora
 from custom_sam_peft.peft_adapters.qlora import (
+    _freeze_non_adapter,
     _infer_compute_dtype_from_wrapper,
+    _quantize_base,
     apply_qlora,
     load_qlora,
     save_qlora,
@@ -36,6 +41,26 @@ pytestmark = [
     pytest.mark.requires_checkpoint,
     pytest.mark.requires_compatible_gpu,
     pytest.mark.gpu_t4,
+]
+
+# #230 Phase 1 spike — go/no-go (recorded 2026-06-02):
+#   Mechanism CHOSEN: target_parameters (peft 0.19.1 LoraConfig.target_parameters).
+#   Plain-LoRA mechanism: GO — confirmed by a CPU toy-MHA probe (attach +
+#     forward finite-grad on in_proj lora_A + merge_and_unload to non-Peft).
+#   Real-model empirical run (this test): DEFERRED — no SAM 3.1 checkpoint on the
+#     dev box; this requires_checkpoint test skips locally. Run on a
+#     checkpoint-equipped GPU runner to confirm attach+merge on the real decoder.
+#   QLoRA coexistence: mechanism sound (in_proj stays bf16/unquantized via the
+#     MHA exclusion, so it is plain bf16 LoRA even in QLoRA mode); empirical
+#     confirmation DEFERRED to the GPU+bnb runner.
+#   => Phase 2 proceeds with the target_parameters mechanism (design default).
+
+# --- #230 in_proj feasibility spike (§7). Phase 1 is production-code-free: it
+# builds the PeftModel INLINE via peft.get_peft_model with target_parameters,
+# because apply_qlora does not wire target_parameters until Phase 2 (Task 2.5).
+_INPROJ_PARAM_PATTERNS = [
+    r"transformer\.decoder\.layers\.\d+\.ca_text\.in_proj_weight$",
+    r"transformer\.decoder\.layers\.\d+\.self_attn\.in_proj_weight$",
 ]
 
 
@@ -206,3 +231,54 @@ def test_apply_qlora_vision_scope_targets_only_vision_backbone() -> None:
         f"mask_decoder targets present at scope='vision' (should be excluded): "
         f"{[n for n in lora_names if 'mask_decoder' in n][:5]}"
     )
+
+
+@pytest.mark.skipif(not _bnb_available(), reason="bitsandbytes not installed")
+def test_spike_inproj_qlora_coexists_attaches_merges() -> None:
+    """#230 §7.2: under QLoRA the bf16 in_proj LoRA and the Linear4bit module
+    LoRA attach and merge_and_unload together in ONE PeftModel.
+
+    Route: INLINE — reuse production _quantize_base/_freeze_non_adapter to make
+    the 4-bit base (MHA stays unquantized, so in_proj_weight is bare bf16), then
+    get_peft_model with BOTH target_modules (Linear4bit names) and
+    target_parameters (in_proj names). apply_qlora wires target_parameters in
+    Phase 2 (Task 2.5); Phase 1 is production-code-free.
+    """
+    import bitsandbytes as bnb
+
+    w = load_sam31(ModelConfig())
+    base = cast(nn.Module, w.model.model)
+    cfg = PEFTConfig(method="qlora")
+
+    _quantize_base(base, cfg)
+    _freeze_non_adapter(base)
+
+    compiled = [re.compile(p) for p in _INPROJ_PARAM_PATTERNS]
+    param_names = [n for n, _ in base.named_parameters() if any(c.search(n) for c in compiled)]
+    assert param_names, "no in_proj_weight parameters found on quantized decoder"
+    module_names = _resolve_targets(base, cfg, linear_types=(bnb.nn.Linear4bit,))
+
+    base.is_loaded_in_4bit = True  # type: ignore[assignment]
+    pm = get_peft_model(
+        cast(Any, base),
+        LoraConfig(
+            r=16,
+            lora_alpha=32,
+            lora_dropout=0.0,
+            target_modules=module_names,
+            target_parameters=param_names,
+            bias="none",
+            task_type=None,
+        ),
+    )
+
+    lora_names = [n for n, _ in pm.named_parameters() if "lora_" in n]
+    assert any("ca_text" in n for n in lora_names), (
+        f"no ca_text in_proj LoRA (qlora): {lora_names[:8]}"
+    )
+    assert any("self_attn" in n for n in lora_names), (
+        f"no self_attn in_proj LoRA (qlora): {lora_names[:8]}"
+    )
+
+    merged = pm.merge_and_unload()  # dequantizes 4-bit base; must fold BOTH axes
+    assert merged is not None
