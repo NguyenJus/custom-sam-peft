@@ -191,6 +191,24 @@ def test_parse_prose_rows_strips_section_prefix_and_flags_literals() -> None:
     # The parenthetical-suffix row is recognized as an in-function literal.
     lit = next(r for r in rows if r.is_in_function_literal)
     assert lit.symbol == "_optimizer_bytes"
+    # AMENDED (#192): DocRow also carries the Value cell and a subscript-key flag.
+    assert by_symbol["MODEL_PARAMS"].value == "1"
+    assert by_symbol["MODEL_PARAMS"].is_subscript_key is False
+
+
+def test_parse_prose_rows_flags_subscript_keys_and_required_value() -> None:
+    body = (
+        "| Location | Value | Tag | Full reference | Verifying quote | Notes |\n"
+        "| --- | --- | --- | --- | --- | --- |\n"
+        '| `schema.py:CHANNEL_SEMANTICS["rgb"].x` | `1` | `index-only` | — | — | n |\n'
+        "| `schema.py:T.epochs` | `required (slot)` | `# cite: x` | — | — | n |\n"
+    )
+    rows = parse_prose_rows(body, section_header="schema.py")
+    sub = next(r for r in rows if r.is_subscript_key)
+    assert "[" in sub.symbol
+    epochs = next(r for r in rows if r.symbol == "T.epochs")
+    assert "required" in epochs.value.lower()
+    assert epochs.is_subscript_key is False
 
 
 def _prose_doc_body(rows: str) -> str:

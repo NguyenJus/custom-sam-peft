@@ -95,18 +95,33 @@ _LITERAL_SUFFIX = re.compile(r"^(?P<symbol>[^()]+?)\s*\((?P<note>[^)]*)\)\s*$")
 
 @dataclass(frozen=True)
 class DocRow:
-    """A parsed Location key from one doc table row, relative to its section."""
+    """A parsed doc table row, relative to its section (amended #192).
+
+    ``value`` is the raw **Value** cell text (used for the required-field
+    exemption); ``is_subscript_key`` flags Location keys an AST surface cannot
+    emit (a bare symbol containing ``[`` or ``(``).
+    """
 
     symbol: str
     is_in_function_literal: bool
+    value: str
+    is_subscript_key: bool
+
+
+def _cell_inner(cell: str) -> str:
+    """Strip the backtick wrapper from a markdown cell, if present."""
+    m = re.search(r"`([^`]+)`", cell)
+    return m.group(1).strip() if m else cell.strip()
 
 
 def parse_prose_rows(body: str, section_header: str) -> list[DocRow]:
-    """Parse a prose section body into per-row Location symbols.
+    """Parse a prose section body into per-row DocRows (amended #192).
 
     The Location prefix mirrors ``section_header`` and is stripped to yield the
-    bare symbol. Rows whose Location has a ``symbol (<note>)`` parenthetical are
-    flagged as in-function literals (exempt in the doc->code direction).
+    bare symbol. Rows whose Location has a ``symbol (<note>)`` parenthetical (with
+    NO ``[`` before the paren) are in-function literals. Rows whose bare symbol
+    contains ``[`` or ``(`` are subscript/call-path keys. The **Value** cell
+    (2nd column) is captured for the required-field exemption.
     """
     prefix = _unescape_md(section_header).strip()
     rows: list[DocRow] = []
@@ -114,18 +129,35 @@ def parse_prose_rows(body: str, section_header: str) -> list[DocRow]:
         m = _ROW.match(line)
         if m is None:
             continue
-        loc_match = _LOCATION_CELL.search(m.group("cells").split("|", 1)[0])
+        cells = m.group("cells").split("|")
+        loc_match = _LOCATION_CELL.search(cells[0])
         if loc_match is None:
             continue
         loc = loc_match.group("loc").strip()
         if not loc.startswith(f"{prefix}:"):
             continue  # header/separator/non-location rows
         rest = loc[len(prefix) + 1 :]  # drop "prefix:"
+        value = _cell_inner(cells[1]) if len(cells) > 1 else ""
+        # subscript/call-path key: a bracket or a paren that is part of a path
+        # (e.g. CHANNEL_SEMANTICS["rgb"].x). Detect a '[' anywhere first.
+        if "[" in rest:
+            rows.append(
+                DocRow(symbol=rest.strip(), is_in_function_literal=False,
+                       value=value, is_subscript_key=True)
+            )
+            continue
         lit = _LITERAL_SUFFIX.match(rest)
         if lit is not None:
-            rows.append(DocRow(symbol=lit.group("symbol").strip(), is_in_function_literal=True))
+            # ``symbol (<note>)`` with no bracket -> in-function literal.
+            rows.append(
+                DocRow(symbol=lit.group("symbol").strip(), is_in_function_literal=True,
+                       value=value, is_subscript_key=False)
+            )
         else:
-            rows.append(DocRow(symbol=rest.strip(), is_in_function_literal=False))
+            rows.append(
+                DocRow(symbol=rest.strip(), is_in_function_literal=False,
+                       value=value, is_subscript_key=False)
+            )
     return rows
 
 
