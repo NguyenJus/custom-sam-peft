@@ -54,15 +54,15 @@ uv run csp init --interactive
 uv run csp init --template coco-text-qlora --output config.yaml
 
 # Train, then eval and export in one shot (recommended)
-uv run csp run config.yaml
+uv run csp run --config config.yaml
 
 # Or run steps individually:
-uv run csp train config.yaml          # train only
-uv run csp train config.yaml --eval   # train + eval
-uv run csp train config.yaml --eval --export  # same as `run`
+uv run csp train --config config.yaml          # train only
+uv run csp train --config config.yaml --eval   # train + eval
+uv run csp train --config config.yaml --eval --export  # same as `run`
 ```
 
-`run cfg.yaml` is shorthand for `train cfg.yaml --eval --export`.
+`run --config cfg.yaml` is shorthand for `train --config cfg.yaml --eval --export`.
 
 ## Advanced
 
@@ -83,8 +83,8 @@ See [cloud/docker/README.md](cloud/docker/README.md) for the full CLI and Jupyte
 
 | Command | Status |
 | --- | --- |
-| `csp run CONFIG [--resume PATH] [-v]` | Functional — shorthand for `train --eval --export` |
-| `csp train CONFIG [--eval] [--export] [--override key=val]... [--resume PATH] [-v]` | Functional |
+| `csp run --config CONFIG [--resume PATH] [-v]` | Functional — shorthand for `train --eval --export` |
+| `csp train --config CONFIG [--eval] [--export] [--override key=val]... [--resume PATH] [-v]` | Functional |
 | `csp eval --config CONFIG --checkpoint PATH [--split val\|test] [--export] [--output PATH] [--interactive]` | Functional (LoRA + QLoRA adapters) |
 | `csp predict --images DIR --prompts "a,b,c" [--checkpoint PATH] [--output PATH] [--visualize] [--interactive]` | Functional |
 | `csp export --checkpoint PATH [--merge] [--output PATH] [--config PATH]` | Functional |
@@ -95,7 +95,7 @@ See [cloud/docker/README.md](cloud/docker/README.md) for the full CLI and Jupyte
 Most commands accept more flags than shown — run `csp <command> --help`
 for the full list.
 
-`run CONFIG` is equivalent to `train CONFIG --eval --export`; use the individual flags when you want only some steps.
+`run --config CONFIG` is equivalent to `train --config CONFIG --eval --export`; use the individual flags when you want only some steps.
 
 `init --interactive` launches the setup wizard (auto-detected data paths, VRAM-calibrated
 presets, guided knobs); `eval` and `predict` accept `--interactive` for guided one-off runs.
