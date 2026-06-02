@@ -94,7 +94,7 @@ QuantType = Literal["nf4", "fp4"]
 # (src/custom_sam_peft/train/trainer.py): adamw8bit for QLoRA, adamw for LoRA.
 Optimizer = Literal["adamw", "adamw8bit", "auto"]
 LRSchedule = Literal["constant", "cosine", "linear", "plateau"]
-TrackerBackend = Literal["tensorboard", "wandb", "none"]
+TrackerBackend = Literal["local", "tensorboard", "wandb", "none"]
 TextPromptMode = Literal["present", "all", "present_plus_negatives", "sampled_fixed_k"]
 LoraScope = Literal["vision", "vision_decoder", "all"]
 EvalMode = Literal["full", "lite"]

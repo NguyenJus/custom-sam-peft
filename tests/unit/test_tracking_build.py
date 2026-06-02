@@ -86,3 +86,10 @@ def test_build_tracker_raises_when_wandb_extra_missing(
 
     with pytest.raises(ImportError, match=r"\[wandb\]"):
         build_tracker(_cfg(tmp_path, "wandb"))
+
+
+def test_build_tracker_returns_local(tmp_path: Path) -> None:
+    from custom_sam_peft.tracking import build_tracker
+
+    t = build_tracker(_cfg(tmp_path, "local"))
+    assert type(t).__name__ == "LocalTracker"
