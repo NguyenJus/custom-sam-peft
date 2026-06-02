@@ -113,7 +113,7 @@ Row schema (every section uses these six columns):
 | `config/schema.py:EvalConfig.batch_size` | `"auto"` | `index-only` | — | — | Auto-resolved at eval time; structural. |
 | `config/schema.py:EvalConfig.visualize` | `True` | `# tbd: #191` | — | — | Repo-chosen default. Tracking via #191. |
 | `config/schema.py:EvalConfig.visualize_count` | `10` | `# tbd: #191` | — | — | Repo-chosen number of visualized samples. Tracking via #191. |
-| `config/schema.py:TrackingConfig.backend` | `"tensorboard"` | `index-only` | — | — | Structural tracker-backend literal; not trust-bearing. |
+| `config/schema.py:TrackingConfig.backend` | `"local"` | `index-only` | — | — | Structural tracker-backend literal; not trust-bearing. |
 | `config/schema.py:AugmentationsConfig.preset` | `"natural"` | `index-only` | — | — | Default augmentation preset; structural (mirrors LossConfig.preset). |
 | `config/schema.py:AugmentationsConfig.intensity` | `"medium"` | `index-only` | — | — | Default augmentation intensity tier; structural. |
 | `config/schema.py:LossConfig.preset` | `"natural"` | `index-only` | — | — | Default loss preset; structural. |
@@ -256,7 +256,7 @@ same symbol. This section cross-links the template slot to its schema row.
 | `config_full.yaml:train.log_every` | `50` | `cross-link` | See `config/schema.py:TrainHyperparams.log_every` row. | — | Template echo of the schema default. |
 | `config_full.yaml:train.nan_abort_after` | `20` | `cross-link` | See `config/schema.py:TrainHyperparams.nan_abort_after` row. | — | Template echo of the schema default. |
 | `config_full.yaml:eval.iou_thresholds` | `[0.5, 0.55, …, 0.95]` | `cross-link` | See `config/schema.py:EvalConfig.iou_thresholds` row. | — | Template echo of the schema default. |
-| `config_full.yaml:tracking.backend` | `tensorboard` | `cross-link` | See `config/schema.py:TrackingConfig.backend` row. | — | Template echo of the schema default. |
+| `config_full.yaml:tracking.backend` | `local` | `cross-link` | See `config/schema.py:TrackingConfig.backend` row. | — | Template echo of the schema default. |
 | `config_full.yaml:export.merge` | `false` | `cross-link` | See `config/_internal.py:ExportConfig.merge` row. | — | Template echo of the schema default. |
 
 ## models/losses/presets.py

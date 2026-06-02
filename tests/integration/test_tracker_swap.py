@@ -57,6 +57,8 @@ class _RecordingTracker:
     ``log_images`` append their arguments to public lists for inspection.
     """
 
+    wants_images = False
+
     def __init__(self) -> None:
         self.start_run_calls: list[tuple[Path, dict[str, Any], Path | None]] = []
         self.log_scalars_calls: list[tuple[int, dict[str, float]]] = []
@@ -275,3 +277,71 @@ def test_trainer_protocol_calls_wandb_tracker(
 
     # run.finish must be called exactly once (by close)
     fake_run.finish.assert_called_once()
+
+
+def _run_fit_with_checkpoint(tracker: Any, run_dir: Path) -> None:
+    """Like _run_fit but with save_every=1 so a checkpoint fires in the 1-epoch run."""
+    ds = _make_tiny_dataset()
+    cfg = _make_cfg(run_dir.parent)
+    # Override save_every so that _maybe_checkpoint fires and exercises the gate.
+    cfg = cfg.model_copy(update={"train": cfg.train.model_copy(update={"save_every": 1})})
+    wrapper = make_stub_wrapper(dim=8, working=True)
+    apply_lora(wrapper, cfg.peft)
+    trainer = Trainer(
+        model=wrapper,
+        train_ds=ds,
+        val_ds=ds,
+        tracker=tracker,
+        cfg=cfg,
+    )
+    trainer.fit(run_dir=run_dir)
+
+
+def test_panel_render_skipped_when_wants_images_false(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """wants_images=False (e.g. local/none/recording): no panel forward pass."""
+    calls: list[int] = []
+
+    def _spy(self: Any, val_examples: Any, class_names: Any, global_step: int) -> None:
+        calls.append(global_step)
+
+    monkeypatch.setattr(Trainer, "_log_image_panel", _spy)
+    _run_fit_with_checkpoint(_RecordingTracker(), run_dir=tmp_path / "run")  # wants_images = False
+    assert calls == [], "panel render must be skipped for a wants_images=False tracker"
+
+
+def test_panel_render_invoked_when_wants_images_true(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """wants_images=True: the panel forward pass runs."""
+
+    class _ImageWantingTracker(_RecordingTracker):
+        wants_images = True
+
+    calls: list[int] = []
+
+    def _spy(self: Any, val_examples: Any, class_names: Any, global_step: int) -> None:
+        calls.append(global_step)
+
+    monkeypatch.setattr(Trainer, "_log_image_panel", _spy)
+    _run_fit_with_checkpoint(_ImageWantingTracker(), run_dir=tmp_path / "run")
+    assert calls, "panel render must be invoked for a wants_images=True tracker"
+
+
+def test_fit_preserves_existing_config_yaml(tmp_path: Path) -> None:
+    """Trainer.fit must NOT overwrite an existing run_dir/config.yaml (resume).
+
+    Spec Change 1 (config.yaml preservation): on resume into an existing dir
+    the original config.yaml is preserved.
+    """
+    run_dir = tmp_path / "run"
+    run_dir.mkdir(parents=True)
+    sentinel = "SENTINEL_ORIGINAL_CONFIG\n"
+    (run_dir / "config.yaml").write_text(sentinel)
+
+    _run_fit(NoopTracker(), run_dir=run_dir)
+
+    assert (run_dir / "config.yaml").read_text() == sentinel, (
+        "fit() overwrote an existing config.yaml; resume must preserve it"
+    )

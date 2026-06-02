@@ -18,8 +18,10 @@ def build_tracker(cfg: TrainConfig) -> Tracker:
     surface when that backend is actually requested. The @register decorator
     in each backend module wires the factory into _registry on first import.
     """
-    backend = cfg.tracking.backend  # Literal["tensorboard", "wandb", "none"]
-    if backend == "tensorboard":
+    backend = cfg.tracking.backend  # Literal["local", "tensorboard", "wandb", "none"]
+    if backend == "local":
+        from custom_sam_peft.tracking import local as _local  # noqa: F401
+    elif backend == "tensorboard":
         from custom_sam_peft.tracking import tensorboard as _tb  # noqa: F401
     elif backend == "wandb":
         from custom_sam_peft.tracking import wandb as _wb  # noqa: F401

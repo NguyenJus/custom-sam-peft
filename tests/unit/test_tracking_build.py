@@ -51,6 +51,7 @@ def test_build_tracker_returns_noop(tmp_path: Path) -> None:
 
     t = build_tracker(_cfg(tmp_path, "none"))
     assert type(t).__name__ == "NoopTracker"
+    assert t.wants_images is False
 
 
 def test_build_tracker_returns_tensorboard(tmp_path: Path) -> None:
@@ -59,6 +60,7 @@ def test_build_tracker_returns_tensorboard(tmp_path: Path) -> None:
 
     t = build_tracker(_cfg(tmp_path, "tensorboard"))
     assert type(t).__name__ == "TensorBoardTracker"
+    assert t.wants_images is True
 
 
 def test_build_tracker_returns_wandb(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -75,6 +77,7 @@ def test_build_tracker_returns_wandb(tmp_path: Path, monkeypatch: pytest.MonkeyP
 
     t = build_tracker(_cfg(tmp_path, "wandb"))
     assert type(t).__name__ == "WandBTracker"
+    assert t.wants_images is True
 
 
 def test_build_tracker_raises_when_wandb_extra_missing(
@@ -86,3 +89,29 @@ def test_build_tracker_raises_when_wandb_extra_missing(
 
     with pytest.raises(ImportError, match=r"\[wandb\]"):
         build_tracker(_cfg(tmp_path, "wandb"))
+
+
+def test_build_tracker_returns_local(tmp_path: Path) -> None:
+    from custom_sam_peft.tracking import build_tracker
+
+    t = build_tracker(_cfg(tmp_path, "local"))
+    assert type(t).__name__ == "LocalTracker"
+    assert t.wants_images is False
+
+
+def test_tracking_config_default_is_local() -> None:
+    from custom_sam_peft.config.schema import TrackingConfig
+
+    assert TrackingConfig().backend == "local"
+
+
+def test_build_tracker_raises_when_tensorboard_extra_missing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Force the SummaryWriter import to fail at construction time.
+    monkeypatch.setitem(sys.modules, "torch.utils.tensorboard", None)
+
+    from custom_sam_peft.tracking import build_tracker
+
+    with pytest.raises(ImportError, match=r"\[tensorboard\]"):
+        build_tracker(_cfg(tmp_path, "tensorboard"))

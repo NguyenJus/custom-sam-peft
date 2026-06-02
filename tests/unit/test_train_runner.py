@@ -257,3 +257,125 @@ def test_run_training_resume_reuses_saved_val_source(
     assert vs2 is not None
     assert vs2.train_ids == saved_train
     assert vs2.val_ids == saved_val
+
+
+def test_run_training_resume_reuses_run_dir(
+    tmp_path: Path, tiny_coco_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Resume must continue in the old run dir, not mint a new stamped dir.
+
+    Spec Change 1: run_training reuses resume_from.parent.parent on resume.
+    Note: tests/integration/test_train_resume.py drives trainer.fit with an
+    explicit run_dir, bypassing run_training, so it is unaffected by this fix.
+    """
+    from custom_sam_peft.config.schema import (
+        DataConfig,
+        DataSplit,
+        PEFTConfig,
+        RunConfig,
+        TrackingConfig,
+        TrainConfig,
+        TrainHyperparams,
+        ValSplitConfig,
+    )
+    from tests.fixtures.tiny_sam3_lora_stub import FIXTURE_SCOPE_PATTERNS, make_stub_wrapper
+
+    def _cfg() -> TrainConfig:
+        return TrainConfig(
+            run=RunConfig(name="resumedir", output_dir=str(tmp_path), seed=0),
+            data=DataConfig(
+                format="coco",
+                train=DataSplit(
+                    annotations=str(tiny_coco_dir / "annotations.json"),
+                    images=str(tiny_coco_dir / "images"),
+                ),
+                val=None,
+                val_split=ValSplitConfig(fraction=0.5, seed=None),
+            ),
+            peft=PEFTConfig(
+                method="lora", scope="vision", target_modules=FIXTURE_SCOPE_PATTERNS["vision"]
+            ),
+            train=TrainHyperparams(
+                epochs=1,
+                batch_size=1,
+                grad_accum_steps=1,
+                save_every=1,
+                log_every=1,
+                warmup_steps=0,
+                num_workers=0,
+            ),
+            tracking=TrackingConfig(backend="none"),
+        )
+
+    monkeypatch.setattr(
+        "custom_sam_peft.train.runner.load_sam31",
+        lambda _m, **_kw: make_stub_wrapper(dim=8, working=True),
+    )
+
+    r1 = run_training(_cfg())
+    ckpts = sorted((r1.run_dir / "checkpoints").glob("step_*"))
+    assert ckpts, "first run produced no checkpoint"
+
+    dirs_before = {p.name for p in tmp_path.iterdir() if p.is_dir()}
+    r2 = run_training(_cfg(), resume_from=ckpts[0])
+    dirs_after = {p.name for p in tmp_path.iterdir() if p.is_dir()}
+
+    assert r2.run_dir == r1.run_dir, "resume must reuse the original run dir"
+    assert dirs_after == dirs_before, "resume must not mint a new stamped run dir"
+
+
+def test_run_training_local_backend_writes_metrics_jsonl(
+    tmp_path: Path, tiny_coco_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Acceptance 1: backend=local runs end-to-end, writes metrics.jsonl, no panels."""
+    import json
+
+    from custom_sam_peft.config.schema import (
+        DataConfig,
+        DataSplit,
+        PEFTConfig,
+        RunConfig,
+        TrackingConfig,
+        TrainConfig,
+        TrainHyperparams,
+        ValSplitConfig,
+    )
+    from tests.fixtures.tiny_sam3_lora_stub import FIXTURE_SCOPE_PATTERNS, make_stub_wrapper
+
+    cfg = TrainConfig(
+        run=RunConfig(name="localrun", output_dir=str(tmp_path), seed=0),
+        data=DataConfig(
+            format="coco",
+            train=DataSplit(
+                annotations=str(tiny_coco_dir / "annotations.json"),
+                images=str(tiny_coco_dir / "images"),
+            ),
+            val=None,
+            val_split=ValSplitConfig(fraction=0.5, seed=None),
+        ),
+        peft=PEFTConfig(
+            method="lora", scope="vision", target_modules=FIXTURE_SCOPE_PATTERNS["vision"]
+        ),
+        train=TrainHyperparams(
+            epochs=1,
+            batch_size=1,
+            grad_accum_steps=1,
+            save_every=1,
+            log_every=1,
+            warmup_steps=0,
+            num_workers=0,
+        ),
+        tracking=TrackingConfig(backend="local"),
+    )
+    monkeypatch.setattr(
+        "custom_sam_peft.train.runner.load_sam31",
+        lambda _m, **_kw: make_stub_wrapper(dim=8, working=True),
+    )
+
+    result = run_training(cfg)
+    metrics_path = result.run_dir / "metrics.jsonl"
+    assert metrics_path.is_file()
+    rows = [json.loads(ln) for ln in metrics_path.read_text().splitlines() if ln.strip()]
+    assert rows, "expected at least one logged scalar row"
+    assert all("step" in r and "wall_time" in r for r in rows)
+    assert not (result.run_dir / "panels").exists(), "metrics-only: no panels dir"

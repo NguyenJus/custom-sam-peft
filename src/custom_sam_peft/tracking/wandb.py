@@ -23,6 +23,8 @@ _WANDB_ID_FILENAME = "wandb_run_id.txt"
 class WandBTracker:
     """Tracker backend writing to Weights & Biases."""
 
+    wants_images = True
+
     def __init__(self, cfg: TrainConfig) -> None:
         try:
             import wandb  # noqa: F401

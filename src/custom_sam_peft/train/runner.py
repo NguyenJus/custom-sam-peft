@@ -84,11 +84,12 @@ def run_training(
 
     Spec: docs/superpowers/specs/2026-05-22-data-no-val-auto-split-design.md §6.4.
     """
-    run_dir = make_run_dir(cfg)
-
-    # On resume, look for val_source.json in the run dir that owns the
-    # checkpoint (checkpoints live at <run_dir>/checkpoints/step_N/).
+    # On resume, continue in the run dir that owns the checkpoint
+    # (checkpoints live at <run_dir>/checkpoints/step_N/), so resumed
+    # artifacts (config.yaml, best/, metrics, val_source.json) stay in the
+    # original folder. Fresh runs mint a new timestamped dir.
     resume_run_dir = resume_from.parent.parent if resume_from is not None else None
+    run_dir = resume_run_dir if resume_run_dir is not None else make_run_dir(cfg)
     vs = resolve_val_source(cfg, run_dir=resume_run_dir)
     save_val_source(vs, run_dir)
     _log_val_source(vs)

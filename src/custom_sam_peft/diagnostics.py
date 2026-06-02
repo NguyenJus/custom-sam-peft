@@ -85,8 +85,8 @@ class DoctorReport:
     data: DataReport | None = None
 
 
-_OPTIONAL = ("bitsandbytes", "wandb")
-_CORE = ("peft", "transformers", "sam3", "datasets", "pydantic", "typer", "tensorboard")
+_OPTIONAL = ("bitsandbytes", "wandb", "tensorboard")
+_CORE = ("peft", "transformers", "sam3", "datasets", "pydantic", "typer")
 
 
 def _version_or_none(name: str) -> str | None:
