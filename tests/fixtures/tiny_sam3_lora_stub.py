@@ -140,16 +140,21 @@ FIXTURE_SCOPE_PATTERNS: dict[str, list[str]] = {
     ],
     "vision_decoder_concept": [
         r"vision_trunk\.blocks\.\d+\.attn\.(qkv|proj)$",
-        r"transformer_decoder\.layers\.\d+\.(self_attn|cross_attn)\.out_proj$",
+        # De-overlapped (spec §4.2): only cross_attn (non-MHA, genuine nn.Linear
+        # out_proj) is targeted generically here. The self_attn/ca_text out_proj is
+        # adapted by peft's lora.MultiheadAttention via FIXTURE_SCOPE_MHA_MODULES, so it
+        # must NOT be double-targeted in the generic axis.
+        r"transformer_decoder\.layers\.\d+\.cross_attn\.out_proj$",
     ],
     "all": [r".*"],
 }
 
-# Parallel to the production SCOPE_TARGET_PARAMETERS, but with the fixture's truncated
-# `transformer_decoder` prefix. Drives the in_proj parameter axis on the stub.
-FIXTURE_SCOPE_TARGET_PARAMETERS: dict[str, list[str]] = {
+# Parallel to the production SCOPE_MHA_MODULES, but with the fixture's truncated
+# `transformer_decoder` prefix. Drives the MHA-module axis on the stub: naming these
+# nn.MultiheadAttention modules makes peft adapt their in_proj_weight + out_proj.
+FIXTURE_SCOPE_MHA_MODULES: dict[str, list[str]] = {
     "vision_decoder_concept": [
-        r"transformer_decoder\.layers\.\d+\.ca_text\.in_proj_weight$",
-        r"transformer_decoder\.layers\.\d+\.self_attn\.in_proj_weight$",
+        r"transformer_decoder\.layers\.\d+\.ca_text$",
+        r"transformer_decoder\.layers\.\d+\.self_attn$",
     ],
 }

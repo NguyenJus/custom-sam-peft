@@ -30,7 +30,7 @@ from torch import nn
 from custom_sam_peft._registry import register
 from custom_sam_peft.config.schema import Dtype, PEFTConfig, QLoRAConfig
 from custom_sam_peft.models.sam3 import Sam3Wrapper
-from custom_sam_peft.peft_adapters.lora import _resolve_target_parameters, _resolve_targets
+from custom_sam_peft.peft_adapters.lora import _resolve_mha_modules, _resolve_targets
 from custom_sam_peft.runtime._runtime import coerce_dtype_for_capability
 
 logger = logging.getLogger(__name__)
@@ -231,29 +231,29 @@ def _inject_lora_adapters(model: nn.Module, cfg: PEFTConfig) -> tuple[nn.Module,
     packed 4-bit storage, causing a shape-mismatch RuntimeError.
 
     Returns:
-        A 2-tuple ``(peft_model, lora_param_names)`` where ``peft_model`` is the
-        resulting ``PeftModel`` (a new object wrapping *model*) and
-        ``lora_param_names`` is the resolved list of target parameter names used
-        to build the ``LoraConfig`` — the authoritative single source of truth for
-        the logged ``n_param_targets`` count.
+        A 2-tuple ``(peft_model, mha_names)`` where ``peft_model`` is the
+        resulting ``PeftModel`` (a new object wrapping *model*) and ``mha_names``
+        is the resolved list of MHA module names unioned into ``target_modules`` —
+        the authoritative single source of truth for the logged ``n_mha_targets``
+        count.
     """
     bnb = _import_bnb()
 
     from peft import LoraConfig, get_peft_model
 
     lora_target_names = _resolve_targets(model, cfg, linear_types=(bnb.nn.Linear4bit,))
-    lora_param_names = _resolve_target_parameters(model, cfg)
+    mha_names = _resolve_mha_modules(model, cfg)
+    target_modules = lora_target_names + [n for n in mha_names if n not in lora_target_names]
     lora_cfg = LoraConfig(
         r=cfg.r,
         lora_alpha=cfg.alpha,
         lora_dropout=cfg.dropout,
-        target_modules=lora_target_names,
-        target_parameters=(lora_param_names or None),
+        target_modules=target_modules,
         bias=cfg.bias,
         task_type=None,
     )
     model.is_loaded_in_4bit = True  # type: ignore[assignment]
-    return get_peft_model(model, lora_cfg), lora_param_names  # type: ignore[arg-type]
+    return get_peft_model(model, lora_cfg), mha_names  # type: ignore[arg-type]
 
 
 @register("peft", "qlora")
