@@ -9,6 +9,32 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+<!-- Add entries for the next milestone here. -->
+
+## [v0.9.0] — 2026-06-02
+
+### Added — v0.9.0 provenance gate and config resync
+
+- **tracker**: local-disk experiment tracker is now the default; resume-dir resolution fixed.
+- **tensorboard**: opt-in TensorBoard extra added (`#206`).
+- **peft**: in-projection concept scope added for PEFT (`#230`).
+- **ci**: no-uncited-default provenance gate enforces citation or `# tbd:` tag on every new hyperparam (`#192`).
+- **config**: config-schema resynced to current field set (`#239`); README refreshed (`#200`).
+- **security**: 25 code-scanning alerts resolved; `GH_TOKEN` removed from Colab notebook.
+
+## [v0.8.0] — 2026-06-01
+
+### Added — v0.8.0 GPU re-architecture and eval panel
+
+- **gpu**: test suite re-architected around RTX 5070 Ti / sm_120 (`#211`); Colab T4 confirmations closed (`#139`/`#193`).
+- **vram**: `calibrate` VRAM probe now survives dirty-OOM on sm_120; ladder hardened against sm_120 "device not ready" surface (`#208`).
+- **eval**: eval-viz gains an original-image panel alongside GT-vs-Pred composites.
+- **deps**: TensorBoard promoted to a base dependency.
+- **train**: three-regime step prediction implemented (`#128`).
+- **wizard**: run-mode default changed from `train` to `run` (`#223`).
+
+## [v0.7.0] — 2026-05-31
+
 ### Added — eval GT-vs-Pred visualization
 
 - **eval**: new `eval.visualize` (bool, default `true`) and `eval.visualize_count`
@@ -20,6 +46,29 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - **cli**: `csp eval --visualize/--no-visualize` (tri-state; defers to config when
   unset) and `csp run --visualize/--no-visualize` (default on). The in-loop
   training eval is unchanged.
+
+### Removed — box_hint localization-hint curriculum (#88)
+
+- **train**: removed the `box_hint` curriculum and the `BoxHintSchedule`
+  config model (`train.box_hint.*`). Training is now text-only.
+- **Changed**: `SupportPrompts` is retained as a field-less reserved extension
+  seam (#126 §12) for future mask/point hints; `Sam3Wrapper.forward(support=)`
+  stays as a no-op. Inference is unchanged (already text-only).
+- **Note**: resume tolerates pre-removal checkpoints — a stale `box_hint_p`
+  key in an old `training_state.pt` is ignored.
+- **Note**: any config carrying `train.box_hint:` now fails to load with a
+  Pydantic `extra_forbidden` error; delete the block from your YAML.
+
+### Changed — VRAM K-autosize, plateau ladder, and wall-clock limit
+
+- **vram**: VRAM K-autosize with split-activation model and cc-aware attention
+  (materialized H·N² term only when cc < 8.0); calibrate-and-climb strategy (`#203`).
+- **train**: plateau-response LR ladder with best-checkpoint-as-final (`#197`).
+- **train**: wall-clock time limit with resumable stop (`#198`).
+- **train**: unified OOM ladder covering trainer/eval/predict paths (`#181`).
+- **config**: literature-cited defaults; epoch count aligned to convergence regime (`#120`).
+
+## [v0.6.0] — 2026-05-28
 
 ### Breaking — text-primary prompt invariant (#126)
 
@@ -36,132 +85,50 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   (`train/trainer.py`, `cli/train_cmd.py`, `cli/run_cmd.py`) — the schema is
   the sole gate.
 
-### Removed — box_hint localization-hint curriculum (#88)
+## [v0.5.0] — 2026-05-28
 
-- **train**: removed the `box_hint` curriculum and the `BoxHintSchedule`
-  config model (`train.box_hint.*`). Training is now text-only.
-- **Changed**: `SupportPrompts` is retained as a field-less reserved extension
-  seam (#126 §12) for future mask/point hints; `Sam3Wrapper.forward(support=)`
-  stays as a no-op. Inference is unchanged (already text-only).
-- **Note**: resume tolerates pre-removal checkpoints — a stale `box_hint_p`
-  key in an old `training_state.pt` is ignored.
-- **Note**: any config carrying `train.box_hint:` now fails to load with a
-  Pydantic `extra_forbidden` error; delete the block from your YAML.
+### Added — interactive wizard and config simplifications
 
----
+- **wizard**: interactive setup wizard added (`#149`); full gradient-checkpointing support removed to simplify training path.
+- **resume**: bare `--resume` now auto-resolves the latest checkpoint (`#156`).
+- **config**: `image_size` knob removed — always 1008 (`#158`).
+- **eval**: OOM caps added to eval path (`#153`).
+- **fix**: config-path-vs-CWD resolution fixed (`#151`); augmentation box-alignment fixed (`#150`).
 
-## [0.12.0] — 2026-05-23
+## [v0.4.0] — 2026-05-24
 
-### Added — SAM 3.1 multiplex forward (issue #22)
+### Added — SAM 3.1 multiplex forward and N-channel adapter
 
-- **feat**: one forward per ≤16-class group in train, eval, and predict. New
-  `train.multiplex.classes_per_forward` (1..16, default 16). New
-  `eval.batch_size: int | "auto"` (default `"auto"`). New `--batch-size auto`
-  (default) for `csp predict`.
+- **train/eval/predict**: SAM 3.1 multiplex forward (`#22`) — one forward per ≤16-class group.
+- **model**: N-channel input via learned channel adapter (`#111`).
+- **loss**: domain-aware loss presets (`#112`).
+- **checkpoint**: QLoRA checkpoint disk-load support (`#98`).
+- **test**: 3-tier GPU test taxonomy established; 3 real-GPU bugs fixed (`#138`).
 
-### Performance
+## [v0.3.0] — 2026-05-23
 
-- **perf**: Multi-class training/eval workloads (COCO ≥80 classes, LVIS) see
-  significantly higher throughput; see PR description for
-  `scripts/bench_multiplex_throughput.py` numbers.
+### Added — hardening pass and new subsystems
 
-### Breaking (numeric)
+- **schema/CLI**: hardening pass — schema/CLI/seam rewrite, `train.lr` → `train.learning_rate`,
+  demoted internal dataclasses, new error taxonomy (`#26`/`#90`).
+- **versioning**: hatch-vcs dynamic versioning (`#103`).
+- **ci**: GHCR Docker publish workflow (`#34`).
+- **cli**: `csp predict` subcommand (`#74`).
+- **vram**: analytic VRAM-tier preset selection + OOM auto-retry (`#36`).
+- **data**: `data.limit` knob (`#72`); no-val / auto-split support (`#71`).
+- **train**: augmentation presets (`#75`); progress bars (`#76`).
 
-- Per-step loss magnitudes shift vs prior versions. The `LossConfig` defaults
-  (`w_mask=w_obj=w_presence=1`) are unchanged; re-validate manual tunings.
-- Per-step RNG draw order shifts at K>1; runs are not seed-bit-equivalent to
-  <0.12.0 for K>1. Bit-equivalence holds at `train.multiplex.classes_per_forward=1`.
+## [v0.2.0] — 2026-05-21
 
-### Escape hatch
+### Added — first GPU-tested release
 
-- Set `train.multiplex.classes_per_forward: 1` to recover the per-class
-  iteration order within the same code path.
+- First GPU-validated release; project renamed to `custom-sam-peft`.
+- CI hardened; draft-PR workflow skips non-essential jobs.
+- Minimized GPU-gated test surface; smoke-test harness established.
 
-## [0.11.0] — 2026-05-23
+## [v0.1.0] — 2026-05-18
 
-### Breaking — v0.x debt paydown ("hardening pass", issue #26)
+### Added — initial milestone baseline
 
-This release rewrites the YAML schema, CLI surface, and internal seams to
-make the user-facing API small and obvious. Upgrade by editing your YAML
-manually against the rename table below — there is intentionally no
-migration tool (pre-1.0; README already declares this).
-
-#### YAML field renames
-
-| Old | New | Notes |
-| --- | --- | --- |
-| `train.lr` | `train.learning_rate` | `"lr"` is an abbreviation; `"learning_rate"` matches the concept and is self-documenting. |
-
-The following fields were **considered** for rename but kept as-is:
-
-| Field | Decision |
-| --- | --- |
-| `train.batch_size` | No rename — already consistent with common ML convention. |
-| `run.output_dir` | No rename — already consistent. |
-| `tracking.wandb.project` | No rename — already consistent. |
-
-#### Removed fields
-
-- `EvalConfig.metrics` — was silently ignored by `compute_coco_map`; removed.
-  Re-introduction tracked in follow-up issue (see below).
-- `BoxHintSchedule.early_stop_p_threshold` — was unused; removed pending
-  early-stopper implementation.
-
-#### Demoted fields (no longer user-set; hardcoded as internal defaults)
-
-The following config dataclasses are now internal-only and have been moved to
-`src/custom_sam_peft/config/_internal.py`. Import from `config._internal`
-in new code; the old names remain re-exported from `config.schema` for
-backward compatibility through this PR.
-
-- `MatcherWeights` — box supervision is deferred; `lambda_l1` / `lambda_giou`
-  are now hardcoded constants.
-- `LossConfig` — `focal_gamma` / `focal_alpha` are never set by users; now
-  hardcoded.
-- `WandbConfig` — rarely set by users; demoted to internal default.
-- `ExportConfig` — single-field dataclass; demoted to internal.
-
-#### CLI command flag changes
-
-- `train` gains bare `--eval` and `--export` flags.
-- `eval` gains a bare `--export` flag.
-- `run` is now documented as an alias for `train --eval --export`.
-
-#### New error taxonomy
-
-- `CustomSamPeftError` — base class for all user-facing errors.
-- `ConfigError` — missing, malformed, or invalid config value.
-- `DataError` — dataset-loading or example-decoding failures.
-- `ModelError` — model construction, patch-application, or adapter failures.
-- `CheckpointError` — checkpoint read/write or resume-state mismatches.
-- `EnvironmentError` — runtime precondition failures (HF gating, missing GPU,
-  missing extra).
-- CLI renders errors in a four-part shape (summary / expected / found / fix).
-  Re-run with `-v` for the full traceback.
-
-#### Internal refactors
-
-- `Runtime` value object centralizes device + dtype + rank-awareness.
-  `is_primary` and `world_size` fields are seam scaffolding for future
-  DDP / FSDP work.
-- `paths/` module owns the run-dir layout; no more string-joined
-  `runs/.../checkpoints/` outside `paths/`.
-- `_bootstrap.py` is the sole site for adapter registration, seeding, and
-  logging configuration.
-- `_patch_*` functions each live in their own file under
-  `src/custom_sam_peft/models/_patches/`; `Sam3Patches.apply` is the
-  single application site.
-- `EvalArtifacts` is the seam between `Trainer` and `Evaluator`.
-- PEFT method-string branches (`if peft.method == "lora": ...`) replaced
-  by `PEFTMethod` protocol dispatch throughout.
-- Static guards in CI enforce: no method-string branches outside
-  `peft_adapters/`, no `.to(device)` outside collator + `runtime/`, no
-  string-joined checkpoint paths outside `paths/`.
-
-### See also
-
-- Audit inventory: `docs/superpowers/specs/2026-05-21-hardening-audit-inventory.md`
-- Config schema reference: `docs/config-schema.md`
-- Design spec: `docs/superpowers/specs/2026-05-21-hardening-pass-design.md`
-- Implementation plan: `docs/superpowers/plans/2026-05-21-hardening-pass.md`
-- Tracking issue: [#26](https://github.com/NguyenJus/Efficient-SAM3-Finetuning/issues/26)
+- Package skeleton, COCO + HF data subsystem, SAM 3.1 loader/wrapper/matcher/open-vocab losses,
+  PEFT LoRA + QLoRA adapters with save/load, and training-loop scaffold.
