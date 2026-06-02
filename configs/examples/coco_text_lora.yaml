@@ -43,7 +43,10 @@ peft:
   alpha: 32
   dropout: 0.05
   # Knobs (defaults shown — uncomment to override):
-  # scope: vision_decoder          # vision | vision_decoder | all
+  # scope: vision_decoder_concept  # vision | vision_decoder | vision_decoder_concept | all
+  #   vision_decoder_concept (default) — adapts ca_text/self_attn MHA in_proj+out_proj
+  #   for text/concept prompts, plus vision trunk and decoder FFN linears. Use
+  #   vision_decoder to freeze ca_text/self_attn in_proj (pre-#230 behaviour).
   # bias: none                     # none | all | lora_only
   # target_modules: [...]          # overrides scope when set
 
