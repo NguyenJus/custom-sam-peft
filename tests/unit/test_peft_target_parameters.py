@@ -124,3 +124,22 @@ def test_apply_lora_legacy_scope_passes_target_parameters_none() -> None:
         "apply_lora did not pass target_parameters to LoraConfig"
     )
     assert captured["target_parameters"] is None
+
+
+# ---------------------------------------------------------------------------
+# Task 2.5: Wire target_parameters into the QLoRA apply path
+# ---------------------------------------------------------------------------
+
+
+def test_qlora_and_lora_resolve_same_parameter_set() -> None:
+    """§10.3: the parameter axis is mode-independent — same names for LoRA and QLoRA."""
+    from custom_sam_peft.peft_adapters.lora import _resolve_target_parameters
+
+    base = _MiniBase()
+    lora_cfg = PEFTConfig(method="lora", scope="vision_decoder_concept")
+    qlora_cfg = PEFTConfig(method="qlora", scope="vision_decoder_concept")
+    assert _resolve_target_parameters(base, lora_cfg) == _resolve_target_parameters(base, qlora_cfg)
+    # And both resolve the two in_proj params on the mini base.
+    got = _resolve_target_parameters(base, lora_cfg)
+    assert any("ca_text.in_proj_weight" in n for n in got)
+    assert any("self_attn.in_proj_weight" in n for n in got)

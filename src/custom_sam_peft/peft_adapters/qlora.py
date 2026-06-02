@@ -30,7 +30,7 @@ from torch import nn
 from custom_sam_peft._registry import register
 from custom_sam_peft.config.schema import Dtype, PEFTConfig, QLoRAConfig
 from custom_sam_peft.models.sam3 import Sam3Wrapper
-from custom_sam_peft.peft_adapters.lora import _resolve_targets
+from custom_sam_peft.peft_adapters.lora import _resolve_target_parameters, _resolve_targets
 from custom_sam_peft.runtime._runtime import coerce_dtype_for_capability
 
 logger = logging.getLogger(__name__)
@@ -237,11 +237,13 @@ def _inject_lora_adapters(model: nn.Module, cfg: PEFTConfig) -> nn.Module:
     from peft import LoraConfig, get_peft_model
 
     lora_target_names = _resolve_targets(model, cfg, linear_types=(bnb.nn.Linear4bit,))
+    lora_param_names = _resolve_target_parameters(model, cfg)
     lora_cfg = LoraConfig(
         r=cfg.r,
         lora_alpha=cfg.alpha,
         lora_dropout=cfg.dropout,
         target_modules=lora_target_names,
+        target_parameters=(lora_param_names or None),
         bias=cfg.bias,
         task_type=None,
     )
@@ -265,6 +267,7 @@ def apply_qlora(wrapper: Sam3Wrapper, cfg: PEFTConfig) -> Sam3Wrapper:
     from peft import PeftModel as _PeftModel
 
     base = cast(nn.Module, wrapper.model.model)
+    lora_param_names = _resolve_target_parameters(base, cfg)
     _quantize_base(base, cfg)
     _freeze_non_adapter(base)
     peft_base = _inject_lora_adapters(base, cfg)
@@ -276,13 +279,15 @@ def apply_qlora(wrapper: Sam3Wrapper, cfg: PEFTConfig) -> Sam3Wrapper:
     total = sum(p.numel() for p in peft_base.parameters())
     ratio = trainable / total if total else 0.0
     logger.info(
-        "QLoRA: trainable=%d (%.2f%%) of %d (lora_scope=%s, quant_type=%s, compute_dtype=%s)",
+        "QLoRA: trainable=%d (%.2f%%) of %d "
+        "(lora_scope=%s, quant_type=%s, compute_dtype=%s, n_param_targets=%d)",
         trainable,
         100 * ratio,
         total,
         cfg.scope if cfg.target_modules is None else "<override>",
         cfg.qlora.quant_type,
         cfg.qlora.compute_dtype,
+        len(lora_param_names),
     )
     if ratio > 0.10:
         logger.warning(
