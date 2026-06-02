@@ -396,11 +396,15 @@ def test_prose_defining_class_rekey(tmp_path: Path) -> None:
 # Phase 2 tests
 # ---------------------------------------------------------------------------
 
+import yaml as _yaml  # noqa: F401 — PyYAML is a base dependency
+
 from custom_sam_peft._provenance_check import (  # noqa: E402
     check_table_section,
+    check_yaml_section,
     extract_preset_cell_lines,
     parse_doc_legend_letters,
     recognize_cell_tag,
+    yaml_scalar_dotted_paths,
 )
 
 
@@ -445,6 +449,51 @@ def test_parse_doc_legend_letters() -> None:
         "| H | x | y |\n"
     )
     assert parse_doc_legend_letters(cite_body) == {"A", "H"}
+
+
+def test_yaml_scalar_dotted_paths_flattens(tmp_path: Path) -> None:
+    f = tmp_path / "config_full.yaml"
+    f.write_text("run:\n  seed: 42\ndata:\n  text_prompt:\n    mode: present\n")
+    paths = yaml_scalar_dotted_paths(f)
+    assert "run.seed" in paths
+    assert "data.text_prompt.mode" in paths
+
+
+def _yaml_doc_body(rows: str) -> str:
+    return (
+        "| Location | Value | Tag | Full reference | Verifying quote | Notes |\n"
+        "| --- | --- | --- | --- | --- | --- |\n" + rows
+    )
+
+
+def test_yaml_missing_crosslink_for_schema_echo_fails(tmp_path: Path) -> None:
+    f = tmp_path / "config_full.yaml"
+    f.write_text("run:\n  seed: 42\n")
+    body = _yaml_doc_body("")  # no cross-link row for run.seed
+    section = Section(header="cli/templates/config_full.yaml", body=body)
+    # run.seed echoes a schema default.
+    violations = check_yaml_section(section, f, schema_default_paths={"run.seed"})
+    assert len(violations) == 1
+    msg = str(violations[0])
+    assert "config_full.yaml:run.seed" in msg
+    assert "cross-link" in msg
+
+
+def test_yaml_template_only_key_not_required(tmp_path: Path) -> None:
+    f = tmp_path / "config_full.yaml"
+    f.write_text("run:\n  output_dir: ./x\n")
+    body = _yaml_doc_body("")
+    section = Section(header="cli/templates/config_full.yaml", body=body)
+    # run.output_dir is NOT in the schema-default set -> no requirement.
+    assert check_yaml_section(section, f, schema_default_paths=set()) == []
+
+
+def test_yaml_present_crosslink_passes(tmp_path: Path) -> None:
+    f = tmp_path / "config_full.yaml"
+    f.write_text("run:\n  seed: 42\n")
+    body = _yaml_doc_body("| `config_full.yaml:run.seed` | `42` | `cross-link` | x | — | n |\n")
+    section = Section(header="cli/templates/config_full.yaml", body=body)
+    assert check_yaml_section(section, f, schema_default_paths={"run.seed"}) == []
 
 
 def _table_module(tmp_path: Path, cells: str) -> Path:

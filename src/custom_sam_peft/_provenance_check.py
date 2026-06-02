@@ -14,7 +14,9 @@ import ast
 import re
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal, TypedDict
+from typing import Any, Literal, TypedDict
+
+import yaml
 
 TABLE_MODULES: frozenset[str] = frozenset({"data/aug_presets.py", "models/losses/presets.py"})
 PROSE_NARRATIVE_HEADERS: frozenset[str] = frozenset(
@@ -498,6 +500,62 @@ def recognize_cell_tag(line: str) -> CellTag | None:
     if _TBD_ANY.search(line) is not None:
         return CellTag(kind="tbd", letters=[])
     return None
+
+
+def yaml_scalar_dotted_paths(yaml_path: Path) -> set[str]:
+    """Dotted paths of every scalar leaf in a YAML file (lists treated as leaves)."""
+    data = yaml.safe_load(yaml_path.read_text(encoding="utf-8")) or {}
+    paths: set[str] = set()
+
+    def walk(node: Any, prefix: str) -> None:
+        if isinstance(node, dict):
+            for key, value in node.items():
+                walk(value, f"{prefix}.{key}" if prefix else str(key))
+        else:
+            if prefix:
+                paths.add(prefix)
+
+    walk(data, "")
+    return paths
+
+
+def _yaml_crosslink_keys(section_body: str, file_disp_basename: str) -> set[str]:
+    """Dotted paths that already have a cross-link row in the yaml doc section."""
+    keys: set[str] = set()
+    for line in section_body.splitlines():
+        m = _ROW.match(line)
+        if m is None:
+            continue
+        loc_match = _LOCATION_CELL.search(m.group("cells").split("|", 1)[0])
+        if loc_match is None:
+            continue
+        loc = loc_match.group("loc").strip()
+        if loc.startswith(f"{file_disp_basename}:"):
+            keys.add(loc[len(file_disp_basename) + 1 :])
+    return keys
+
+
+def check_yaml_section(
+    section: Section, yaml_path: Path, schema_default_paths: set[str]
+) -> list[ProvenanceViolation]:
+    """Assertion 3: every template scalar echoing a schema default has a cross-link row."""
+    basename = yaml_path.name  # rows are keyed "config_full.yaml:<dotted>"
+    documented = _yaml_crosslink_keys(section.body, basename)
+    template_paths = yaml_scalar_dotted_paths(yaml_path)
+    echoing = template_paths & schema_default_paths
+    violations: list[ProvenanceViolation] = []
+    for dotted in sorted(echoing - documented):
+        violations.append(
+            ProvenanceViolation(
+                location=f"{basename}:{dotted}",
+                problem="template scalar echoes a schema default but has no cross-link row",
+                remediation=(
+                    "add a `cross-link` row to the "
+                    "`## cli/templates/config_full.yaml` section"
+                ),
+            )
+        )
+    return violations
 
 
 def check_table_section(section: Section, file_path: Path) -> list[ProvenanceViolation]:
