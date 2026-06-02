@@ -20,7 +20,16 @@ if TYPE_CHECKING:
 class TensorBoardTracker:
     """Tracker backend writing to TensorBoard event files under run_dir."""
 
+    wants_images = True
+
     def __init__(self, cfg: TrainConfig) -> None:
+        try:
+            from torch.utils.tensorboard import SummaryWriter  # noqa: F401
+        except ImportError as e:
+            raise ImportError(
+                "tracking.backend='tensorboard' requires the [tensorboard] extra. "
+                "Install with: pip install 'custom-sam-peft[tensorboard]'"
+            ) from e
         self._cfg = cfg
         self._writer: SummaryWriter | None = None
         self._closed = False

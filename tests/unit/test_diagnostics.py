@@ -17,7 +17,7 @@ def test_report_has_expected_fields() -> None:
     assert r.torch_version
     assert "bitsandbytes" in r.optional_deps
     assert "wandb" in r.optional_deps
-    assert "tensorboard" in r.core_versions
+    assert "tensorboard" in r.optional_deps
     assert "peft" in r.core_versions
     assert "transformers" in r.core_versions
     assert r.sam3_weights.path.name == "sam3.1_multiplex.pt"

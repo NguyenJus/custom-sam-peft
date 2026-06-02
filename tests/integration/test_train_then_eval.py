@@ -30,6 +30,8 @@ pytestmark = pytest.mark.integration
 class _RecordingTracker:
     """Minimal tracker that records every log_scalars call."""
 
+    wants_images = False
+
     def __init__(self) -> None:
         self.scalars: list[tuple[int, dict[str, float]]] = []
 

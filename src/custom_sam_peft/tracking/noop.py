@@ -14,6 +14,8 @@ from custom_sam_peft.config.schema import TrainConfig
 class NoopTracker:
     """Tracker that drops all calls on the floor."""
 
+    wants_images = False
+
     def start_run(
         self,
         run_dir: Path,
