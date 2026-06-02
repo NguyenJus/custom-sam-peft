@@ -642,7 +642,7 @@ class EvalConfig(_Strict):
 
 
 class TrackingConfig(_Strict):
-    backend: TrackerBackend = "tensorboard"
+    backend: TrackerBackend = "local"
     # --- advanced ---
     wandb: WandbConfig = Field(default_factory=WandbConfig)
 

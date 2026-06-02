@@ -97,3 +97,9 @@ def test_build_tracker_returns_local(tmp_path: Path) -> None:
     t = build_tracker(_cfg(tmp_path, "local"))
     assert type(t).__name__ == "LocalTracker"
     assert t.wants_images is False
+
+
+def test_tracking_config_default_is_local() -> None:
+    from custom_sam_peft.config.schema import TrackingConfig
+
+    assert TrackingConfig().backend == "local"
