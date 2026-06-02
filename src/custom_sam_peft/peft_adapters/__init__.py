@@ -45,7 +45,6 @@ class PEFTMethod(Protocol):
 
         Returns 'adamw8bit' for QLoRA (requires bitsandbytes), 'adamw' for LoRA.
         """
-        ...
 
     def disables_outer_autocast(self) -> bool:
         """Return True if outer torch.autocast must NOT be used during training.
@@ -54,7 +53,6 @@ class PEFTMethod(Protocol):
         produce bf16/fp32 collisions under an outer autocast scope.
         LoRA returns False: outer autocast is safe.
         """
-        ...
 
     def detect_method_from_checkpoint(self, adapter_dir: Path) -> str:
         """Inspect adapter_dir and return the canonical method string.
@@ -63,7 +61,6 @@ class PEFTMethod(Protocol):
         LoRA: absence of the JSON marker → returns 'lora'.
         Raises CheckpointError on ambiguous or corrupted state.
         """
-        ...
 
     def supports_checkpoint_load_from_disk(self) -> bool:
         """Return True if this method can load a checkpoint from disk without
@@ -73,7 +70,6 @@ class PEFTMethod(Protocol):
         quantized base from saved custom_sam_peft_qlora.json metadata, then loads
         the LoRA adapter weights via PeftModel.from_pretrained).
         """
-        ...
 
     def load_from_disk(self, wrapper: Any, dirpath: Any) -> Any:
         """Load a checkpoint from disk into a freshly-built wrapper.
@@ -89,7 +85,6 @@ class PEFTMethod(Protocol):
         Both implementations import their respective loaders lazily inside the
         method body so that LoRA-only users never import bitsandbytes.
         """
-        ...
 
 
 @register("peft_method", "lora")
