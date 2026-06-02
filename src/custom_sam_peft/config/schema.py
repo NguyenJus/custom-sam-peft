@@ -96,7 +96,7 @@ Optimizer = Literal["adamw", "adamw8bit", "auto"]
 LRSchedule = Literal["constant", "cosine", "linear", "plateau"]
 TrackerBackend = Literal["tensorboard", "wandb", "none"]
 TextPromptMode = Literal["present", "all", "present_plus_negatives", "sampled_fixed_k"]
-LoraScope = Literal["vision", "vision_decoder", "all"]
+LoraScope = Literal["vision", "vision_decoder", "vision_decoder_concept", "all"]
 EvalMode = Literal["full", "lite"]
 
 

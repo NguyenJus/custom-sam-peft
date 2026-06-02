@@ -105,6 +105,40 @@ def _resolve_targets(
     return matched
 
 
+def _resolve_target_parameters(base: nn.Module, cfg: PEFTConfig) -> list[str]:
+    """Resolve scope/override parameter-name patterns against named_parameters().
+
+    Precedence mirrors _resolve_targets:
+      * cfg.target_parameters is not None -> use it verbatim (overrides scope).
+      * else -> SCOPE_TARGET_PARAMETERS.get(cfg.scope, []).
+
+    Returns the full matched parameter names (e.g.
+    'transformer.decoder.layers.0.ca_text.in_proj_weight') to pass to
+    LoraConfig(target_parameters=...). Returns [] when the resolved pattern list is
+    empty (legacy scopes) — NOT an error. Raises ValueError only when a NON-EMPTY
+    pattern list matches zero parameters (a typo or SAM rename), mirroring
+    _resolve_targets' no-match error so the in_proj surface never silently trains
+    nothing.
+    """
+    patterns = (
+        cfg.target_parameters
+        if cfg.target_parameters is not None
+        else SCOPE_TARGET_PARAMETERS.get(cfg.scope, [])
+    )
+    if not patterns:
+        return []
+    compiled = [re.compile(p) for p in patterns]
+    param_names = [name for name, _ in base.named_parameters()]
+    matched = [name for name in param_names if any(c.search(name) for c in compiled)]
+    if not matched:
+        sample = ", ".join(param_names[:50]) if param_names else "<no parameters found>"
+        raise ValueError(
+            f"apply_lora: no parameters matched target_parameters patterns {patterns}. "
+            f"Parameters actually present (first 50): {sample}"
+        )
+    return matched
+
+
 @register("peft", "lora")
 def apply_lora(wrapper: Sam3Wrapper, cfg: PEFTConfig) -> Sam3Wrapper:
     """Freeze SAM 3.1 base and inject LoRA adapters; mutate `wrapper` in place.
