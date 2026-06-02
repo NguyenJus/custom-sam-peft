@@ -154,6 +154,7 @@ def apply_lora(wrapper: Sam3Wrapper, cfg: PEFTConfig) -> Sam3Wrapper:
 
     base = cast(nn.Module, wrapper.model.model)
     matched_names = _resolve_targets(base, cfg)
+    matched_params = _resolve_target_parameters(base, cfg)
 
     for p in base.parameters():
         p.requires_grad = False
@@ -163,6 +164,7 @@ def apply_lora(wrapper: Sam3Wrapper, cfg: PEFTConfig) -> Sam3Wrapper:
         lora_alpha=cfg.alpha,
         lora_dropout=cfg.dropout,
         target_modules=matched_names,
+        target_parameters=(matched_params or None),
         bias=cfg.bias,
         task_type=None,
     )
@@ -175,12 +177,13 @@ def apply_lora(wrapper: Sam3Wrapper, cfg: PEFTConfig) -> Sam3Wrapper:
     total = sum(p.numel() for p in peft_base.parameters())
     ratio = trainable / total if total else 0.0
     logger.info(
-        "LoRA: trainable=%d (%.2f%%) of %d (scope=%s, n_targets=%d)",
+        "LoRA: trainable=%d (%.2f%%) of %d (scope=%s, n_targets=%d, n_param_targets=%d)",
         trainable,
         100 * ratio,
         total,
         cfg.scope if cfg.target_modules is None else "<override>",
         len(matched_names),
+        len(matched_params),
     )
     if ratio > 0.10:
         logger.warning(

@@ -84,3 +84,38 @@ def test_resolve_non_empty_no_match_raises_valueerror() -> None:
     msg = str(exc.value)
     assert "nonexistent.param.path$" in msg  # patterns tried listed
     assert "in_proj_weight" in msg  # a real parameter name sampled
+
+
+# ---------------------------------------------------------------------------
+# Task 2.4: Wire target_parameters into apply_lora
+# ---------------------------------------------------------------------------
+
+
+def test_apply_lora_legacy_scope_passes_target_parameters_none() -> None:
+    """Reproducibility: legacy scopes must build LoraConfig with target_parameters=None."""
+    import custom_sam_peft.peft_adapters.lora as lora_mod
+    from tests.fixtures.tiny_sam3_lora_stub import FIXTURE_SCOPE_PATTERNS, make_stub_wrapper
+
+    captured: dict[str, object] = {}
+    real_cfg = lora_mod.LoraConfig
+
+    def _spy(*args: object, **kwargs: object) -> object:
+        captured.update(kwargs)
+        return real_cfg(*args, **kwargs)
+
+    w = make_stub_wrapper(dim=8, working=False)
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(lora_mod, "LoraConfig", _spy)
+        lora_mod.apply_lora(
+            w,
+            PEFTConfig(
+                method="lora",
+                scope="vision_decoder",
+                target_modules=FIXTURE_SCOPE_PATTERNS["vision_decoder"],
+            ),
+        )
+    assert "target_parameters" in captured, (
+        "apply_lora did not pass target_parameters to LoraConfig"
+    )
+    assert captured["target_parameters"] is None
