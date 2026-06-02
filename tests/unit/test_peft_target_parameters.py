@@ -143,3 +143,25 @@ def test_qlora_and_lora_resolve_same_parameter_set() -> None:
     got = _resolve_target_parameters(base, lora_cfg)
     assert any("ca_text.in_proj_weight" in n for n in got)
     assert any("self_attn.in_proj_weight" in n for n in got)
+
+
+# ---------------------------------------------------------------------------
+# Task 2.6: Flip default scope to vision_decoder_concept
+# ---------------------------------------------------------------------------
+
+
+def test_peftconfig_default_scope_is_concept() -> None:
+    assert PEFTConfig(method="lora").scope == "vision_decoder_concept"
+
+
+def test_lorascope_literal_includes_concept() -> None:
+    import typing
+
+    from custom_sam_peft.config.schema import LoraScope
+
+    assert set(typing.get_args(LoraScope)) == {
+        "vision",
+        "vision_decoder",
+        "vision_decoder_concept",
+        "all",
+    }

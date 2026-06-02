@@ -35,7 +35,12 @@ def _lora_param_names(m: nn.Module) -> list[str]:
 def test_apply_lora_default_scope_freezes_base() -> None:
     w = make_stub_wrapper()
     apply_lora(
-        w, PEFTConfig(method="lora", target_modules=FIXTURE_SCOPE_PATTERNS["vision_decoder"])
+        w,
+        PEFTConfig(
+            method="lora",
+            scope="vision_decoder",
+            target_modules=FIXTURE_SCOPE_PATTERNS["vision_decoder"],
+        ),
     )
     # Every non-LoRA param is frozen.
     for n, p in w.model.model.named_parameters():
@@ -47,7 +52,10 @@ def test_apply_lora_default_scope_freezes_base() -> None:
 
 def test_apply_lora_vision_scope_matches_only_vision() -> None:
     w = make_stub_wrapper()
-    apply_lora(w, PEFTConfig(method="lora", target_modules=FIXTURE_SCOPE_PATTERNS["vision"]))
+    apply_lora(
+        w,
+        PEFTConfig(method="lora", scope="vision", target_modules=FIXTURE_SCOPE_PATTERNS["vision"]),
+    )
     lora_names = _lora_param_names(w.model.model)
     assert lora_names, "expected LoRA params under vision scope"
     assert all("vision_trunk" in n for n in lora_names), lora_names
@@ -57,7 +65,12 @@ def test_apply_lora_vision_scope_matches_only_vision() -> None:
 def test_apply_lora_vision_decoder_scope() -> None:
     w = make_stub_wrapper()
     apply_lora(
-        w, PEFTConfig(method="lora", target_modules=FIXTURE_SCOPE_PATTERNS["vision_decoder"])
+        w,
+        PEFTConfig(
+            method="lora",
+            scope="vision_decoder",
+            target_modules=FIXTURE_SCOPE_PATTERNS["vision_decoder"],
+        ),
     )
     lora_names = _lora_param_names(w.model.model)
     assert any("vision_trunk" in n for n in lora_names), lora_names
@@ -103,19 +116,25 @@ def test_apply_lora_no_match_raises() -> None:
 
 def test_apply_lora_idempotent_guard() -> None:
     w = make_stub_wrapper()
-    apply_lora(
-        w, PEFTConfig(method="lora", target_modules=FIXTURE_SCOPE_PATTERNS["vision_decoder"])
+    _cfg = PEFTConfig(
+        method="lora",
+        scope="vision_decoder",
+        target_modules=FIXTURE_SCOPE_PATTERNS["vision_decoder"],
     )
+    apply_lora(w, _cfg)
     with pytest.raises(RuntimeError, match="already applied"):
-        apply_lora(
-            w, PEFTConfig(method="lora", target_modules=FIXTURE_SCOPE_PATTERNS["vision_decoder"])
-        )
+        apply_lora(w, _cfg)
 
 
 def test_apply_lora_trainable_ratio_under_default_scope() -> None:
     w = make_stub_wrapper()
     apply_lora(
-        w, PEFTConfig(method="lora", target_modules=FIXTURE_SCOPE_PATTERNS["vision_decoder"])
+        w,
+        PEFTConfig(
+            method="lora",
+            scope="vision_decoder",
+            target_modules=FIXTURE_SCOPE_PATTERNS["vision_decoder"],
+        ),
     )
     ratio = _trainable(w.model.model) / _total(w.model.model)
     assert ratio < 0.20, f"trainable ratio {ratio:.2%} unexpectedly high on tiny stub"
@@ -125,7 +144,12 @@ def test_apply_lora_preserves_forward_signature() -> None:
     w = make_stub_wrapper()
     sig_before = inspect.signature(w.forward)
     apply_lora(
-        w, PEFTConfig(method="lora", target_modules=FIXTURE_SCOPE_PATTERNS["vision_decoder"])
+        w,
+        PEFTConfig(
+            method="lora",
+            scope="vision_decoder",
+            target_modules=FIXTURE_SCOPE_PATTERNS["vision_decoder"],
+        ),
     )
     sig_after = inspect.signature(w.forward)
     assert sig_before == sig_after
@@ -136,7 +160,12 @@ def test_apply_lora_sets_peft_model_handle() -> None:
     w = make_stub_wrapper()
     assert w.peft_model is None
     apply_lora(
-        w, PEFTConfig(method="lora", target_modules=FIXTURE_SCOPE_PATTERNS["vision_decoder"])
+        w,
+        PEFTConfig(
+            method="lora",
+            scope="vision_decoder",
+            target_modules=FIXTURE_SCOPE_PATTERNS["vision_decoder"],
+        ),
     )
     assert w.peft_model is not None
     # The handle is the same object that replaced wrapper.model.model.
@@ -145,13 +174,18 @@ def test_apply_lora_sets_peft_model_handle() -> None:
 
 def test_scope_targets_keys_match_lora_scope_literal() -> None:
     # Cheap guard: SCOPE_TARGETS must cover every literal value of LoraScope.
-    assert set(SCOPE_TARGETS) == {"vision", "vision_decoder", "all"}
+    assert set(SCOPE_TARGETS) == {"vision", "vision_decoder", "vision_decoder_concept", "all"}
 
 
 def test_save_load_lora_roundtrip(tmp_path: Path) -> None:
     w1 = make_stub_wrapper()
     apply_lora(
-        w1, PEFTConfig(method="lora", target_modules=FIXTURE_SCOPE_PATTERNS["vision_decoder"])
+        w1,
+        PEFTConfig(
+            method="lora",
+            scope="vision_decoder",
+            target_modules=FIXTURE_SCOPE_PATTERNS["vision_decoder"],
+        ),
     )
     # Capture trained-side state-dict for the LoRA params.
     sd1 = {n: p.detach().clone() for n, p in w1.model.model.named_parameters() if "lora_" in n}
@@ -175,7 +209,10 @@ def test_save_load_lora_roundtrip(tmp_path: Path) -> None:
 
 def test_load_lora_keeps_lora_params_trainable(tmp_path: Path) -> None:
     w_a = make_stub_wrapper(dim=8)
-    apply_lora(w_a, PEFTConfig(method="lora", target_modules=FIXTURE_SCOPE_PATTERNS["vision"]))
+    apply_lora(
+        w_a,
+        PEFTConfig(method="lora", scope="vision", target_modules=FIXTURE_SCOPE_PATTERNS["vision"]),
+    )
     save_lora(w_a, tmp_path / "adapter")
 
     w_b = make_stub_wrapper(dim=8)
@@ -193,7 +230,12 @@ def test_load_lora_on_already_wrapped_reloads_weights(tmp_path: Path) -> None:
     # load_full_state), load_lora reloads adapter weights rather than raising.
     w = make_stub_wrapper()
     apply_lora(
-        w, PEFTConfig(method="lora", target_modules=FIXTURE_SCOPE_PATTERNS["vision_decoder"])
+        w,
+        PEFTConfig(
+            method="lora",
+            scope="vision_decoder",
+            target_modules=FIXTURE_SCOPE_PATTERNS["vision_decoder"],
+        ),
     )
     save_lora(w, tmp_path)
     # Should not raise; should return the same wrapper.
@@ -216,7 +258,12 @@ def test_merge_lora_unwraps_and_clears_handle() -> None:
     pre = w.model.model.vision_trunk.blocks[0].attn.qkv.weight.detach().clone()
 
     apply_lora(
-        w, PEFTConfig(method="lora", target_modules=FIXTURE_SCOPE_PATTERNS["vision_decoder"])
+        w,
+        PEFTConfig(
+            method="lora",
+            scope="vision_decoder",
+            target_modules=FIXTURE_SCOPE_PATTERNS["vision_decoder"],
+        ),
     )
     # Force a non-zero LoRA-B so merge changes the base.
     for n, p in w.model.model.named_parameters():
@@ -375,7 +422,7 @@ def test_scope_targets_match_real_sam3_module_naming() -> None:
     assert all(".mlp." not in n for n in vision_decoder)
 
     # SCOPE_TARGETS still exposes only the three documented scopes.
-    assert set(SCOPE_TARGETS) == {"vision", "vision_decoder", "all"}
+    assert set(SCOPE_TARGETS) == {"vision", "vision_decoder", "vision_decoder_concept", "all"}
 
 
 def test_vision_decoder_scope_matches_decoder_ffn_linears() -> None:
