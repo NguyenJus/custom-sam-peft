@@ -41,9 +41,13 @@ class _DecoderAttn(nn.Module):
 
 
 class _DecoderLayer(nn.Module):
-    def __init__(self, dim: int = 8) -> None:
+    def __init__(self, dim: int = 8, n_heads: int = 2) -> None:
         super().__init__()
-        self.self_attn = _DecoderAttn(dim)
+        # Genuine torch MHA so in_proj_weight (a bare nn.Parameter) exists, mirroring
+        # SAM 3.1's decoder ca_text/self_attn. cross_attn stays a non-MHA attention so
+        # it is the negative control for the in_proj parameter axis.
+        self.ca_text = nn.MultiheadAttention(dim, n_heads, batch_first=True)
+        self.self_attn = nn.MultiheadAttention(dim, n_heads, batch_first=True)
         self.cross_attn = _DecoderAttn(dim)
 
 
@@ -134,5 +138,18 @@ FIXTURE_SCOPE_PATTERNS: dict[str, list[str]] = {
         r"vision_trunk\.blocks\.\d+\.attn\.(qkv|proj)$",
         r"transformer_decoder\.layers\.\d+\.(self_attn|cross_attn)\.out_proj$",
     ],
+    "vision_decoder_concept": [
+        r"vision_trunk\.blocks\.\d+\.attn\.(qkv|proj)$",
+        r"transformer_decoder\.layers\.\d+\.(self_attn|cross_attn)\.out_proj$",
+    ],
     "all": [r".*"],
+}
+
+# Parallel to the production SCOPE_TARGET_PARAMETERS, but with the fixture's truncated
+# `transformer_decoder` prefix. Drives the in_proj parameter axis on the stub.
+FIXTURE_SCOPE_TARGET_PARAMETERS: dict[str, list[str]] = {
+    "vision_decoder_concept": [
+        r"transformer_decoder\.layers\.\d+\.ca_text\.in_proj_weight$",
+        r"transformer_decoder\.layers\.\d+\.self_attn\.in_proj_weight$",
+    ],
 }

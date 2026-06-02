@@ -165,3 +165,27 @@ def test_lorascope_literal_includes_concept() -> None:
         "vision_decoder_concept",
         "all",
     }
+
+
+# ---------------------------------------------------------------------------
+# Task 2.7: Expose MHA in_proj in the LoRA stub fixture
+# ---------------------------------------------------------------------------
+
+
+def test_fixture_exposes_mha_inproj_and_concept_patterns() -> None:
+    from tests.fixtures.tiny_sam3_lora_stub import (
+        FIXTURE_SCOPE_PATTERNS,
+        FIXTURE_SCOPE_TARGET_PARAMETERS,
+        make_stub_wrapper,
+    )
+
+    w = make_stub_wrapper(dim=8, working=False)
+    base = w.model.model
+    names = [n for n, _ in base.named_parameters()]
+    assert any(n.endswith("ca_text.in_proj_weight") for n in names), names[:10]
+    assert any(n.endswith("self_attn.in_proj_weight") for n in names), names[:10]
+    # cross_attn must NOT be MHA (negative control for the parameter axis).
+    assert not any("cross_attn.in_proj_weight" in n for n in names)
+    # The concept fixture mappings exist.
+    assert "vision_decoder_concept" in FIXTURE_SCOPE_PATTERNS
+    assert "vision_decoder_concept" in FIXTURE_SCOPE_TARGET_PARAMETERS
