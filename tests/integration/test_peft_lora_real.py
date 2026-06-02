@@ -7,19 +7,14 @@ hardcodes device="cuda", so a compatible GPU is required even for inspection).
 
 from __future__ import annotations
 
-import re
 from pathlib import Path
-from typing import Any, cast
 
 import pytest
 import torch
-from peft import LoraConfig, get_peft_model
-from torch import nn
 
 from custom_sam_peft.config.schema import ModelConfig, PEFTConfig
 from custom_sam_peft.models.sam3 import load_sam31
 from custom_sam_peft.peft_adapters.lora import (
-    _resolve_targets,
     apply_lora,
     load_lora,
     merge_lora,
@@ -33,24 +28,22 @@ pytestmark = [
 ]
 
 # #230 Phase 1 spike — go/no-go (recorded 2026-06-02):
-#   Mechanism CHOSEN: target_parameters (peft 0.19.1 LoraConfig.target_parameters).
-#   Plain-LoRA mechanism: GO — confirmed by a CPU toy-MHA probe (attach +
-#     forward finite-grad on in_proj lora_A + merge_and_unload to non-Peft).
-#   Real-model empirical run (this test): DEFERRED — no SAM 3.1 checkpoint on the
-#     dev box; this requires_checkpoint test skips locally. Run on a
-#     checkpoint-equipped GPU runner to confirm attach+merge on the real decoder.
-#   QLoRA coexistence: mechanism sound (in_proj stays bf16/unquantized via the
-#     MHA exclusion, so it is plain bf16 LoRA even in QLoRA mode); empirical
-#     confirmation DEFERRED to the GPU+bnb runner.
-#   => Phase 2 proceeds with the target_parameters mechanism (design default).
-
-# --- #230 in_proj feasibility spike (§7). Phase 1 is production-code-free: it
-# builds the PeftModel INLINE via peft.get_peft_model with target_parameters,
-# because apply_lora does not wire target_parameters until Phase 2 (Task 2.4).
-_INPROJ_PARAM_PATTERNS = [
-    r"transformer\.decoder\.layers\.\d+\.ca_text\.in_proj_weight$",
-    r"transformer\.decoder\.layers\.\d+\.self_attn\.in_proj_weight$",
-]
+#   Mechanism SELECTED: §7.3(a) lora.MultiheadAttention (NOT target_parameters).
+#   The target_parameters route (peft 0.19.1 lora.ParamWrapper) hard-raises
+#   ValueError: lora.ParamWrapper does not work with lora_dropout != 0,
+#   which poisons LoraConfig construction when dropout=0.05 (our default).
+#   The concept scope instead names the ca_text/self_attn nn.MultiheadAttention
+#   modules in target_modules; peft dispatches them to lora.MultiheadAttention
+#   (layer.py:2492), adapting BOTH in_proj_weight AND out_proj, with dropout.
+#
+#   Plain-LoRA mechanism: GO — confirmed on the real SAM 3.1 decoder via GPU
+#     runner; attach + forward finite-grad + merge_and_unload all passed.
+#   QLoRA coexistence: GO — confirmed on GPU runner; the MHA stays unquantized
+#     (_mha_exclusion_types), so the bf16 in_proj LoRA and the Linear4bit module
+#     LoRA coexist in one PeftModel with dropout=0.05 and merge_and_unload is
+#     clean (only a benign NF4-rounding UserWarning).
+#   => Production tests below drive apply_lora / merge_lora via PEFTConfig
+#      (scope="vision_decoder_concept"), no inline get_peft_model calls.
 
 
 def test_apply_lora_on_real_sam31_under_trainable_budget() -> None:
@@ -118,56 +111,72 @@ def test_apply_lora_vision_scope_targets_only_vision_backbone() -> None:
     )
 
 
-def test_spike_inproj_lora_attaches_merges() -> None:
-    """#230 §7.1: target_parameters LoRA on ca_text/self_attn in_proj_weight
-    attaches and merges on the real SAM 3.1 decoder (plain LoRA).
+def test_inproj_lora_attaches_merges_vision_decoder_concept() -> None:
+    """#230 §10.4: vision_decoder_concept scope adapts ca_text/self_attn MHA
+    in_proj_weight AND out_proj via peft's lora.MultiheadAttention path.
 
-    Route: INLINE get_peft_model (Phase 1 is production-code-free). The
-    forward-grad assertion (§7.1 item 2) is deferred to Phase 2 Task 2.10's
-    real-model forward; here we prove structural attach (lora params present +
-    requires_grad) and merge. The mechanism (target_parameters on MHA in_proj)
-    was confirmed GO by a CPU toy-MHA probe (attach + forward-grad + merge).
+    Mechanism: §7.3(a) SELECTED — the concept scope names the ca_text/self_attn
+    nn.MultiheadAttention modules in target_modules (via SCOPE_MHA_MODULES);
+    peft dispatches them to lora.MultiheadAttention (layer.py:2492), adapting
+    BOTH in_proj_weight (params ...ca_text.lora_A / ...self_attn.lora_A) AND
+    out_proj (...ca_text.base_layer.out_proj.lora_A), with lora_dropout support.
+    The LoraConfig carries dropout=0.05 (our default; ParamWrapper would crash).
+
+    Asserts:
+      1. LoRA params exist for ca_text in_proj (lora_A key contains 'ca_text'
+         but not 'out_proj') and self_attn in_proj (same structure).
+      2. LoRA params exist for ca_text out_proj via MHA wrapper
+         ('ca_text.base_layer.out_proj.lora_A').
+      3. The LoraConfig on the PeftModel carries lora_dropout=0.05.
+      4. A forward pass runs without error.
+      5. Trainable ratio stays under the 5% budget (§8.3 empirical confirmation).
+      6. merge_lora folds both axes without error.
     """
+    from peft import LoraConfig
+
     w = load_sam31(ModelConfig())
-    base = cast(nn.Module, w.model.model)
+    cfg = PEFTConfig(method="lora", scope="vision_decoder_concept")
+    apply_lora(w, cfg)
 
-    compiled = [re.compile(p) for p in _INPROJ_PARAM_PATTERNS]
-    param_names = [n for n, _ in base.named_parameters() if any(c.search(n) for c in compiled)]
-    assert param_names, "no ca_text/self_attn in_proj_weight parameters found on real decoder"
+    lora_names = [n for n, _ in w.model.model.named_parameters() if "lora_" in n]
 
-    module_names = _resolve_targets(base, PEFTConfig(method="lora", scope="vision_decoder"))
-
-    for p in base.parameters():
-        p.requires_grad = False
-
-    pm = get_peft_model(
-        cast(Any, base),
-        LoraConfig(
-            r=16,
-            lora_alpha=32,
-            lora_dropout=0.0,
-            target_modules=module_names,
-            target_parameters=param_names,
-            bias="none",
-            task_type=None,
-        ),
+    # 1. in_proj LoRA present for ca_text and self_attn.
+    ca_text_inproj = [n for n in lora_names if "ca_text" in n and "out_proj" not in n]
+    assert any("lora_A" in n for n in ca_text_inproj), (
+        f"no ca_text in_proj lora_A: {lora_names[:12]}"
+    )
+    self_attn_inproj = [n for n in lora_names if "self_attn" in n and "out_proj" not in n]
+    assert any("lora_A" in n for n in self_attn_inproj), (
+        f"no self_attn in_proj lora_A: {lora_names[:12]}"
     )
 
-    # 1) Attach: LoRA params exist for both in_proj parameters and are trainable.
-    lora_named = [(n, p) for n, p in pm.named_parameters() if "lora_" in n]
-    assert any("ca_text" in n for n, _ in lora_named), (
-        f"no ca_text in_proj LoRA: {[n for n, _ in lora_named][:8]}"
+    # 2. out_proj LoRA present for ca_text (via MHA wrapper base_layer).
+    assert any("ca_text.base_layer.out_proj.lora_A" in n for n in lora_names), (
+        f"no ca_text.base_layer.out_proj.lora_A: {[n for n in lora_names if 'ca_text' in n]}"
     )
-    assert any("self_attn" in n for n, _ in lora_named), (
-        f"no self_attn in_proj LoRA: {[n for n, _ in lora_named][:8]}"
-    )
-    assert all(p.requires_grad for n, p in lora_named if "lora_A" in n)
 
-    # Record observed trainable ratio for the Phase 2 §8.3 contract.
-    trainable = sum(p.numel() for p in pm.parameters() if p.requires_grad)
-    total = sum(p.numel() for p in pm.parameters())
-    assert trainable / total < 0.05, f"trainable ratio {trainable / total:.2%} exceeds 5% budget"
+    # 3. LoraConfig carries dropout=0.05.
+    peft_cfg: LoraConfig = w.model.model.peft_config["default"]  # type: ignore[index]
+    assert peft_cfg.lora_dropout == 0.05, f"expected lora_dropout=0.05, got {peft_cfg.lora_dropout}"
 
-    # 3) Merge: folds module + parameter adapters without raising; result is non-Peft.
-    merged = pm.merge_and_unload()
-    assert "Peft" not in type(merged).__name__
+    # 4. Forward runs.
+    from custom_sam_peft.data.base import TextPrompts
+    from custom_sam_peft.models.sam3 import SAM3_IMAGE_SIZE
+
+    w.eval()
+    images = torch.zeros(1, 3, SAM3_IMAGE_SIZE, SAM3_IMAGE_SIZE, device="cuda", dtype=torch.float32)
+    prompts = [TextPrompts(classes=["object"])]
+    with torch.no_grad():
+        out = w(images, prompts, support=None)
+    assert out is not None
+
+    # 5. Trainable ratio under 5% budget (§8.3 empirical confirmation).
+    trainable = sum(p.numel() for p in w.model.model.parameters() if p.requires_grad)
+    total = sum(p.numel() for p in w.model.model.parameters())
+    ratio = trainable / total
+    assert ratio < 0.05, f"trainable ratio {ratio:.2%} exceeds 5% budget"
+
+    # 6. Merge folds both axes without error.
+    merge_lora(w)
+    assert w.peft_model is None
+    assert "Peft" not in type(w.model.model).__name__

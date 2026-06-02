@@ -15,22 +15,16 @@ via scripts/run_gpu_tests.sh.
 from __future__ import annotations
 
 import json
-import re
 from pathlib import Path
-from typing import Any, cast
 
 import pytest
 import torch
-from peft import LoraConfig, get_peft_model
-from torch import nn
 
 from custom_sam_peft.config.schema import ModelConfig, PEFTConfig
 from custom_sam_peft.models.sam3 import SAM3_IMAGE_SIZE, load_sam31
-from custom_sam_peft.peft_adapters.lora import _resolve_targets, merge_lora
+from custom_sam_peft.peft_adapters.lora import merge_lora
 from custom_sam_peft.peft_adapters.qlora import (
-    _freeze_non_adapter,
     _infer_compute_dtype_from_wrapper,
-    _quantize_base,
     apply_qlora,
     load_qlora,
     save_qlora,
@@ -44,24 +38,20 @@ pytestmark = [
 ]
 
 # #230 Phase 1 spike — go/no-go (recorded 2026-06-02):
-#   Mechanism CHOSEN: target_parameters (peft 0.19.1 LoraConfig.target_parameters).
-#   Plain-LoRA mechanism: GO — confirmed by a CPU toy-MHA probe (attach +
-#     forward finite-grad on in_proj lora_A + merge_and_unload to non-Peft).
-#   Real-model empirical run (this test): DEFERRED — no SAM 3.1 checkpoint on the
-#     dev box; this requires_checkpoint test skips locally. Run on a
-#     checkpoint-equipped GPU runner to confirm attach+merge on the real decoder.
-#   QLoRA coexistence: mechanism sound (in_proj stays bf16/unquantized via the
-#     MHA exclusion, so it is plain bf16 LoRA even in QLoRA mode); empirical
-#     confirmation DEFERRED to the GPU+bnb runner.
-#   => Phase 2 proceeds with the target_parameters mechanism (design default).
-
-# --- #230 in_proj feasibility spike (§7). Phase 1 is production-code-free: it
-# builds the PeftModel INLINE via peft.get_peft_model with target_parameters,
-# because apply_qlora does not wire target_parameters until Phase 2 (Task 2.5).
-_INPROJ_PARAM_PATTERNS = [
-    r"transformer\.decoder\.layers\.\d+\.ca_text\.in_proj_weight$",
-    r"transformer\.decoder\.layers\.\d+\.self_attn\.in_proj_weight$",
-]
+#   Mechanism SELECTED: §7.3(a) lora.MultiheadAttention (NOT target_parameters).
+#   The target_parameters route (peft 0.19.1 lora.ParamWrapper) hard-raises
+#   ValueError: lora.ParamWrapper does not work with lora_dropout != 0,
+#   which poisons LoraConfig construction when dropout=0.05 (our default).
+#   The concept scope instead names the ca_text/self_attn nn.MultiheadAttention
+#   modules in target_modules; peft dispatches them to lora.MultiheadAttention
+#   (layer.py:2492), adapting BOTH in_proj_weight AND out_proj, with dropout.
+#
+#   QLoRA coexistence: GO — GPU-confirmed (§7.2, §7.3a). The MHA stays
+#     unquantized (_mha_exclusion_types), so the bf16 in_proj LoRA and the
+#     Linear4bit module LoRA attach in one PeftModel with dropout=0.05.
+#     merge_and_unload is clean (only a benign NF4-rounding UserWarning).
+#   => Production tests below drive apply_qlora / merge_lora via PEFTConfig
+#      (scope="vision_decoder_concept"), no inline get_peft_model calls.
 
 
 def _bnb_available() -> bool:
@@ -72,7 +62,7 @@ def _bnb_available() -> bool:
     return True
 
 
-def _has_linear4bit_modules(module: nn.Module) -> bool:
+def _has_linear4bit_modules(module: torch.nn.Module) -> bool:
     import bitsandbytes as bnb
 
     return any(isinstance(m, bnb.nn.Linear4bit) for m in module.modules())
@@ -171,7 +161,7 @@ def test_save_load_qlora_roundtrip(tmp_path: Path) -> None:
 
     # Forward-output parity: w2 must produce the same outputs as w1 on the same input.
     # atol=1e-4, rtol=1e-4 accommodates 4-bit dequant rounding after the
-    # quantize→save→reload cycle; on CC < 8.0 bfloat16 is coerced to float16
+    # quantize->save->reload cycle; on CC < 8.0 bfloat16 is coerced to float16
     # compute_dtype so tolerances apply to fp16 arithmetic.
     torch.manual_seed(0)
     w2.eval()
@@ -234,51 +224,79 @@ def test_apply_qlora_vision_scope_targets_only_vision_backbone() -> None:
 
 
 @pytest.mark.skipif(not _bnb_available(), reason="bitsandbytes not installed")
-def test_spike_inproj_qlora_coexists_attaches_merges() -> None:
-    """#230 §7.2: under QLoRA the bf16 in_proj LoRA and the Linear4bit module
-    LoRA attach and merge_and_unload together in ONE PeftModel.
+def test_inproj_qlora_coexists_attaches_merges_vision_decoder_concept() -> None:
+    """#230 §7.2, §10.4: under QLoRA the bf16 MHA in_proj LoRA and the
+    Linear4bit module LoRA coexist, forward, and merge in ONE PeftModel.
 
-    Route: INLINE — reuse production _quantize_base/_freeze_non_adapter to make
-    the 4-bit base (MHA stays unquantized, so in_proj_weight is bare bf16), then
-    get_peft_model with BOTH target_modules (Linear4bit names) and
-    target_parameters (in_proj names). apply_qlora wires target_parameters in
-    Phase 2 (Task 2.5); Phase 1 is production-code-free.
+    Mechanism: §7.3(a) SELECTED — apply_qlora with scope="vision_decoder_concept"
+    calls _resolve_mha_modules (imported from lora.py), unions the matched
+    ca_text/self_attn MHA module names into target_modules, and passes a single
+    LoraConfig (dropout=0.05) to get_peft_model. peft dispatches:
+      - Linear4bit modules -> lora.Linear (generic module axis)
+      - nn.MultiheadAttention ca_text/self_attn -> lora.MultiheadAttention
+        (MHA axis; adapting in_proj_weight + out_proj; MHA stays unquantized
+        via _mha_exclusion_types, so the MHA LoRA is plain bf16 even in QLoRA)
+
+    Asserts (§10.4):
+      1. LoRA params exist for ca_text in_proj (...ca_text.lora_A, no 'out_proj').
+      2. LoRA params exist for self_attn in_proj (...self_attn.lora_A, no 'out_proj').
+      3. LoRA params exist for ca_text out_proj via MHA wrapper
+         (...ca_text.base_layer.out_proj.lora_A).
+      4. The LoraConfig carries lora_dropout=0.05 (§7.3a — ParamWrapper crashes
+         on dropout != 0; lora.MultiheadAttention supports it).
+      5. A forward pass runs without error.
+      6. Trainable ratio stays under the 5% budget (§8.3 empirical confirmation).
+      7. merge_lora folds both axes without error (QLoRA coexistence requirement,
+         §7.2; merge emits only a benign NF4-rounding UserWarning).
     """
-    import bitsandbytes as bnb
+    from peft import LoraConfig
 
     w = load_sam31(ModelConfig())
-    base = cast(nn.Module, w.model.model)
-    cfg = PEFTConfig(method="qlora")
+    cfg = PEFTConfig(method="qlora", scope="vision_decoder_concept")
+    apply_qlora(w, cfg)
 
-    _quantize_base(base, cfg)
-    _freeze_non_adapter(base)
+    lora_names = [n for n, _ in w.model.model.named_parameters() if "lora_" in n]
 
-    compiled = [re.compile(p) for p in _INPROJ_PARAM_PATTERNS]
-    param_names = [n for n, _ in base.named_parameters() if any(c.search(n) for c in compiled)]
-    assert param_names, "no in_proj_weight parameters found on quantized decoder"
-    module_names = _resolve_targets(base, cfg, linear_types=(bnb.nn.Linear4bit,))
-
-    base.is_loaded_in_4bit = True  # type: ignore[assignment]
-    pm = get_peft_model(
-        cast(Any, base),
-        LoraConfig(
-            r=16,
-            lora_alpha=32,
-            lora_dropout=0.0,
-            target_modules=module_names,
-            target_parameters=param_names,
-            bias="none",
-            task_type=None,
-        ),
+    # 1. ca_text in_proj LoRA present.
+    ca_text_inproj = [n for n in lora_names if "ca_text" in n and "out_proj" not in n]
+    assert any("lora_A" in n for n in ca_text_inproj), (
+        f"no ca_text in_proj lora_A (qlora): {lora_names[:12]}"
     )
 
-    lora_names = [n for n, _ in pm.named_parameters() if "lora_" in n]
-    assert any("ca_text" in n for n in lora_names), (
-        f"no ca_text in_proj LoRA (qlora): {lora_names[:8]}"
-    )
-    assert any("self_attn" in n for n in lora_names), (
-        f"no self_attn in_proj LoRA (qlora): {lora_names[:8]}"
+    # 2. self_attn in_proj LoRA present.
+    self_attn_inproj = [n for n in lora_names if "self_attn" in n and "out_proj" not in n]
+    assert any("lora_A" in n for n in self_attn_inproj), (
+        f"no self_attn in_proj lora_A (qlora): {lora_names[:12]}"
     )
 
-    merged = pm.merge_and_unload()  # dequantizes 4-bit base; must fold BOTH axes
-    assert merged is not None
+    # 3. ca_text out_proj LoRA present via MHA wrapper.
+    assert any("ca_text.base_layer.out_proj.lora_A" in n for n in lora_names), (
+        f"no ca_text.base_layer.out_proj.lora_A (qlora): "
+        f"{[n for n in lora_names if 'ca_text' in n]}"
+    )
+
+    # 4. LoraConfig carries dropout=0.05.
+    peft_cfg: LoraConfig = w.model.model.peft_config["default"]  # type: ignore[index]
+    assert peft_cfg.lora_dropout == 0.05, f"expected lora_dropout=0.05, got {peft_cfg.lora_dropout}"
+
+    # 5. Forward runs.
+    from custom_sam_peft.data.base import TextPrompts
+
+    w.eval()
+    images = torch.zeros(1, 3, SAM3_IMAGE_SIZE, SAM3_IMAGE_SIZE, device="cuda", dtype=torch.float32)
+    prompts = [TextPrompts(classes=["object"])]
+    with torch.no_grad():
+        out = w(images, prompts, support=None)
+    assert out is not None
+
+    # 6. Trainable ratio under 5% budget (§8.3 empirical confirmation).
+    trainable = sum(p.numel() for p in w.model.model.parameters() if p.requires_grad)
+    total = sum(p.numel() for p in w.model.model.parameters())
+    ratio = trainable / total
+    assert ratio < 0.05, f"trainable ratio {ratio:.2%} exceeds 5% budget"
+
+    # 7. Merge folds both axes without error (only a benign NF4-rounding
+    # UserWarning is expected; Linear4bit modules legitimately remain after merge).
+    merge_lora(w)
+    assert w.peft_model is None
+    assert w.model.model is not None
