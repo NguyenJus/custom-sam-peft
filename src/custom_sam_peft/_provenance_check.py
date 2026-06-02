@@ -129,42 +129,161 @@ def parse_prose_rows(body: str, section_header: str) -> list[DocRow]:
     return rows
 
 
-def extract_default_surface(file_path: Path) -> set[str]:
-    """Return the enforced default-surface symbol keys for a prose file.
+# Override-mirror config classes: all fields default to None ("inherit from the
+# preset table"); their value provenance lives in the TABLE modules, not prose.
+OVERRIDE_MIRROR_CLASSES: frozenset[str] = frozenset(
+    {"AugmentationOverrides", "LossOverrides"}
+)
+_ALIAS_BASES: frozenset[str] = frozenset({"Literal", "Union", "Optional"})
+_LITERAL_NODES = (ast.Constant, ast.Tuple, ast.List, ast.Dict, ast.Set)
 
-    Surface = pydantic ``Field(default=...)``/``Field(default_factory=...)``,
-    dataclass field defaults, and module-level constant assignments. In-function
-    literals are deliberately excluded.
+
+def _is_type_alias_rhs(value: ast.expr | None) -> bool:
+    """RHS is ``Literal[...]`` / ``Union[...]`` / ``Optional[...]`` (a type alias)."""
+    if not isinstance(value, ast.Subscript):
+        return False
+    base = value.value
+    return (isinstance(base, ast.Name) and base.id in _ALIAS_BASES) or (
+        isinstance(base, ast.Attribute) and base.attr in _ALIAS_BASES
+    )
+
+
+def _is_literal_value(value: ast.expr | None) -> bool:
+    """RHS is a literal value node (Constant/Tuple/List/Dict/Set or -Constant)."""
+    if isinstance(value, _LITERAL_NODES):
+        return True
+    return isinstance(value, ast.UnaryOp) and isinstance(value.operand, ast.Constant)
+
+
+def _is_field_call(value: ast.expr | None) -> bool:
+    """True if value is a ``Field(...)`` / ``...Field(...)`` call."""
+    return isinstance(value, ast.Call) and (
+        (isinstance(value.func, ast.Name) and value.func.id == "Field")
+        or (isinstance(value.func, ast.Attribute) and value.func.attr == "Field")
+    )
+
+
+def _nested_container_name(value: ast.expr | None) -> str | None:
+    """Class name if the default/default_factory references a config class, else None.
+
+    Handles ``Field(default_factory=X)``, ``Field(default=X())``, and bare ``= X()``.
+    """
+    if value is None:
+        return None
+    if _is_field_call(value):
+        assert isinstance(value, ast.Call)
+        for kw in value.keywords:
+            if kw.arg == "default_factory" and isinstance(kw.value, ast.Name):
+                return kw.value.id
+            if (
+                kw.arg == "default"
+                and isinstance(kw.value, ast.Call)
+                and isinstance(kw.value.func, ast.Name)
+            ):
+                return kw.value.func.id
+        return None
+    if isinstance(value, ast.Call) and isinstance(value.func, ast.Name):
+        return value.func.id
+    return None
+
+
+def _looks_like_container(name: str | None) -> bool:
+    """Name-shape heuristic for an IMPORTED config container (cannot recurse)."""
+    return name is not None and name.endswith(("Config", "Overrides", "Weights"))
+
+
+def _is_required_field(value: ast.expr | None) -> bool:
+    """A no-default field: AnnAssign w/o value, or Field(...) w/o default*/factory."""
+    if value is None:
+        return True
+    if _is_field_call(value):
+        assert isinstance(value, ast.Call)
+        return not any(kw.arg in ("default", "default_factory") for kw in value.keywords)
+    return False
+
+
+def _field_target_name(stmt: ast.stmt) -> str | None:
+    if isinstance(stmt, ast.AnnAssign) and isinstance(stmt.target, ast.Name):
+        return stmt.target.id
+    if isinstance(stmt, ast.Assign):
+        names = [t.id for t in stmt.targets if isinstance(t, ast.Name)]
+        return names[0] if names else None
+    return None
+
+
+def _field_value(stmt: ast.stmt) -> ast.expr | None:
+    if isinstance(stmt, (ast.AnnAssign, ast.Assign)):
+        return stmt.value
+    return None
+
+
+def extract_default_surface(file_path: Path) -> set[str]:
+    """Return the enforced default-surface symbol keys (amended #192).
+
+    See the design spec's "default surface" definition (authoritative).
     """
     tree = ast.parse(file_path.read_text(encoding="utf-8"))
+    classes: dict[str, ast.ClassDef] = {
+        n.name: n for n in tree.body if isinstance(n, ast.ClassDef)
+    }
     surface: set[str] = set()
 
-    # Module-level constant assignments.
+    # (1) Module-level constants — literal RHS only, with exclusions.
+    for node in tree.body:
+        targets_values: list[tuple[str, ast.expr | None]] = []
+        if isinstance(node, ast.Assign):
+            targets_values = [
+                (t.id, node.value) for t in node.targets if isinstance(t, ast.Name)
+            ]
+        elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
+            targets_values = [(node.target.id, node.value)]
+        for name, value in targets_values:
+            if name.startswith("__") and name.endswith("__"):
+                continue
+            if name in ("pytestmark", "model_config"):
+                continue
+            if _is_type_alias_rhs(value):
+                continue
+            if not _is_literal_value(value):
+                continue  # excludes Call/BinOp/Name RHS (loggers, computed, derived)
+            surface.add(name)
+
+    # (2) Class-body field defaults — suppress nested containers + recurse;
+    #     defining-class keying; required + override-mirror handling.
+    def recurse(class_node: ast.ClassDef) -> None:
+        for stmt in class_node.body:
+            target = _field_target_name(stmt)
+            if target is None or target == "model_config":
+                continue
+            value = _field_value(stmt)
+            if _is_required_field(value):
+                continue
+            nested = _nested_container_name(value)
+            if nested in classes:
+                recurse(classes[nested])  # local container -> recurse, suppress leaf
+                continue
+            if _looks_like_container(nested):
+                continue  # imported container -> suppress (leaves in its own section)
+            if class_node.name in OVERRIDE_MIRROR_CLASSES:
+                continue
+            surface.add(f"{class_node.name}.{target}")
+
+    for node in tree.body:
+        if isinstance(node, ast.ClassDef):
+            recurse(node)
+    return surface
+
+
+def module_assign_names(file_path: Path) -> set[str]:
+    """Every module-level assigned name (any RHS) — for the module-constant exemption."""
+    tree = ast.parse(file_path.read_text(encoding="utf-8"))
+    names: set[str] = set()
     for node in tree.body:
         if isinstance(node, ast.Assign):
-            for target in node.targets:
-                if isinstance(target, ast.Name):
-                    surface.add(target.id)
-        elif (
-            isinstance(node, ast.AnnAssign)
-            and isinstance(node.target, ast.Name)
-            and node.value is not None
-        ):
-            surface.add(node.target.id)
-
-    # Class-body field defaults (pydantic + dataclass): ``name: T = <default>``.
-    for node in tree.body:
-        if not isinstance(node, ast.ClassDef):
-            continue
-        for stmt in node.body:
-            if isinstance(stmt, ast.AnnAssign) and isinstance(stmt.target, ast.Name):
-                if stmt.value is not None:
-                    surface.add(f"{node.name}.{stmt.target.id}")
-            elif isinstance(stmt, ast.Assign):
-                for target in stmt.targets:
-                    if isinstance(target, ast.Name):
-                        surface.add(f"{node.name}.{target.id}")
-    return surface
+            names.update(t.id for t in node.targets if isinstance(t, ast.Name))
+        elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
+            names.add(node.target.id)
+    return names
 
 
 def check_prose_section(section: Section, file_path: Path) -> list[ProvenanceViolation]:

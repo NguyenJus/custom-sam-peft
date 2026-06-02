@@ -12,6 +12,7 @@ from custom_sam_peft._provenance_check import (
     classify_section,
     discover_sections,
     extract_default_surface,
+    module_assign_names,
     parse_prose_rows,
     resolve_section_path,
 )
@@ -95,42 +96,83 @@ def test_classify_missing_file_is_hard_fail(tmp_path: Path) -> None:
         classify_section(Section(header="config/does_not_exist.py", body=""), repo)
 
 
-def test_surface_collects_pydantic_dataclass_and_module_constants(tmp_path: Path) -> None:
-    src = """
-from pydantic import BaseModel, Field
+def test_surface_collects_literal_module_consts_and_nested_class_fields(tmp_path: Path) -> None:
+    src = '''
+from __future__ import annotations
+import logging
 from dataclasses import dataclass
+from typing import Literal
+from pydantic import BaseModel, Field
 
-MODULE_CONST = 7
-TYPED_CONST: int = 8
-
-
-class Cfg(BaseModel):
-    a: int = Field(default=3)
-    b: list[int] = Field(default_factory=list)
-    plain: int = 5
+__all__ = ["Cfg"]                       # dunder -> excluded
+pytestmark = []                         # pytest marker -> excluded
+Dtype = Literal["a", "b"]               # type alias -> excluded
+_LOG = logging.getLogger(__name__)      # Call RHS -> excluded (not literal)
+_GB = 1024 ** 3                         # BinOp RHS -> excluded (not literal)
+MODEL_PARAMS = 5_000_000_000            # literal -> INCLUDED
+_IMAGENET_MEAN = (0.485, 0.456, 0.406)  # Tuple literal -> INCLUDED
 
 
 @dataclass
-class DC:
-    x: float = 1.5
+class Wandb:                            # imported-style container (here: local)
+    project: str = "p"
 
 
-def helper() -> int:
-    magic = 42  # in-function literal, NOT surface
-    return magic
-"""
+class Inner(BaseModel):
+    k: int = Field(default=16)
+    model_config = {"x": 1}            # model_config -> excluded
+
+
+class Cfg(BaseModel):
+    epochs: int                        # required (no default) -> exempt
+    plain: int = 5                     # leaf
+    inner: Inner = Field(default_factory=Inner)   # local container -> recurse, suppress
+    wandb: Wandb = Field(default_factory=Wandb)   # local dataclass container -> recurse
+'''
     f = tmp_path / "m.py"
     f.write_text(src)
     surface = extract_default_surface(f)
-    assert "MODULE_CONST" in surface
-    assert "TYPED_CONST" in surface
-    assert "Cfg.a" in surface
-    assert "Cfg.b" in surface
+    # literal module constants
+    assert "MODEL_PARAMS" in surface
+    assert "_IMAGENET_MEAN" in surface
+    # excluded module symbols
+    for excluded in ("__all__", "pytestmark", "Dtype", "_LOG", "_GB"):
+        assert excluded not in surface, excluded
+    # nested recursion + container suppression (keyed by defining class)
+    assert "Inner.k" in surface
+    assert "Cfg.inner" not in surface          # container suppressed, not a leaf
+    assert "Wandb.project" in surface          # dataclass container recursed
+    assert "Cfg.wandb" not in surface
+    # required field exempt; model_config excluded
+    assert "Cfg.epochs" not in surface
     assert "Cfg.plain" in surface
-    assert "DC.x" in surface
-    # In-function literal is excluded.
-    assert not any("magic" in s for s in surface)
-    assert "helper" not in surface
+    assert "Inner.model_config" not in surface
+
+    # module_assign_names returns ALL module-level names (any RHS) for the
+    # doc->code module-constant exemption.
+    names = module_assign_names(f)
+    assert {"MODEL_PARAMS", "_LOG", "_GB", "Dtype"} <= names
+
+
+def test_surface_excludes_override_mirror_real_classes(tmp_path: Path) -> None:
+    # The real impl hard-codes OVERRIDE_MIRROR = {"AugmentationOverrides", "LossOverrides"}.
+    src = '''
+from pydantic import BaseModel, Field
+
+
+class LossOverrides(BaseModel):
+    w_box: float | None = Field(default=None)
+    mask_family: str | None = None
+
+
+class TextPromptConfig(BaseModel):
+    k: int = Field(default=16)
+'''
+    f = tmp_path / "schema.py"
+    f.write_text(src)
+    surface = extract_default_surface(f)
+    assert not any(s.startswith("LossOverrides.") for s in surface)
+    assert "TextPromptConfig.k" in surface
 
 
 def test_parse_prose_rows_strips_section_prefix_and_flags_literals() -> None:
