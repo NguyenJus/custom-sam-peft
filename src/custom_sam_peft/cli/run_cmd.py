@@ -20,7 +20,6 @@ import typer
 from rich import print as rprint
 from rich.console import Console
 
-from custom_sam_peft._registry import lookup
 from custom_sam_peft.cli._host_ram import format_host_ram_message
 from custom_sam_peft.cli._logging import configure_logging
 from custom_sam_peft.cli._progress import ProgressKind, ProgressMode, progress_session, resolve_mode
@@ -36,7 +35,7 @@ from custom_sam_peft.presets import PresetDecision, decide_preset
 from custom_sam_peft.runs.bundle import BundleContext, write_bundle
 from custom_sam_peft.train.checkpoint import find_latest_checkpoint, load_adapter
 from custom_sam_peft.train.close_out import close_out
-from custom_sam_peft.train.runner import run_training
+from custom_sam_peft.train.runner import _build_dataset_from_dict, run_training
 
 _LATEST_SENTINEL = "__latest__"
 
@@ -62,7 +61,12 @@ def _load_preset_or_fallback(cfg: TrainConfig) -> PresetDecision:
 
 
 def _build_val_dataset(cfg: TrainConfig, vs: ValSource) -> Dataset:
-    """Build the val dataset using the same image ids the trainer used.
+    """Build the val dataset using the same image ids and limit the trainer used.
+
+    Routes through _build_dataset_from_dict so that _apply_limit(inner, cfg,
+    "eval") is applied with the same seed/strategy/cap the trainer used when
+    building its eval dataset.  This preserves the index-alignment invariant
+    that pick_samples relies on: len(val_dataset) == len(per_example_iou).
 
     Spec: docs/superpowers/specs/2026-05-22-data-no-val-auto-split-design.md §7.6.
     """
@@ -70,8 +74,7 @@ def _build_val_dataset(cfg: TrainConfig, vs: ValSource) -> Dataset:
     if vs.mode == "auto_split":
         assert vs.val_ids is not None  # noqa: S101 — mode invariant for type narrowing
         data_cfg_dict["_resolved_image_ids"] = {"eval": list(vs.val_ids)}
-    builder = lookup("dataset", cfg.data.format)
-    return cast(Dataset, builder(data_cfg_dict, model_name=cfg.model.name, pipeline="eval"))
+    return cast(Dataset, _build_dataset_from_dict(data_cfg_dict, cfg, "eval"))
 
 
 def _orchestrate(
