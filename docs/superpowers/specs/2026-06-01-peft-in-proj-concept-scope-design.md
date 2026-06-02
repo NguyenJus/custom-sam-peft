@@ -4,7 +4,20 @@
 **Issue:** [#230 — LoRA: adapt more layers for niche text concepts](https://github.com/NguyenJus/custom-sam-peft/issues/230)
 **Research note (source of truth):** [`docs/research/2026-06-01-issue-230-peft-adaptation-surface-lit-review.md`](../../research/2026-06-01-issue-230-peft-adaptation-surface-lit-review.md)
 **Sibling specs:** [`2026-05-17-peft-lora-design.md`](2026-05-17-peft-lora-design.md), [`2026-05-17-peft-qlora-design.md`](2026-05-17-peft-qlora-design.md)
-**Scope:** `src/custom_sam_peft/peft_adapters/lora.py` (new `target_parameters` resolution axis + one new scope), `src/custom_sam_peft/peft_adapters/qlora.py` (wire the same axis), `src/custom_sam_peft/config/schema.py` (`LoraScope` literal, default `scope`, new `target_parameters` field), `tests/fixtures/tiny_sam3_lora_stub.py` (expose two `nn.MultiheadAttention` decoder children), `src/custom_sam_peft/cli/calibrate_cmd.py` (VRAM-autosize alpha co-scaling + WARNING; extend `PresetDecision` / v3 `chosen_*` cache keys with `alpha`), `src/custom_sam_peft/cli/_config_rewrite.py` (write `alpha` alongside `r` in the sizing block), `tests/unit/test_calibrate_cmd.py` (alpha co-scale + warning + cache round-trip tests), and new/extended unit tests. A feasibility spike against the real SAM 3.1 decoder gates the in_proj surface.
+**Scope:** `src/custom_sam_peft/peft_adapters/lora.py` (new MHA-module resolution axis + one new scope), `src/custom_sam_peft/peft_adapters/qlora.py` (wire the same axis), `src/custom_sam_peft/config/schema.py` (`LoraScope` literal, default `scope`), `tests/fixtures/tiny_sam3_lora_stub.py` (expose two `nn.MultiheadAttention` decoder children), `src/custom_sam_peft/cli/calibrate_cmd.py` (VRAM-autosize alpha co-scaling + WARNING; extend `PresetDecision` / v3 `chosen_*` cache keys with `alpha`), `src/custom_sam_peft/cli/_config_rewrite.py` (write `alpha` alongside `r` in the sizing block), `tests/unit/test_calibrate_cmd.py` (alpha co-scale + warning + cache round-trip tests), and new/extended unit tests. A feasibility spike against the real SAM 3.1 decoder gated the in_proj surface and SELECTED §7.3(a) — peft's `lora.MultiheadAttention` support path (see §7.3 decision record).
+
+> **Mechanism pivot (2026-06-02, user-approved).** This spec originally routed the
+> in_proj surface through peft's `LoraConfig(target_parameters=...)` API. The Phase-1
+> spike established that peft 0.19.1's `target_parameters` LoRA layer
+> (`lora.ParamWrapper`) **hard-raises** `ValueError: lora.ParamWrapper does not work
+> with lora_dropout != 0` (`peft/tuners/lora/layer.py:2142`), and our `PEFTConfig.dropout`
+> defaults to `0.05` — so the shipped concept default would crash on construction. The
+> §7.3(a) contingency is therefore SELECTED: the concept scope names the `ca_text` /
+> `self_attn` `nn.MultiheadAttention` **modules** as `target_modules`, which peft
+> dispatches to `lora.MultiheadAttention` (`layer.py:2492`), adapting **both**
+> `in_proj_weight` AND `out_proj`, **with dropout support**. The `target_parameters`
+> axis (field, resolver, scope dict entry, apply-path wiring, fixture mapping) is
+> **fully reverted**. See §5, §6.3, §7.3.
 
 ---
 
@@ -21,12 +34,14 @@ This spec closes exactly that gap, and only that gap:
 
 - Reach the decoder's two genuine `nn.MultiheadAttention` blocks — `ca_text` (concept
   injection) and `self_attn` (DETR-style duplicate-removal / instance separation) — at
-  their `in_proj_weight` (packed q/k/v), via `peft`'s `target_parameters` API.
+  their `in_proj_weight` (packed q/k/v), by naming the MHA **modules** as `target_modules`
+  so `peft` dispatches them to its `lora.MultiheadAttention` support layer (which adapts
+  both `in_proj_weight` and `out_proj`).
 - Ship this as **one new LoRA scope** that becomes the default, without mutating the
   existing `vision` / `vision_decoder` / `all` scopes (reproducibility).
-- Add a parallel **parameter-name resolution axis** (`target_parameters`) alongside the
-  existing module-name axis (`target_modules`), wired through both the plain-LoRA and the
-  QLoRA apply paths.
+- Add a parallel **MHA-module resolution axis** (`SCOPE_MHA_MODULES`) alongside the
+  existing generic `nn.Linear` module-name axis (`SCOPE_TARGETS`), wired through both the
+  plain-LoRA and the QLoRA apply paths.
 
 Priority order, per the research note and project memory: **final accuracy > user-facing
 simplicity >> training speed**. The design must stay robust from small to medium datasets
@@ -72,37 +87,44 @@ transformer.decoder.layers.<N>.ca_text.in_proj_weight
 transformer.decoder.layers.<N>.self_attn.in_proj_weight
 ```
 
-`peft` 0.19.1 (installed; verified by introspection) exposes both `target_modules` and
-`target_parameters` on `LoraConfig`. `target_parameters` is the API built specifically to
-LoRA-adapt bare `nn.Parameter`s such as `nn.MultiheadAttention.in_proj_weight`. So the gap
-closes at config level — **no module rewrite, no new layers** — consistent with the
-project's "stay true to SAM" constraint. It does carry known MHA sharp edges, which the
-gating spike (§7) must resolve before the surface is committed.
+`peft` 0.19.1 (installed; verified by introspection) ships a dedicated
+`lora.MultiheadAttention` support layer that adapts an entire `nn.MultiheadAttention`
+module — **both** its packed `in_proj_weight` and its `out_proj` — when the MHA module is
+named in `target_modules`. This is the API built specifically to LoRA-adapt MHA blocks,
+and unlike peft's `target_parameters` / `lora.ParamWrapper` path it **supports
+`lora_dropout != 0`**. So the gap closes at config level — **no module rewrite, no new
+layers** — consistent with the project's "stay true to SAM" constraint. The Phase-1
+gating spike (§7) confirmed attach + forward + merge on the real decoder in both LoRA and
+QLoRA modes before the surface was committed (§7.3 decision record).
 
 ## 3. Design overview
 
 Four coordinated changes for the in_proj surface, in dependency order — plus one
 orthogonal calibrate fix (§7a) that ships in the same issue:
 
-1. **Feasibility spike (§7, FIRST work item):** confirm `target_parameters` LoRA on a real
-   SAM 3.1 decoder layer's `ca_text` / `self_attn` `in_proj_weight` attaches, forwards, and
-   merges in **both** plain-LoRA and QLoRA modes. The spike result gates whether the
-   in_proj surface ships enabled (full design) or gated (fallback, §7.3). The rest of the
-   spec is written assuming the spike passes; §7.3 defines the contingency.
+1. **Feasibility spike (§7, FIRST work item):** confirm in_proj LoRA on a real SAM 3.1
+   decoder layer's `ca_text` / `self_attn` attaches, forwards, and merges in **both**
+   plain-LoRA and QLoRA modes. The spike SELECTED the §7.3(a) `lora.MultiheadAttention`
+   route (the `target_parameters` route hard-crashes with our default `dropout=0.05`). §7.3
+   is the decision record.
 
-2. **New resolution axis (§5):** add a per-scope **parameter-name** target set alongside
-   the existing module-name set, resolve it against `base.named_parameters()`, and pass the
-   resolved names to `LoraConfig(target_parameters=...)` in both `apply_lora` and the QLoRA
-   apply path. Add a `PEFTConfig.target_parameters: list[str] | None` override mirroring
-   `target_modules`.
+2. **New resolution axis (§5):** add a per-scope **MHA-module** target set
+   (`SCOPE_MHA_MODULES`) alongside the existing generic `nn.Linear` module set
+   (`SCOPE_TARGETS`), resolve it against the `nn.MultiheadAttention` modules in
+   `base.named_modules()`, and union the matched MHA module names into `target_modules` in
+   both `apply_lora` and the QLoRA apply path. peft adapts in_proj via its
+   `lora.MultiheadAttention` layer. No new `PEFTConfig` field is added — the
+   `target_parameters` override field is reverted.
 
-3. **New scope + new default (§4, §6):** add one `LoraScope` literal that equals
-   `vision_decoder`'s module patterns **plus** the two in_proj parameter patterns; make it
-   the new `PEFTConfig.scope` default; leave `vision` / `vision_decoder` / `all` untouched.
+3. **New scope + new default (§4, §6):** add one `LoraScope` literal whose generic-module
+   patterns equal `vision_decoder`'s set **minus** the two MHA out_proj alternatives (peft's
+   MHA wrapper adapts out_proj internally, so they must not be double-targeted) **plus** the
+   two MHA-module patterns; make it the new `PEFTConfig.scope` default; leave `vision` /
+   `vision_decoder` / `all` untouched.
 
 4. **Fixtures + tests (§10):** expose `ca_text` / `self_attn` as `nn.MultiheadAttention`
-   (with `in_proj_weight`) under `transformer.decoder.layers.<N>` in the LoRA stub so the
-   CPU predicate tests resolve the new parameters under both LoRA and QLoRA.
+   under `transformer.decoder.layers.<N>` in the LoRA stub so the CPU predicate tests
+   resolve and adapt the MHA modules under both LoRA and QLoRA.
 
 5. **Calibrate alpha co-scale (§7a, orthogonal):** make the pre-flight VRAM calibrate
    autosize co-scale `alpha` whenever it reduces LoRA rank `r` below the configured value
@@ -127,194 +149,255 @@ inventing an opaque tier word like `aggressive`. Exactly one new scope is added;
 
 ### 4.2 Contents
 
-`vision_decoder_concept` carries **both** target sets:
+`vision_decoder_concept` carries **two** target sets, deliberately **de-overlapped** so the
+two adapters never collide on the same weight:
 
-- **Module patterns** (identical to `SCOPE_TARGETS["vision_decoder"]`, matched against
-  `named_modules()`):
+- **Generic `nn.Linear` module patterns** (`SCOPE_TARGETS["vision_decoder_concept"]`,
+  matched against `nn.Linear` modules in `named_modules()`):
 
   ```text
   backbone\.vision_backbone\.trunk\.blocks\.\d+\.attn\.(qkv|proj)$
-  transformer\.decoder\.layers\.\d+\.(self_attn|cross_attn|ca_text)\.out_proj$
+  transformer\.decoder\.layers\.\d+\.cross_attn\.out_proj$
   transformer\.decoder\.layers\.\d+\.linear[12]$
   ```
 
-- **Parameter patterns** (new, matched against `named_parameters()`):
+  This is `vision_decoder`'s set with the `(self_attn|cross_attn|ca_text)\.out_proj`
+  alternation **narrowed to `cross_attn\.out_proj`**. `cross_attn` is a `RoPEAttention`
+  (genuinely non-MHA — its `out_proj` is a plain `nn.Linear`), so it is targeted as a
+  generic module exactly as before. The `self_attn` / `ca_text` `out_proj` entries are
+  **dropped** here because peft's `lora.MultiheadAttention` wrapper adapts `out_proj`
+  internally when the MHA module is targeted (below); leaving them in `SCOPE_TARGETS` would
+  double-target the same `out_proj`. (Confirm `cross_attn` is `RoPEAttention` against the
+  existing `SCOPE_TARGETS["vision_decoder"]` comment in `lora.py` and the sam3 decoder
+  naming before editing.)
+
+- **MHA module patterns** (new `SCOPE_MHA_MODULES["vision_decoder_concept"]`, matched
+  against `nn.MultiheadAttention` modules in `named_modules()`):
 
   ```text
-  transformer\.decoder\.layers\.\d+\.ca_text\.in_proj_weight$
-  transformer\.decoder\.layers\.\d+\.self_attn\.in_proj_weight$
+  transformer\.decoder\.layers\.\d+\.ca_text$
+  transformer\.decoder\.layers\.\d+\.self_attn$
   ```
 
-The two parameter patterns deliberately target only `ca_text` and `self_attn`. The third
-decoder attention (`cross_attn`, a `RoPEAttention`) is *not* MHA and is not an in_proj
-target here; its q/k/v go to the medium tier (§9).
+  Naming these MHA **modules** makes peft adapt **both** their `in_proj_weight` (LoRA params
+  `<mha>.lora_A` / `<mha>.lora_B`; in_proj `lora_B` shape `[3*embed_dim, r]`) **and** their
+  `out_proj` (`<mha>.base_layer.out_proj.lora_A` / `.lora_B`), with `lora_dropout` support.
+
+The MHA patterns deliberately target only `ca_text` and `self_attn`. The third decoder
+attention (`cross_attn`, a `RoPEAttention`) is *not* MHA and is handled by the generic axis
+above; its q/k/v go to the medium tier (§9).
+
+**Consequence — concept scope is no longer module-equal to `vision_decoder`.** Under the
+original `target_parameters` design the two scopes shared an identical `SCOPE_TARGETS`
+entry; under the MHA-module design the concept entry differs (it drops the `self_attn` /
+`ca_text` out_proj alternatives and gains an `SCOPE_MHA_MODULES` entry). Any test or
+invariant that asserted `SCOPE_TARGETS["vision_decoder_concept"] ==
+SCOPE_TARGETS["vision_decoder"]` is updated to reflect the de-overlap.
 
 ### 4.3 Scopes left unchanged
 
-`vision`, `vision_decoder`, and `all` keep their exact current module patterns and carry an
-**empty** parameter target set (no `target_parameters`). This preserves byte-for-byte
-reproducibility for existing configs that pin those scopes — the issue's explicit
-reproducibility concern. The change is purely additive: a new scope literal, not a
+`vision`, `vision_decoder`, and `all` keep their exact current `SCOPE_TARGETS` patterns and
+have **no** `SCOPE_MHA_MODULES` entry — `SCOPE_MHA_MODULES.get(scope, [])` returns `[]` for
+all three. This preserves byte-for-byte reproducibility for existing configs that pin those
+scopes — the issue's explicit reproducibility concern. The change is purely additive: a new
+scope literal plus a new MHA-module dict that only the concept scope populates, not a
 mutation of shipped ones.
 
-## 5. The `target_parameters` resolution axis
+**Reproducibility is structural.** The `nn.MultiheadAttention` filter
+(`SCOPE_MHA_MODULES` → `_resolve_mha_modules`) is a **separate** resolution path from the
+`nn.Linear` / `Linear4bit` generic resolver (`SCOPE_TARGETS` → `_resolve_targets`). The
+`all` scope's `.*` pattern is applied **only inside `_resolve_targets` against `nn.Linear`
+modules**, so it can never reach an `nn.MultiheadAttention` module. A legacy scope therefore
+attaches no MHA/in_proj LoRA. This is enforced as a hard test (§10.2).
+
+## 5. The MHA-module resolution axis
 
 ### 5.1 Data structure
 
 Today `SCOPE_TARGETS: dict[str, list[str]]` maps scope → list of module-name regexes
 (lora.py:36-60), and `_resolve_targets` matches them against `nn.Linear` (or `Linear4bit`)
-modules. The new axis needs a parallel mapping of scope → list of **parameter-name**
-regexes.
+modules. The in_proj surface needs a parallel mapping of scope → list of
+**MHA-module-name** regexes, resolved against `nn.MultiheadAttention` modules only.
 
-**Chosen representation: a second module-level mapping, `SCOPE_TARGET_PARAMETERS`**, kept
+**Chosen representation: a second module-level mapping, `SCOPE_MHA_MODULES`**, kept
 adjacent to `SCOPE_TARGETS` in `lora.py`. Rationale:
 
 - It mirrors the existing "single point of contact for SAM naming" comment block exactly:
-  the docstring already calls `SCOPE_TARGETS` (with `meta_to_canonical`) the two
+  the docstring already calls `SCOPE_TARGETS` (with `meta_to_canonical`) the
   single-points-of-contact for SAM surface naming. A sibling dict extends that contract
-  with the parameter axis in the same place and the same style, rather than introducing a
-  new per-scope dataclass that would force every existing scope entry to be rewritten.
+  with the MHA axis in the same place and the same style, rather than introducing a new
+  per-scope dataclass that would force every existing scope entry to be rewritten.
 - It keeps the additive, reproducibility-preserving shape: only `vision_decoder_concept`
-  appears in the new dict; scopes absent from it resolve to "no parameter targets."
+  appears in the new dict; scopes absent from it resolve to "no MHA targets."
+- It keeps the `nn.MultiheadAttention` surface a **separate structure** from the generic
+  `nn.Linear` resolver, so the `all` scope's `.*` (matched only inside `_resolve_targets`
+  against `nn.Linear`) can never reach an MHA module (reproducibility, §4.3).
 
 ```python
-# Parallel to SCOPE_TARGETS: scope -> regexes matched against named_parameters().
-# Reaches bare nn.Parameter q/k/v packed in nn.MultiheadAttention.in_proj_weight,
-# which target_modules cannot see. Only the concept scope populates it; absent
-# scopes carry no parameter targets (reproducibility for vision/vision_decoder/all).
-SCOPE_TARGET_PARAMETERS: dict[str, list[str]] = {
+# Parallel to SCOPE_TARGETS: scope -> regexes matched against nn.MultiheadAttention
+# modules in named_modules(). Naming an MHA module makes peft dispatch it to its
+# lora.MultiheadAttention layer, which adapts BOTH in_proj_weight and out_proj (with
+# dropout support). Only the concept scope populates it; absent scopes carry no MHA
+# targets (reproducibility for vision/vision_decoder/all).
+SCOPE_MHA_MODULES: dict[str, list[str]] = {
     "vision_decoder_concept": [
-        r"transformer\.decoder\.layers\.\d+\.ca_text\.in_proj_weight$",
-        r"transformer\.decoder\.layers\.\d+\.self_attn\.in_proj_weight$",
+        r"transformer\.decoder\.layers\.\d+\.ca_text$",
+        r"transformer\.decoder\.layers\.\d+\.self_attn$",
     ],
 }
 ```
 
 `SCOPE_TARGETS["vision_decoder_concept"]` is added in the same edit and equals the
-`vision_decoder` module list (§4.2). Lookups into `SCOPE_TARGET_PARAMETERS` use
-`.get(scope, [])` so the three legacy scopes return an empty list without a `KeyError`.
+`vision_decoder` generic-module list **minus** the `self_attn` / `ca_text` `out_proj`
+alternatives (§4.2 — peft's MHA wrapper adapts those out_proj internally; double-targeting
+must be avoided). Lookups into `SCOPE_MHA_MODULES` use `.get(scope, [])` so the three legacy
+scopes return an empty list without a `KeyError`.
 
-### 5.2 New resolver: `_resolve_target_parameters`
+### 5.2 New resolver: `_resolve_mha_modules`
 
-Add a sibling to `_resolve_targets`, matching parameter-name patterns against
-`base.named_parameters()`:
+Add a sibling to `_resolve_targets`, matching MHA-module-name patterns against the
+`nn.MultiheadAttention` modules in `base.named_modules()`:
 
 ```python
-def _resolve_target_parameters(base: nn.Module, cfg: PEFTConfig) -> list[str]:
-    """Resolve scope/override parameter-name patterns against named_parameters().
+def _resolve_mha_modules(base: nn.Module, cfg: PEFTConfig) -> list[str]:
+    """Resolve scope MHA-module patterns against the nn.MultiheadAttention modules.
 
     Precedence mirrors _resolve_targets:
-      * cfg.target_parameters is not None -> use it verbatim (overrides scope).
-      * else -> SCOPE_TARGET_PARAMETERS.get(cfg.scope, []).
-    Returns the full matched parameter names (e.g.
-    'transformer.decoder.layers.0.ca_text.in_proj_weight') to pass to
-    LoraConfig(target_parameters=...). Returns [] when the resolved pattern
-    list is empty (legacy scopes). Raises ValueError only when a NON-EMPTY
-    pattern list matches zero parameters.
+      * cfg.target_modules is not None -> return [] (the user's explicit module
+        override owns the module axis; the scope's MHA patterns do not apply).
+      * else -> SCOPE_MHA_MODULES.get(cfg.scope, []) matched against the
+        nn.MultiheadAttention modules in base.named_modules().
+
+    Returns the full matched MHA module names (e.g.
+    'transformer.decoder.layers.0.ca_text') to union into target_modules so peft
+    dispatches them to lora.MultiheadAttention. Returns [] when the resolved
+    pattern list is empty (legacy scopes) or when target_modules is overridden.
+    Raises ValueError only when a NON-EMPTY pattern list matches zero MHA modules.
     """
 ```
 
 Behavior:
 
-- `patterns = cfg.target_parameters if cfg.target_parameters is not None else
-  SCOPE_TARGET_PARAMETERS.get(cfg.scope, [])`.
-- If `patterns` is empty → return `[]` (no parameter targets; the common case for legacy
-  scopes). This is **not** an error — it is the documented "this scope has no in_proj
-  surface" state.
-- Else compile and search each pattern against every `name` from
-  `base.named_parameters()`; collect full matched names.
-- If `patterns` is non-empty but **zero** names match → raise `ValueError` listing the
-  patterns tried and the first 50 parameter names actually present. This mirrors the
-  existing `_resolve_targets` no-match `ValueError` (lora.py:78-84) so a typo'd or
-  SAM-renamed parameter path fails loudly instead of silently training nothing on the
-  in_proj surface (§8).
+- If `cfg.target_modules is not None` → return `[]`. An explicit `target_modules` override
+  takes full ownership of the module axis (the user is naming modules directly); the scope's
+  MHA patterns are not unioned in. (Mirrors how an override replaces the scope's module
+  patterns in `_resolve_targets`.)
+- Else `patterns = SCOPE_MHA_MODULES.get(cfg.scope, [])`.
+- If `patterns` is empty → return `[]` (no MHA targets; the common case for legacy scopes).
+  This is **not** an error — it is the documented "this scope has no in_proj surface" state.
+- Else iterate `base.named_modules()` **filtered to
+  `isinstance(module, nn.MultiheadAttention)`**, compile and search each pattern against
+  each such module's name; collect full matched names.
+- If `patterns` is non-empty but **zero** MHA modules match → raise `ValueError` listing the
+  patterns tried and the MHA module names actually present. This mirrors the existing
+  `_resolve_targets` no-match `ValueError` (lora.py:78-84) so a typo'd or SAM-renamed MHA
+  path fails loudly instead of silently training nothing on the in_proj surface (§8).
 
 This asymmetry — empty-list is fine, non-empty-no-match is an error — is the key
 distinction from `_resolve_targets`, where an empty module set is always an error. The
-difference exists because parameter targets are an *optional* second axis that most scopes
-legitimately do not use, whereas every scope must match at least one module.
+difference exists because MHA targets are an *optional* second axis that most scopes
+legitimately do not use, whereas every scope must match at least one generic module.
 
 ### 5.3 `apply_lora` wiring (lora.py)
 
 In `apply_lora` (lora.py:88-137), after resolving `matched_names`:
 
-1. `matched_params = _resolve_target_parameters(base, cfg)`.
-2. Build `LoraConfig` passing **both** axes:
+1. `mha_names = _resolve_mha_modules(base, cfg)`.
+2. Union the MHA module names into the generic module names (dedup, generic-first order):
+
+   ```python
+   target_modules = matched_names + [n for n in mha_names if n not in matched_names]
+   ```
+
+3. Build `LoraConfig` with the unioned `target_modules` (no `target_parameters` axis — it is
+   reverted):
 
    ```python
    lora_cfg = LoraConfig(
        r=cfg.r,
        lora_alpha=cfg.alpha,
        lora_dropout=cfg.dropout,
-       target_modules=matched_names,
-       target_parameters=(matched_params or None),
+       target_modules=target_modules,
        bias=cfg.bias,
        task_type=None,
    )
    ```
 
-   Pass `None` (not `[]`) when there are no parameter targets, so the LoRA config for the
-   three legacy scopes is byte-identical to today's (reproducibility — `target_parameters`
-   defaults to `None` in peft).
-3. The trainable-ratio log line (lora.py:123-130) gains the in_proj count for visibility;
-   e.g. extend the existing `n_targets=%d` with an `n_param_targets=%d` field. The >10 %
-   warning logic (lora.py:131-136) is unchanged in structure (see §8.3 on the threshold).
+   For the three legacy scopes `mha_names` is `[]`, so `target_modules == matched_names` and
+   the `LoraConfig` is byte-identical to today's (reproducibility). **`lora_dropout=cfg.dropout`
+   (default `0.05`) is passed unchanged** — peft's `lora.MultiheadAttention` supports dropout
+   (unlike the abandoned `lora.ParamWrapper` path, which crashes on `dropout != 0`). The
+   `dropout` default stays `0.05` (§7.3, §12).
+4. The trainable-ratio log line (lora.py:123-130) gains the MHA count for visibility; e.g.
+   extend the existing `n_targets=%d` with an `n_mha_targets=%d` field. The >10 % warning
+   logic (lora.py:131-136) is unchanged in structure (see §8.3 on the threshold).
 
-`get_peft_model` then attaches LoRA to both the matched `nn.Linear` modules and the matched
-in_proj parameters in one `PeftModel`. No change to `save_lora` / `load_lora` /
-`merge_lora`: peft persists and merges `target_parameters` adapters through the same
-`save_pretrained` / `from_pretrained` / `merge_and_unload` surface the module adapters use.
+`get_peft_model` then attaches LoRA to the matched generic `nn.Linear` modules and dispatches
+the matched MHA modules to `lora.MultiheadAttention` (adapting their in_proj + out_proj) in
+one `PeftModel`. No change to `save_lora` / `load_lora` / `merge_lora`: peft persists and
+merges MHA adapters through the same `save_pretrained` / `from_pretrained` /
+`merge_and_unload` surface the generic module adapters use.
 
 ### 5.4 QLoRA wiring (qlora.py)
 
 In `_inject_lora_adapters` (qlora.py:224-249), the LoRA config is built after
-`_resolve_targets(model, cfg, linear_types=(bnb.nn.Linear4bit,))`. Add the parameter axis:
+`_resolve_targets(model, cfg, linear_types=(bnb.nn.Linear4bit,))`. Add the MHA axis:
 
-1. `lora_param_names = _resolve_target_parameters(model, cfg)` (imported from `lora.py`
-   alongside `_resolve_targets`; the one-way `qlora.py -> lora.py` import contract is
-   preserved — lora.py still never imports qlora.py or bitsandbytes).
-2. Pass `target_parameters=(lora_param_names or None)` into the `LoraConfig` here too.
+1. `mha_names = _resolve_mha_modules(model, cfg)` (imported from `lora.py` alongside
+   `_resolve_targets`; the one-way `qlora.py -> lora.py` import contract is preserved —
+   lora.py still never imports qlora.py or bitsandbytes).
+2. Union it into the module list the same way: `target_modules = lora_target_names + [n for
+   n in mha_names if n not in lora_target_names]`, and pass that to the `LoraConfig` here too.
 
 **Why this is correct under QLoRA (the coexistence guarantee, §7.2):** `_mha_exclusion_types`
-(qlora.py:59-96) deliberately keeps `nn.MultiheadAttention` children **unquantized**, and
-`in_proj_weight` is a bare `Parameter` that is never quantized regardless. So under QLoRA:
+(qlora.py:59-96) deliberately keeps `nn.MultiheadAttention` children **unquantized**, so the
+MHA module (and its `in_proj_weight`, a bare bf16 `Parameter`) is never quantized. So under
+QLoRA:
 
-- The `Linear4bit` LoRA attaches to FFN/trunk linears via `target_modules` (as today).
-- The in_proj LoRA attaches to the **unquantized bf16** `in_proj_weight` parameters via
-  `target_parameters` — it is *plain* LoRA-on-bf16 even in QLoRA mode.
-- Both adapters live in **one** `PeftModel` and must merge together via the existing
-  `merge_lora` (`merge_and_unload`) path.
+- The `Linear4bit` LoRA attaches to FFN/trunk linears via the generic module axis (as today).
+- The MHA LoRA attaches to the **unquantized bf16** `ca_text` / `self_attn` modules via
+  `lora.MultiheadAttention` — it is *plain* LoRA-on-bf16 even in QLoRA mode.
+- Both adapters live in **one** `PeftModel` and merge together via the existing `merge_lora`
+  (`merge_and_unload`) path. **GPU-confirmed:** using the project's own `_quantize_base` /
+  `_freeze_non_adapter`, the MHA stays unquantized, attaches alongside `Linear4bit` LoRA in
+  one `PeftModel` with `dropout=0.05`, forward+grad finite on all surfaces, and
+  `merge_and_unload` is clean (only a benign NF4-rounding `UserWarning`).
 
-The `_resolve_target_parameters` call resolves against the **same** parameter names in
-both modes (in_proj is never swapped to `Linear4bit`), so the parameter set is identical
-LoRA vs QLoRA — only the module set differs (out_proj drops out under QLoRA, as already
-documented in qlora.py:113-120). The QLoRA log line (qlora.py:278-286) gains the same
-`n_param_targets` field for parity.
+The `_resolve_mha_modules` call resolves against the **same** MHA module names in both modes
+(MHA is never swapped to `Linear4bit`), so the MHA set is identical LoRA vs QLoRA — only the
+generic module set differs (out_proj drops out under QLoRA, as already documented in
+qlora.py:113-120). The QLoRA log line (qlora.py:278-286) gains the same `n_mha_targets`
+field for parity.
 
 ### 5.5 Control / data flow summary
 
 ```text
-PEFTConfig(scope=..., target_modules=..., target_parameters=...)
+PEFTConfig(scope=..., target_modules=...)
         |
         v
 apply_lora / apply_qlora
         |
    +----+--------------------------+
    |                               |
-_resolve_targets               _resolve_target_parameters
-(named_modules, nn.Linear      (named_parameters, by name regex;
- or Linear4bit; ValueError      [] allowed; ValueError only on
- on zero match)                 non-empty-no-match)
+_resolve_targets               _resolve_mha_modules
+(named_modules, nn.Linear      (named_modules filtered to
+ or Linear4bit; ValueError      nn.MultiheadAttention, by name
+ on zero match)                 regex; [] allowed; [] if
+   |                            target_modules overridden;
+   |                            ValueError on non-empty-no-match)
    |                               |
    v                               v
-matched_names                  matched_params
+matched_names                  mha_names
    |                               |
    +-------------+-----------------+
                  v
-   LoraConfig(target_modules=matched_names,
-             target_parameters=(matched_params or None), ...)
+   target_modules = matched_names + [n in mha_names not already present]
+                 v
+   LoraConfig(target_modules=target_modules, lora_dropout=cfg.dropout, ...)
                  v
         get_peft_model -> one PeftModel
+        (generic nn.Linear -> lora.Linear;
+         MHA modules -> lora.MultiheadAttention, adapting in_proj + out_proj)
                  v
    forward / merge_and_unload (both axes folded together)
 ```
@@ -342,41 +425,21 @@ cite/tbd discipline (every changed default needs a tag).
 
 **Reproducibility implication (must be documented in the spec and in a code comment):**
 flipping the default changes what an existing config *without* an explicit `peft.scope`
-adapts — it now additionally adapts `ca_text` / `self_attn` in_proj. Configs that pin
-`scope: vision_decoder` (or `vision` / `all`) are entirely unaffected. This is the
-intended behavior change (the shipped default could not previously learn text concepts),
-but it is a behavior change and is called out as such in §11 acceptance and in the example
-configs (§6.4).
+adapts — it now additionally adapts the `ca_text` / `self_attn` MHA modules (in_proj +
+out_proj). Configs that pin `scope: vision_decoder` (or `vision` / `all`) are entirely
+unaffected. This is the intended behavior change (the shipped default could not previously
+learn text concepts), but it is a behavior change and is called out as such in §11
+acceptance and in the example configs (§6.4).
 
-### 6.3 New `target_parameters` override field (schema.py PEFTConfig, alongside
-`target_modules` at schema.py:498-504)
+### 6.3 No new override field (`target_parameters` reverted)
 
-```python
-target_parameters: list[str] | None = Field(
-    default=None,
-    description=(
-        "Explicit list of parameter-name patterns to adapt via LoRA "
-        "target_parameters (e.g. nn.MultiheadAttention in_proj_weight). When "
-        "None, apply_lora uses SCOPE_TARGET_PARAMETERS.get(scope, []). When set, "
-        "overrides the scope's parameter patterns; independent of target_modules."
-    ),
-)
-```
-
-**Override interaction (documented on the field and enforced in the resolvers, not in
-pydantic):**
-
-- `target_modules` and `target_parameters` are **independent** axes. Each overrides only
-  its own axis when set; neither affects the other.
-- `target_parameters is None` → use `SCOPE_TARGET_PARAMETERS.get(scope, [])`.
-- `target_parameters` is a list → use it verbatim, ignore the scope's parameter patterns.
-  (Same precedence shape as `target_modules` vs `SCOPE_TARGETS[scope]`.)
-- A user may set `target_modules` alone (override modules, keep scope parameters),
-  `target_parameters` alone (override parameters, keep scope modules), both, or neither.
-  Pydantic accepts any combination; the two resolvers apply precedence at apply time.
-- Edge case to document: setting `target_parameters` to a non-empty list whose patterns
-  match nothing raises `ValueError` (§5.2); setting it to `[]` explicitly means "no
-  parameter targets" and is valid (returns `[]`, no error).
+The original design added a `PEFTConfig.target_parameters: list[str] | None` override field
+mirroring `target_modules`. With the MHA-module mechanism there is **no `target_parameters`
+axis**, so this field is **reverted** — `PEFTConfig` gains no new field in this issue. The
+existing `target_modules` override remains the single module-axis override: setting it takes
+full ownership of the module axis, and `_resolve_mha_modules` returns `[]` in that case (the
+scope's MHA patterns are not unioned in; §5.2). A user who wants the concept in_proj surface
+selects it via `scope: vision_decoder_concept`, not via a parameter override.
 
 ### 6.4 Example configs
 
@@ -384,12 +447,12 @@ Update the LoRA/text example config(s) under `configs/examples/` that carry comm
 knobs (the LoRA spec §7 added a commented block) to:
 
 - List `vision_decoder_concept` as the default in the `# scope:` comment line and note it
-  is the new shipped default.
-- Add a commented `# target_parameters: [...]  # overrides scope's in_proj patterns`
-  knob mirroring the existing commented `# target_modules:` knob.
+  is the new shipped default (adapts `ca_text` / `self_attn` MHA in_proj + out_proj for
+  text concepts).
 
-No uncommented value changes — defaults already apply; this is documentation of the new
-lever only.
+No new `# target_parameters:` knob is added (the field is reverted). The existing commented
+`# target_modules:` knob is left as-is. No uncommented value changes — defaults already
+apply; this is documentation of the new default only.
 
 ## 7. Gating feasibility spike (FIRST work item)
 
@@ -402,9 +465,11 @@ spike passes; everything in §4–§6 is contingent on it.
 `F.linear(x, in_proj_weight, ...)` and accesses `self.out_proj.weight` directly rather than
 dispatching through a child module's `forward`, so peft needs MHA-specific handling and
 integrations have hit `AttributeError` / merge-path issues (research note §4). peft 0.19.1
-*does* ship a dedicated `peft.tuners.lora.layer.MultiheadAttention` support path — note it
-as the **primary route** for adapting MHA, and treat `target_parameters` **correctness** as
-the thing to confirm, not assume.
+ships a dedicated `peft.tuners.lora.layer.MultiheadAttention` support path — it is the
+**selected route** (§7.3 decision record): naming the MHA module in `target_modules` makes
+peft adapt both `in_proj_weight` and `out_proj`, with `lora_dropout` support. The originally
+considered `target_parameters` route was **rejected** — it routes through
+`lora.ParamWrapper`, which hard-raises on our default `dropout=0.05` (§7.3).
 
 The spike runs on the **real** SAM 3.1 decoder (a single `TransformerDecoderLayer`, or the
 full model under the gated GPU markers — see §7.4) and confirms, for `ca_text` and
@@ -455,6 +520,46 @@ If the spike shows peft cannot cleanly attach + forward + merge MHA in_proj in t
 The choice between (a) and (b) is made from the spike result and recorded in the PR. The
 planner should sequence the spike as the first phase so the rest of the work proceeds with
 a known outcome.
+
+### 7.3a Decision record (2026-06-02, user-approved): Option (a) SELECTED
+
+The Phase-1 spike chose `target_parameters` and validated it with `lora_dropout=0.0`
+hardcoded — and **missed** that peft 0.19.1's `lora.ParamWrapper` (the `target_parameters`
+LoRA layer) **hard-raises** `ValueError: lora.ParamWrapper does not work with lora_dropout
+!= 0` (`peft/tuners/lora/layer.py:2142`), which poisons the **entire** `LoraConfig`. Our
+`PEFTConfig.dropout` defaults to `0.05`, so the shipped concept default would crash on
+construction.
+
+**Decision: Option (a) (`lora.MultiheadAttention` support path) is SELECTED.** The concept
+scope names the `ca_text` / `self_attn` `nn.MultiheadAttention` **modules** in
+`target_modules`; peft dispatches them to `lora.MultiheadAttention` (`layer.py:2492`),
+adapting **both** `in_proj_weight` **and** `out_proj`, **with dropout**. This is a **full
+revert** of the `target_parameters` axis (field, resolver, scope dict, apply wiring, fixture
+mapping — §5, §6.3, §10) per the project priority order (accuracy > simplicity >> speed):
+
+- **Accuracy unchanged** — the MHA-module route adapts every real in_proj surface (`ca_text`
+  / `self_attn` in_proj + out_proj) the `target_parameters` route would have, on the same
+  decoder modules.
+- **Simplicity gained** — one resolution axis style (module-name matching) instead of two; no
+  new `PEFTConfig` field; no dropout-guard branch.
+- **Crash path eliminated** — there is no `lora.ParamWrapper` in the model, so the
+  `dropout != 0` `ValueError` cannot fire.
+
+**Empirically established (stated as confirmed):**
+
+- `lora.MultiheadAttention` (named via `target_modules`) adapts in_proj (params
+  `<mha>.lora_A` / `<mha>.lora_B`; in_proj `lora_B` shape `[3*embed_dim, r]`) **and** out_proj
+  (`<mha>.base_layer.out_proj.lora_A` / `.lora_B`), supports `lora_dropout`, and uses no
+  `ParamWrapper`.
+- **QLoRA-MHA coexistence is GPU-confirmed** with the project's own `_quantize_base` /
+  `_freeze_non_adapter`: the MHA stays unquantized (`_mha_exclusion_types`), attaches
+  alongside `Linear4bit` LoRA in **one** `PeftModel` with `dropout=0.05`, forward + grad are
+  finite on all surfaces, and `merge_and_unload` is clean (only a benign NF4-rounding
+  `UserWarning`). The §7.2 hard requirement holds on the MHA route.
+
+**Dropout default unchanged.** SAMed (the project's training anchor) uses **no** LoRA
+dropout; `0.05` is a generic `# tbd:` default. Because the MHA route supports dropout, the
+`dropout=0.05` default is **kept unchanged** (do not change it). §12 records this.
 
 ### 7.4 Where the spike lives
 
@@ -579,32 +684,33 @@ recorded explicitly in the §12 table.
 
 | Condition | Behavior |
 | --- | --- |
-| `cfg.target_parameters is None`, scope has no parameter patterns (legacy scopes) | `_resolve_target_parameters` returns `[]`; `LoraConfig` gets `target_parameters=None`. No error — this is the normal legacy path. |
-| Non-empty parameter pattern list matches zero `named_parameters()` | `ValueError` listing patterns tried + first 50 parameter names present (mirrors `_resolve_targets` lora.py:78-84). Surfaces a typo or SAM rename loudly; never silently trains nothing on in_proj. |
-| `cfg.target_parameters = []` (explicit empty) | Returns `[]`; no error (explicit "no parameter targets"). |
-| `cfg.target_modules` matches zero modules | Unchanged: existing `_resolve_targets` `ValueError`. |
-| Scope not a known literal | Unchanged: pydantic blocks it upstream (`LoraScope` is a `Literal`); `SCOPE_TARGET_PARAMETERS.get(scope, [])` would also not `KeyError`. |
-| peft cannot attach/merge MHA in_proj | Spike fallback §7.3 — not a runtime error path; resolved before ship. |
+| Legacy scope (`vision` / `vision_decoder` / `all`) — no `SCOPE_MHA_MODULES` entry | `_resolve_mha_modules` returns `[]`; `target_modules` is byte-identical to today. No error — the normal legacy path. |
+| `SCOPE_MHA_MODULES[scope]` non-empty but matches zero `nn.MultiheadAttention` modules | `ValueError` listing patterns tried + MHA module names present (mirrors `_resolve_targets` lora.py:78-84). Surfaces a typo or SAM rename loudly; never silently trains nothing on in_proj. |
+| `cfg.target_modules` overridden (not `None`) | `_resolve_mha_modules` returns `[]` — the explicit override owns the module axis; the scope's MHA patterns are not unioned in (§5.2). |
+| `cfg.target_modules` (when not overridden) matches zero modules | Unchanged: existing `_resolve_targets` `ValueError`. |
+| Scope not a known literal | Unchanged: pydantic blocks it upstream (`LoraScope` is a `Literal`); `SCOPE_MHA_MODULES.get(scope, [])` would also not `KeyError`. |
+| peft cannot attach/merge MHA in_proj | Spike fallback §7.3 — resolved before ship; Option (a) SELECTED. Not a runtime error path. |
 
 ### 8.1 No-match parity
 
 The existing `_resolve_targets` raising a helpful `ValueError` on zero matches is preserved
-verbatim for modules and **replicated** for parameters (with the empty-pattern-list
-exception of §5.2). The error message format is the same shape: patterns tried + sample of
-real names present.
+verbatim for modules and **replicated** for the MHA axis (with the empty-pattern-list and
+override exceptions of §5.2). The error message format is the same shape: patterns tried +
+sample of real (MHA) names present.
 
 ### 8.2 QLoRA dtype safety
 
-No new dtype handling is required: in_proj is never quantized (it is a bare bf16
-`Parameter`, and `_mha_exclusion_types` keeps the whole MHA unquantized), so the
-`target_parameters` LoRA is plain bf16 LoRA. The dtype-collision footguns documented in
-qlora.py (`_freeze_non_adapter`, the deliberate skip of `prepare_model_for_kbit_training`)
-are unchanged by this spec. The spike (§7.2) is the place this is *verified*, not assumed.
+No new dtype handling is required: the MHA modules are never quantized (`in_proj_weight` is a
+bare bf16 `Parameter` and `_mha_exclusion_types` keeps the whole MHA unquantized), so the
+MHA LoRA is plain bf16 LoRA. The dtype-collision footguns documented in qlora.py
+(`_freeze_non_adapter`, the deliberate skip of `prepare_model_for_kbit_training`) are
+unchanged by this spec. The spike (§7.2) verified this on GPU (§7.3a) — the only
+merge-time diagnostic is a benign NF4-rounding `UserWarning`.
 
 ### 8.3 Trainable-ratio guard
 
-The >10 % warning (lora.py:131-136, qlora.py:287-292) stays. The two in_proj parameters per
-decoder layer are low-parameter (a LoRA pair on each `in_proj_weight`), so the
+The >10 % warning (lora.py:131-136, qlora.py:287-292) stays. The two MHA modules per
+decoder layer are low-parameter (a LoRA pair on each in_proj + each out_proj), so the
 post-change ratio should remain well under 10 %. The implementation must **empirically
 confirm** the post-change trainable ratio on the real model (the GPU integration test
 already asserts `ratio < 0.05`, lora.py real test) and only adjust the 10 % threshold or
@@ -639,66 +745,75 @@ levers (research note §5, §7).
 
 The current `_DecoderLayer` (tiny_sam3_lora_stub.py:43-47) uses `_DecoderAttn`
 (`q/k/v/out_proj` as separate `nn.Linear`s) for `self_attn` and `cross_attn`. The CPU
-predicate tests must resolve the new `target_parameters` patterns, which require real
+predicate tests must resolve and adapt the new MHA modules, which require real
 `nn.MultiheadAttention` children exposing `in_proj_weight`.
 
 **Required fixture change:** under the decoder layer subtree, expose `ca_text` and
 `self_attn` as `nn.MultiheadAttention` modules (each has a real `in_proj_weight`
-`nn.Parameter`), at paths the new parameter patterns match. Because the stub uses truncated
+`nn.Parameter`), at paths the new MHA-module patterns match. Because the stub uses truncated
 prefixes (`transformer_decoder` rather than the real `transformer.decoder`) and the tests
 drive resolution via `FIXTURE_SCOPE_PATTERNS` (tiny_sam3_lora_stub.py:131-138) rather than
-the production `SCOPE_TARGETS`, add a parallel `FIXTURE_SCOPE_TARGET_PARAMETERS` mapping
-with the fixture-prefixed parameter patterns, e.g.:
+the production `SCOPE_TARGETS`, add a parallel `FIXTURE_SCOPE_MHA_MODULES` mapping with the
+fixture-prefixed MHA-module patterns, e.g.:
 
 ```text
-transformer_decoder\.layers\.\d+\.ca_text\.in_proj_weight$
-transformer_decoder\.layers\.\d+\.self_attn\.in_proj_weight$
+transformer_decoder\.layers\.\d+\.ca_text$
+transformer_decoder\.layers\.\d+\.self_attn$
 ```
 
 Specifics the implementer must honor:
 
 - `ca_text` and `self_attn` become `nn.MultiheadAttention(dim, n_heads)` so `in_proj_weight`
   exists under `transformer_decoder.layers.0.{ca_text,self_attn}.in_proj_weight`.
-- Keep `cross_attn` as a non-MHA attention (it must **not** match the in_proj parameter
-  patterns — it is the negative control for the parameter axis).
+- Keep `cross_attn` as a non-MHA attention (it must **not** match the MHA-module patterns —
+  it is the negative control for the MHA axis).
 - The `working=True` forward path must still exercise at least one LoRA-targeted module so
   the existing forward/backward grad test (test_peft_scope_coverage.py:95-129) keeps
   working; if the MHA forward is awkward to wire into the stub's forward, the in_proj grad
-  check can be a separate structural+grad test using a minimal MHA forward, consistent with
-  how the stub already separates structural (`working=False`) from forward (`working=True`)
-  modes.
-- `FIXTURE_SCOPE_PATTERNS["vision_decoder_concept"]` is added (equal to the
-  `vision_decoder` fixture module patterns) so module-axis tests can drive the new scope.
+  check can be a separate structural+grad test, consistent with how the stub already
+  separates structural (`working=False`) from forward (`working=True`) modes.
+- `FIXTURE_SCOPE_PATTERNS["vision_decoder_concept"]` is added so module-axis tests can drive
+  the new scope.
 
 The fixture is the second of the two single-points-of-contact for SAM naming (the
-production `SCOPE_TARGETS` / `SCOPE_TARGET_PARAMETERS` is the first); the parameter axis is
-mirrored in both.
+production `SCOPE_TARGETS` / `SCOPE_MHA_MODULES` is the first); the MHA axis is mirrored in
+both.
 
 ### 10.2 CPU unit tests (extend `tests/unit/test_peft_scope_coverage.py` and/or a new
 `tests/unit/test_peft_target_parameters.py`)
 
-Drive resolution on the stub via the fixture pattern mappings (the existing tests pass
-`target_modules=FIXTURE_SCOPE_PATTERNS[scope]`; the new ones additionally pass
-`target_parameters=FIXTURE_SCOPE_TARGET_PARAMETERS[scope]`). Enumerated cases:
+**CPU-harness note (must be honored).** Production `SCOPE_MHA_MODULES` and
+`SCOPE_TARGETS["vision_decoder_concept"]` use the real `transformer.decoder` prefix, which
+does **not** match the stub's truncated `transformer_decoder` prefix. So a test that calls
+`apply_lora(scope="vision_decoder_concept")` on the stub **without intervention** would make
+`_resolve_mha_modules` raise non-empty-no-match. To exercise `apply_lora`'s **real union
+path** on the stub, the CPU test must **monkeypatch** the production `SCOPE_MHA_MODULES`
+**and** `SCOPE_TARGETS["vision_decoder_concept"]` to the fixture-prefixed patterns (use the
+new `FIXTURE_SCOPE_MHA_MODULES` and `FIXTURE_SCOPE_PATTERNS["vision_decoder_concept"]`),
+then call `apply_lora`. Additionally, add a **focused unit test of `_resolve_mha_modules`**
+against `_MiniBase` (real MHA children at `transformer.decoder.layers.0.ca_text|self_attn`)
+that does not need the monkeypatch.
+
+Enumerated cases:
 
 | Test | Asserts |
 | --- | --- |
-| New scope resolves expected modules **and** parameters | `scope="vision_decoder_concept"` attaches LoRA to the vision-trunk + decoder out_proj/FFN modules **and** to `ca_text.in_proj_weight` + `self_attn.in_proj_weight`; `cross_attn.in_proj_weight` is absent (it is not MHA / not targeted). |
-| Existing scopes unchanged | `vision` / `vision_decoder` / `all` produce **no** `target_parameters` (empty resolution) and the same module set as before — byte-identical `LoraConfig` shape (reproducibility). |
+| Concept scope resolves modules **and** MHA in_proj/out_proj (monkeypatched stub) | `scope="vision_decoder_concept"` attaches LoRA params: in_proj `...ca_text.lora_A/lora_B` + `...self_attn.lora_A/lora_B`, out_proj `...ca_text.base_layer.out_proj.lora_A`, and the vision modules (`vision_trunk.blocks...`); and **no** MHA/in_proj LoRA on `cross_attn` (negative control). |
+| `_resolve_mha_modules` on `_MiniBase` | Returns `['transformer.decoder.layers.0.ca_text', 'transformer.decoder.layers.0.self_attn']` for the concept scope; returns `[]` for a legacy scope; returns `[]` when `target_modules` is overridden; raises `ValueError` on a non-empty-no-match pattern. |
+| Existing scopes unchanged | `vision` / `vision_decoder` / `all` produce **no** MHA targets (empty resolution) and the same generic module set as before — byte-identical `LoraConfig` shape (reproducibility). |
+| `all` scope never reaches MHA (HARD) | Under `scope="all"`, no `nn.MultiheadAttention` module is adapted — the `.*` generic pattern is applied only inside `_resolve_targets` against `nn.Linear`, so it cannot reach an MHA module (§4.3 structural separation). |
 | Default is the new scope | `PEFTConfig(method="lora").scope == "vision_decoder_concept"`. |
-| `target_parameters` override | Setting `cfg.target_parameters=[<one pattern>]` adapts exactly that parameter and ignores the scope's parameter patterns; setting `target_modules` does **not** change the resolved parameter set (axis independence). |
-| Non-empty no-match raises | `target_parameters=["nonexistent.param"]` raises `ValueError` whose message lists patterns tried + a real parameter name. |
-| Empty override is valid | `target_parameters=[]` resolves to no parameter targets without error. |
 | Trainable ratio sane | Ratio under `vision_decoder_concept` on the stub stays a small bound (consistent with the existing `< 0.05` style assertion). |
-| Forward/backward grad on in_proj LoRA | Under `working=True`, the in_proj `lora_A` params are in the gradient graph with finite grads (wiring assertion, mirroring test_peft_scope_coverage.py:95-129). |
+| Forward/backward grad on MHA LoRA | Under `working=True`, the MHA in_proj `lora_A` params are in the gradient graph with finite grads (wiring assertion, mirroring test_peft_scope_coverage.py:95-129). |
 
 ### 10.3 QLoRA CPU coverage
 
-Mirror the parameter-resolution assertions for the QLoRA path where they can run on CPU
+Mirror the MHA-resolution assertions for the QLoRA path where they can run on CPU
 (resolution is pure name-matching and does not need bitsandbytes): assert
-`_resolve_target_parameters` returns the **same** parameter set for the QLoRA config as for
-the LoRA config on the same stub (the parameter axis is mode-independent; only the module
-axis differs). The real attach + coexist + merge under QLoRA is GPU-gated (§10.4).
+`_resolve_mha_modules` returns the **same** MHA module set for the QLoRA config as for the
+LoRA config on the same stub (the MHA axis is mode-independent; only the generic module axis
+differs). The real attach + coexist + merge under QLoRA is GPU-gated (§10.4, GPU-confirmed
+§7.3a).
 
 ### 10.4 GPU integration tests (gated)
 
@@ -706,10 +821,12 @@ Extend `tests/integration/test_peft_lora_real.py` and `test_peft_qlora_real.py` 
 existing `requires_checkpoint` + `requires_compatible_gpu` markers) to assert, on the real
 SAM 3.1 model with `scope="vision_decoder_concept"`:
 
-- LoRA params exist for `ca_text.in_proj_weight` and `self_attn.in_proj_weight` (both
-  modes).
+- LoRA params exist for the `ca_text` / `self_attn` MHA in_proj (`...ca_text.lora_A`,
+  `...self_attn.lora_A`) **and** their out_proj (`...ca_text.base_layer.out_proj.lora_A`)
+  in both modes, with `dropout=0.05` on the `LoraConfig`.
 - Forward runs; `merge_lora` folds both axes without error (both modes — the QLoRA
-  coexistence requirement, §7.2).
+  coexistence requirement, §7.2; GPU-confirmed §7.3a, merge emits only a benign
+  NF4-rounding `UserWarning`).
 - Trainable ratio stays under the existing budget (`< 0.05`), empirically confirming §8.3.
 
 These tests are the productionized form of the §7 spike.
@@ -734,27 +851,31 @@ emitted WARNING via `capsys` / captured stderr (the existing tests already captu
 
 A correct implementation satisfies:
 
-1. **Spike resolved first.** The in_proj feasibility spike (§7) has a recorded go/no-go;
-   the shipped behavior matches its outcome (full surface, or fallback §7.3 with the
-   surface gated and the reproducibility note adjusted).
-2. **New scope.** `LoraScope` gains exactly one literal, `vision_decoder_concept`, equal to
-   `vision_decoder`'s module patterns plus the two in_proj parameter patterns. `vision`,
-   `vision_decoder`, `all` are byte-for-byte unchanged.
+1. **Spike resolved first.** The in_proj feasibility spike (§7) has a recorded go/no-go and
+   a recorded mechanism: §7.3(a) (`lora.MultiheadAttention`) SELECTED, `target_parameters`
+   reverted (§7.3a). The shipped behavior matches that outcome (full surface via MHA
+   modules).
+2. **New scope.** `LoraScope` gains exactly one literal, `vision_decoder_concept`, whose
+   `SCOPE_TARGETS` entry equals `vision_decoder`'s generic-module set **minus** the
+   `self_attn` / `ca_text` out_proj alternatives (de-overlap) **plus** an
+   `SCOPE_MHA_MODULES` entry for `ca_text` / `self_attn`. `vision`, `vision_decoder`, `all`
+   are byte-for-byte unchanged.
 3. **New default.** `PEFTConfig.scope` defaults to `vision_decoder_concept` with an updated
    `# tbd: #230` annotation; the reproducibility implication for default-scope configs is
    documented in code and spec.
-4. **Resolution axis.** `SCOPE_TARGET_PARAMETERS` + `_resolve_target_parameters` exist;
-   both `apply_lora` and the QLoRA apply path pass resolved parameter names to
-   `LoraConfig(target_parameters=...)`; legacy scopes pass `target_parameters=None`.
-5. **Override field.** `PEFTConfig.target_parameters: list[str] | None = None` exists,
-   mirrors `target_modules` precedence, is axis-independent from `target_modules`, and is
-   documented (including the empty-list vs non-empty-no-match distinction).
-6. **QLoRA coexistence.** In both LoRA and QLoRA modes the in_proj parameter LoRA and the
-   module LoRA attach, forward, and `merge_and_unload` together in one `PeftModel` (or, in
-   fallback §7.3(b), the surface is gated and this is deferred with the in_proj patterns
-   empty).
-7. **Error parity.** Non-empty parameter pattern lists that match nothing raise a helpful
-   `ValueError`; empty resolution is not an error.
+4. **Resolution axis.** `SCOPE_MHA_MODULES` + `_resolve_mha_modules` exist; both
+   `apply_lora` and the QLoRA apply path union the matched MHA module names into
+   `target_modules`; legacy scopes add no MHA targets. The `target_parameters` field /
+   resolver / scope dict / apply wiring are **reverted** (no longer present).
+5. **No override field.** `PEFTConfig` gains **no** new field — the `target_parameters`
+   override is reverted. The existing `target_modules` override owns the module axis and
+   suppresses the scope's MHA union when set (§5.2).
+6. **QLoRA coexistence.** In both LoRA and QLoRA modes the MHA in_proj/out_proj LoRA and the
+   generic module LoRA attach, forward, and `merge_and_unload` together in one `PeftModel`,
+   with `dropout=0.05` (GPU-confirmed, §7.3a).
+7. **Error parity.** Non-empty MHA pattern lists that match zero MHA modules raise a helpful
+   `ValueError`; empty resolution (legacy scope, or `target_modules` override) is not an
+   error.
 8. **Trainable-ratio guard.** The post-change ratio is empirically confirmed under 10 % (in
    practice under the test's 5 % budget); the threshold/comment is changed only if reality
    demands it, with a tag if so.
@@ -770,10 +891,13 @@ A correct implementation satisfies:
    never rank/alpha). The co-scale needs **no** new `# tbd:` — it is justified by the
    existing `alpha = 2r` citation. The §10.5 CPU tests (mocked probe) pass.
 10. **Tests/fixtures.** The LoRA stub exposes `ca_text` / `self_attn` as
-    `nn.MultiheadAttention`; the CPU predicate tests (§10.2-10.3, §10.5) and the gated GPU
-    tests (§10.4) pass; coverage stays >= 80 %.
-11. **Lint/type.** `ruff check`, `ruff format --check`, and `mypy --strict` pass on every
-    touched file; the spec passes the repo markdownlint gate.
+    `nn.MultiheadAttention` plus a `FIXTURE_SCOPE_MHA_MODULES` mapping; the CPU predicate
+    tests (§10.2-10.3, §10.5 — including the monkeypatched union path and the
+    `_resolve_mha_modules` unit test) and the gated GPU tests (§10.4) pass; coverage stays
+    >= 80 %.
+11. **Lint/type.** `ruff check`, `ruff format --check`, and `mypy --strict` (CI scopes mypy
+    to `src/custom_sam_peft`) pass on every touched file; the spec passes the repo
+    markdownlint gate.
 
 ## 12. Chosen defaults (cite / tbd discipline)
 
@@ -785,7 +909,8 @@ Every new or changed default carries a `# cite:` or `# tbd:` tag (repo-enforced)
 | `alpha` | 32 (unchanged) | `# cite:` LoRA (Hu 2021) §4.1 (`alpha = 2r`) — **do not change**; co-scaled by calibrate autosize to preserve the cited ratio (§7a) |
 | calibrate autosize `alpha` co-scale | `alpha_final = round(cfg.alpha * r_final / cfg.r)` (preserve configured ratio; default `= 2 * r_final`) | **no new tag** — justified by the existing `alpha = 2r` citation (Hu 2021 §4.1); the co-scale *restores* the cited convention at the autosized rank, leaving alpha fixed would *violate* it (§7a.5). Not a new hyperparameter — a deterministic function of cited inputs. |
 | `scope` default | `vision_decoder_concept` (changed from `vision_decoder`) | `# tbd: #230` — project-chosen concept scope; flip rationale = shipped default must learn text concepts (research note §4, §7) |
-| `target_parameters` field default | `None` | framework parity with `target_modules` (`# cite:` PEFT LoraConfig default `target_parameters=None`) |
+| `dropout` default | `0.05` (unchanged) | `# tbd:` generic default — SAMed (the training anchor) uses **no** LoRA dropout. **Kept** because the SELECTED `lora.MultiheadAttention` route supports `lora_dropout` (unlike the rejected `target_parameters` / `lora.ParamWrapper` route, which hard-crashes on `dropout != 0`; §7.3a). Do not change. |
+| in_proj mechanism | `lora.MultiheadAttention` via `SCOPE_MHA_MODULES` (modules named in `target_modules`) | design choice, §7.3a; `target_parameters` rejected (crashes on default dropout). Not a hyperparameter. |
 | small-data `r` guidance | 8 (note only, **not** a default change) | `# tbd:` within cited r≈8-16 small-data range (Unsloth / Raschka; research note §6). Documented as a comment/reference near the `r` default, not applied. |
 | trainable-ratio threshold | 10 % (unchanged unless reality demands) | no tag needed if unchanged; a change requires `# tbd:` + empirical basis (§8.3) |
 | new scope literal name | `vision_decoder_concept` | design choice (settled here; not a hyperparameter) |

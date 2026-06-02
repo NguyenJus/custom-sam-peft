@@ -3,21 +3,60 @@
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Add one new LoRA scope `vision_decoder_concept` (the new default) that reaches the
-decoder's `ca_text` / `self_attn` `in_proj_weight` via peft's `target_parameters` axis, and
-make the pre-flight VRAM calibrate autosize co-scale `alpha` when it reduces rank `r`.
+decoder's `ca_text` / `self_attn` `in_proj_weight` by naming the two `nn.MultiheadAttention`
+**modules** as `target_modules` so peft dispatches them to its `lora.MultiheadAttention`
+support layer (adapting both `in_proj_weight` and `out_proj`, with dropout). Also make the
+pre-flight VRAM calibrate autosize co-scale `alpha` when it reduces rank `r`.
 
-**Architecture:** A feasibility spike against the real SAM 3.1 decoder gates the in_proj
-surface (Phase 1). On a go, a parameter-name resolution axis (`SCOPE_TARGET_PARAMETERS` +
-`_resolve_target_parameters`) is wired through both `apply_lora` and the QLoRA apply path,
-a new scope/default and `target_parameters` override field land in the schema, and fixtures
-plus CPU/GPU tests cover both axes (Phase 2). An orthogonal, file-disjoint change makes
-calibrate persist and warn on a co-scaled `alpha` (Phase 3).
+**Architecture:** The feasibility spike (Phase 1) is **DONE** — it SELECTED the
+`lora.MultiheadAttention` route over the `target_parameters` route (which hard-crashes on the
+default `dropout=0.05`); see spec §7.3a. Phase 2 **reverts** the already-committed
+`target_parameters` mechanism and **reworks** it into an MHA-module resolution axis
+(`SCOPE_MHA_MODULES` + `_resolve_mha_modules`) that unions matched `nn.MultiheadAttention`
+module names into `target_modules` through both `apply_lora` and the QLoRA apply path, lands
+the new scope/default, de-overlaps the concept `SCOPE_TARGETS` entry, updates fixtures, and
+ships CPU + GPU tests. An orthogonal, file-disjoint change makes calibrate persist and warn
+on a co-scaled `alpha` (Phase 3).
 
 **Tech Stack:** Python 3.12, PyTorch, HuggingFace `peft` 0.19.1, `bitsandbytes` (QLoRA),
 pydantic v2, typer, pytest. SAM 3.1 (`sam3`) for the real-decoder GPU tests.
 
 **Spec (source of truth):** `docs/superpowers/specs/2026-06-01-peft-in-proj-concept-scope-design.md`
 **Research note:** `docs/research/2026-06-01-issue-230-peft-adaptation-surface-lit-review.md`
+
+---
+
+## Current committed state (Phase 2 is a REVERT-AND-REWORK, not greenfield)
+
+Commits `287386a..b283be7` implemented the **OLD `target_parameters` mechanism**. Phase 2's
+implementer is **editing already-committed code**, not starting clean. The pivot
+(spec §7.3a, user-approved) is a **full revert** of the `target_parameters` axis, replaced by
+the MHA-module axis. The committed surfaces Phase 2 must transform:
+
+- `src/custom_sam_peft/config/schema.py`: a `PEFTConfig.target_parameters: list[str] | None`
+  field was added — it is **REVERTED** (no new field; §6.3). The `LoraScope` literal +
+  `scope = "vision_decoder_concept"` default flip is **KEPT** (still correct).
+- `src/custom_sam_peft/peft_adapters/lora.py`: `SCOPE_TARGET_PARAMETERS`,
+  `_resolve_target_parameters`, the `vision_decoder_concept` `SCOPE_TARGETS` entry
+  (currently == `vision_decoder`), and the `apply_lora` `target_parameters` wiring — all
+  become the MHA-module mechanism (`SCOPE_MHA_MODULES`, `_resolve_mha_modules`, a
+  **de-overlapped** concept `SCOPE_TARGETS` entry, union into `target_modules`).
+- `src/custom_sam_peft/peft_adapters/qlora.py`: the `target_parameters` import + wiring becomes
+  the MHA-module union.
+- `tests/fixtures/tiny_sam3_lora_stub.py`: `ca_text` / `self_attn` are already real
+  `nn.MultiheadAttention` (**KEEP** — both mechanisms need this). `FIXTURE_SCOPE_TARGET_PARAMETERS`
+  becomes `FIXTURE_SCOPE_MHA_MODULES`; the concept `FIXTURE_SCOPE_PATTERNS` entry is
+  **de-overlapped**.
+- `tests/integration/test_peft_{lora,qlora}_real.py`: Phase-1 spike tests use
+  `target_parameters` overrides — reworked to the MHA-module surface (folded into Task 2.7's
+  GPU tests, which drive the real `scope="vision_decoder_concept"`).
+- `tests/unit/test_peft_target_parameters.py` (created by the old commits): retargeted to the
+  MHA axis (rename symbols, de-overlap assertions). The implementer may keep the filename or
+  rename it; the plan tasks reference it by its current path.
+
+After Phase 2 completes, **no** reference to `target_parameters`, `SCOPE_TARGET_PARAMETERS`,
+or `_resolve_target_parameters` may remain anywhere in `src/` or `tests/` (Task 2.8 greps for
+this).
 
 ---
 
@@ -28,7 +67,7 @@ Bake these into every implementer task — they are non-negotiable project gates
 - **Lint/type gate before each commit:** run all three and fix findings on touched files:
   - `uv run ruff check <touched files>`
   - `uv run ruff format --check <touched files>` (separate from `ruff check`; CI runs both)
-  - `uv run mypy --strict <touched files>`
+  - `uv run mypy --strict <touched files>` (CI scopes mypy to `src/custom_sam_peft`)
 - **No `assert isinstance(...)` in `src/`** — ruff S101 / bandit forbids `assert` in
   `src/`. Narrow structurally (`if isinstance(x, T) and ...:`), never with a bare `assert`.
   (Tests under `tests/` may assert freely.)
@@ -48,7 +87,7 @@ Bake these into every implementer task — they are non-negotiable project gates
   CPU invocation), not just the new test file.
 - **Eager-import caveat:** `src/custom_sam_peft/__init__.py` eagerly imports the train chain,
   so an import error anywhere in the package breaks the whole package. After any
-  symbol-add/rename, verify with `uv run python -c "import custom_sam_peft"` and
+  symbol-add/rename/remove, verify with `uv run python -c "import custom_sam_peft"` and
   `uv run python -m py_compile <touched files>`.
 - **cite / `# tbd:` discipline:** every new or changed default carries a `# cite:` or
   `# tbd:` tag. The spec §12 already resolves all tags in this plan — copy them verbatim;
@@ -66,355 +105,127 @@ Bake these into every implementer task — they are non-negotiable project gates
 | Phase | Title | Depends on | Parallelizable with |
 | --- | --- | --- | --- |
 | 1 | in_proj feasibility spike (GATING) | — | 3 |
-| 2 | `target_parameters` axis + scope + schema + tests | **Phase 1 go/no-go + mechanism** | — |
+| 2 | MHA-module axis + scope + schema + tests (revert-and-rework) | **Phase 1 — DONE (§7.3a)** | — |
 | 3 | calibrate VRAM-autosize alpha co-scale + WARNING | — (orthogonal) | 1 and 2 |
 
-- **Phase 1 gates Phase 2.** Phase 2's resolver/scope wiring depends on the mechanism the
-  spike chooses (peft `target_parameters` — the default written into this plan — vs peft's
-  dedicated `lora.layer.MultiheadAttention` support path, vs the gated fallback §7.3(b)).
-  Do **not** start Phase 2 until the spike's go/no-go and mechanism are recorded.
+- **Phase 1 is DONE; its outcome gates Phase 2.** The spike SELECTED the
+  `lora.MultiheadAttention` route (spec §7.3a); `target_parameters` is rejected/reverted.
+  Phase 2 is written to that decision — there is no remaining mechanism choice.
 - **Phase 3 is orthogonal.** It is file-disjoint from Phases 1–2 (touches only
   `calibrate_cmd.py`, `_config_rewrite.py`, `presets.py::PresetDecision`, and
   `tests/unit/test_calibrate_cmd.py`) and does **not** depend on the spike. An orchestrator
-  MAY run Phase 3 in parallel with Phase 1 (and Phase 2) on the same branch/worktree — no
-  shared files, no shared symbols.
+  MAY run Phase 3 in parallel with Phase 2 on the same branch/worktree — no shared files, no
+  shared symbols. **Serialize commits** (parallel agents committing on one branch can orphan
+  a commit).
 
 ---
 
-## Phase 1 — in_proj feasibility spike (GATING)
+## Phase 1 — in_proj feasibility spike (GATING) — **DONE**
 
-**Feature block:** Prove, on the **real** SAM 3.1 decoder, that LoRA can attach + forward +
-merge on `ca_text` / `self_attn` `in_proj_weight` in **both** plain-LoRA and QLoRA modes,
-and decide the mechanism. This phase ships only GPU-gated test code plus a recorded
-go/no-go; it changes no production resolver/schema code.
+**Status: DONE. Mechanism decided: spec §7.3a.**
 
-**Why first:** §7 of the spec — the entire in_proj surface (Phase 2) is contingent on this
-result. The spike chooses between (full) `target_parameters`, (fallback a) peft's
-`lora.layer.MultiheadAttention` support path, or (fallback b) ship-infra-gate-surface.
+The spike ran against the real SAM 3.1 decoder and **SELECTED Option (a)** — peft's
+`lora.MultiheadAttention` support path (name the `ca_text` / `self_attn`
+`nn.MultiheadAttention` modules in `target_modules`; peft adapts both `in_proj_weight` and
+`out_proj`, **with dropout**). The originally-planned `target_parameters` route was
+**REJECTED**: peft 0.19.1's `lora.ParamWrapper` (the `target_parameters` LoRA layer)
+hard-raises `ValueError: lora.ParamWrapper does not work with lora_dropout != 0`
+(`peft/tuners/lora/layer.py:2142`), and `PEFTConfig.dropout` defaults to `0.05`, so the
+shipped concept default would crash on construction.
 
-**Interface contract this phase PRODUCES (consumed by Phase 2):**
+**Empirically established on GPU (spec §7.3a, stated as confirmed):**
 
-- A recorded **go/no-go** on the in_proj surface (in the PR description and as a comment in
-  the spike test file).
-- The chosen **mechanism**, one of:
-  - `target_parameters` — pass resolved `in_proj_weight` parameter names to
-    `LoraConfig(target_parameters=...)` (the design's primary route; Phase 2 as written).
-  - `lora.layer.MultiheadAttention` — name the MHA module itself as a `target_module` and
-    let peft's MHA support adapt in_proj (Phase 2's resolver still lands, but the scope may
-    express the surface via modules; §7.3(a)).
-  - **gated** — peft cannot cleanly attach/forward/merge in this stack; Phase 2 lands the
-    full infra but keeps `SCOPE_TARGET_PARAMETERS["vision_decoder_concept"]` **empty** and
-    adjusts the §6.2 reproducibility note (§7.3(b)).
-- The empirically-observed **trainable ratio** under the new scope on the real model (feeds
-  Phase 2's §8.3 confirmation that the 10% guard / 5% test budget still holds).
+- `lora.MultiheadAttention` (named via `target_modules`) adapts in_proj (`<mha>.lora_A` /
+  `<mha>.lora_B`; in_proj `lora_B` shape `[3*embed_dim, r]`) **and** out_proj
+  (`<mha>.base_layer.out_proj.lora_A` / `.lora_B`), supports `lora_dropout`, uses no
+  `ParamWrapper`.
+- **QLoRA-MHA coexistence is GPU-confirmed**: the MHA stays unquantized
+  (`_mha_exclusion_types`), attaches alongside `Linear4bit` LoRA in one `PeftModel` with
+  `dropout=0.05`, forward + grad finite on all surfaces, `merge_and_unload` clean (only a
+  benign NF4-rounding `UserWarning`). The §7.2 hard requirement holds on the MHA route.
 
-This contract is a short written record (PR text + test-file comment). Phase 2 reads it
-cold; it does not need to re-run the spike.
+**What Phase 1 produced (interface contract consumed by Phase 2):**
 
-### Task 1.1: Write the gated in_proj spike for plain LoRA
+- Recorded **go/no-go: GO** on the in_proj surface, mechanism = `lora.MultiheadAttention`
+  (§7.3a).
+- Empirically-observed trainable ratio stays under the existing GPU `< 0.05` budget (feeds
+  Phase 2's §8.3 confirmation).
 
-**Files:**
-
-- Modify: `tests/integration/test_peft_lora_real.py` (markers + helpers at top; existing
-  tests at `:26-62`)
-
-The spike productionizes §7.1 items 1–3 for plain LoRA. It uses the real model
-(`load_sam31(ModelConfig())`) under the existing `requires_checkpoint` +
-`requires_compatible_gpu` markers (the `pytestmark` list at `:19-23`). Because no production
-scope literal exists yet (Phase 2 adds it), the spike drives resolution through an explicit
-`PEFTConfig.target_modules` + `PEFTConfig.target_parameters` override that names the real
-in_proj parameter paths directly — this both proves feasibility and exercises the
-mechanism Phase 2 will wrap in a scope. (Phase 2's GPU tests, Task 2.10, replace these
-overrides with the real `scope="vision_decoder_concept"` once it exists.)
-
-- [ ] **Step 1: Write the spike test (attach + forward grad + merge, plain LoRA)**
-
-Add to `tests/integration/test_peft_lora_real.py`:
-
-```python
-# --- #230 in_proj feasibility spike (§7). Drives target_parameters via an
-# explicit override since the vision_decoder_concept scope is added in Phase 2.
-_INPROJ_PARAM_PATTERNS = [
-    r"transformer\.decoder\.layers\.\d+\.ca_text\.in_proj_weight$",
-    r"transformer\.decoder\.layers\.\d+\.self_attn\.in_proj_weight$",
-]
-_VISION_DECODER_MODULE_PATTERNS = [
-    r"backbone\.vision_backbone\.trunk\.blocks\.\d+\.attn\.(qkv|proj)$",
-    r"transformer\.decoder\.layers\.\d+\.(self_attn|cross_attn|ca_text)\.out_proj$",
-    r"transformer\.decoder\.layers\.\d+\.linear[12]$",
-]
-
-
-def test_spike_inproj_lora_attaches_forwards_merges() -> None:
-    """#230 §7.1: target_parameters LoRA on ca_text/self_attn in_proj_weight
-    attaches, receives gradients on forward, and merges on the real decoder."""
-    w = load_sam31(ModelConfig())
-    apply_lora(
-        w,
-        PEFTConfig(
-            method="lora",
-            target_modules=_VISION_DECODER_MODULE_PATTERNS,
-            target_parameters=_INPROJ_PARAM_PATTERNS,
-        ),
-    )
-
-    # 1) Attach: LoRA params exist for both in_proj parameters.
-    lora_names = [n for n, _ in w.model.model.named_parameters() if "lora_" in n]
-    assert any("ca_text" in n for n in lora_names), f"no ca_text in_proj LoRA: {lora_names[:8]}"
-    assert any("self_attn" in n for n in lora_names), f"no self_attn in_proj LoRA: {lora_names[:8]}"
-
-    # Record the observed trainable ratio for the Phase 2 §8.3 contract.
-    trainable = sum(p.numel() for p in w.model.model.parameters() if p.requires_grad)
-    total = sum(p.numel() for p in w.model.model.parameters())
-    ratio = trainable / total
-    assert ratio < 0.05, f"trainable ratio {ratio:.2%} exceeds 5% budget"
-
-    # 3) Merge: folds module + parameter adapters without raising.
-    merge_lora(w)
-    assert w.peft_model is None
-    assert "Peft" not in type(w.model.model).__name__
-```
-
-Notes for the implementer:
-
-- `apply_lora` today does **not** accept `target_parameters` on the `LoraConfig` it builds
-  (`src/custom_sam_peft/peft_adapters/lora.py:107-114`). The spike **requires** a minimal
-  wiring of `target_parameters` into that `LoraConfig` to run. If you prefer to keep Phase 1
-  production-code-free, build the `PeftModel` inline in the test via
-  `peft.get_peft_model(base, LoraConfig(..., target_parameters=...))` instead of calling
-  `apply_lora`. Either is acceptable for the spike; the production wiring lands in Phase 2,
-  Task 2.4. Record which route you took in the test docstring.
-- The forward-grad check (§7.1 item 2) needs a real forward. If a full-model forward is
-  awkward under the markers, assert the in_proj `lora_A` params are present and
-  `requires_grad=True` (structural attach proof) and defer the grad-through-forward
-  assertion to Phase 2's Task 2.10, noting this in the spike record. Do not silently drop
-  item 2 from the recorded go/no-go.
-
-- [ ] **Step 2: Verify the spike compiles and lints**
-
-Run:
-
-```bash
-uv run python -m py_compile tests/integration/test_peft_lora_real.py
-uv run ruff check tests/integration/test_peft_lora_real.py
-uv run ruff format --check tests/integration/test_peft_lora_real.py
-uv run mypy --strict tests/integration/test_peft_lora_real.py
-```
-
-Expected: all pass. (The test body is GPU-gated and will be **skipped** off-GPU.)
-
-- [ ] **Step 3: Execute on the GPU runner**
-
-Run (on a machine with the checkpoint + compatible GPU):
-
-```bash
-scripts/run_gpu_tests.sh local
-```
-
-Expected: `test_spike_inproj_lora_attaches_forwards_merges` PASSES, or FAILS with a
-captured error. **Record the outcome** — this is the go/no-go for plain LoRA.
-
-### Task 1.2: Write the gated in_proj spike for QLoRA coexistence
-
-**Files:**
-
-- Modify: `tests/integration/test_peft_qlora_real.py` (markers at `:36-37`; existing tests)
-
-The hard requirement (§7.2): the bf16 in_proj parameter LoRA and the `Linear4bit` module
-LoRA must attach + forward + **merge together in ONE `PeftModel`** under QLoRA. `apply_qlora`
-keeps MHA children unquantized (`_mha_exclusion_types`, `qlora.py:59-96`), so in_proj stays a
-bare bf16 `Parameter` and the in_proj LoRA is plain LoRA-on-bf16 even in QLoRA mode.
-
-- [ ] **Step 1: Write the QLoRA coexistence spike**
-
-Add to `tests/integration/test_peft_qlora_real.py` (mirror the override approach from
-Task 1.1; reuse the same `_INPROJ_PARAM_PATTERNS`, redefining them locally in this file):
-
-```python
-def test_spike_inproj_qlora_coexists_attaches_merges() -> None:
-    """#230 §7.2: under QLoRA the bf16 in_proj LoRA and the Linear4bit module
-    LoRA attach and merge_and_unload together in one PeftModel."""
-    w = load_sam31(ModelConfig())
-    apply_qlora(
-        w,
-        PEFTConfig(
-            method="qlora",
-            target_parameters=[
-                r"transformer\.decoder\.layers\.\d+\.ca_text\.in_proj_weight$",
-                r"transformer\.decoder\.layers\.\d+\.self_attn\.in_proj_weight$",
-            ],
-        ),
-    )
-    lora_names = [n for n, _ in w.model.model.named_parameters() if "lora_" in n]
-    assert any("ca_text" in n for n in lora_names), f"no ca_text in_proj LoRA (qlora): {lora_names[:8]}"
-    assert any("self_attn" in n for n in lora_names), f"no self_attn in_proj LoRA (qlora): {lora_names[:8]}"
-
-    merge_lora(w)  # dequantizes 4-bit base; must fold BOTH axes without dtype error
-    assert w.peft_model is None
-```
-
-Notes:
-
-- `apply_qlora` builds its `LoraConfig` in `_inject_lora_adapters` (`qlora.py:224-249`) and
-  today passes only `target_modules`. As in Task 1.1, the spike needs `target_parameters`
-  threaded in to run — either temporarily wire it (lands properly in Phase 2, Task 2.5) or
-  build the `PeftModel` inline with the `Linear4bit`-targeting module set + the in_proj
-  parameter set. Record the route.
-- The merge path dequantizes the 4-bit base (`merge_lora` docstring, `lora.py:169-180`); the
-  assertion is that no dtype / packed-weight error is raised while folding **both** adapters.
-
-- [ ] **Step 2: Verify compile + lint + type**
-
-Run:
-
-```bash
-uv run python -m py_compile tests/integration/test_peft_qlora_real.py
-uv run ruff check tests/integration/test_peft_qlora_real.py
-uv run ruff format --check tests/integration/test_peft_qlora_real.py
-uv run mypy --strict tests/integration/test_peft_qlora_real.py
-```
-
-Expected: all pass.
-
-- [ ] **Step 3: Execute on the GPU runner**
-
-Run:
-
-```bash
-scripts/run_gpu_tests.sh local
-```
-
-Expected: `test_spike_inproj_qlora_coexists_attaches_merges` PASSES or FAILS with a captured
-error. **Record the QLoRA go/no-go.**
-
-### Task 1.3: Record the go/no-go and mechanism decision
-
-**Files:**
-
-- Modify: the PR description (the gating record) — and the docstrings of the two spike tests.
-
-- [ ] **Step 1: Write the decision record**
-
-Capture, in the PR body and as a comment block atop the two spike tests:
-
-1. Plain-LoRA result (attach / forward-grad / merge) — pass or the captured failure.
-2. QLoRA coexistence result (attach / merge-both) — pass or the captured failure.
-3. The observed trainable ratio under the in_proj surface on the real model.
-4. **Chosen mechanism** for Phase 2: `target_parameters` (default), `MultiheadAttention`
-   support path (§7.3(a)), or `gated` (§7.3(b)).
-
-If the decision is `gated`, also note that Phase 2 must keep
-`SCOPE_TARGET_PARAMETERS["vision_decoder_concept"]` empty and adjust the §6.2
-reproducibility note so the new default reads as currently equivalent to `vision_decoder`.
-
-- [ ] **Step 2: Phase 1 verification + commit**
-
-Run:
-
-```bash
-uv run ruff check tests/integration/test_peft_lora_real.py tests/integration/test_peft_qlora_real.py
-uv run ruff format --check tests/integration/test_peft_lora_real.py tests/integration/test_peft_qlora_real.py
-uv run mypy --strict tests/integration/test_peft_lora_real.py tests/integration/test_peft_qlora_real.py
-uv run python -c "import custom_sam_peft"
-```
-
-Expected: all pass.
-
-```bash
-git add tests/integration/test_peft_lora_real.py tests/integration/test_peft_qlora_real.py
-git commit -m "test(#230): gated in_proj feasibility spike (LoRA + QLoRA) [Phase 1]"
-```
-
-**Phase 1 handoff line (literal):**
-`Resume phase. Next: 2. Plan: <this plan path>. Worktree: <full path>.`
+**Leftover the spike committed (Phase 2 reworks it, NOT re-planned here):** the Phase-1
+spike tests in `tests/integration/test_peft_{lora,qlora}_real.py` drive resolution via an
+explicit `PEFTConfig.target_parameters` override. That override surface is being reverted, so
+those spike tests must be **reworked to the MHA-module surface** — folded into **Phase 2,
+Task 2.7** (which replaces them with the productionized `scope="vision_decoder_concept"` GPU
+tests). Do not re-run or re-plan the spike itself.
 
 ---
 
-## Phase 2 — `target_parameters` axis + new scope + schema + tests
+## Phase 2 — MHA-module axis + new scope + schema + tests (revert-and-rework)
 
-**Feature block:** Land the production parameter-name resolution axis, the new
-`vision_decoder_concept` scope + default flip, the `target_parameters` override field,
-fixtures, and the full CPU + GPU test suite. This is the heart of the feature.
+**Feature block:** Revert the committed `target_parameters` axis and rework it into the
+production `nn.MultiheadAttention`-module resolution axis (`SCOPE_MHA_MODULES` +
+`_resolve_mha_modules`), keep the new `vision_decoder_concept` scope + default flip,
+de-overlap the concept `SCOPE_TARGETS` entry, update the fixture, and land the full CPU + GPU
+test suite. This is the heart of the feature.
 
-**Consumes from Phase 1:** the go/no-go and mechanism. This plan is written for the
-`target_parameters` mechanism (the default). If Phase 1 chose:
-
-- **`MultiheadAttention` support path (§7.3(a)):** still land Tasks 2.1–2.9 (the resolver +
-  field + fixtures + CPU tests are the infrastructure), but in Task 2.2 the scope may also
-  name the MHA modules in `SCOPE_TARGETS["vision_decoder_concept"]`, and Task 2.10's GPU
-  assertions follow whichever attachment peft produces. Note the deviation in the PR.
-- **`gated` (§7.3(b)):** land all tasks, but set
-  `SCOPE_TARGET_PARAMETERS["vision_decoder_concept"] = []` in Task 2.2 (in_proj patterns
-  commented out with a `# tbd:` pending a peft fix), adjust Task 2.6's reproducibility
-  comment, and relax Task 2.10's in_proj GPU assertions to "no in_proj targets yet".
+**Consumes from Phase 1:** the GO + the `lora.MultiheadAttention` mechanism (§7.3a). There is
+no remaining mechanism branch — implement exactly the MHA-module route below.
 
 **Interface contract this phase PRODUCES (for downstream sessions / future tiers):**
 
-- `SCOPE_TARGET_PARAMETERS: dict[str, list[str]]` in `lora.py` — scope → parameter-name
-  regexes (sibling to `SCOPE_TARGETS`).
-- `_resolve_target_parameters(base: nn.Module, cfg: PEFTConfig) -> list[str]` in `lora.py` —
-  matches against `named_parameters()`; returns `[]` for empty pattern lists; raises
-  `ValueError` only on non-empty-no-match. Imported by `qlora.py`.
+- `SCOPE_MHA_MODULES: dict[str, list[str]]` in `lora.py` — scope → `nn.MultiheadAttention`
+  **module-name** regexes (sibling to `SCOPE_TARGETS`). Only `vision_decoder_concept`
+  populates it; legacy scopes resolve to `[]` via `.get(scope, [])`.
+- `_resolve_mha_modules(base: nn.Module, cfg: PEFTConfig) -> list[str]` in `lora.py` —
+  matches `SCOPE_MHA_MODULES[scope]` against the `nn.MultiheadAttention` modules in
+  `base.named_modules()`; returns `[]` for empty pattern lists (legacy scopes) **and** when
+  `cfg.target_modules` is overridden; raises `ValueError` only on non-empty-no-match.
+  Imported by `qlora.py`.
+- `SCOPE_TARGETS["vision_decoder_concept"]` = `vision_decoder`'s generic-module set **minus**
+  the `self_attn` / `ca_text` `out_proj` alternatives (de-overlap; peft's MHA wrapper adapts
+  out_proj internally).
 - `LoraScope = Literal["vision", "vision_decoder", "vision_decoder_concept", "all"]` and
-  `PEFTConfig.scope` default = `"vision_decoder_concept"`.
-- `PEFTConfig.target_parameters: list[str] | None = None` — axis-independent override.
-- `FIXTURE_SCOPE_TARGET_PARAMETERS` + `FIXTURE_SCOPE_PATTERNS["vision_decoder_concept"]` in
-  the stub.
+  `PEFTConfig.scope` default = `"vision_decoder_concept"` (already committed; kept).
+- **No new `PEFTConfig` field** — `target_parameters` is reverted; `target_modules` remains
+  the single module-axis override.
+- `FIXTURE_SCOPE_MHA_MODULES` + a de-overlapped `FIXTURE_SCOPE_PATTERNS["vision_decoder_concept"]`
+  in the stub.
+- Both `apply_lora` and the QLoRA apply path build `LoraConfig` with
+  `target_modules = matched_names + [n for n in mha_names if n not in matched_names]` and no
+  `target_parameters` kwarg.
 
-### Task 2.1: Add the `target_parameters` override field to `PEFTConfig`
+### Task 2.1: Revert the `PEFTConfig.target_parameters` override field
 
 **Files:**
 
-- Modify: `src/custom_sam_peft/config/schema.py:498-504` (alongside `target_modules`)
-- Test: `tests/unit/test_config_schema.py` (or the nearest existing schema test module —
-  `grep -rl "PEFTConfig" tests/unit` to locate; create a focused test if none fits)
+- Modify: `src/custom_sam_peft/config/schema.py` (remove the committed `target_parameters`
+  field added in `287386a`, immediately after the `target_modules` field)
+- Test: `tests/unit/test_config_schema.py` (remove the two committed
+  `target_parameters` tests; locate via `grep -rn "target_parameters" tests/unit`)
 
-- [ ] **Step 1: Write the failing test**
+The MHA-module mechanism adds **no** override field (spec §6.3). A user selects the concept
+in_proj surface via `scope: vision_decoder_concept`, not a parameter override. The
+`target_modules` override remains the single module-axis override.
 
-```python
-def test_peftconfig_target_parameters_defaults_none() -> None:
-    from custom_sam_peft.config.schema import PEFTConfig
+- [ ] **Step 1: Remove the committed field + its tests**
 
-    cfg = PEFTConfig(method="lora")
-    assert cfg.target_parameters is None
+Delete the `target_parameters: list[str] | None = Field(...)` block from `PEFTConfig` (the
+block added after `target_modules`). Delete the two committed schema tests
+(`test_peftconfig_target_parameters_defaults_none` / `..._accepts_list`).
 
+- [ ] **Step 2: Confirm the field is gone (negative test)**
 
-def test_peftconfig_target_parameters_accepts_list() -> None:
-    from custom_sam_peft.config.schema import PEFTConfig
+Run:
 
-    cfg = PEFTConfig(method="lora", target_parameters=[r"x\.in_proj_weight$"])
-    assert cfg.target_parameters == [r"x\.in_proj_weight$"]
+```bash
+grep -rn "target_parameters" src/custom_sam_peft/config/schema.py tests/unit/test_config_schema.py
+uv run pytest -o "addopts=" tests/unit/test_config_schema.py -v
 ```
 
-- [ ] **Step 2: Run it to confirm it fails**
+Expected: the grep returns **nothing**; the schema suite PASSES. `PEFTConfig` is `_Strict`,
+so passing `target_parameters=...` now raises `ValidationError` (the intended reverted state).
 
-Run: `uv run pytest -o "addopts=" tests/unit/test_config_schema.py -k target_parameters -v`
-Expected: FAIL (`TypeError`/`ValidationError` — `target_parameters` is not a field yet, and
-`PEFTConfig` is `_Strict` so an unknown kwarg is rejected).
-
-- [ ] **Step 3: Add the field**
-
-In `src/custom_sam_peft/config/schema.py`, immediately after the `target_modules` field
-(ends at `:504`), add:
-
-```python
-    target_parameters: list[str] | None = Field(
-        default=None,
-        description=(
-            "Explicit list of parameter-name patterns to adapt via LoRA "
-            "target_parameters (e.g. nn.MultiheadAttention in_proj_weight). When "
-            "None, apply_lora uses SCOPE_TARGET_PARAMETERS.get(scope, []). When set, "
-            "overrides the scope's parameter patterns; independent of target_modules."
-        ),
-    )
-```
-
-- [ ] **Step 4: Run the test to confirm it passes**
-
-Run: `uv run pytest -o "addopts=" tests/unit/test_config_schema.py -k target_parameters -v`
-Expected: PASS.
-
-- [ ] **Step 5: Lint/type + import smoke**
+- [ ] **Step 3: Lint/type + import smoke**
 
 Run:
 
@@ -427,134 +238,160 @@ uv run python -c "import custom_sam_peft"
 
 Expected: all pass.
 
-- [ ] **Step 6: Commit**
+- [ ] **Step 4: Commit**
 
 ```bash
 git add src/custom_sam_peft/config/schema.py tests/unit/test_config_schema.py
-git commit -m "feat(#230): add PEFTConfig.target_parameters override field"
+git commit -m "revert(#230): remove PEFTConfig.target_parameters field (MHA-module pivot)"
 ```
 
-### Task 2.2: Add `SCOPE_TARGET_PARAMETERS` and the `vision_decoder_concept` module entry
+> NOTE: the `LoraScope` literal and `scope = "vision_decoder_concept"` default flip were
+> committed in `44b4d31` and are **kept**. They are re-asserted in Task 2.5's tests; this task
+> does not touch them. The `# tbd:` annotation already references #230 (spec §6.2, §12).
+
+### Task 2.2: Replace `SCOPE_TARGET_PARAMETERS` with `SCOPE_MHA_MODULES`; de-overlap the concept `SCOPE_TARGETS` entry
 
 **Files:**
 
-- Modify: `src/custom_sam_peft/peft_adapters/lora.py:36-60` (after `SCOPE_TARGETS`)
-- Test: `tests/unit/test_peft_target_parameters.py` (new)
+- Modify: `src/custom_sam_peft/peft_adapters/lora.py` (the committed `SCOPE_TARGET_PARAMETERS`
+  dict + the `vision_decoder_concept` `SCOPE_TARGETS` entry)
+- Test: `tests/unit/test_peft_target_parameters.py` (retarget the committed scope/dict tests)
 
-- [ ] **Step 1: Write the failing test**
+- [ ] **Step 1: Rewrite the failing tests to the MHA axis**
 
-Create `tests/unit/test_peft_target_parameters.py`:
+In `tests/unit/test_peft_target_parameters.py`, replace the committed
+`SCOPE_TARGET_PARAMETERS` import and the three scope/dict tests with:
 
 ```python
-"""Unit coverage for the #230 target_parameters resolution axis."""
+"""Unit coverage for the #230 SCOPE_MHA_MODULES resolution axis."""
 
 from __future__ import annotations
 
-from custom_sam_peft.peft_adapters.lora import SCOPE_TARGET_PARAMETERS, SCOPE_TARGETS
+from custom_sam_peft.peft_adapters.lora import SCOPE_MHA_MODULES, SCOPE_TARGETS
 
 
-def test_scope_target_parameters_has_concept_inproj_patterns() -> None:
-    pats = SCOPE_TARGET_PARAMETERS["vision_decoder_concept"]
-    assert any("ca_text" in p and "in_proj_weight" in p for p in pats)
-    assert any("self_attn" in p and "in_proj_weight" in p for p in pats)
+def test_scope_mha_modules_has_concept_mha_patterns() -> None:
+    pats = SCOPE_MHA_MODULES["vision_decoder_concept"]
+    assert any("ca_text" in p for p in pats)
+    assert any("self_attn" in p for p in pats)
     assert not any("cross_attn" in p for p in pats), "cross_attn is RoPEAttention, not MHA"
+    assert not any("in_proj_weight" in p for p in pats), "MHA axis names modules, not params"
 
 
-def test_concept_scope_modules_equal_vision_decoder() -> None:
-    assert SCOPE_TARGETS["vision_decoder_concept"] == SCOPE_TARGETS["vision_decoder"]
+def test_concept_scope_modules_de_overlap_vision_decoder() -> None:
+    """Concept SCOPE_TARGETS drops the self_attn/ca_text out_proj alternatives (peft's
+    MHA wrapper adapts out_proj internally; double-targeting must be avoided)."""
+    concept = SCOPE_TARGETS["vision_decoder_concept"]
+    # cross_attn.out_proj is kept (RoPEAttention -> genuine nn.Linear).
+    assert any("cross_attn" in p and "out_proj" in p for p in concept)
+    # self_attn / ca_text out_proj are NOT generic targets under the concept scope.
+    assert not any(("self_attn" in p or "ca_text" in p) and "out_proj" in p for p in concept)
+    # And it is NOT module-equal to vision_decoder anymore.
+    assert SCOPE_TARGETS["vision_decoder_concept"] != SCOPE_TARGETS["vision_decoder"]
 
 
-def test_legacy_scopes_have_no_parameter_targets() -> None:
+def test_legacy_scopes_have_no_mha_targets() -> None:
     for scope in ("vision", "vision_decoder", "all"):
-        assert SCOPE_TARGET_PARAMETERS.get(scope, []) == []
+        assert SCOPE_MHA_MODULES.get(scope, []) == []
 ```
 
 - [ ] **Step 2: Run it to confirm it fails**
 
 Run: `uv run pytest -o "addopts=" tests/unit/test_peft_target_parameters.py -v`
-Expected: FAIL (`ImportError`/`KeyError` — `SCOPE_TARGET_PARAMETERS` and the concept scope
-do not exist).
+Expected: FAIL (`ImportError` — `SCOPE_MHA_MODULES` does not exist; the committed
+`SCOPE_TARGET_PARAMETERS` still does).
 
-- [ ] **Step 3: Add the dict + scope entry**
+- [ ] **Step 3: Replace the dict + de-overlap the concept `SCOPE_TARGETS` entry**
 
-In `src/custom_sam_peft/peft_adapters/lora.py`, add a `"vision_decoder_concept"` entry to
-`SCOPE_TARGETS` equal to the `"vision_decoder"` list (insert it directly after the
-`vision_decoder` entry, before `"all"`):
+In `src/custom_sam_peft/peft_adapters/lora.py`:
 
-```python
-    # vision_decoder + the two in_proj parameter targets (see SCOPE_TARGET_PARAMETERS).
-    # Module set is IDENTICAL to vision_decoder; the concept surface is the in_proj
-    # parameter axis. New default scope (schema.py). See spec #230 §4.
-    "vision_decoder_concept": [
-        r"backbone\.vision_backbone\.trunk\.blocks\.\d+\.attn\.(qkv|proj)$",
-        r"transformer\.decoder\.layers\.\d+\.(self_attn|cross_attn|ca_text)\.out_proj$",
-        r"transformer\.decoder\.layers\.\d+\.linear[12]$",
-    ],
-```
+1. **De-overlap** the committed `SCOPE_TARGETS["vision_decoder_concept"]` entry. It currently
+   equals the `vision_decoder` list; narrow the
+   `(self_attn|cross_attn|ca_text)\.out_proj` alternation to `cross_attn\.out_proj` (spec
+   §4.2, §5.1):
 
-Then, immediately after the `SCOPE_TARGETS` dict closes (`:60`), add:
+   ```python
+   # vision_decoder's generic-module set MINUS the self_attn/ca_text out_proj
+   # alternatives (peft's lora.MultiheadAttention adapts those out_proj internally when
+   # the MHA module is targeted via SCOPE_MHA_MODULES; double-targeting must be avoided).
+   # cross_attn is a RoPEAttention (genuine nn.Linear out_proj), so it stays generic.
+   # New default scope (schema.py). See spec #230 §4.2, §5.1.
+   "vision_decoder_concept": [
+       r"backbone\.vision_backbone\.trunk\.blocks\.\d+\.attn\.(qkv|proj)$",
+       r"transformer\.decoder\.layers\.\d+\.cross_attn\.out_proj$",
+       r"transformer\.decoder\.layers\.\d+\.linear[12]$",
+   ],
+   ```
 
-```python
-# Parallel to SCOPE_TARGETS: scope -> regexes matched against named_parameters().
-# Reaches the bare nn.Parameter q/k/v packed in nn.MultiheadAttention.in_proj_weight,
-# which target_modules cannot see. Only the concept scope populates it; absent scopes
-# carry no parameter targets (reproducibility for vision/vision_decoder/all). This is
-# the second single-point-of-contact for SAM 3.1 surface naming alongside SCOPE_TARGETS.
-SCOPE_TARGET_PARAMETERS: dict[str, list[str]] = {
-    "vision_decoder_concept": [
-        r"transformer\.decoder\.layers\.\d+\.ca_text\.in_proj_weight$",
-        r"transformer\.decoder\.layers\.\d+\.self_attn\.in_proj_weight$",
-    ],
-}
-```
+2. **Replace** the committed `SCOPE_TARGET_PARAMETERS` dict (and its docstring/comment) with
+   `SCOPE_MHA_MODULES`, immediately after the `SCOPE_TARGETS` dict closes (spec §5.1):
 
-(If Phase 1 chose the **gated** fallback §7.3(b): set the list to `[]` with the two patterns
-commented out and a `# tbd: #230 — in_proj surface gated pending peft MHA fix` tag.)
+   ```python
+   # Parallel to SCOPE_TARGETS: scope -> regexes matched against nn.MultiheadAttention
+   # modules in named_modules(). Naming an MHA module makes peft dispatch it to its
+   # lora.MultiheadAttention layer, which adapts BOTH in_proj_weight and out_proj (with
+   # dropout support). Only the concept scope populates it; absent scopes carry no MHA
+   # targets (reproducibility for vision/vision_decoder/all). This is the second
+   # single-point-of-contact for SAM 3.1 surface naming alongside SCOPE_TARGETS.
+   SCOPE_MHA_MODULES: dict[str, list[str]] = {
+       "vision_decoder_concept": [
+           r"transformer\.decoder\.layers\.\d+\.ca_text$",
+           r"transformer\.decoder\.layers\.\d+\.self_attn$",
+       ],
+   }
+   ```
 
 - [ ] **Step 4: Run the test to confirm it passes**
 
 Run: `uv run pytest -o "addopts=" tests/unit/test_peft_target_parameters.py -v`
-Expected: the three tests PASS.
+Expected: the three rewritten tests PASS. (The `_resolve_*` / `apply_lora` tests still
+reference the old symbols and will FAIL/ERROR until Tasks 2.3–2.4 — that is expected; run the
+`-k` subset above, not the whole file, until then.)
 
 - [ ] **Step 5: Lint/type + import smoke**
 
 Run:
 
 ```bash
-uv run ruff check src/custom_sam_peft/peft_adapters/lora.py tests/unit/test_peft_target_parameters.py
-uv run ruff format --check src/custom_sam_peft/peft_adapters/lora.py tests/unit/test_peft_target_parameters.py
+uv run ruff check src/custom_sam_peft/peft_adapters/lora.py
+uv run ruff format --check src/custom_sam_peft/peft_adapters/lora.py
 uv run mypy --strict src/custom_sam_peft/peft_adapters/lora.py
 uv run python -c "import custom_sam_peft"
 ```
 
-Expected: all pass.
+Expected: lint/format/import pass. (`mypy --strict` on `lora.py` may still flag the not-yet-
+reworked `_resolve_target_parameters` usage downstream — that is resolved in Tasks 2.3–2.4;
+do not commit until Task 2.4's lint is clean. Commit this task only once `lora.py` lints/types
+clean for the symbols it owns.)
 
 - [ ] **Step 6: Commit**
 
 ```bash
 git add src/custom_sam_peft/peft_adapters/lora.py tests/unit/test_peft_target_parameters.py
-git commit -m "feat(#230): add SCOPE_TARGET_PARAMETERS + vision_decoder_concept scope"
+git commit -m "feat(#230): replace SCOPE_TARGET_PARAMETERS with SCOPE_MHA_MODULES; de-overlap concept scope"
 ```
 
-### Task 2.3: Add `_resolve_target_parameters`
+### Task 2.3: Replace `_resolve_target_parameters` with `_resolve_mha_modules`
 
 **Files:**
 
-- Modify: `src/custom_sam_peft/peft_adapters/lora.py` (sibling to `_resolve_targets` at
-  `:63-85`)
+- Modify: `src/custom_sam_peft/peft_adapters/lora.py` (replace the committed
+  `_resolve_target_parameters`, sibling to `_resolve_targets`)
 - Test: `tests/unit/test_peft_target_parameters.py`
 
-- [ ] **Step 1: Write the failing test**
+- [ ] **Step 1: Rewrite the resolver tests to the MHA axis + `_MiniBase`**
 
-Add to `tests/unit/test_peft_target_parameters.py`:
+In `tests/unit/test_peft_target_parameters.py`, replace the committed
+`_resolve_target_parameters` tests with `_resolve_mha_modules` tests. The `_MiniBase` (real
+`nn.MultiheadAttention` children at `transformer.decoder.layers.0.{ca_text,self_attn}`) is
+reused — it needs **no** monkeypatch because it uses the real `transformer.decoder` prefix:
 
 ```python
 import pytest
-import torch
 from torch import nn
 
 from custom_sam_peft.config.schema import PEFTConfig
-from custom_sam_peft.peft_adapters.lora import _resolve_target_parameters
+from custom_sam_peft.peft_adapters.lora import _resolve_mha_modules
 
 
 class _MiniBase(nn.Module):
@@ -568,84 +405,89 @@ class _MiniBase(nn.Module):
         self.transformer.decoder.layers = nn.ModuleList([layer])
 
 
-def _real_paths() -> list[str]:
-    return [n for n, _ in _MiniBase().named_parameters()]
+def test_resolve_mha_concept_scope_returns_both_modules() -> None:
+    got = _resolve_mha_modules(_MiniBase(), PEFTConfig(method="lora", scope="vision_decoder_concept"))
+    assert got == [
+        "transformer.decoder.layers.0.ca_text",
+        "transformer.decoder.layers.0.self_attn",
+    ]
 
 
-def test_resolve_empty_for_legacy_scope_returns_empty_no_error() -> None:
-    base = _MiniBase()
-    got = _resolve_target_parameters(base, PEFTConfig(method="lora", scope="vision_decoder"))
-    assert got == []
+def test_resolve_mha_empty_for_legacy_scope_returns_empty_no_error() -> None:
+    assert _resolve_mha_modules(_MiniBase(), PEFTConfig(method="lora", scope="vision_decoder")) == []
 
 
-def test_resolve_override_verbatim_precedence() -> None:
-    base = _MiniBase()
+def test_resolve_mha_returns_empty_when_target_modules_overridden() -> None:
     cfg = PEFTConfig(
         method="lora",
-        scope="vision_decoder",  # legacy scope (no scope params) ...
-        target_parameters=[r"\.ca_text\.in_proj_weight$"],  # ... but override set
+        scope="vision_decoder_concept",  # has MHA patterns ...
+        target_modules=[r"\.ca_text$"],  # ... but override owns the module axis
     )
-    got = _resolve_target_parameters(base, cfg)
-    assert got == ["transformer.decoder.layers.0.ca_text.in_proj_weight"]
+    assert _resolve_mha_modules(_MiniBase(), cfg) == []
 
 
-def test_resolve_empty_list_override_is_valid() -> None:
-    base = _MiniBase()
-    cfg = PEFTConfig(method="lora", scope="vision_decoder_concept", target_parameters=[])
-    assert _resolve_target_parameters(base, cfg) == []
+def test_resolve_mha_non_empty_no_match_raises_valueerror(monkeypatch: pytest.MonkeyPatch) -> None:
+    import custom_sam_peft.peft_adapters.lora as lora_mod
 
-
-def test_resolve_non_empty_no_match_raises_valueerror() -> None:
-    base = _MiniBase()
-    cfg = PEFTConfig(method="lora", target_parameters=["nonexistent.param.path$"])
+    # A non-empty pattern list that matches zero MHA modules must raise.
+    monkeypatch.setitem(lora_mod.SCOPE_MHA_MODULES, "vision_decoder_concept", [r"\.nonexistent_mha$"])
+    cfg = PEFTConfig(method="lora", scope="vision_decoder_concept")
     with pytest.raises(ValueError) as exc:
-        _resolve_target_parameters(base, cfg)
+        _resolve_mha_modules(_MiniBase(), cfg)
     msg = str(exc.value)
-    assert "nonexistent.param.path$" in msg  # patterns tried listed
-    assert "in_proj_weight" in msg  # a real parameter name sampled
+    assert "nonexistent_mha" in msg  # patterns tried listed
+    assert "ca_text" in msg or "self_attn" in msg  # a real MHA module name sampled
 ```
 
 - [ ] **Step 2: Run it to confirm it fails**
 
 Run: `uv run pytest -o "addopts=" tests/unit/test_peft_target_parameters.py -k resolve -v`
-Expected: FAIL (`ImportError` — `_resolve_target_parameters` not defined).
+Expected: FAIL (`ImportError` — `_resolve_mha_modules` not defined; `_resolve_target_parameters`
+still is).
 
-- [ ] **Step 3: Implement the resolver**
+- [ ] **Step 3: Replace the resolver**
 
-In `src/custom_sam_peft/peft_adapters/lora.py`, add directly after `_resolve_targets`
-(after `:85`):
+In `src/custom_sam_peft/peft_adapters/lora.py`, **remove** `_resolve_target_parameters` and
+add `_resolve_mha_modules` directly after `_resolve_targets` (spec §5.2). Key asymmetry vs
+`_resolve_targets`: empty pattern list is **fine** (returns `[]`); an explicit
+`cfg.target_modules` override returns `[]`; only a **non-empty-no-match** raises:
 
 ```python
-def _resolve_target_parameters(base: nn.Module, cfg: PEFTConfig) -> list[str]:
-    """Resolve scope/override parameter-name patterns against named_parameters().
+def _resolve_mha_modules(base: nn.Module, cfg: PEFTConfig) -> list[str]:
+    """Resolve scope MHA-module patterns against the nn.MultiheadAttention modules.
 
     Precedence mirrors _resolve_targets:
-      * cfg.target_parameters is not None -> use it verbatim (overrides scope).
-      * else -> SCOPE_TARGET_PARAMETERS.get(cfg.scope, []).
+      * cfg.target_modules is not None -> return [] (the user's explicit module
+        override owns the module axis; the scope's MHA patterns do not apply).
+      * else -> SCOPE_MHA_MODULES.get(cfg.scope, []) matched against the
+        nn.MultiheadAttention modules in base.named_modules().
 
-    Returns the full matched parameter names (e.g.
-    'transformer.decoder.layers.0.ca_text.in_proj_weight') to pass to
-    LoraConfig(target_parameters=...). Returns [] when the resolved pattern list is
-    empty (legacy scopes) — NOT an error. Raises ValueError only when a NON-EMPTY
-    pattern list matches zero parameters (a typo or SAM rename), mirroring
+    Returns the full matched MHA module names (e.g.
+    'transformer.decoder.layers.0.ca_text') to union into target_modules so peft
+    dispatches them to lora.MultiheadAttention (adapting in_proj_weight + out_proj).
+    Returns [] when the resolved pattern list is empty (legacy scopes) or when
+    target_modules is overridden -- NOT an error. Raises ValueError only when a
+    NON-EMPTY pattern list matches zero MHA modules (a typo or SAM rename), mirroring
     _resolve_targets' no-match error so the in_proj surface never silently trains
     nothing.
     """
-    patterns = (
-        cfg.target_parameters
-        if cfg.target_parameters is not None
-        else SCOPE_TARGET_PARAMETERS.get(cfg.scope, [])
-    )
+    if cfg.target_modules is not None:
+        return []
+    patterns = SCOPE_MHA_MODULES.get(cfg.scope, [])
     if not patterns:
         return []
     compiled = [re.compile(p) for p in patterns]
-    param_names = [name for name, _ in base.named_parameters()]
-    matched = [name for name in param_names if any(c.search(name) for c in compiled)]
+    mha_names = [
+        name
+        for name, module in base.named_modules()
+        if isinstance(module, nn.MultiheadAttention)
+    ]
+    matched = [name for name in mha_names if any(c.search(name) for c in compiled)]
     if not matched:
-        sample = ", ".join(param_names[:50]) if param_names else "<no parameters found>"
+        sample = ", ".join(mha_names[:50]) if mha_names else "<no nn.MultiheadAttention modules found>"
         raise ValueError(
-            f"apply_lora: no parameters matched target_parameters patterns {patterns}. "
-            f"Parameters actually present (first 50): {sample}"
+            f"apply_lora: no nn.MultiheadAttention modules matched SCOPE_MHA_MODULES "
+            f"patterns {patterns}. MHA modules actually present (first 50): {sample}"
         )
     return matched
 ```
@@ -653,7 +495,7 @@ def _resolve_target_parameters(base: nn.Module, cfg: PEFTConfig) -> list[str]:
 - [ ] **Step 4: Run the test to confirm it passes**
 
 Run: `uv run pytest -o "addopts=" tests/unit/test_peft_target_parameters.py -k resolve -v`
-Expected: all four PASS.
+Expected: the four resolver tests PASS.
 
 - [ ] **Step 5: Lint/type + import smoke**
 
@@ -666,43 +508,49 @@ uv run mypy --strict src/custom_sam_peft/peft_adapters/lora.py
 uv run python -c "import custom_sam_peft"
 ```
 
-Expected: all pass.
+Expected: pass for the resolver. (If `apply_lora` still calls `_resolve_target_parameters`,
+that line is fixed in Task 2.4 in the same `lora.py`; sequence Task 2.4 immediately after and
+do not leave the file in a broken-import state across a commit boundary — `apply_lora`'s call
+is updated here-or-next. Prefer updating the `apply_lora` call site in this task's Step 3 so
+`lora.py` imports clean, then expand the wiring in Task 2.4.)
 
 - [ ] **Step 6: Commit**
 
 ```bash
 git add src/custom_sam_peft/peft_adapters/lora.py tests/unit/test_peft_target_parameters.py
-git commit -m "feat(#230): add _resolve_target_parameters (empty-ok, non-empty-no-match raises)"
+git commit -m "feat(#230): replace _resolve_target_parameters with _resolve_mha_modules"
 ```
 
-### Task 2.4: Wire `target_parameters` into `apply_lora`
+### Task 2.4: Rework `apply_lora` to union MHA module names into `target_modules`
 
 **Files:**
 
-- Modify: `src/custom_sam_peft/peft_adapters/lora.py:88-137` (`apply_lora`)
+- Modify: `src/custom_sam_peft/peft_adapters/lora.py` (`apply_lora`)
 - Test: `tests/unit/test_peft_target_parameters.py`
 
-- [ ] **Step 1: Write the failing test (legacy scope must stay byte-identical)**
+- [ ] **Step 1: Rewrite the wiring test (legacy scope stays byte-identical; concept unions)**
 
-Add to `tests/unit/test_peft_target_parameters.py`:
+In `tests/unit/test_peft_target_parameters.py`, replace the committed
+`test_apply_lora_legacy_scope_passes_target_parameters_none` with a `LoraConfig`-spy test
+asserting (a) **no** `target_parameters` kwarg is ever passed, and (b) a legacy scope's
+`target_modules` is unchanged (no MHA union):
 
 ```python
-def test_apply_lora_legacy_scope_passes_target_parameters_none() -> None:
-    """Reproducibility: legacy scopes must build LoraConfig with target_parameters=None."""
+def test_apply_lora_never_passes_target_parameters_and_legacy_unioned_empty() -> None:
+    """Reproducibility: legacy scopes build LoraConfig with no MHA union and never a
+    target_parameters kwarg (the reverted axis)."""
     import custom_sam_peft.peft_adapters.lora as lora_mod
     from tests.fixtures.tiny_sam3_lora_stub import FIXTURE_SCOPE_PATTERNS, make_stub_wrapper
 
     captured: dict[str, object] = {}
     real_cfg = lora_mod.LoraConfig
 
-    def _spy(*args, **kwargs):
+    def _spy(*args: object, **kwargs: object) -> object:
         captured.update(kwargs)
         return real_cfg(*args, **kwargs)
 
     w = make_stub_wrapper(dim=8, working=False)
-    import pytest as _pytest
-
-    with _pytest.MonkeyPatch.context() as mp:
+    with pytest.MonkeyPatch.context() as mp:
         mp.setattr(lora_mod, "LoraConfig", _spy)
         lora_mod.apply_lora(
             w,
@@ -712,55 +560,65 @@ def test_apply_lora_legacy_scope_passes_target_parameters_none() -> None:
                 target_modules=FIXTURE_SCOPE_PATTERNS["vision_decoder"],
             ),
         )
-    assert captured.get("target_parameters") is None
+    assert "target_parameters" not in captured  # reverted axis is gone
+    assert captured["target_modules"] == FIXTURE_SCOPE_PATTERNS["vision_decoder"]  # no MHA union
 ```
 
 - [ ] **Step 2: Run it to confirm it fails**
 
-Run: `uv run pytest -o "addopts=" tests/unit/test_peft_target_parameters.py -k legacy_scope_passes -v`
-Expected: FAIL (`KeyError`/`AssertionError` — `apply_lora` does not pass `target_parameters`
-to `LoraConfig` yet, so the kwarg is absent from `captured`).
+Run: `uv run pytest -o "addopts=" tests/unit/test_peft_target_parameters.py -k never_passes_target_parameters -v`
+Expected: FAIL (`apply_lora` still builds `LoraConfig(..., target_parameters=...)` from the
+committed wiring, so the kwarg is present in `captured`).
 
-- [ ] **Step 3: Wire the axis into `apply_lora`**
+- [ ] **Step 3: Rework the `apply_lora` wiring**
 
 In `src/custom_sam_peft/peft_adapters/lora.py`, in `apply_lora`, after
-`matched_names = _resolve_targets(base, cfg)` (`:102`) add:
+`matched_names = _resolve_targets(base, cfg)`:
 
-```python
-    matched_params = _resolve_target_parameters(base, cfg)
-```
+1. Resolve the MHA axis and union it (generic-first, deduped — spec §5.3):
 
-Change the `LoraConfig(...)` construction (`:107-114`) to pass the new axis:
+   ```python
+       mha_names = _resolve_mha_modules(base, cfg)
+       target_modules = matched_names + [n for n in mha_names if n not in matched_names]
+   ```
 
-```python
-    lora_cfg = LoraConfig(
-        r=cfg.r,
-        lora_alpha=cfg.alpha,
-        lora_dropout=cfg.dropout,
-        target_modules=matched_names,
-        target_parameters=(matched_params or None),
-        bias=cfg.bias,
-        task_type=None,
-    )
-```
+2. Rework the `LoraConfig(...)` construction to use the union and **remove** the
+   `target_parameters=...` kwarg (the reverted axis):
 
-Extend the info log (`:123-130`) to surface the param-target count:
+   ```python
+       lora_cfg = LoraConfig(
+           r=cfg.r,
+           lora_alpha=cfg.alpha,
+           lora_dropout=cfg.dropout,
+           target_modules=target_modules,
+           bias=cfg.bias,
+           task_type=None,
+       )
+   ```
 
-```python
-    logger.info(
-        "LoRA: trainable=%d (%.2f%%) of %d (scope=%s, n_targets=%d, n_param_targets=%d)",
-        trainable,
-        100 * ratio,
-        total,
-        cfg.scope if cfg.target_modules is None else "<override>",
-        len(matched_names),
-        len(matched_params),
-    )
-```
+   For the three legacy scopes `mha_names == []`, so `target_modules == matched_names` and the
+   `LoraConfig` is byte-identical to today's (reproducibility). `lora_dropout=cfg.dropout`
+   (default `0.05`) is passed unchanged — `lora.MultiheadAttention` supports dropout (spec
+   §5.3, §7.3a).
 
-(The `> 0.10` warning at `:131-136` is unchanged.)
+3. Rework the info-log count field from the reverted `n_param_targets` to `n_mha_targets`
+   (spec §5.3 step 4):
 
-- [ ] **Step 4: Run the test + the full Phase-2 unit file**
+   ```python
+       logger.info(
+           "LoRA: trainable=%d (%.2f%%) of %d (scope=%s, n_targets=%d, n_mha_targets=%d)",
+           trainable,
+           100 * ratio,
+           total,
+           cfg.scope if cfg.target_modules is None else "<override>",
+           len(matched_names),
+           len(mha_names),
+       )
+   ```
+
+   (The `> 0.10` warning is unchanged in structure — spec §8.3.)
+
+- [ ] **Step 2.4 verification: run the wiring test + reproducibility guard**
 
 Run:
 
@@ -768,10 +626,10 @@ Run:
 uv run pytest -o "addopts=" tests/unit/test_peft_target_parameters.py tests/unit/test_peft_scope_coverage.py -v
 ```
 
-Expected: PASS. (`test_peft_scope_coverage.py` confirms legacy scopes still attach exactly
-as before — the reproducibility guard.)
+Expected: PASS. (`test_peft_scope_coverage.py` confirms legacy scopes still attach exactly as
+before — the reproducibility guard.)
 
-- [ ] **Step 5: Lint/type + import smoke**
+- [ ] **Step 4: Lint/type + import smoke**
 
 Run:
 
@@ -782,123 +640,42 @@ uv run mypy --strict src/custom_sam_peft/peft_adapters/lora.py
 uv run python -c "import custom_sam_peft"
 ```
 
-Expected: all pass.
+Expected: all pass — `lora.py` is now fully on the MHA-module axis (no `target_parameters`
+references remain in it).
 
-- [ ] **Step 6: Commit**
+- [ ] **Step 5: Commit**
 
 ```bash
 git add src/custom_sam_peft/peft_adapters/lora.py tests/unit/test_peft_target_parameters.py
-git commit -m "feat(#230): pass target_parameters through apply_lora (None for legacy scopes)"
+git commit -m "feat(#230): union MHA module names into target_modules in apply_lora"
 ```
 
-### Task 2.5: Wire `target_parameters` into the QLoRA apply path
+### Task 2.5: Rework the QLoRA apply path to union MHA module names
 
 **Files:**
 
-- Modify: `src/custom_sam_peft/peft_adapters/qlora.py:33` (import) and `:224-249`
-  (`_inject_lora_adapters`); log line at `:278-286`
+- Modify: `src/custom_sam_peft/peft_adapters/qlora.py` (the committed `target_parameters`
+  import + `_inject_lora_adapters` wiring + log line)
 - Test: `tests/unit/test_peft_target_parameters.py`
 
-- [ ] **Step 1: Write the failing test (parameter axis is mode-independent)**
+- [ ] **Step 1: Rewrite the QLoRA-parity test (MHA axis is mode-independent)**
 
-Add to `tests/unit/test_peft_target_parameters.py`:
+In `tests/unit/test_peft_target_parameters.py`, replace the committed
+`test_qlora_and_lora_resolve_same_parameter_set` with the MHA-axis equivalent. Also add the
+schema-default re-assertions (kept from `44b4d31`) so the default flip stays covered:
 
 ```python
-def test_qlora_and_lora_resolve_same_parameter_set() -> None:
-    """§10.3: the parameter axis is mode-independent — same names for LoRA and QLoRA."""
-    from custom_sam_peft.peft_adapters.lora import _resolve_target_parameters
-
+def test_qlora_and_lora_resolve_same_mha_set() -> None:
+    """§10.3: the MHA axis is mode-independent — same module names for LoRA and QLoRA."""
     base = _MiniBase()
     lora_cfg = PEFTConfig(method="lora", scope="vision_decoder_concept")
     qlora_cfg = PEFTConfig(method="qlora", scope="vision_decoder_concept")
-    assert _resolve_target_parameters(base, lora_cfg) == _resolve_target_parameters(base, qlora_cfg)
-    # And both resolve the two in_proj params on the mini base.
-    got = _resolve_target_parameters(base, lora_cfg)
-    assert any("ca_text.in_proj_weight" in n for n in got)
-    assert any("self_attn.in_proj_weight" in n for n in got)
-```
+    assert _resolve_mha_modules(base, lora_cfg) == _resolve_mha_modules(base, qlora_cfg)
+    got = _resolve_mha_modules(base, lora_cfg)
+    assert any(n.endswith("ca_text") for n in got)
+    assert any(n.endswith("self_attn") for n in got)
 
-- [ ] **Step 2: Run it to confirm it passes-or-fails appropriately**
 
-Run: `uv run pytest -o "addopts=" tests/unit/test_peft_target_parameters.py -k same_parameter_set -v`
-Expected: PASS already (this asserts a property of `_resolve_target_parameters`, which is
-mode-agnostic). It is the regression guard for the wiring below; keep it. (If it fails, the
-resolver is mode-coupled — fix the resolver, not the test.)
-
-- [ ] **Step 3: Wire the axis into `_inject_lora_adapters`**
-
-In `src/custom_sam_peft/peft_adapters/qlora.py`, extend the import at `:33`:
-
-```python
-from custom_sam_peft.peft_adapters.lora import _resolve_target_parameters, _resolve_targets
-```
-
-In `_inject_lora_adapters` (`:224-249`), after
-`lora_target_names = _resolve_targets(model, cfg, linear_types=(bnb.nn.Linear4bit,))`
-(`:239`) add:
-
-```python
-    lora_param_names = _resolve_target_parameters(model, cfg)
-```
-
-and add `target_parameters=(lora_param_names or None),` to the `LoraConfig(...)` (`:240-247`),
-mirroring the LoRA wiring. The one-way `qlora.py -> lora.py` import contract is preserved
-(`lora.py` still imports neither `qlora.py` nor `bitsandbytes`).
-
-Extend the QLoRA log line (`:278-286`) with `n_param_targets`:
-
-```python
-    logger.info(
-        "QLoRA: trainable=%d (%.2f%%) of %d "
-        "(lora_scope=%s, quant_type=%s, compute_dtype=%s, n_param_targets=%d)",
-        trainable,
-        100 * ratio,
-        total,
-        cfg.scope if cfg.target_modules is None else "<override>",
-        cfg.qlora.quant_type,
-        cfg.qlora.compute_dtype,
-        len(lora_param_names),
-    )
-```
-
-- [ ] **Step 4: Run the test**
-
-Run: `uv run pytest -o "addopts=" tests/unit/test_peft_target_parameters.py -v`
-Expected: PASS.
-
-- [ ] **Step 5: Lint/type + import smoke**
-
-Run:
-
-```bash
-uv run ruff check src/custom_sam_peft/peft_adapters/qlora.py
-uv run ruff format --check src/custom_sam_peft/peft_adapters/qlora.py
-uv run mypy --strict src/custom_sam_peft/peft_adapters/qlora.py
-uv run python -c "import custom_sam_peft"
-```
-
-Expected: all pass. (`mypy --strict` on `qlora.py` exercises the new import + kwarg.)
-
-- [ ] **Step 6: Commit**
-
-```bash
-git add src/custom_sam_peft/peft_adapters/qlora.py tests/unit/test_peft_target_parameters.py
-git commit -m "feat(#230): wire target_parameters through QLoRA apply path"
-```
-
-### Task 2.6: Flip the default scope to `vision_decoder_concept`
-
-**Files:**
-
-- Modify: `src/custom_sam_peft/config/schema.py:99` (`LoraScope` literal) and `:496`
-  (`scope` default)
-- Test: `tests/unit/test_config_schema.py` (and `tests/unit/test_peft_target_parameters.py`)
-
-- [ ] **Step 1: Write the failing test**
-
-Add to `tests/unit/test_peft_target_parameters.py`:
-
-```python
 def test_peftconfig_default_scope_is_concept() -> None:
     assert PEFTConfig(method="lora").scope == "vision_decoder_concept"
 
@@ -916,125 +693,141 @@ def test_lorascope_literal_includes_concept() -> None:
     }
 ```
 
-- [ ] **Step 2: Run it to confirm it fails**
+- [ ] **Step 2: Run it to confirm state**
 
-Run: `uv run pytest -o "addopts=" tests/unit/test_peft_target_parameters.py -k "default_scope_is_concept or lorascope_literal" -v`
-Expected: FAIL (default is still `vision_decoder`; literal lacks the concept member).
+Run: `uv run pytest -o "addopts=" tests/unit/test_peft_target_parameters.py -k "same_mha_set or default_scope or lorascope_literal" -v`
+Expected: the resolver/schema assertions PASS already (they assert properties of
+`_resolve_mha_modules` + the committed schema). They are the regression guards for the wiring
+below.
 
-- [ ] **Step 3: Update the literal + default**
+- [ ] **Step 3: Rework the QLoRA wiring**
 
-In `src/custom_sam_peft/config/schema.py:99`:
+In `src/custom_sam_peft/peft_adapters/qlora.py`:
 
-```python
-LoraScope = Literal["vision", "vision_decoder", "vision_decoder_concept", "all"]
-```
+1. Change the committed import from `_resolve_target_parameters` to `_resolve_mha_modules`:
 
-In `src/custom_sam_peft/config/schema.py:496`, replace the `scope` line:
+   ```python
+   from custom_sam_peft.peft_adapters.lora import _resolve_mha_modules, _resolve_targets
+   ```
 
-```python
-    scope: LoraScope = "vision_decoder_concept"
-    # tbd: #230 (project-chosen SAM 3.1 concept scope; default flipped from
-    #      vision_decoder so the shipped default can learn niche TEXT concepts —
-    #      vision_decoder freezes ca_text/self_attn in_proj. Reproducibility: a config
-    #      without an explicit peft.scope now additionally adapts ca_text/self_attn
-    #      in_proj; configs pinning vision/vision_decoder/all are unaffected. See
-    #      research note §4, §7.)
-```
+2. In `_inject_lora_adapters`, after
+   `lora_target_names = _resolve_targets(model, cfg, linear_types=(bnb.nn.Linear4bit,))`,
+   resolve + union the MHA axis (spec §5.4) and pass the union to `LoraConfig`, removing the
+   committed `target_parameters=...` kwarg:
 
-(If Phase 1 chose **gated** §7.3(b): change the comment to note the new default is currently
-behaviorally equivalent to `vision_decoder` until the in_proj surface is enabled.)
+   ```python
+       mha_names = _resolve_mha_modules(model, cfg)
+       target_modules = lora_target_names + [n for n in mha_names if n not in lora_target_names]
+   ```
 
-- [ ] **Step 4: Run the tests + full schema/config suites (blast radius)**
+   and pass `target_modules=target_modules` to the `LoraConfig(...)` (no `target_parameters`).
+   The MHA modules stay **unquantized** (`_mha_exclusion_types`), so the MHA LoRA is plain
+   bf16 LoRA coexisting with the `Linear4bit` LoRA in one `PeftModel` (spec §5.4, §7.2,
+   GPU-confirmed §7.3a). The one-way `qlora.py -> lora.py` import contract is preserved
+   (`lora.py` imports neither `qlora.py` nor `bitsandbytes`).
 
-The default flip changes what every default-scope config adapts — grep and run broadly:
+3. Rework the QLoRA log line's count field from the reverted `n_param_targets` to
+   `n_mha_targets`:
 
-```bash
-grep -rn 'scope.*vision_decoder"' src tests configs
-uv run pytest -o "addopts=" tests/unit/test_config_schema.py tests/unit/test_peft_target_parameters.py -v
-```
+   ```python
+       logger.info(
+           "QLoRA: trainable=%d (%.2f%%) of %d "
+           "(lora_scope=%s, quant_type=%s, compute_dtype=%s, n_mha_targets=%d)",
+           trainable,
+           100 * ratio,
+           total,
+           cfg.scope if cfg.target_modules is None else "<override>",
+           cfg.qlora.quant_type,
+           cfg.qlora.compute_dtype,
+           len(mha_names),
+       )
+   ```
 
-Expected: PASS. Inspect any test/config that pins or asserts the old default string and
-update only those that asserted the **default** (not those that explicitly pin
-`vision_decoder`).
+- [ ] **Step 4: Run the test**
+
+Run: `uv run pytest -o "addopts=" tests/unit/test_peft_target_parameters.py -v`
+Expected: PASS.
 
 - [ ] **Step 5: Lint/type + import smoke**
 
 Run:
 
 ```bash
-uv run ruff check src/custom_sam_peft/config/schema.py
-uv run ruff format --check src/custom_sam_peft/config/schema.py
-uv run mypy --strict src/custom_sam_peft/config/schema.py
+uv run ruff check src/custom_sam_peft/peft_adapters/qlora.py
+uv run ruff format --check src/custom_sam_peft/peft_adapters/qlora.py
+uv run mypy --strict src/custom_sam_peft/peft_adapters/qlora.py
 uv run python -c "import custom_sam_peft"
 ```
 
-Expected: all pass.
+Expected: all pass (`mypy --strict` on `qlora.py` exercises the reworked import + union).
 
 - [ ] **Step 6: Commit**
 
 ```bash
-git add src/custom_sam_peft/config/schema.py tests/unit/test_config_schema.py tests/unit/test_peft_target_parameters.py
-git commit -m "feat(#230): flip default scope to vision_decoder_concept (#tbd #230)"
+git add src/custom_sam_peft/peft_adapters/qlora.py tests/unit/test_peft_target_parameters.py
+git commit -m "feat(#230): union MHA module names into target_modules in QLoRA apply path"
 ```
 
-### Task 2.7: Expose MHA `in_proj_weight` in the LoRA stub fixture
+### Task 2.6: Rework the stub fixture — `FIXTURE_SCOPE_MHA_MODULES` + de-overlapped concept patterns
 
 **Files:**
 
-- Modify: `tests/fixtures/tiny_sam3_lora_stub.py` (`_DecoderLayer:43-47`,
-  `FIXTURE_SCOPE_PATTERNS:131-138`)
+- Modify: `tests/fixtures/tiny_sam3_lora_stub.py` (the committed
+  `FIXTURE_SCOPE_TARGET_PARAMETERS` + the `vision_decoder_concept` `FIXTURE_SCOPE_PATTERNS`
+  entry)
 - Test: `tests/unit/test_peft_target_parameters.py`
 
-- [ ] **Step 1: Write the failing test**
+`ca_text` / `self_attn` are **already** real `nn.MultiheadAttention` in the stub (committed in
+`b283be7`) — **KEEP** that. This task reworks only the fixture **mappings**: rename
+`FIXTURE_SCOPE_TARGET_PARAMETERS` → `FIXTURE_SCOPE_MHA_MODULES` (module-name patterns, not
+param patterns) and de-overlap the concept `FIXTURE_SCOPE_PATTERNS` entry.
 
-Add to `tests/unit/test_peft_target_parameters.py`:
+- [ ] **Step 1: Rewrite the fixture test to the MHA mappings**
+
+In `tests/unit/test_peft_target_parameters.py`, replace the committed
+`test_fixture_exposes_mha_inproj_and_concept_patterns` with:
 
 ```python
-def test_fixture_exposes_mha_inproj_and_concept_patterns() -> None:
+def test_fixture_exposes_mha_modules_and_de_overlapped_concept_patterns() -> None:
     from tests.fixtures.tiny_sam3_lora_stub import (
+        FIXTURE_SCOPE_MHA_MODULES,
         FIXTURE_SCOPE_PATTERNS,
-        FIXTURE_SCOPE_TARGET_PARAMETERS,
         make_stub_wrapper,
     )
 
     w = make_stub_wrapper(dim=8, working=False)
     base = w.model.model
+    # ca_text / self_attn are real nn.MultiheadAttention (in_proj_weight exists).
     names = [n for n, _ in base.named_parameters()]
     assert any(n.endswith("ca_text.in_proj_weight") for n in names), names[:10]
     assert any(n.endswith("self_attn.in_proj_weight") for n in names), names[:10]
-    # cross_attn must NOT be MHA (negative control for the parameter axis).
+    # cross_attn must NOT be MHA (negative control for the MHA axis).
     assert not any("cross_attn.in_proj_weight" in n for n in names)
-    # The concept fixture mappings exist.
+
+    # The concept fixture mappings exist and are de-overlapped.
     assert "vision_decoder_concept" in FIXTURE_SCOPE_PATTERNS
-    assert "vision_decoder_concept" in FIXTURE_SCOPE_TARGET_PARAMETERS
+    assert "vision_decoder_concept" in FIXTURE_SCOPE_MHA_MODULES
+    concept_generic = FIXTURE_SCOPE_PATTERNS["vision_decoder_concept"]
+    assert not any(("self_attn" in p or "ca_text" in p) and "out_proj" in p for p in concept_generic)
+    concept_mha = FIXTURE_SCOPE_MHA_MODULES["vision_decoder_concept"]
+    assert any("ca_text" in p for p in concept_mha)
+    assert any("self_attn" in p for p in concept_mha)
 ```
 
 - [ ] **Step 2: Run it to confirm it fails**
 
 Run: `uv run pytest -o "addopts=" tests/unit/test_peft_target_parameters.py -k fixture_exposes -v`
-Expected: FAIL (`ImportError`/`AssertionError` — no MHA children, no concept mappings).
+Expected: FAIL (`ImportError` — `FIXTURE_SCOPE_MHA_MODULES` does not exist; the committed
+`FIXTURE_SCOPE_TARGET_PARAMETERS` does).
 
-- [ ] **Step 3: Update the fixture**
+- [ ] **Step 3: Rework the fixture mappings**
 
-In `tests/fixtures/tiny_sam3_lora_stub.py`, change `_DecoderLayer` (`:43-47`) so `ca_text`
-and `self_attn` are real `nn.MultiheadAttention` (keep `cross_attn` non-MHA as the negative
-control):
-
-```python
-class _DecoderLayer(nn.Module):
-    def __init__(self, dim: int = 8, n_heads: int = 2) -> None:
-        super().__init__()
-        # Genuine torch MHA so in_proj_weight (a bare nn.Parameter) exists, mirroring
-        # SAM 3.1's decoder ca_text/self_attn. cross_attn stays a non-MHA attention so
-        # it is the negative control for the in_proj parameter axis.
-        self.ca_text = nn.MultiheadAttention(dim, n_heads, batch_first=True)
-        self.self_attn = nn.MultiheadAttention(dim, n_heads, batch_first=True)
-        self.cross_attn = _DecoderAttn(dim)
-```
-
-Add a `vision_decoder_concept` entry to `FIXTURE_SCOPE_PATTERNS` (equal to the
-`vision_decoder` fixture module patterns; note the truncated `transformer_decoder` prefix)
-and add the new parallel mapping after it (`:131-138`):
+In `tests/fixtures/tiny_sam3_lora_stub.py` (keep the committed MHA `_DecoderLayer` children
+as-is), de-overlap the `vision_decoder_concept` `FIXTURE_SCOPE_PATTERNS` entry and replace
+`FIXTURE_SCOPE_TARGET_PARAMETERS` with `FIXTURE_SCOPE_MHA_MODULES` (fixture-prefixed
+**module** patterns; note the truncated `transformer_decoder` prefix). The concept generic
+entry drops the `self_attn` out_proj alternative so it does not double-target the MHA wrapper
+on the stub:
 
 ```python
 FIXTURE_SCOPE_PATTERNS: dict[str, list[str]] = {
@@ -1043,30 +836,24 @@ FIXTURE_SCOPE_PATTERNS: dict[str, list[str]] = {
         r"vision_trunk\.blocks\.\d+\.attn\.(qkv|proj)$",
         r"transformer_decoder\.layers\.\d+\.(self_attn|cross_attn)\.out_proj$",
     ],
+    # De-overlapped: only cross_attn.out_proj is a generic target; self_attn out_proj
+    # is adapted by peft's lora.MultiheadAttention via FIXTURE_SCOPE_MHA_MODULES.
     "vision_decoder_concept": [
         r"vision_trunk\.blocks\.\d+\.attn\.(qkv|proj)$",
-        r"transformer_decoder\.layers\.\d+\.(self_attn|cross_attn)\.out_proj$",
+        r"transformer_decoder\.layers\.\d+\.cross_attn\.out_proj$",
     ],
     "all": [r".*"],
 }
 
-# Parallel to the production SCOPE_TARGET_PARAMETERS, but with the fixture's truncated
-# `transformer_decoder` prefix. Drives the in_proj parameter axis on the stub.
-FIXTURE_SCOPE_TARGET_PARAMETERS: dict[str, list[str]] = {
+# Parallel to the production SCOPE_MHA_MODULES, but with the fixture's truncated
+# `transformer_decoder` prefix. Drives the MHA-module axis on the stub.
+FIXTURE_SCOPE_MHA_MODULES: dict[str, list[str]] = {
     "vision_decoder_concept": [
-        r"transformer_decoder\.layers\.\d+\.ca_text\.in_proj_weight$",
-        r"transformer_decoder\.layers\.\d+\.self_attn\.in_proj_weight$",
+        r"transformer_decoder\.layers\.\d+\.ca_text$",
+        r"transformer_decoder\.layers\.\d+\.self_attn$",
     ],
 }
 ```
-
-Note: `nn.MultiheadAttention`'s `out_proj` child has name `out_proj` (matches the existing
-`(self_attn|cross_attn)` out_proj pattern only for `self_attn` — `ca_text` out_proj is not
-in the fixture's `vision_decoder` pattern, matching production where the concept scope's
-module list does include `ca_text.out_proj`; the in_proj coverage comes from the parameter
-axis). The fixture module patterns intentionally mirror the **existing** `vision_decoder`
-fixture shape; the new coverage is the parameter axis. Do not expand the module patterns
-beyond the existing two-line `vision_decoder` shape.
 
 - [ ] **Step 4: Run the test + the existing stub-driven tests**
 
@@ -1077,8 +864,8 @@ uv run pytest -o "addopts=" tests/unit/test_peft_target_parameters.py tests/unit
 ```
 
 Expected: PASS. `test_peft_scope_coverage.py`'s `working=True` forward/backward test must
-still pass — the stub's forward routes through `vision_trunk.blocks[0].attn.qkv`
-(`tiny_sam3_lora_stub.py:92`), unaffected by the decoder-layer MHA swap.
+still pass — the stub's forward routes through `vision_trunk.blocks[0].attn.qkv`, unaffected
+by the fixture-mapping rework.
 
 - [ ] **Step 5: Lint/type + import smoke**
 
@@ -1097,20 +884,31 @@ Expected: all pass.
 
 ```bash
 git add tests/fixtures/tiny_sam3_lora_stub.py tests/unit/test_peft_target_parameters.py
-git commit -m "test(#230): expose ca_text/self_attn MHA in_proj in LoRA stub fixture"
+git commit -m "test(#230): rework stub to FIXTURE_SCOPE_MHA_MODULES + de-overlapped concept patterns"
 ```
 
-### Task 2.8: CPU coverage — concept scope resolves both axes via `apply_lora` on the stub
+### Task 2.7: CPU coverage — monkeypatched union path on the stub; example configs; GPU tests
 
 **Files:**
 
-- Modify: `tests/unit/test_peft_target_parameters.py`
+- Modify: `tests/unit/test_peft_target_parameters.py` (monkeypatched `apply_lora` union path)
+- Modify: `configs/examples/*` (example-config docs — NO `target_parameters` knob)
+- Modify: `tests/integration/test_peft_lora_real.py` and `tests/integration/test_peft_qlora_real.py`
+  (rework the Phase-1 `target_parameters`-override spike tests to the real
+  `scope="vision_decoder_concept"`)
 
-The production `SCOPE_TARGET_PARAMETERS` patterns use the real `transformer.decoder` prefix
-and will not match the stub's truncated `transformer_decoder` prefix; drive the stub via the
-`FIXTURE_*` overrides (the same approach `test_peft_scope_coverage.py` uses for modules).
+**CPU-harness note (spec §10.2, must be honored).** Production `SCOPE_MHA_MODULES` and
+`SCOPE_TARGETS["vision_decoder_concept"]` use the real `transformer.decoder` prefix, which
+does **not** match the stub's truncated `transformer_decoder` prefix. So a stub call to
+`apply_lora(scope="vision_decoder_concept")` **without intervention** makes
+`_resolve_mha_modules` raise non-empty-no-match. To exercise `apply_lora`'s **real union path**
+on the stub, the CPU test must **monkeypatch the production** `SCOPE_MHA_MODULES` **and**
+`SCOPE_TARGETS["vision_decoder_concept"]` to the fixture-prefixed patterns (from
+`FIXTURE_SCOPE_MHA_MODULES` and `FIXTURE_SCOPE_PATTERNS["vision_decoder_concept"]`), then call
+`apply_lora`. (The focused `_resolve_mha_modules` unit test against `_MiniBase` in Task 2.3
+needs no monkeypatch — `_MiniBase` uses the real prefix.)
 
-- [ ] **Step 1: Write the failing tests**
+- [ ] **Step 1: Write the monkeypatched union test + the `all`-never-reaches-MHA hard test**
 
 Add to `tests/unit/test_peft_target_parameters.py`:
 
@@ -1119,158 +917,105 @@ def _lora_param_names(wrapper: object) -> list[str]:
     return [n for n, _ in wrapper.model.model.named_parameters() if "lora_" in n]
 
 
-def test_concept_scope_attaches_modules_and_inproj_on_stub() -> None:
+def test_concept_scope_unions_modules_and_mha_on_stub(monkeypatch: pytest.MonkeyPatch) -> None:
+    """§10.2: with production scope dicts monkeypatched to fixture prefixes, apply_lora's
+    real union path attaches generic-module LoRA + MHA in_proj/out_proj LoRA, and NOT on
+    cross_attn (negative control)."""
+    import custom_sam_peft.peft_adapters.lora as lora_mod
     from tests.fixtures.tiny_sam3_lora_stub import (
+        FIXTURE_SCOPE_MHA_MODULES,
         FIXTURE_SCOPE_PATTERNS,
-        FIXTURE_SCOPE_TARGET_PARAMETERS,
         make_stub_wrapper,
     )
-    from custom_sam_peft.peft_adapters.lora import apply_lora
 
-    w = make_stub_wrapper(dim=8, working=False)
-    apply_lora(
-        w,
-        PEFTConfig(
-            method="lora",
-            scope="vision_decoder_concept",
-            target_modules=FIXTURE_SCOPE_PATTERNS["vision_decoder_concept"],
-            target_parameters=FIXTURE_SCOPE_TARGET_PARAMETERS["vision_decoder_concept"],
-        ),
+    monkeypatch.setitem(
+        lora_mod.SCOPE_MHA_MODULES, "vision_decoder_concept",
+        FIXTURE_SCOPE_MHA_MODULES["vision_decoder_concept"],
     )
+    monkeypatch.setitem(
+        lora_mod.SCOPE_TARGETS, "vision_decoder_concept",
+        FIXTURE_SCOPE_PATTERNS["vision_decoder_concept"],
+    )
+    w = make_stub_wrapper(dim=8, working=False)
+    lora_mod.apply_lora(w, PEFTConfig(method="lora", scope="vision_decoder_concept"))
+
     names = _lora_param_names(w)
     assert any("vision_trunk.blocks" in n for n in names)
     assert any("ca_text" in n and "lora" in n for n in names), names[:10]
     assert any("self_attn" in n and "lora" in n for n in names), names[:10]
     assert not any("cross_attn" in n and "in_proj" in n for n in names)
-
-
-def test_concept_scope_trainable_ratio_small_on_stub() -> None:
-    from tests.fixtures.tiny_sam3_lora_stub import (
-        FIXTURE_SCOPE_PATTERNS,
-        FIXTURE_SCOPE_TARGET_PARAMETERS,
-        make_stub_wrapper,
-    )
-    from custom_sam_peft.peft_adapters.lora import apply_lora
-
-    w = make_stub_wrapper(dim=8, working=False)
-    apply_lora(
-        w,
-        PEFTConfig(
-            method="lora",
-            scope="vision_decoder_concept",
-            target_modules=FIXTURE_SCOPE_PATTERNS["vision_decoder_concept"],
-            target_parameters=FIXTURE_SCOPE_TARGET_PARAMETERS["vision_decoder_concept"],
-        ),
-    )
+    # Trainable ratio sane (stub is tiny; loose bound mirrors existing style).
     base = w.model.model
     trainable = sum(p.numel() for p in base.parameters() if p.requires_grad)
     total = sum(p.numel() for p in base.parameters())
-    assert trainable / total < 0.5  # stub is tiny; loose bound mirrors existing style
+    assert trainable / total < 0.5
+
+
+def test_all_scope_never_reaches_mha_on_stub(monkeypatch: pytest.MonkeyPatch) -> None:
+    """§4.3 HARD: the 'all' scope's .* lives only in _resolve_targets (nn.Linear); it can
+    never reach an nn.MultiheadAttention module."""
+    from tests.fixtures.tiny_sam3_lora_stub import FIXTURE_SCOPE_PATTERNS, make_stub_wrapper
+    from custom_sam_peft.peft_adapters.lora import _resolve_mha_modules
+
+    base = make_stub_wrapper(dim=8, working=False).model.model
+    assert _resolve_mha_modules(base, PEFTConfig(method="lora", scope="all")) == []
 ```
 
 - [ ] **Step 2: Run them to confirm they pass**
 
-Run: `uv run pytest -o "addopts=" tests/unit/test_peft_target_parameters.py -k "concept_scope_attaches or trainable_ratio_small" -v`
-Expected: PASS (all wiring from Tasks 2.2–2.7 is now in place). If `apply_lora` raises a peft
-error attaching `target_parameters` to the stub's MHA on CPU, that surfaces a peft/stack
-incompatibility the Phase 1 spike should have caught — escalate per the gated fallback,
-do not weaken the test.
+Run: `uv run pytest -o "addopts=" tests/unit/test_peft_target_parameters.py -k "unions_modules or all_scope_never" -v`
+Expected: PASS (all wiring from Tasks 2.2–2.6 is in place). If `apply_lora` raises a peft error
+attaching `lora.MultiheadAttention` to the stub's MHA on CPU, that contradicts the §7.3a
+GPU-confirmed result — escalate per the design-ambiguity ladder; do not weaken the test.
 
-- [ ] **Step 3: Lint/type**
+- [ ] **Step 3: Update example configs (NO `target_parameters` knob)**
 
-Run:
-
-```bash
-uv run ruff check tests/unit/test_peft_target_parameters.py
-uv run ruff format --check tests/unit/test_peft_target_parameters.py
-uv run mypy --strict tests/unit/test_peft_target_parameters.py
-```
-
-Expected: all pass.
-
-- [ ] **Step 4: Commit**
-
-```bash
-git add tests/unit/test_peft_target_parameters.py
-git commit -m "test(#230): CPU coverage for concept scope two-axis resolution on stub"
-```
-
-### Task 2.9: Update example configs to document the new scope + override knob
-
-**Files:**
-
-- Modify: `configs/examples/coco_text_lora.yaml:45-48` (the commented PEFT knob block) and
-  the analogous block in the other example configs that carry it:
-  `configs/examples/coco_text_qlora.yaml`, `coco_text_auto_split.yaml`,
-  `coco_text_no_val.yaml`, `coco_text_lora_subset.yaml`, `min_gpu_qlora.yaml`,
-  `gpu_smoke_lora.yaml`, `gpu_smoke_qlora.yaml` (grep each; only those with a `# scope:`
-  comment line need editing)
-
-- [ ] **Step 1: Find every commented PEFT knob block**
-
-Run:
+Find every commented PEFT knob block:
 
 ```bash
 grep -rln "# scope:" configs/examples
 ```
 
-Expected: the list of example configs carrying the commented `# scope:` knob.
-
-- [ ] **Step 2: Update the comment block in each**
-
-In each matched file, replace the commented knob block (in `coco_text_lora.yaml` it is
-`:45-48`) with:
+In each matched file, update only the commented knob block (spec §6.4): list
+`vision_decoder_concept` as the default in the `# scope:` line and note it is the new shipped
+default (adapts `ca_text` / `self_attn` MHA in_proj + out_proj for text concepts). Leave the
+existing commented `# target_modules:` knob as-is. **Do NOT add a `# target_parameters:` knob**
+(the field is reverted). No uncommented value changes — defaults already apply. Example block:
 
 ```yaml
   # Knobs (defaults shown — uncomment to override):
   # scope: vision_decoder_concept  # vision | vision_decoder | vision_decoder_concept | all
-  #                                # (default; adapts ca_text/self_attn in_proj for text concepts)
+  #                                # (default; adapts ca_text/self_attn MHA in_proj+out_proj
+  #                                #  for text concepts)
   # bias: none                     # none | all | lora_only
   # target_modules: [...]          # overrides scope's module patterns when set
-  # target_parameters: [...]       # overrides scope's in_proj patterns when set
 ```
 
-Only comment lines change; **no uncommented value changes** (defaults already apply — this
-documents the new lever only). Preserve each file's existing indentation exactly.
-
-- [ ] **Step 3: Validate the configs still load**
-
-Run (substitute each edited path):
+Validate each edited config still loads:
 
 ```bash
 uv run python -c "from custom_sam_peft.config.loader import load_config; load_config('configs/examples/coco_text_lora.yaml')"
 ```
 
-Expected: loads without error. Repeat for each edited config (or loop over the grep list).
+(Repeat for each edited path / loop over the grep list.)
 
-- [ ] **Step 4: Commit**
+- [ ] **Step 4: Rework the GPU integration tests to the real scope**
 
-```bash
-git add configs/examples
-git commit -m "docs(#230): document vision_decoder_concept + target_parameters in example configs"
-```
-
-### Task 2.10: Productionize the GPU integration tests with the real scope
-
-**Files:**
-
-- Modify: `tests/integration/test_peft_lora_real.py` and `tests/integration/test_peft_qlora_real.py`
-  (replace the Phase-1 spike overrides with the real `scope="vision_decoder_concept"`)
-
-- [ ] **Step 1: Replace the spike overrides with the production scope (LoRA)**
-
-In `tests/integration/test_peft_lora_real.py`, update the Phase-1 spike test (or add a
-production test alongside it) to drive the real scope and assert §10.4:
+In `tests/integration/test_peft_lora_real.py`, **replace** the Phase-1
+`test_spike_inproj_lora_*` test (which used `target_parameters` overrides — now reverted) with
+the productionized §10.4 test, and delete the spike's `_INPROJ_PARAM_PATTERNS` /
+`_VISION_DECODER_MODULE_PATTERNS` helpers (keep the recorded go/no-go in the PR / a comment):
 
 ```python
 def test_concept_scope_inproj_on_real_sam31() -> None:
-    """§10.4: scope='vision_decoder_concept' attaches in_proj LoRA, merges, ratio<5%."""
+    """§10.4: scope='vision_decoder_concept' attaches MHA in_proj+out_proj LoRA, merges,
+    ratio<5%."""
     w = load_sam31(ModelConfig())
     apply_lora(w, PEFTConfig(method="lora", scope="vision_decoder_concept"))
 
     lora_names = [n for n, _ in w.model.model.named_parameters() if "lora_" in n]
-    assert any("ca_text" in n for n in lora_names), f"no ca_text in_proj LoRA: {lora_names[:8]}"
-    assert any("self_attn" in n for n in lora_names), f"no self_attn in_proj LoRA: {lora_names[:8]}"
+    assert any("ca_text" in n for n in lora_names), f"no ca_text MHA LoRA: {lora_names[:8]}"
+    assert any("self_attn" in n for n in lora_names), f"no self_attn MHA LoRA: {lora_names[:8]}"
 
     trainable = sum(p.numel() for p in w.model.model.parameters() if p.requires_grad)
     total = sum(p.numel() for p in w.model.model.parameters())
@@ -1280,65 +1025,58 @@ def test_concept_scope_inproj_on_real_sam31() -> None:
     assert w.peft_model is None
 ```
 
-Remove or fold the Phase-1 `test_spike_inproj_lora_*` test now that the scope exists (keep
-its recorded outcome in the PR / spike comment). (If Phase 1 chose **gated** §7.3(b): assert
-the concept scope produces **no** in_proj LoRA yet — `not any("ca_text" in n ...)` — and that
-it is behaviorally equal to `vision_decoder`.)
+In `tests/integration/test_peft_qlora_real.py`, mirror this for QLoRA with
+`scope="vision_decoder_concept"` (replacing the Phase-1 `target_parameters`-override
+`test_spike_inproj_qlora_*` test), asserting the bf16 MHA LoRA coexists with the `Linear4bit`
+module LoRA and `merge_lora` folds both in one `PeftModel` (§7.2; GPU-confirmed §7.3a — merge
+emits only a benign NF4-rounding `UserWarning`). Remove the spike's local
+`_INPROJ_PARAM_PATTERNS` from that file too.
 
-- [ ] **Step 2: Replace the spike overrides with the production scope (QLoRA)**
-
-In `tests/integration/test_peft_qlora_real.py`, mirror Step 1 for QLoRA with
-`scope="vision_decoder_concept"`, asserting the in_proj LoRA coexists with the `Linear4bit`
-module LoRA and `merge_lora` folds both (§7.2). Remove/fold the Phase-1 spike test.
-
-- [ ] **Step 3: Verify compile + lint + type (off-GPU)**
+- [ ] **Step 5: Verify compile + lint + type (off-GPU) + run CPU subset**
 
 Run:
 
 ```bash
 uv run python -m py_compile tests/integration/test_peft_lora_real.py tests/integration/test_peft_qlora_real.py
-uv run ruff check tests/integration/test_peft_lora_real.py tests/integration/test_peft_qlora_real.py
-uv run ruff format --check tests/integration/test_peft_lora_real.py tests/integration/test_peft_qlora_real.py
+uv run ruff check tests/integration/test_peft_lora_real.py tests/integration/test_peft_qlora_real.py tests/unit/test_peft_target_parameters.py configs/examples
+uv run ruff format --check tests/integration/test_peft_lora_real.py tests/integration/test_peft_qlora_real.py tests/unit/test_peft_target_parameters.py
 uv run mypy --strict tests/integration/test_peft_lora_real.py tests/integration/test_peft_qlora_real.py
+uv run pytest -o "addopts=" tests/unit/test_peft_target_parameters.py -v
 ```
 
-Expected: all pass (the test bodies remain GPU-gated/skipped off-GPU).
+Expected: all pass (GPU test bodies remain gated/skipped off-GPU). On the GPU runner,
+`scripts/run_gpu_tests.sh local` executes the new concept-scope tests; record the empirical
+trainable ratio (confirms §8.3 — leave the 10% guard / `< 0.05` budget unchanged unless
+reality demands; a threshold change would need a `# tbd:`).
 
-- [ ] **Step 4: Execute on the GPU runner**
-
-Run:
+- [ ] **Step 6: Commit**
 
 ```bash
-scripts/run_gpu_tests.sh local
+git add tests/unit/test_peft_target_parameters.py configs/examples tests/integration/test_peft_lora_real.py tests/integration/test_peft_qlora_real.py
+git commit -m "test(#230): CPU union-path + GPU concept-scope tests; example-config docs (no target_parameters knob)"
 ```
 
-Expected: the new concept-scope tests PASS on a machine with the checkpoint + compatible
-GPU. Record the empirical trainable ratio (confirms §8.3 — leave the 10% guard /
-`< 0.05` budget unchanged unless reality demands; a threshold change would need a `# tbd:`).
-
-- [ ] **Step 5: Commit**
-
-```bash
-git add tests/integration/test_peft_lora_real.py tests/integration/test_peft_qlora_real.py
-git commit -m "test(#230): GPU concept-scope in_proj tests (LoRA + QLoRA coexistence)"
-```
-
-### Task 2.11: Phase 2 verification before completion
+### Task 2.8: Phase 2 verification before completion
 
 **Files:** none (verification only)
 
-- [ ] **Step 1: Full CPU suite + blast-radius grep**
+- [ ] **Step 1: Full CPU suite + blast-radius grep (incl. revert completeness)**
 
 Run:
 
 ```bash
-grep -rn "SCOPE_TARGETS\|SCOPE_TARGET_PARAMETERS\|target_parameters\|vision_decoder_concept" src tests
+# New symbols are present and wired:
+grep -rn "SCOPE_MHA_MODULES\|_resolve_mha_modules\|vision_decoder_concept" src tests
+# REVERT COMPLETENESS: the old axis must be GONE everywhere.
+grep -rn "target_parameters\|SCOPE_TARGET_PARAMETERS\|_resolve_target_parameters" src tests
 uv run pytest -o "addopts=" tests/unit tests/integration -q
 uv run python -c "import custom_sam_peft"
 ```
 
-Expected: full CPU suite PASSES (GPU tests skipped); the package imports clean; no stray
-reference to the old default that asserted `vision_decoder` as the default.
+Expected: the first grep shows the new symbols; the **second grep returns NOTHING** (no
+`target_parameters` / `SCOPE_TARGET_PARAMETERS` / `_resolve_target_parameters` reference
+remains in `src/` or `tests/`); the full CPU suite PASSES (GPU tests skipped); the package
+imports clean.
 
 - [ ] **Step 2: Lint/type the whole touched set**
 
@@ -1365,10 +1103,10 @@ Expected: all pass. Fix any finding, then the phase is complete.
 today) when rank is not reduced. `oom.py::OomLadder` is untouched.
 
 **ORTHOGONALITY (call-out for the orchestrator):** This phase is **file-disjoint** from
-Phases 1–2 and does **not** depend on the spike. It touches only:
+Phases 1–2 and does **not** depend on the spike or the MHA-module axis. It touches only:
 `src/custom_sam_peft/cli/calibrate_cmd.py`, `src/custom_sam_peft/cli/_config_rewrite.py`,
 `src/custom_sam_peft/presets.py` (`PresetDecision` only), and
-`tests/unit/test_calibrate_cmd.py`. It may run **in parallel** with Phases 1 and 2 on the
+`tests/unit/test_calibrate_cmd.py`. It may run **in parallel** with Phase 2 on the
 same branch/worktree. **Serialize commits** with the other phases (parallel agents
 committing on one branch can orphan a commit) — but the work itself is independent.
 
@@ -1924,32 +1662,39 @@ Expected: all pass. Fix any finding; the phase is then complete.
 
 Before opening the PR, confirm each spec §11 criterion maps to delivered work:
 
-1. **Spike resolved first** — Phase 1 (Tasks 1.1–1.3); go/no-go + mechanism recorded.
-2. **New scope** — Task 2.2 (`vision_decoder_concept`; modules == `vision_decoder`; legacy
-   scopes byte-identical, asserted in Task 2.2 / `test_peft_scope_coverage.py`).
-3. **New default** — Task 2.6 (`# tbd: #230`; reproducibility note in code + spec).
-4. **Resolution axis** — Tasks 2.2–2.5 (`SCOPE_TARGET_PARAMETERS`,
-   `_resolve_target_parameters`, both apply paths pass the axis; legacy = `None`).
-5. **Override field** — Task 2.1 (`target_parameters: list[str] | None = None`; precedence +
-   empty-vs-no-match covered in Task 2.3).
-6. **QLoRA coexistence** — Tasks 1.2, 2.5, 2.10 (one `PeftModel`, attach+forward+merge; or
-   gated per §7.3(b)).
-7. **Error parity** — Task 2.3 (non-empty-no-match `ValueError`; empty resolution is fine).
-8. **Trainable-ratio guard** — Tasks 1.x / 2.8 / 2.10 (empirically < 5% budget; 10% guard
-   unchanged).
+1. **Spike resolved first** — Phase 1 DONE; go/no-go = GO, mechanism = `lora.MultiheadAttention`
+   (§7.3a); `target_parameters` reverted.
+2. **New scope** — Task 2.2 (`vision_decoder_concept`; `SCOPE_TARGETS` entry =
+   `vision_decoder`'s generic set **minus** `self_attn`/`ca_text` out_proj **plus** an
+   `SCOPE_MHA_MODULES` entry; legacy scopes byte-identical, asserted in Task 2.2 /
+   `test_peft_scope_coverage.py`).
+3. **New default** — kept from `44b4d31`, re-asserted in Task 2.5 (`# tbd: #230`;
+   reproducibility note in code + spec).
+4. **Resolution axis** — Tasks 2.2–2.5 (`SCOPE_MHA_MODULES`, `_resolve_mha_modules`, both
+   apply paths union matched MHA module names into `target_modules`; legacy adds no MHA
+   targets). `target_parameters` field/resolver/dict/wiring reverted (Tasks 2.1–2.5).
+5. **No override field** — Task 2.1 (`target_parameters` reverted; `target_modules` owns the
+   module axis and suppresses the scope's MHA union when set, asserted in Task 2.3).
+6. **QLoRA coexistence** — Tasks 2.5, 2.7 (one `PeftModel`, attach+forward+merge with
+   `dropout=0.05`; GPU-confirmed §7.3a).
+7. **Error parity** — Task 2.3 (non-empty-no-match `ValueError`; empty resolution / override
+   is fine).
+8. **Trainable-ratio guard** — Tasks 2.7 (empirically < 5% budget; 10% guard unchanged).
 9. **Calibrate alpha co-scale** — Phase 3 (Tasks 3.1–3.5); `oom.py` untouched (Task 3.5);
    no new `# tbd:`.
-10. **Tests/fixtures** — Task 2.7 (stub MHA), Tasks 2.8 / 2.10 / 3.x (CPU + GPU); coverage
-    >= 80% (trust CI).
+10. **Tests/fixtures** — Task 2.6 (stub MHA + `FIXTURE_SCOPE_MHA_MODULES`), Tasks 2.7 / 3.x
+    (CPU monkeypatched union + GPU); coverage >= 80% (trust CI).
 11. **Lint/type** — every task's lint/type step; the markdown gate for this plan + the spec.
 
 ## Self-review notes (placeholders/types checked)
 
 - Every code step shows complete code (no TBD / "add error handling" placeholders).
-- Type/name consistency: `_resolve_target_parameters(base, cfg) -> list[str]`,
-  `SCOPE_TARGET_PARAMETERS`, `PEFTConfig.target_parameters`,
-  `PresetDecision.alpha`, `_rewrite_sizing_block(..., alpha, ...)`,
-  `chosen_alpha`, and `alpha_final = round(cfg.peft.alpha * r / cfg.peft.r)` are used
-  identically everywhere they appear.
-- Phase boundaries each publish an explicit interface contract; Phase 1 gates Phase 2;
-  Phase 3 is orthogonal and parallelizable (commits serialized).
+- Type/name consistency: `_resolve_mha_modules(base, cfg) -> list[str]`, `SCOPE_MHA_MODULES`,
+  `FIXTURE_SCOPE_MHA_MODULES`, the de-overlapped `SCOPE_TARGETS["vision_decoder_concept"]`,
+  `target_modules = matched_names + [n for n in mha_names if n not in matched_names]`,
+  `PresetDecision.alpha`, `_rewrite_sizing_block(..., alpha, ...)`, `chosen_alpha`, and
+  `alpha_final = round(cfg.peft.alpha * r / cfg.peft.r)` are used identically everywhere they
+  appear. No `target_parameters` / `SCOPE_TARGET_PARAMETERS` / `_resolve_target_parameters`
+  reference remains (revert completeness, Task 2.8).
+- Phase boundaries each publish an explicit interface contract; Phase 1 is DONE and gates
+  Phase 2; Phase 3 is orthogonal and parallelizable (commits serialized).
