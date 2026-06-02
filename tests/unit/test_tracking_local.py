@@ -81,3 +81,39 @@ def test_log_images_is_noop(tmp_path: Path) -> None:
 
 def test_wants_images_is_false() -> None:
     assert LocalTracker.wants_images is False
+
+
+def _write_rows(run_dir: Path, steps: list[int]) -> None:
+    lines = [json.dumps({"step": s, "wall_time": 1.0, "loss": float(s)}) for s in steps]
+    (run_dir / "metrics.jsonl").write_text("\n".join(lines) + "\n")
+
+
+def test_resume_keeps_only_rows_before_resume_step(tmp_path: Path) -> None:
+    # Interrupted run logged steps 0..5; last checkpoint was step_4.
+    _write_rows(tmp_path, [0, 1, 2, 3, 4, 5])
+    ckpt = tmp_path / "checkpoints" / "step_4"
+    ckpt.mkdir(parents=True)
+
+    t = _tracker()
+    t.start_run(tmp_path, {}, resume_from=ckpt)
+    # Re-walk re-logs step 4 onward; appends must not duplicate prior steps.
+    t.log_scalars(4, {"loss": 4.0})
+    t.log_scalars(5, {"loss": 5.0})
+    t.close()
+
+    steps = [r["step"] for r in _read_rows(tmp_path)]
+    assert steps == [0, 1, 2, 3, 4, 5], f"expected dedup to keep <4 then re-append; got {steps}"
+
+
+def test_resume_fallback_when_name_not_step_n(tmp_path: Path) -> None:
+    _write_rows(tmp_path, [0, 1, 2])
+    ckpt = tmp_path / "checkpoints" / "latest"  # does NOT match step_<N>
+    ckpt.mkdir(parents=True)
+
+    t = _tracker()
+    t.start_run(tmp_path, {}, resume_from=ckpt)  # warns, appends without dedup
+    t.log_scalars(3, {"loss": 3.0})
+    t.close()
+
+    steps = [r["step"] for r in _read_rows(tmp_path)]
+    assert steps == [0, 1, 2, 3], f"fallback must retain all existing rows; got {steps}"
