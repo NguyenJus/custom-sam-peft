@@ -54,9 +54,29 @@ SCOPE_TARGETS: dict[str, list[str]] = {
         r"transformer\.decoder\.layers\.\d+\.(self_attn|cross_attn|ca_text)\.out_proj$",
         r"transformer\.decoder\.layers\.\d+\.linear[12]$",
     ],
+    # vision_decoder + the two in_proj parameter targets (see SCOPE_TARGET_PARAMETERS).
+    # Module set is IDENTICAL to vision_decoder; the concept surface is the in_proj
+    # parameter axis. New default scope (schema.py). See spec #230 §4.
+    "vision_decoder_concept": [
+        r"backbone\.vision_backbone\.trunk\.blocks\.\d+\.attn\.(qkv|proj)$",
+        r"transformer\.decoder\.layers\.\d+\.(self_attn|cross_attn|ca_text)\.out_proj$",
+        r"transformer\.decoder\.layers\.\d+\.linear[12]$",
+    ],
     # Every nn.Linear in the tree. Existing intentional over-match; narrowing
     # is deferred (see TODO history in PRs #4 / #7).
     "all": [r".*"],
+}
+
+# Parallel to SCOPE_TARGETS: scope -> regexes matched against named_parameters().
+# Reaches the bare nn.Parameter q/k/v packed in nn.MultiheadAttention.in_proj_weight,
+# which target_modules cannot see. Only the concept scope populates it; absent scopes
+# carry no parameter targets (reproducibility for vision/vision_decoder/all). This is
+# the second single-point-of-contact for SAM 3.1 surface naming alongside SCOPE_TARGETS.
+SCOPE_TARGET_PARAMETERS: dict[str, list[str]] = {
+    "vision_decoder_concept": [
+        r"transformer\.decoder\.layers\.\d+\.ca_text\.in_proj_weight$",
+        r"transformer\.decoder\.layers\.\d+\.self_attn\.in_proj_weight$",
+    ],
 }
 
 
