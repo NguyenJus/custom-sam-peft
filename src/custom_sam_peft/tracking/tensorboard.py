@@ -20,6 +20,8 @@ if TYPE_CHECKING:
 class TensorBoardTracker:
     """Tracker backend writing to TensorBoard event files under run_dir."""
 
+    wants_images = True
+
     def __init__(self, cfg: TrainConfig) -> None:
         self._cfg = cfg
         self._writer: SummaryWriter | None = None

@@ -57,6 +57,8 @@ class _RecordingTracker:
     ``log_images`` append their arguments to public lists for inspection.
     """
 
+    wants_images = False
+
     def __init__(self) -> None:
         self.start_run_calls: list[tuple[Path, dict[str, Any], Path | None]] = []
         self.log_scalars_calls: list[tuple[int, dict[str, float]]] = []

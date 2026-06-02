@@ -15,6 +15,10 @@ class Tracker(Protocol):
     Lifecycle: ``__init__`` → ``start_run`` → ``log_*`` … → ``close``.
     """
 
+    #: Whether the backend consumes image panels. The trainer skips the
+    #: per-eval panel-render forward pass entirely when this is False.
+    wants_images: bool
+
     def start_run(
         self,
         run_dir: Path,
