@@ -834,3 +834,26 @@ def test_calibrate_custom_ratio_preserved(tmp_path: Path, monkeypatch: pytest.Mo
     )
     assert decision.r == 8
     assert decision.alpha == 8
+
+
+def test_calibrate_reduce_emits_warning_text(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from custom_sam_peft.cli import calibrate_cmd
+
+    _patch_probe(monkeypatch, tmp_path=tmp_path, gpu_name="SmallGPU", total=int(16 * _GB))
+    _write_config_with_alpha(tmp_path / "config.yaml", method="lora", r=64, alpha=128, k=16)
+
+    def _probe(**kw):
+        if kw["r"] > 16 or kw["batch"] > 1 or kw["k_eff"] > 1:
+            raise torch.cuda.OutOfMemoryError("synthetic")
+        return _synthetic_peak(**kw)
+
+    monkeypatch.setattr(calibrate_cmd, "_run_probe", _probe)
+    monkeypatch.chdir(tmp_path)
+    calibrate_cmd.run_calibration(
+        config=tmp_path / "config.yaml", output=tmp_path / "c.json", force=True
+    )
+    err = capsys.readouterr().err
+    assert "VRAM autosize reduced LoRA rank" in err
+    assert "alpha co-scaled" in err
