@@ -50,31 +50,31 @@ _LOG = logging.getLogger(__name__)
 PRESET_TABLE: dict[tuple[Preset, Intensity], dict[str, bool | float]] = {
     ("natural", "safe"): {
         "hflip": True,  # (a)
-        "vflip": False,
-        "rotate90": False,
-        "rotate_arbitrary": 0.0,
+        "vflip": False,  # (a)
+        "rotate90": False,  # (a)
+        "rotate_arbitrary": 0.0,  # (e)
         "color_jitter": 0.05,  # (b)
-        "stain_jitter": 0.0,
-        "blur": 0.0,
-        "gauss_noise": 0.0,
+        "stain_jitter": 0.0,  # (a)
+        "blur": 0.0,  # (e)
+        "gauss_noise": 0.0,  # (e)
     },
     ("natural", "medium"): {
         "hflip": True,  # (a)
-        "vflip": False,
-        "rotate90": False,
-        "rotate_arbitrary": 0.0,
+        "vflip": False,  # (a)
+        "rotate90": False,  # (a)
+        "rotate_arbitrary": 0.0,  # (e)
         "color_jitter": 0.1,  # (b)
-        "stain_jitter": 0.0,
-        "blur": 0.0,
-        "gauss_noise": 0.0,
+        "stain_jitter": 0.0,  # (a)
+        "blur": 0.0,  # (e)
+        "gauss_noise": 0.0,  # (e)
     },
     ("natural", "aggressive"): {
         "hflip": True,  # (a)
         "vflip": True,  # (a)
-        "rotate90": False,
+        "rotate90": False,  # (a)
         "rotate_arbitrary": 10.0,  # (b)
         "color_jitter": 0.2,  # (b)
-        "stain_jitter": 0.0,
+        "stain_jitter": 0.0,  # (a)
         "blur": 0.05,  # (b)
         "gauss_noise": 0.02,  # (b)
     },
@@ -82,11 +82,11 @@ PRESET_TABLE: dict[tuple[Preset, Intensity], dict[str, bool | float]] = {
         "hflip": False,  # (d)
         "vflip": False,  # (d)
         "rotate90": False,  # (d)
-        "rotate_arbitrary": 0.0,
+        "rotate_arbitrary": 0.0,  # (e)
         "color_jitter": 0.0,  # (d)
-        "stain_jitter": 0.0,
-        "blur": 0.0,
-        "gauss_noise": 0.0,
+        "stain_jitter": 0.0,  # (e)
+        "blur": 0.0,  # (e)
+        "gauss_noise": 0.0,  # (e)
     },
     ("medical", "medium"): {
         "hflip": False,  # (d)
@@ -95,7 +95,7 @@ PRESET_TABLE: dict[tuple[Preset, Intensity], dict[str, bool | float]] = {
         "rotate_arbitrary": 5.0,  # (b)
         "color_jitter": 0.0,  # (d)
         "stain_jitter": 0.03,  # (c)
-        "blur": 0.0,
+        "blur": 0.0,  # (e)
         "gauss_noise": 0.01,  # (b)
     },
     ("medical", "aggressive"): {
@@ -112,21 +112,21 @@ PRESET_TABLE: dict[tuple[Preset, Intensity], dict[str, bool | float]] = {
         "hflip": True,  # (a)
         "vflip": True,  # (a)
         "rotate90": True,  # (a)
-        "rotate_arbitrary": 0.0,
-        "color_jitter": 0.0,
-        "stain_jitter": 0.0,
-        "blur": 0.0,
-        "gauss_noise": 0.0,
+        "rotate_arbitrary": 0.0,  # (e)
+        "color_jitter": 0.0,  # (e)
+        "stain_jitter": 0.0,  # (a)
+        "blur": 0.0,  # (e)
+        "gauss_noise": 0.0,  # (e)
     },
     ("satellite", "medium"): {
         "hflip": True,  # (a)
         "vflip": True,  # (a)
         "rotate90": True,  # (a)
-        "rotate_arbitrary": 0.0,
+        "rotate_arbitrary": 0.0,  # (e)
         "color_jitter": 0.05,  # (b)
-        "stain_jitter": 0.0,
-        "blur": 0.0,
-        "gauss_noise": 0.0,
+        "stain_jitter": 0.0,  # (a)
+        "blur": 0.0,  # (e)
+        "gauss_noise": 0.0,  # (e)
     },
     ("satellite", "aggressive"): {
         "hflip": True,  # (a)
@@ -134,7 +134,7 @@ PRESET_TABLE: dict[tuple[Preset, Intensity], dict[str, bool | float]] = {
         "rotate90": True,  # (a)
         "rotate_arbitrary": 15.0,  # (b)
         "color_jitter": 0.1,  # (b)
-        "stain_jitter": 0.0,
+        "stain_jitter": 0.0,  # (a)
         "blur": 0.05,  # (b)
         "gauss_noise": 0.02,  # (b)
     },
@@ -142,21 +142,21 @@ PRESET_TABLE: dict[tuple[Preset, Intensity], dict[str, bool | float]] = {
         "hflip": False,  # (d)
         "vflip": True,  # (a)
         "rotate90": True,  # (a)
-        "rotate_arbitrary": 0.0,
+        "rotate_arbitrary": 0.0,  # (e)
         "color_jitter": 0.0,  # (d)
-        "stain_jitter": 0.0,
-        "blur": 0.0,
-        "gauss_noise": 0.0,
+        "stain_jitter": 0.0,  # (a)
+        "blur": 0.0,  # (e)
+        "gauss_noise": 0.0,  # (e)
     },
     ("microscopy", "medium"): {
         "hflip": False,  # (d)
         "vflip": True,  # (a)
         "rotate90": True,  # (a)
-        "rotate_arbitrary": 0.0,
+        "rotate_arbitrary": 0.0,  # (e)
         "color_jitter": 0.0,  # (d)
-        "stain_jitter": 0.0,
-        "blur": 0.0,
-        "gauss_noise": 0.0,
+        "stain_jitter": 0.0,  # (a)
+        "blur": 0.0,  # (e)
+        "gauss_noise": 0.0,  # (e)
     },
     ("microscopy", "aggressive"): {
         "hflip": False,  # (d)
@@ -164,7 +164,7 @@ PRESET_TABLE: dict[tuple[Preset, Intensity], dict[str, bool | float]] = {
         "rotate90": True,  # (a)
         "rotate_arbitrary": 15.0,  # (b)
         "color_jitter": 0.0,  # (d)
-        "stain_jitter": 0.0,
+        "stain_jitter": 0.0,  # (a)
         "blur": 0.05,  # (b)
         "gauss_noise": 0.02,  # (b)
     },
