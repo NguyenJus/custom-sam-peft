@@ -503,9 +503,34 @@ def recognize_cell_tag(line: str) -> CellTag | None:
     return None
 
 
+_TEMPLATE_BARE_LINE = re.compile(r"^\s*\$[A-Za-z_][A-Za-z0-9_]*\s*$")
+_TEMPLATE_INLINE_TOKEN = re.compile(r"\$[A-Za-z_][A-Za-z0-9_]*")
+
+
+def _neutralize_template_tokens(text: str) -> str:
+    """Strip bare block-expansion lines and replace inline $tokens with a placeholder.
+
+    ``string.Template`` files contain two token shapes:
+    - Bare block-expansion lines (stripped == ``$identifier``): these expand to
+      whole sub-blocks of user content and are NOT scalar leaves — drop the line
+      entirely so ``yaml.safe_load`` does not see a bare scalar where a key is
+      expected.
+    - Inline value placeholders (``key: $name``): only the path matters, not the
+      value — replace the token with the literal string ``__TEMPLATE__`` so the
+      line parses and its dotted path is still emitted.
+    """
+    out: list[str] = []
+    for line in text.splitlines(keepends=True):
+        if _TEMPLATE_BARE_LINE.match(line):
+            continue  # drop: bare block-expansion slot, emits no path
+        out.append(_TEMPLATE_INLINE_TOKEN.sub("__TEMPLATE__", line))
+    return "".join(out)
+
+
 def yaml_scalar_dotted_paths(yaml_path: Path) -> set[str]:
     """Dotted paths of every scalar leaf in a YAML file (lists treated as leaves)."""
-    data = yaml.safe_load(yaml_path.read_text(encoding="utf-8")) or {}
+    raw = yaml_path.read_text(encoding="utf-8")
+    data = yaml.safe_load(_neutralize_template_tokens(raw)) or {}
     paths: set[str] = set()
 
     def walk(node: Any, prefix: str) -> None:
@@ -596,7 +621,7 @@ DOC_REL_PATH = "docs/defaults-provenance.md"
 def schema_default_dotted_paths(repo_root: Path) -> set[str]:
     """Dotted YAML paths for every pydantic field that has a default, from the schema.
 
-    Walks ``custom_sam_peft.config.schema.RunConfig`` (the root config model) and
+    Walks ``custom_sam_peft.config.schema.TrainConfig`` (the root config model) and
     yields the dotted path of each field whose model field has a default. Used
     only for Assertion 3; imported lazily so the unit tests that pass explicit
     schema-default sets do not need the real schema importable.
@@ -607,7 +632,7 @@ def schema_default_dotted_paths(repo_root: Path) -> set[str]:
     """
     from pydantic import BaseModel
 
-    from custom_sam_peft.config.schema import RunConfig
+    from custom_sam_peft.config.schema import TrainConfig
 
     paths: set[str] = set()
 
@@ -625,13 +650,15 @@ def schema_default_dotted_paths(repo_root: Path) -> set[str]:
             if isinstance(nested, type) and issubclass(nested, BaseModel):
                 walk(nested, dotted)
             else:
-                has_default = (
-                    field.default is not None or field.default_factory is not None
-                ) or not field.is_required()
-                if has_default:
+                # A pydantic field "has a default" iff it is not required. Do not
+                # test ``field.default is not None``: a required field's default is
+                # the ``PydanticUndefined`` sentinel (not ``None``), so that test
+                # would wrongly count required fields (e.g. ``run.name``) as
+                # defaulted and demand spurious cross-links for their template slots.
+                if not field.is_required():
                     paths.add(dotted)
 
-    walk(RunConfig, "")
+    walk(TrainConfig, "")
     return paths
 
 

@@ -565,6 +565,68 @@ def test_recognize_cell_tag_forms() -> None:
     assert recognize_cell_tag('"vflip": False,') is None
 
 
+# ---------------------------------------------------------------------------
+# Bug-fix tests (issue #192)
+# ---------------------------------------------------------------------------
+
+from custom_sam_peft._provenance_check import schema_default_dotted_paths  # noqa: E402
+
+
+def test_yaml_scalar_dotted_paths_neutralizes_template_tokens(tmp_path: Path) -> None:
+    """yaml_scalar_dotted_paths must not crash on string.Template placeholders.
+
+    - Bare block-expansion lines (stripped == '$identifier') must emit NO path.
+    - Inline 'key: $value' lines must still emit their dotted path.
+    - Ordinary literal scalars are unaffected.
+    - Nested dict paths use dotted form.
+    """
+    content = (
+        "run:\n"
+        "  name: $run_name\n"  # inline placeholder -> 'run.name' emitted
+        "  seed: 42\n"  # literal -> 'run.seed' emitted
+        "model:\n"
+        "$model_block\n"  # bare block placeholder -> NO path emitted
+        "  dtype: bfloat16\n"  # literal -> 'model.dtype' emitted
+        "train:\n"
+        "  epochs: $epochs\n"  # inline placeholder -> 'train.epochs' emitted
+        "  lr_schedule: $lr_schedule\n"  # inline -> 'train.lr_schedule' emitted
+    )
+    f = tmp_path / "config_full.yaml"
+    f.write_text(content)
+    paths = yaml_scalar_dotted_paths(f)
+
+    # Inline-placeholder paths ARE emitted (path matters; value irrelevant).
+    assert "run.name" in paths
+    assert "train.epochs" in paths
+    assert "train.lr_schedule" in paths
+    # Literal scalar paths are unaffected.
+    assert "run.seed" in paths
+    assert "model.dtype" in paths
+    # Bare block-expansion line emits NO path (neither 'model_block' nor anything
+    # that a raw yaml.safe_load would crash on).
+    assert not any("model_block" in p for p in paths)
+
+
+def test_schema_default_dotted_paths_walks_train_config_root(tmp_path: Path) -> None:
+    """schema_default_dotted_paths must walk TrainConfig (top-level), not RunConfig.
+
+    The real schema has nested sub-configs: run.seed, model.dtype, peft.r,
+    tracking.backend, etc. All must be present with the dotted prefix. The
+    bare unprefixed 'seed' (a RunConfig-only walk artifact) must NOT appear.
+    """
+    paths = schema_default_dotted_paths(Path("."))
+    # Nested-prefixed paths from multiple sub-configs must be present.
+    assert {"run.seed", "model.dtype", "peft.r", "tracking.backend"} <= paths
+    # The bare unprefixed name that a RunConfig-only walk would have emitted must
+    # not exist — it would mean the root model was RunConfig, not TrainConfig.
+    assert "seed" not in paths
+    # Required fields (no default) must NOT be emitted: a required pydantic field's
+    # ``default`` is the PydanticUndefined sentinel, so a naive ``default is not
+    # None`` test would wrongly include them and demand spurious yaml cross-links.
+    assert "run.name" not in paths  # RunConfig.name: str (required)
+    assert "peft.method" not in paths  # PEFTConfig.method: PEFTMethod (required)
+
+
 def test_extract_preset_cell_lines_multiple_tuple_key_entries(tmp_path: Path) -> None:
     # Two tuple-key entries: the inner `},` closes must NOT prematurely end the
     # top-level span; all cells from both entries are collected.
