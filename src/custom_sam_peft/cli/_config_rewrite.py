@@ -25,6 +25,7 @@ def _rewrite_sizing_block(
     *,
     method: str,
     r: int,
+    alpha: int,
     batch_size: int,
     grad_accum_steps: int,
     classes_per_forward: int,
@@ -33,13 +34,13 @@ def _rewrite_sizing_block(
 ) -> None:
     """In-place, comment-preserving rewrite of a config's sizing fields.
 
-    Locates peft.method/peft.r, train.batch_size/train.grad_accum_steps, model.dtype
+    Locates peft.method/peft.r/peft.alpha, train.batch_size/train.grad_accum_steps, model.dtype
     and substitutes their values by LINE SURGERY (not yaml.safe_dump, which would
     strip comments/formatting). Prepends `annotation` as a comment line above the
     first touched line. Rewrites DIRECT children of the target section (zero-indent
     section → first child-indent level); deeper-nested keys with the same name are
     left untouched — EXCEPT the nested train.multiplex.classes_per_forward target,
-    which is rewritten by a dedicated pass. If any of the 5 direct (section, key)
+    which is rewritten by a dedicated pass. If any of the 6 direct (section, key)
     targets are absent, raises ValueError naming the missing keys; a missing
     train.multiplex.classes_per_forward likewise raises ValueError. Strips any
     immediately preceding annotation line (starting with '# calibrated' or
@@ -60,7 +61,8 @@ def _rewrite_sizing_block(
         raise ValueError(f"config root is not a mapping: {config_path}")
 
     # Perform line-surgery: replace each targeted scalar value.
-    # Targets: model.dtype, peft.method, peft.r, train.batch_size, train.grad_accum_steps.
+    # Targets: model.dtype, peft.method, peft.r, peft.alpha,
+    #          train.batch_size, train.grad_accum_steps.
     # Each line is matched as: <indent><key>: <value> [# optional comment]
     # We replace the value portion while preserving indentation and inline comments.
     lines = original.splitlines(keepends=True)
@@ -83,6 +85,7 @@ def _rewrite_sizing_block(
         ("model", "dtype"): dtype,
         ("peft", "method"): method,
         ("peft", "r"): str(r),
+        ("peft", "alpha"): str(alpha),
         ("train", "batch_size"): str(batch_size),
         ("train", "grad_accum_steps"): str(grad_accum_steps),
     }
@@ -150,7 +153,7 @@ def _rewrite_sizing_block(
             "_rewrite_sizing_block: config missing train.multiplex.classes_per_forward"
         )
 
-    # Validate that all 5 expected targets were found.
+    # Validate that all 6 expected targets were found.
     missing = set(replacements.keys()) - done
     if missing:
         missing_keys = ", ".join(f"{sec}.{key}" for sec, key in sorted(missing))
