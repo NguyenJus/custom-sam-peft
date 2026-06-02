@@ -744,7 +744,6 @@ dependencies = [
     { name = "rich" },
     { name = "sam3" },
     { name = "scipy" },
-    { name = "tensorboard" },
     { name = "tifffile" },
     { name = "torch" },
     { name = "transformers" },
@@ -768,6 +767,9 @@ jupyter = [
 ]
 qlora = [
     { name = "bitsandbytes" },
+]
+tensorboard = [
+    { name = "tensorboard" },
 ]
 wandb = [
     { name = "wandb" },
@@ -802,7 +804,7 @@ requires-dist = [
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.7" },
     { name = "sam3", git = "https://github.com/facebookresearch/sam3?rev=2814fa619404a722d03e9a012e083e4f293a4e53" },
     { name = "scipy", specifier = ">=1.10" },
-    { name = "tensorboard", specifier = ">=2.18" },
+    { name = "tensorboard", marker = "extra == 'tensorboard'", specifier = ">=2.18" },
     { name = "tifffile", specifier = ">=2024.1" },
     { name = "torch", specifier = ">=2.4" },
     { name = "torch", marker = "extra == 'cu130'" },
@@ -811,7 +813,7 @@ requires-dist = [
     { name = "types-pyyaml", marker = "extra == 'dev'", specifier = ">=6" },
     { name = "wandb", marker = "extra == 'wandb'", specifier = ">=0.18" },
 ]
-provides-extras = ["cu130", "dev", "jupyter", "qlora", "wandb"]
+provides-extras = ["cu130", "dev", "jupyter", "qlora", "tensorboard", "wandb"]
 
 [package.metadata.requires-dev]
 dev = [{ name = "ruff", specifier = ">=0.15.13" }]

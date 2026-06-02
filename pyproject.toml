@@ -25,12 +25,12 @@ dependencies = [
   "einops>=0.7",
   "huggingface-hub>=0.30",
   "psutil>=5.9",
-  "tensorboard>=2.18",
   "sam3 @ git+https://github.com/facebookresearch/sam3@2814fa619404a722d03e9a012e083e4f293a4e53",
 ]
 
 [project.optional-dependencies]
 wandb = ["wandb>=0.18"]
+tensorboard = ["tensorboard>=2.18"]
 qlora = ["bitsandbytes>=0.43"]
 cu130 = ["torch"]
 jupyter = ["jupyterlab>=4"]
