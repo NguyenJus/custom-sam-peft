@@ -278,8 +278,10 @@ def _run_parity_check(
     atol, rtol = _PARITY_TOL[band]
 
     # --- Torch reference: the SAME merged module at the SAME export dtype ---
+    # The merged wrapper may be on CUDA (LoRA path); feed the reference on its device.
+    # np_img below is taken from the CPU copy, so the ORT (CPU-EP) side is unaffected.
     with torch.no_grad():
-        ref = wrapper.forward(images, prompts)
+        ref = wrapper.forward(images.to(next(wrapper.parameters()).device), prompts)
 
     np_img = images.detach().cpu().numpy()
     core = _OrtCore(staging_dir, ["CPUExecutionProvider"])
@@ -471,7 +473,17 @@ def _trace_encoder(
 ) -> None:
     """Trace ``_EncoderExport`` to ``dest`` (spec §5.2)."""
     shim = _EncoderExport(merged, channel_adapter).eval()
-    images = torch.zeros(_TRACE_B, channels, SAM3_IMAGE_SIZE, SAM3_IMAGE_SIZE, dtype=export_dtype)
+    # Trace inputs must live on the merged model's device: the LoRA path leaves the
+    # model on CUDA (fp16 conv is unsupported on CPU), so CPU dummies would mismatch.
+    # ONNX graphs are device-neutral, so tracing on CUDA still yields a CPU-loadable graph.
+    images = torch.zeros(
+        _TRACE_B,
+        channels,
+        SAM3_IMAGE_SIZE,
+        SAM3_IMAGE_SIZE,
+        dtype=export_dtype,
+        device=next(merged.parameters()).device,
+    )
     with torch.no_grad():
         outs = shim(images)
     n_outputs = len(outs)
@@ -510,7 +522,15 @@ def _trace_decoder(
     # Produce the encoder feats once (the encoder<->decoder boundary) to feed the
     # decoder shim with correctly-shaped dummies, and bake the text embedding.
     enc = _EncoderExport(merged, channel_adapter).eval()
-    images = torch.zeros(_TRACE_B, channels, SAM3_IMAGE_SIZE, SAM3_IMAGE_SIZE, dtype=export_dtype)
+    # Trace inputs on the merged model's device (see _trace_encoder for why).
+    images = torch.zeros(
+        _TRACE_B,
+        channels,
+        SAM3_IMAGE_SIZE,
+        SAM3_IMAGE_SIZE,
+        dtype=export_dtype,
+        device=next(merged.parameters()).device,
+    )
     with torch.no_grad():
         vision_feats = enc(images)
     n_levels = len(vision_feats) // 2
