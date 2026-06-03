@@ -56,6 +56,8 @@ __all__ = [  # noqa: RUF022
     "QLoRAConfig",
     "RunConfig",
     "SemanticDataConfig",
+    "SemanticLossConfig",
+    "SemanticLossOverrides",
     "TextPromptConfig",
     "TrackingConfig",
     "TrainConfig",
@@ -71,6 +73,7 @@ __all__ = [  # noqa: RUF022
     "LRSchedule",
     "MaskFamily",
     "ObjFamily",
+    "SemMaskFamily",
     "Optimizer",
     "PEFTMethod",
     "PresenceFamily",
@@ -197,6 +200,33 @@ class LossConfig(_Strict):
     overrides: LossOverrides = Field(default_factory=LossOverrides)
 
     model_config = ConfigDict(extra="forbid", arbitrary_types_allowed=True)
+
+
+SemMaskFamily = Literal["ce_dice", "focal_dice", "focal_tversky", "boundary", "ce", "dice"]
+
+
+class SemanticLossOverrides(_Strict):
+    """Per-knob overrides; None -> inherit from (preset, class_imbalance)."""
+
+    sem_family: SemMaskFamily | None = None
+    w_ce: PositiveFloat | None = None
+    w_region: PositiveFloat | None = None  # weight on the Dice/Tversky/Boundary term
+    focal_gamma: PositiveFloat | None = None
+    focal_alpha: float | None = Field(default=None, ge=0.0, le=1.0)
+    tversky_alpha: float | None = Field(default=None, ge=0.0, le=1.0)
+    tversky_gamma: PositiveFloat | None = None
+    boundary_weight: float | None = Field(default=None, ge=0.0, le=1.0)
+
+
+class SemanticLossConfig(_Strict):
+    preset: Preset = "natural"  # reuse #112 Preset verbatim
+    class_imbalance: ClassImbalance = "balanced"  # reuse #112 axis verbatim
+    overrides: SemanticLossOverrides = Field(default_factory=SemanticLossOverrides)
+    # --- argmax / background / reduction knobs (§4.5, §6.2) ---
+    background_logit: float = 0.0  # cite: degenerate logit boundary (sigmoid(0)=0.5)
+    background_class_name: str | None = None  # tbd: #113 — custom explicit-bg name
+    query_reduce: Literal["max", "sum"] = "max"  # tbd: #113 — see §6.2
+    source: Literal["marginalize", "semantic_seg"] = "marginalize"  # cite: §3.3 / OQ-1
 
 
 class AugmentationOverrides(_Strict):
@@ -666,6 +696,7 @@ class TrainHyperparams(_Strict):
     early_stop: EarlyStopConfig = Field(default_factory=EarlyStopConfig)
 
     loss: LossConfig = Field(default_factory=LossConfig)
+    semantic_loss: SemanticLossConfig = Field(default_factory=SemanticLossConfig)
     nan_abort_after: PositiveInt = 20
     num_workers: int = Field(
         default_factory=lambda: min(4, os.cpu_count() or 1),
