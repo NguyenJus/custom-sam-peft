@@ -132,6 +132,7 @@ class COCODataset:
         seed: int = 0,
         image_ids: Iterable[int] | None = None,
         channels: int = 3,
+        expand_tiles: bool = True,
     ) -> None:
         self._image_root = Path(images)
         self._channels = channels
@@ -140,6 +141,7 @@ class COCODataset:
         self._seed = seed
         self._multiplex_cap = 16
         self._warned_truncation = False
+        self._expand_tiles = expand_tiles
 
         self._coco = _load_coco_index(annotations)
         sparse_ids, mapping, class_names = _build_category_remap(self._coco)
@@ -186,7 +188,10 @@ class COCODataset:
         self._samples: list[tuple[int, Window]] = []
         for img_id in self._image_ids:
             h, w = self._image_hw(img_id)
-            windows = iter_windows(h, w) if tiling_engaged(h, w) else [Window(0, 0, h, w)]
+            if self._expand_tiles and tiling_engaged(h, w):
+                windows = iter_windows(h, w)
+            else:
+                windows = [Window(0, 0, h, w)]
             for win in windows:
                 self._samples.append((img_id, win))
 
@@ -428,4 +433,5 @@ def build_coco(
         text_prompt=text_prompt,
         image_ids=[int(s) for s in resolved] if resolved is not None else None,
         channels=int(cfg.get("channels", 3)),
+        expand_tiles=(pipeline == "train"),
     )

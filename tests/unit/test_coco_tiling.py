@@ -51,6 +51,7 @@ def test_C6_oversized_raster_expands_into_tiles(oversized_coco, _eval_transforms
         transforms=_eval_transforms,
         text_prompt=TextPromptConfig(),
         channels=3,
+        expand_tiles=True,  # train intent: explicit
     )
     # 1500x1500 @ tile 1008 overlap 0.25 -> 2x2 = 4 windows -> len == 4 (one image)
     assert len(ds) == 4
@@ -117,6 +118,19 @@ def test_image_hw_zero_record_dims_fall_back_to_pil(tmp_path, _eval_transforms):
     # PIL fallback should yield real dims (8x8), not the degenerate (0, 0).
     h, w = ds._image_hw(1)
     assert h == 8 and w == 8
+
+
+def test_C6_eval_does_not_expand(oversized_coco, _eval_transforms):
+    ann, imgs = oversized_coco
+    ds = COCODataset(
+        annotations=ann,
+        images=imgs,
+        transforms=_eval_transforms,
+        text_prompt=TextPromptConfig(),
+        channels=3,
+        expand_tiles=False,
+    )
+    assert len(ds) == 1  # eval/val: 1 image = 1 sample (no dataset-level tiling)
 
 
 def test_decode_targets_uses_image_hw_not_rec_keys(tmp_path, _eval_transforms):
