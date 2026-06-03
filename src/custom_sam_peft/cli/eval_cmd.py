@@ -12,7 +12,14 @@ from rich import print as rprint
 from rich.console import Console
 
 from custom_sam_peft.cli._logging import configure_logging
-from custom_sam_peft.cli._options import DryRunOpt, Progress, ProgressOpt, VerboseOpt
+from custom_sam_peft.cli._options import (
+    DryRunOpt,
+    Progress,
+    ProgressOpt,
+    Split,
+    VerboseOpt,
+    discover_config,
+)
 from custom_sam_peft.cli._progress import ProgressKind, progress_session, resolve_mode
 from custom_sam_peft.config.loader import load_config
 from custom_sam_peft.eval.runner import run_eval
@@ -26,7 +33,7 @@ def evaluate(
         "--checkpoint",
         help="Path to adapter checkpoint. Omit to evaluate baseline (zero-shot) SAM.",
     ),
-    split: str = typer.Option("val", "--split", help="Dataset split: val | test."),
+    split: Split = typer.Option(Split.val, "--split", help="Dataset split: val | test."),
     output: Path | None = typer.Option(
         None,
         "--output",
@@ -66,11 +73,15 @@ def evaluate(
         _interactive.run_eval_interactive(output=output, force=False)
         return
     if config is None:
-        raise typer.BadParameter("--config is required", param_hint="--config")
-    if split not in ("val", "test"):
-        raise typer.BadParameter(f"--split must be val|test; got {split!r}", param_hint="--split")
+        if checkpoint is not None:
+            config = discover_config(checkpoint)
+        else:
+            raise typer.BadParameter(
+                "--config is required for baseline (zero-shot) eval",
+                param_hint="--config",
+            )
     cfg = load_config(config)
-    split_lit = cast(Literal["val", "test"], split)
+    split_lit = cast(Literal["val", "test"], split.value)
 
     if dry_run:
         rprint(
