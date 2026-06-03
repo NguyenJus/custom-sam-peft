@@ -7,6 +7,7 @@ import pycocotools.mask as mask_utils
 import pytest
 import torch
 
+from custom_sam_peft.eval.metrics import coco_max_dets_cap
 from custom_sam_peft.eval.postprocess import queries_to_coco_results
 
 
@@ -26,6 +27,12 @@ def _outputs(
         "pred_masks": masks if masks is not None else torch.full((1, n, h, w), -10.0),
         "presence_logit_dec": torch.full((1, 1), presence),
     }
+
+
+def test_coco_max_dets_cap_is_pycocotools_default_100():
+    # pycocotools segm Params default maxDets == [1, 10, 100]; the scorer reads the
+    # LAST (max) slice, so the cap the postprocess filter must match is 100.
+    assert coco_max_dets_cap() == 100
 
 
 def test_shapes_and_keys():
