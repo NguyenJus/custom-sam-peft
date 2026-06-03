@@ -29,10 +29,12 @@ def main() -> None:
     ap.add_argument("--split", choices=("val", "test"), default="val")
     args = ap.parse_args()
 
+    from custom_sam_peft._bootstrap import bootstrap
     from custom_sam_peft.config.loader import load_config
     from custom_sam_peft.eval import _profile
     from custom_sam_peft.eval.runner import run_eval
 
+    bootstrap()  # fire @register decorators (datasets/adapters) — same as the CLI
     _profile.reset()
     cfg = load_config(args.config)
     run_eval(cfg, checkpoint=args.checkpoint, split=args.split)
