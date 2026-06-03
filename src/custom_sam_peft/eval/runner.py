@@ -19,6 +19,7 @@ from custom_sam_peft.data.val_source import resolve_val_source
 from custom_sam_peft.eval._artifacts import EvalArtifacts
 from custom_sam_peft.eval.evaluator import Evaluator
 from custom_sam_peft.eval.metrics import MetricsReport
+from custom_sam_peft.eval.semantic_evaluator import SemanticEvaluator
 from custom_sam_peft.models.sam3 import MULTIPLEX_CAP, load_sam31
 from custom_sam_peft.train.checkpoint import load_adapter
 
@@ -173,7 +174,7 @@ def run_eval(
 
     visualize_resolved = cfg.eval.visualize if visualize is None else visualize
 
-    evaluator = Evaluator(eval_cfg)
+    evaluator = SemanticEvaluator(eval_cfg) if cfg.task == "semantic" else Evaluator(eval_cfg)
     # Output dir: prefer explicit arg, then artifacts.run_dir, then checkpoint parent,
     # then cfg.run.output_dir (baseline path where checkpoint is None).
     if output_dir is not None:
@@ -223,8 +224,10 @@ def run_eval(
                 indent=2,
             )
         )
-        if eval_cfg.save_predictions and eval_cfg.mode == "full":
-            (out / "predictions.json").write_text(json.dumps(evaluator._last_predictions))
+        if eval_cfg.save_predictions and eval_cfg.mode == "full" and cfg.task != "semantic":
+            (out / "predictions.json").write_text(
+                json.dumps(cast(Evaluator, evaluator)._last_predictions)
+            )
         _run_viz(per_example_iou)
         return report, per_example_iou
 
@@ -247,6 +250,9 @@ def run_eval(
             indent=2,
         )
     )
-    evaluator._maybe_save_predictions(evaluator._last_predictions, run_dir=out)
+    if cfg.task != "semantic":
+        cast(Evaluator, evaluator)._maybe_save_predictions(
+            cast(Evaluator, evaluator)._last_predictions, run_dir=out
+        )
     _run_viz(per_example_iou)
     return report
