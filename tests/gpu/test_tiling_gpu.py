@@ -353,9 +353,15 @@ def test_G2_tiled_eval_accumulates_without_stitch(tmp_path: Path) -> None:
 
     # 'No stitched mask': per-tile prediction RLEs must be tile-sized, NOT full-image.
     # The evaluator accumulates predictions per tile (each tile independently).
-    predictions_path = out_dir / "predictions.json"
-    assert predictions_path.exists(), "predictions.json not written (save_predictions=True)"
-    predictions = json.loads(predictions_path.read_text())
+    # Predictions are persisted at the canonical artifacts path (a JSON array written
+    # to artifacts/predictions_<split>.jsonl), NOT a bare out_dir/predictions.json.
+    from custom_sam_peft.paths import predictions_path
+
+    preds_path = predictions_path(out_dir, split="val")
+    assert preds_path.exists(), (
+        f"predictions not written at {preds_path} (save_predictions=True, mode=full)"
+    )
+    predictions = json.loads(preds_path.read_text())
     assert isinstance(predictions, list)
     for entry in predictions:
         seg = entry.get("segmentation")
