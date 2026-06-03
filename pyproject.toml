@@ -173,6 +173,13 @@ exclude_lines = [
   "if TYPE_CHECKING:",
 ]
 
+[tool.uv]
+# Security floors on transitive dependencies. Remove an entry once the floor is
+# satisfied transitively (so the resolver picks it without our help).
+constraint-dependencies = [
+  "aiohttp>=3.14.0",  # CVE-2026-34993 (pulled in transitively via datasets)
+]
+
 [dependency-groups]
 dev = [
     "ruff>=0.15.13",
