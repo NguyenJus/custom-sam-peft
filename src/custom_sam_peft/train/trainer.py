@@ -269,6 +269,14 @@ class Trainer:
         (run_dir / "loss_bundle.json").write_text(
             json.dumps(dump_loss_bundle(cfg.train.loss), indent=2, sort_keys=False)
         )
+        if cfg.task == "semantic":
+            from custom_sam_peft.models.losses import dump_semantic_loss_bundle
+
+            (run_dir / "semantic_loss_bundle.json").write_text(
+                json.dumps(
+                    dump_semantic_loss_bundle(cfg.train.semantic_loss), indent=2, sort_keys=False
+                )
+            )
         return run_dir
 
     def _build_optimizer(self) -> torch.optim.Optimizer:

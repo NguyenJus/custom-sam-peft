@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import contextlib
 import hashlib
+import json
 import logging
 import random
 import time
@@ -102,6 +103,7 @@ class _ResolvedConfig:
     dtype_str: str  # "bfloat16" or "float32"
     normalize_mean: list[float]
     normalize_std: list[float]
+    task: str  # "instance" or "semantic" (default "instance")
 
 
 # ---------------------------------------------------------------------------
@@ -126,12 +128,17 @@ def _resolve_config(opts: PredictOptions) -> _ResolvedConfig:
     config_model_name: str | None = None
     config_channels: int | None = None
     config_channel_semantics: str | None = None
+    config_task: str = "instance"
 
     if opts.config is not None:
         try:
             import yaml
 
             raw: dict[str, Any] = yaml.safe_load(opts.config.read_text(encoding="utf-8")) or {}
+            # top-level task key (default "instance")
+            raw_task = raw.get("task", "instance")
+            if isinstance(raw_task, str):
+                config_task = raw_task
             model_section = raw.get("model", {})
             if isinstance(model_section, dict):
                 val = model_section.get("name")
@@ -221,6 +228,7 @@ def _resolve_config(opts: PredictOptions) -> _ResolvedConfig:
         dtype_str=dtype_str,
         normalize_mean=mean,
         normalize_std=std,
+        task=config_task,
     )
 
 
@@ -392,7 +400,24 @@ def run_predict(opts: PredictOptions) -> PredictReport:
     from custom_sam_peft.models.sam3 import MULTIPLEX_CAP
     from custom_sam_peft.oom import OomDecision, OomLadder, is_cuda_oom
 
+    is_semantic = rcfg.task == "semantic"
+
+    # Semantic imports (lazy — only when task=semantic)
+    if is_semantic:
+        import torch.nn.functional as F
+
+        from custom_sam_peft.config.schema import SemanticLossConfig
+        from custom_sam_peft.models.semantic import (
+            build_semantic_logits,
+            marginalize_group,
+            semantic_argmax,
+        )
+        from custom_sam_peft.predict.writers import write_semantic_label_map
+
+        _sem_cfg = SemanticLossConfig()
+
     all_predictions: list[dict[str, object]] = []
+    image_id_to_colorized: dict[int, Path] = {}
     id_to_path: dict[int, Path] = {}
     id_to_stem: dict[int, str] = {}
     originals: dict[int, tuple[int, int]] = {}
@@ -452,6 +477,11 @@ def run_predict(opts: PredictOptions) -> PredictReport:
         chunk_buf: list[dict[str, object]] = []
         restart_chunk = False
         j = 0  # class index into prompts
+
+        # Semantic: per-image accumulation of (1, k_g, H_m, W_m) logit slices
+        # across K-groups; discarded on RETRY_B just like chunk_buf.
+        chunk_slices: list[list[torch.Tensor]] = [[] for _ in metas] if is_semantic else []
+
         while j < len(prompts):
             K_g = min(ladder.effective_K, len(prompts) - j)
             group = prompts[j : j + K_g]
@@ -467,6 +497,8 @@ def run_predict(opts: PredictOptions) -> PredictReport:
                 decision = ladder.on_oom()
                 if decision is OomDecision.RETRY_B:
                     restart_chunk = True
+                    if is_semantic:
+                        chunk_slices = [[] for _ in metas]  # discard semantic buffer
                     break  # discard chunk_buf; restart this image-chunk at smaller B
                 if decision is OomDecision.RETRY_K:
                     continue  # resume from j at the smaller K_g
@@ -477,27 +509,84 @@ def run_predict(opts: PredictOptions) -> PredictReport:
                     "use a larger GPU or smaller image_size."
                 ) from oom_err
 
-            # postprocess each (image, class) row — category_id uses index arithmetic
-            # (j+kk)+1, value-equivalent to the old prompts.index(group[kk])+1
-            for r in range(len(metas) * K_g):
-                ii, kk = divmod(r, K_g)
-                image_id, orig_h, orig_w = metas[ii]
-                class_idx_one_based = (j + kk) + 1
-                entries = queries_to_coco_results(
-                    _row_outputs(outputs, r),
-                    image_id=image_id,
-                    category_id=class_idx_one_based,
-                    original_hw=(orig_h, orig_w),
-                    mask_threshold=0.0,
-                )
-                entries = [e for e in entries if cast(float, e["score"]) >= opts.score_threshold]
-                entries.sort(key=lambda e: cast(float, e["score"]), reverse=True)
-                entries = entries[: opts.top_k]
-                chunk_buf.extend(entries)
+            if is_semantic:
+                # Accumulate per-image logit slices (mirrors SemanticEvaluator)
+                b = len(metas)
+                logit_slice = marginalize_group(
+                    outputs,
+                    b,
+                    K_g,
+                    query_reduce=_sem_cfg.query_reduce,
+                    source=_sem_cfg.source,
+                )  # (b, K_g, H_m, W_m)
+                for ii in range(b):
+                    chunk_slices[ii].append(logit_slice[ii : ii + 1])  # (1, K_g, H_m, W_m)
+            else:
+                # postprocess each (image, class) row — category_id uses index arithmetic
+                # (j+kk)+1, value-equivalent to the old prompts.index(group[kk])+1
+                for r in range(len(metas) * K_g):
+                    ii, kk = divmod(r, K_g)
+                    image_id, orig_h, orig_w = metas[ii]
+                    class_idx_one_based = (j + kk) + 1
+                    entries = queries_to_coco_results(
+                        _row_outputs(outputs, r),
+                        image_id=image_id,
+                        category_id=class_idx_one_based,
+                        original_hw=(orig_h, orig_w),
+                        mask_threshold=0.0,
+                    )
+                    entries = [
+                        e for e in entries if cast(float, e["score"]) >= opts.score_threshold
+                    ]
+                    entries.sort(key=lambda e: cast(float, e["score"]), reverse=True)
+                    entries = entries[: opts.top_k]
+                    chunk_buf.extend(entries)
+
             j += K_g  # advance by the ACTUAL group length
 
         if restart_chunk:
             continue  # re-enter outer while at smaller B; i unchanged, buffer dropped
+
+        # -------------------------------------------------------------------
+        # Semantic post-processing: build label map per image in the chunk
+        # -------------------------------------------------------------------
+        if is_semantic:
+            # opts.output is created implicitly by write_semantic_label_map (parents=True);
+            # the unconditional mkdir at step 10 below covers the no-visualize path too.
+            label_maps_dir = opts.output / "label_maps"
+
+            for ii, (image_id, orig_h, orig_w) in enumerate(metas):
+                sem_logits_b = build_semantic_logits(
+                    chunk_slices[ii],
+                    background_logit=_sem_cfg.background_logit,
+                )  # (1, K+1, H_m, W_m)
+
+                # Upsample to original image resolution (predict has no GT; use orig_h/orig_w)
+                sem_logits_up = F.interpolate(
+                    sem_logits_b,
+                    size=(orig_h, orig_w),
+                    mode="bilinear",
+                    align_corners=False,
+                )  # (1, K+1, orig_h, orig_w)
+
+                pred_label_map = semantic_argmax(sem_logits_up)[0]  # (H, W) int64
+
+                str_image_id = str(image_id)
+                label_map_paths = write_semantic_label_map(
+                    pred_label_map,
+                    image_id=str_image_id,
+                    out_dir=label_maps_dir,
+                    class_names=prompts,
+                )
+
+                image_id_to_colorized[image_id] = Path(label_map_paths["colorized_path"])
+                chunk_buf.append(
+                    {
+                        "image_id": image_id,
+                        "label_map_path": str(label_map_paths["index_path"]),
+                        "concepts": list(prompts),
+                    }
+                )
 
         # Chunk completed every class group: commit exactly once.
         all_predictions.extend(chunk_buf)
@@ -548,26 +637,40 @@ def run_predict(opts: PredictOptions) -> PredictReport:
         write_run_json,
     )
 
-    write_predictions(
-        all_predictions,
-        opts.output,
-        save_masks=opts.save_masks,
-        originals=originals,
-        id_to_stem=id_to_stem if opts.save_masks == "png" else None,
-    )
+    if is_semantic:
+        # Semantic: write predictions.json with label-map schema (already in all_predictions)
+        (opts.output / "predictions.json").write_text(json.dumps(all_predictions))
 
-    if opts.visualize:
-        from custom_sam_peft.predict.visualize import write_visualization
+        if opts.visualize:
+            from custom_sam_peft.predict.visualize import write_semantic_visualization
 
-        # Group predictions by image_id
-        by_image: dict[int, list[dict[str, object]]] = {}
-        for entry in all_predictions:
-            iid = int(cast(int, entry["image_id"]))
-            by_image.setdefault(iid, []).append(entry)
+            for entry in all_predictions:
+                image_id_int = int(cast(int, entry["image_id"]))
+                img_path_or_none = id_to_path.get(image_id_int)
+                color_path = image_id_to_colorized.get(image_id_int)
+                if img_path_or_none is not None and color_path is not None and color_path.exists():
+                    write_semantic_visualization(img_path_or_none, color_path, opts.output)
+    else:
+        write_predictions(
+            all_predictions,
+            opts.output,
+            save_masks=opts.save_masks,
+            originals=originals,
+            id_to_stem=id_to_stem if opts.save_masks == "png" else None,
+        )
 
-        for image_id, img_path in id_to_path.items():
-            img_entries = by_image.get(image_id, [])
-            write_visualization(img_path, img_entries, opts.output, prompts=prompts)
+        if opts.visualize:
+            from custom_sam_peft.predict.visualize import write_visualization
+
+            # Group predictions by image_id
+            by_image: dict[int, list[dict[str, object]]] = {}
+            for entry in all_predictions:
+                iid = int(cast(int, entry["image_id"]))
+                by_image.setdefault(iid, []).append(entry)
+
+            for image_id, img_path in id_to_path.items():
+                img_entries = by_image.get(image_id, [])
+                write_visualization(img_path, img_entries, opts.output, prompts=prompts)
 
     # ---------------------------------------------------------------------------
     # Step 11: write sidecars

@@ -1,6 +1,7 @@
-"""Output writers for csp predict: predictions, id-map, run metadata, and masks.
+"""Output writers for csp predict: predictions, id-map, run metadata, masks, and label maps.
 
-Writes predictions.json, image_id_map.json, run.json, and optional mask PNGs.
+Writes predictions.json, image_id_map.json, run.json, optional mask PNGs, and semantic
+label-map PNGs (index + colorized) for the semantic task branch.
 """
 
 from __future__ import annotations
@@ -12,9 +13,79 @@ from typing import Any, Literal
 
 import numpy as np
 import pycocotools.mask as mask_utils
+import torch
 from PIL import Image
 
 import custom_sam_peft
+
+
+def write_semantic_label_map(
+    label_map: torch.Tensor,
+    *,
+    image_id: str,
+    out_dir: Path,
+    class_names: list[str],
+) -> dict[str, Path]:
+    """Write a raw index PNG and a colorized label-map PNG for one image.
+
+    Args:
+        label_map:   (H, W) int64 tensor of class indices in {0..K}.
+                     0 is always background.
+        image_id:    String identifier used in output filenames.
+        out_dir:     Directory in which to place the two files.
+        class_names: Concept names (length K); label i maps to class_names[i-1].
+                     label 0 is always background (black).
+
+    Returns:
+        dict with keys ``"index_path"`` and ``"colorized_path"`` (both Path).
+    """
+    from custom_sam_peft.predict.visualize import PALETTE, color_for_class
+
+    out_dir = Path(out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    arr = label_map.cpu().numpy()  # (H, W) int64
+    K = len(class_names)
+
+    # ---- index PNG ----------------------------------------------------------
+    # Use uint16 when K+1 > 255 (e.g. K=255 needs values 0..255 → 256 entries).
+    if K + 1 > 255:
+        index_arr = arr.astype(np.uint16)
+        # PIL uint16: use mode "I" (int32 array) and convert to 16-bit on save.
+        # fromarray with int32 + tobytes avoids the deprecated mode="I;16".
+        index_img = Image.fromarray(index_arr.astype(np.int32), mode="I").convert("I;16")
+    else:
+        index_arr = arr.astype(np.uint8)
+        index_img = Image.fromarray(index_arr, mode="L")
+
+    index_path = out_dir / f"{image_id}_label_index.png"
+    index_img.save(index_path)
+
+    # ---- colorized PNG -------------------------------------------------------
+    # Build palette keyed by concept INDEX so it is stable regardless of name
+    # ordering.  label 0 → black;  label i (i>=1) → PALETTE[i-1 % len(PALETTE)]
+    # The color for concept i is derived from class_names[i-1] via color_for_class
+    # so it stays consistent with the instance viz palette when names are available.
+    H, W = arr.shape
+    colorized = np.zeros((H, W, 3), dtype=np.uint8)  # background = black
+
+    unique_labels = np.unique(arr)
+    for label in unique_labels:
+        if label == 0:
+            continue  # background stays (0,0,0)
+        idx = int(label) - 1  # 0-based concept index
+        if idx < len(class_names):
+            color = color_for_class(class_names[idx])
+        else:
+            # Fallback for out-of-range labels: cycle the palette by index
+            color = PALETTE[idx % len(PALETTE)]
+        mask = arr == label
+        colorized[mask] = color
+
+    colorized_path = out_dir / f"{image_id}_label_color.png"
+    Image.fromarray(colorized, mode="RGB").save(colorized_path)
+
+    return {"index_path": index_path, "colorized_path": colorized_path}
 
 
 def encode_rle_dict(mask: np.ndarray[Any, np.dtype[np.uint8]]) -> dict[str, Any]:

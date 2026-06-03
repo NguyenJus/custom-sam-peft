@@ -21,9 +21,14 @@ from custom_sam_peft.data.aug_presets import (
 )
 from custom_sam_peft.data.transforms import resolve_normalization_with_path
 from custom_sam_peft.diagnostics import DoctorReport, run_doctor
-from custom_sam_peft.models.losses import dump_loss_bundle
+from custom_sam_peft.models.losses import (
+    dump_loss_bundle,
+    dump_semantic_loss_bundle,
+    resolve_semantic,
+)
 from custom_sam_peft.models.losses import resolve as resolve_losses
 from custom_sam_peft.models.losses.presets import _TERM_CLASS_NAMES
+from custom_sam_peft.models.losses.semantic_presets import _SEM_TERM_CLASS_NAMES
 
 
 def _render_table(report: DoctorReport) -> None:
@@ -100,6 +105,12 @@ def _render_resolved_config_tables(cfg: TrainConfig) -> None:
     """Spec §11.2.1 + §11.2.2 — two additional tables when --config is set."""
     console = Console()
 
+    task_tbl = Table(title="Task", show_header=False, box=None)
+    task_tbl.add_column("knob")
+    task_tbl.add_column("value")
+    task_tbl.add_row("task", cfg.task)
+    console.print(task_tbl)
+
     resolved = resolve(cfg.data.augmentations)
     aug = Table(title="Resolved augmentations", show_header=False, box=None)
     aug.add_row("preset", cfg.data.augmentations.preset)
@@ -133,39 +144,70 @@ def _render_resolved_config_tables(cfg: TrainConfig) -> None:
     norm.add_row("resolution path", path)
     console.print(norm)
 
-    losses_resolved = resolve_losses(cfg.train.loss)
-    loss_table = Table(title="Resolved losses", show_header=False, box=None)
-    loss_table.add_column("knob")
-    loss_table.add_column("value")
-    loss_table.add_row("preset", cfg.train.loss.preset)
-    loss_table.add_row("class_imbalance", cfg.train.loss.class_imbalance)
-    for fname in (
-        "mask_family",
-        "box_family",
-        "obj_family",
-        "presence_family",
-        "w_mask",
-        "w_box",
-        "w_obj",
-        "w_presence",
-        "focal_gamma",
-        "focal_alpha",
-        "tversky_alpha",
-        "tversky_gamma",
-        "boundary_weight",
-    ):
-        loss_table.add_row(fname, str(getattr(losses_resolved, fname)))
-    term_classes = {
-        "mask": _TERM_CLASS_NAMES["mask"][losses_resolved.mask_family],
-        "box": _TERM_CLASS_NAMES["box"][losses_resolved.box_family],
-        "obj": _TERM_CLASS_NAMES["obj"][losses_resolved.obj_family],
-        "presence": _TERM_CLASS_NAMES["presence"][losses_resolved.presence_family],
-    }
-    loss_table.add_row(
-        "term_classes",
-        ", ".join(f"{k}={v}" for k, v in term_classes.items()),
-    )
-    console.print(loss_table)
+    if cfg.task == "semantic":
+        sem_resolved = resolve_semantic(cfg.train.semantic_loss)
+        sem_table = Table(title="Resolved semantic losses", show_header=False, box=None)
+        sem_table.add_column("knob")
+        sem_table.add_column("value")
+        sem_table.add_row("preset", cfg.train.semantic_loss.preset)
+        sem_table.add_row("class_imbalance", cfg.train.semantic_loss.class_imbalance)
+        for fname in (
+            "sem_family",
+            "w_ce",
+            "w_region",
+            "focal_gamma",
+            "focal_alpha",
+            "tversky_alpha",
+            "tversky_gamma",
+            "boundary_weight",
+        ):
+            sem_table.add_row(fname, str(getattr(sem_resolved, fname)))
+        sem_table.add_row(
+            "term_classes",
+            f"region={_SEM_TERM_CLASS_NAMES[sem_resolved.sem_family]}",
+        )
+        sem_table.add_row("source", cfg.train.semantic_loss.source)
+        sem_table.add_row("query_reduce", cfg.train.semantic_loss.query_reduce)
+        sem_table.add_row("background_logit", str(cfg.train.semantic_loss.background_logit))
+        console.print(sem_table)
+        if cfg.train.semantic_loss.source == "marginalize":
+            console.print("Head: marginalization (head-free)")
+        else:
+            console.print("Head: semantic_seg (surfaced)")
+    else:
+        losses_resolved = resolve_losses(cfg.train.loss)
+        loss_table = Table(title="Resolved losses", show_header=False, box=None)
+        loss_table.add_column("knob")
+        loss_table.add_column("value")
+        loss_table.add_row("preset", cfg.train.loss.preset)
+        loss_table.add_row("class_imbalance", cfg.train.loss.class_imbalance)
+        for fname in (
+            "mask_family",
+            "box_family",
+            "obj_family",
+            "presence_family",
+            "w_mask",
+            "w_box",
+            "w_obj",
+            "w_presence",
+            "focal_gamma",
+            "focal_alpha",
+            "tversky_alpha",
+            "tversky_gamma",
+            "boundary_weight",
+        ):
+            loss_table.add_row(fname, str(getattr(losses_resolved, fname)))
+        term_classes = {
+            "mask": _TERM_CLASS_NAMES["mask"][losses_resolved.mask_family],
+            "box": _TERM_CLASS_NAMES["box"][losses_resolved.box_family],
+            "obj": _TERM_CLASS_NAMES["obj"][losses_resolved.obj_family],
+            "presence": _TERM_CLASS_NAMES["presence"][losses_resolved.presence_family],
+        }
+        loss_table.add_row(
+            "term_classes",
+            ", ".join(f"{k}={v}" for k, v in term_classes.items()),
+        )
+        console.print(loss_table)
 
 
 def _build_resolved_config_json(cfg: TrainConfig) -> dict[str, object]:
@@ -177,7 +219,8 @@ def _build_resolved_config_json(cfg: TrainConfig) -> dict[str, object]:
     )
     assert cfg.data.normalize is not None  # materialized by DataConfig validator  # noqa: S101
     mean, std, path = resolve_normalization_with_path(cfg.model.name, cfg.data.normalize)
-    return {
+    result: dict[str, object] = {
+        "task": cfg.task,
         "augmentations": {
             "preset": aug_dump["preset"],
             "intensity": aug_dump["intensity"],
@@ -190,10 +233,18 @@ def _build_resolved_config_json(cfg: TrainConfig) -> dict[str, object]:
             "std": std,
             "resolution_path": path,
         },
-        "loss": {
-            k: v for k, v in dump_loss_bundle(cfg.train.loss).items() if k != "library_version"
-        },
     }
+    if cfg.task == "semantic":
+        result["semantic_loss"] = {
+            k: v
+            for k, v in dump_semantic_loss_bundle(cfg.train.semantic_loss).items()
+            if k != "library_version"
+        }
+    else:
+        result["loss"] = {
+            k: v for k, v in dump_loss_bundle(cfg.train.loss).items() if k != "library_version"
+        }
+    return result
 
 
 def doctor(

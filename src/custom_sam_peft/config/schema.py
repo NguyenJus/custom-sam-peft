@@ -55,6 +55,9 @@ __all__ = [  # noqa: RUF022
     "PEFTConfig",
     "QLoRAConfig",
     "RunConfig",
+    "SemanticDataConfig",
+    "SemanticLossConfig",
+    "SemanticLossOverrides",
     "TextPromptConfig",
     "TrackingConfig",
     "TrainConfig",
@@ -70,12 +73,14 @@ __all__ = [  # noqa: RUF022
     "LRSchedule",
     "MaskFamily",
     "ObjFamily",
+    "SemMaskFamily",
     "Optimizer",
     "PEFTMethod",
     "PresenceFamily",
     "Preset",
     "QuantType",
     "SubsetStrategy",
+    "Task",
     "TextPromptMode",
     "TrackerBackend",
     # Internal classes re-exported for backward compatibility (audit Section G)
@@ -87,7 +92,8 @@ __all__ = [  # noqa: RUF022
 ]
 
 Dtype = Literal["bfloat16", "float16"]
-DataFormat = Literal["coco", "hf"]
+DataFormat = Literal["coco", "hf", "mask_png"]  # mask_png is semantic-only (§4.2)
+Task = Literal["instance", "semantic"]  # cite: #113 — extensible (panoptic out of scope)
 PEFTMethod = Literal["lora", "qlora"]
 QuantType = Literal["nf4", "fp4"]
 # "auto" resolves at trainer construction via peft_method.recommended_optimizer()
@@ -121,6 +127,13 @@ class ModelConfig(_Strict):
 
 
 class DataSplit(_Strict):
+    """A pair of paths identifying one data split.
+
+    For ``mask_png`` format: ``annotations`` is reinterpreted as the
+    **label-map PNG directory** and ``images`` as the image directory
+    (no JSON annotation file is used).
+    """
+
     annotations: str = Field(min_length=1)
     images: str = Field(min_length=1)
 
@@ -187,6 +200,33 @@ class LossConfig(_Strict):
     overrides: LossOverrides = Field(default_factory=LossOverrides)
 
     model_config = ConfigDict(extra="forbid", arbitrary_types_allowed=True)
+
+
+SemMaskFamily = Literal["ce_dice", "focal_dice", "focal_tversky", "boundary", "ce", "dice"]
+
+
+class SemanticLossOverrides(_Strict):
+    """Per-knob overrides; None -> inherit from (preset, class_imbalance)."""
+
+    sem_family: SemMaskFamily | None = None
+    w_ce: PositiveFloat | None = None
+    w_region: PositiveFloat | None = None  # weight on the Dice/Tversky/Boundary term
+    focal_gamma: PositiveFloat | None = None
+    focal_alpha: float | None = Field(default=None, ge=0.0, le=1.0)
+    tversky_alpha: float | None = Field(default=None, ge=0.0, le=1.0)
+    tversky_gamma: PositiveFloat | None = None
+    boundary_weight: float | None = Field(default=None, ge=0.0, le=1.0)
+
+
+class SemanticLossConfig(_Strict):
+    preset: Preset = "natural"  # reuse #112 Preset verbatim
+    class_imbalance: ClassImbalance = "balanced"  # reuse #112 axis verbatim
+    overrides: SemanticLossOverrides = Field(default_factory=SemanticLossOverrides)
+    # --- argmax / background / reduction knobs (§4.5, §6.2) ---
+    background_logit: float = 0.0  # cite: degenerate logit boundary (sigmoid(0)=0.5)
+    background_class_name: str | None = None  # tbd: #113 — custom explicit-bg name
+    query_reduce: Literal["max", "sum"] = "max"  # tbd: #113 — see §6.2
+    source: Literal["marginalize", "semantic_seg"] = "marginalize"  # cite: §3.3 / OQ-1
 
 
 class AugmentationOverrides(_Strict):
@@ -314,6 +354,7 @@ class HFFieldMap(_Strict):
     segmentation: str | None = "objects.segmentation"
     categories_feature: str = "categories"
     bbox_format: Literal["xywh", "xyxy"] = "xyxy"
+    label_map: str | None = None  # cite: #113 -- HF feature holding the (H,W) label image
 
 
 class HFDatasetConfig(_Strict):
@@ -380,6 +421,41 @@ class LimitConfig(_Strict):
         return data
 
 
+class SemanticDataConfig(_Strict):
+    """Semantic-segmentation data parameters. Required when task == 'semantic'.
+
+    Lives under DataConfig.semantic. None for instance datasets.
+    """
+
+    class_map: str | None = Field(
+        default=None,
+        description=(
+            "Path to a JSON file mapping integer pixel value -> class name, e.g. "
+            '{"0": "background", "1": "road", "2": "building"}. The set of NAMES '
+            "(excluding any explicit background, see §4.5) is the prompted concept "
+            "vocabulary AND the dataset class_names, in ascending-pixel-value order. "
+            "Required for data.format: mask_png (the only class-name source). "
+            "Optional for data.format: hf — when absent the class vocabulary is "
+            "derived from the HF dataset's label feature ClassLabel.names."
+        ),
+    )
+    ignore_index: int = Field(
+        default=255,  # cite: PASCAL VOC / Cityscapes void convention (255)
+        description=(
+            "Pixel value in the label map treated as void/unlabeled. Excluded from "
+            "both loss and metrics. Not a class. Default 255 is the de-facto standard."
+        ),
+    )
+    label_suffix: str = Field(
+        default="_labelIds.png",  # tbd: #113 — Cityscapes-style; override per dataset
+        description=(
+            "Filename suffix that maps an image file to its label-map PNG (mask_png "
+            "format only). image 'aachen_000000.png' -> label "
+            "'aachen_000000{label_suffix}'. Set to '.png' for same-stem pairing."
+        ),
+    )
+
+
 class DataConfig(_Strict):
     format: DataFormat
     train: DataSplit
@@ -414,6 +490,7 @@ class DataConfig(_Strict):
     text_prompt: TextPromptConfig = Field(default_factory=TextPromptConfig)
     normalize: NormalizeConfig | None = None
     limit: LimitConfig = Field(default_factory=LimitConfig)
+    semantic: SemanticDataConfig | None = None  # required when task == 'semantic'
     # --- advanced ---
     test: DataSplit | None = None
     hf: HFDatasetConfig | None = None
@@ -619,6 +696,7 @@ class TrainHyperparams(_Strict):
     early_stop: EarlyStopConfig = Field(default_factory=EarlyStopConfig)
 
     loss: LossConfig = Field(default_factory=LossConfig)
+    semantic_loss: SemanticLossConfig = Field(default_factory=SemanticLossConfig)
     nan_abort_after: PositiveInt = 20
     num_workers: int = Field(
         default_factory=lambda: min(4, os.cpu_count() or 1),
@@ -664,3 +742,36 @@ class TrainConfig(_Strict):
     eval: EvalConfig = Field(default_factory=EvalConfig)
     tracking: TrackingConfig = Field(default_factory=TrackingConfig)
     export: ExportConfig = Field(default_factory=ExportConfig)
+    task: Task = "instance"  # cite: #113 — default preserves the instance path exactly
+
+    @model_validator(mode="after")
+    def _check_task_data_compat(self) -> TrainConfig:
+        if self.task == "semantic":
+            if self.data.format == "coco":
+                raise ValueError(
+                    "task: semantic does not support data.format: coco (instance JSON). "
+                    "Use data.format: mask_png or hf with a semantic field map."
+                )
+            if self.data.semantic is None:
+                raise ValueError("task: semantic requires data.semantic (class_map, ignore_index).")
+            if self.data.format == "mask_png" and self.data.semantic.class_map is None:
+                raise ValueError(
+                    "data.format: mask_png requires data.semantic.class_map "
+                    "(a JSON pixel-value -> class-name map)."
+                )
+            if self.eval.iou_thresholds != EvalConfig().iou_thresholds:
+                raise ValueError(
+                    "eval.iou_thresholds is inert under task: semantic (mIoU has no "
+                    "threshold sweep). Remove it."
+                )
+            if self.eval.mask_threshold != EvalConfig().mask_threshold:
+                raise ValueError(
+                    "eval.mask_threshold is inert under task: semantic (argmax, not "
+                    "per-mask binarize). Remove it."
+                )
+        else:  # instance
+            if self.data.semantic is not None:
+                raise ValueError("data.semantic is only valid when task: semantic.")
+            if self.data.format == "mask_png":
+                raise ValueError("data.format: mask_png requires task: semantic.")
+        return self
