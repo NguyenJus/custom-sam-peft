@@ -194,3 +194,72 @@ def test_bfloat16_inputs_run_without_error():
     assert len(entries) == 2
     for e in entries:
         assert np.isfinite(e["score"])
+
+
+# --- top-N filter tests ---
+
+
+def _outputs_with_scores(scores: list[float], h: int = 4, w: int = 4) -> dict[str, torch.Tensor]:
+    # Encode target post-sigmoid scores via pred_logits with presence fixed so
+    # sigmoid(presence)=1 (large positive). score = sigmoid(logit) * ~1.
+    n = len(scores)
+    logits = torch.tensor(
+        [[[torch.logit(torch.tensor(min(max(s, 1e-6), 1 - 1e-6))).item()] for s in scores]]
+    )
+    return {
+        "pred_logits": logits,  # (1, n, 1)
+        "pred_boxes": torch.full((1, n, 4), 0.5),
+        "pred_masks": torch.full((1, n, h, w), -10.0),
+        "presence_logit_dec": torch.full((1, 1), 20.0),  # sigmoid≈1
+    }
+
+
+def test_filter_no_op_when_n_le_cap():
+    # N=3 <= cap=100 -> identical entries to unfiltered.
+    out = _outputs_with_scores([0.9, 0.5, 0.1])
+    base = queries_to_coco_results(out, image_id=1, category_id=1, original_hw=(4, 4))
+    filt = queries_to_coco_results(out, image_id=1, category_id=1, original_hw=(4, 4), max_dets=100)
+    assert filt == base
+
+
+def test_filter_keeps_top_cap_by_score():
+    # 105 queries, distinct descending scores; cap=100 -> exactly 100 survivors,
+    # and they are the 100 highest scores.
+    scores = [i / 200.0 for i in range(105, 0, -1)]  # 105 distinct, descending
+    out = _outputs_with_scores(scores)
+    filt = queries_to_coco_results(out, image_id=1, category_id=1, original_hw=(4, 4), max_dets=100)
+    assert len(filt) == 100
+    kept = sorted((e["score"] for e in filt), reverse=True)
+    expected = sorted(scores, reverse=True)[:100]
+    assert kept == pytest.approx(expected, abs=1e-5)
+
+
+def test_filter_boundary_ties_keep_superset():
+    # 102 queries; scores tie exactly at the cap boundary (positions 100,101,102
+    # all equal). The >= threshold keeps the SUPERSET (all 3 tied), never < cap.
+    scores = [0.9 - i * 0.001 for i in range(99)] + [0.3, 0.3, 0.3]  # 99 distinct + 3 ties
+    out = _outputs_with_scores(scores)
+    filt = queries_to_coco_results(out, image_id=1, category_id=1, original_hw=(4, 4), max_dets=100)
+    # 99 above the tie + all 3 tied at 0.3 = 102 survivors (superset, not truncated to 100).
+    assert len(filt) == 102
+
+
+def test_filter_n_zero_returns_empty():
+    out = {
+        "pred_logits": torch.zeros(1, 0, 1),
+        "pred_boxes": torch.zeros(1, 0, 4),
+        "pred_masks": torch.zeros(1, 0, 4, 4),
+        "presence_logit_dec": torch.zeros(1, 1),
+    }
+    assert (
+        queries_to_coco_results(out, image_id=1, category_id=1, original_hw=(4, 4), max_dets=100)
+        == []
+    )
+
+
+def test_filter_none_is_no_filter():
+    # max_dets=None (default) preserves the predict/visualize contract: ALL queries.
+    scores = [i / 200.0 for i in range(105, 0, -1)]
+    out = _outputs_with_scores(scores)
+    entries = queries_to_coco_results(out, image_id=1, category_id=1, original_hw=(4, 4))
+    assert len(entries) == 105  # unfiltered
