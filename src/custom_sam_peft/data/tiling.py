@@ -175,10 +175,18 @@ def run_windows(
     """Apply `fn(crop, window)` to each window's crop and collect fragments,
     re-placing each tile-local fragment mask onto the full-image canvas at the
     window origin (spec §5.1). `fn` returns fragments whose masks are tile-local
-    (H_win, W_win); this offsets them to full-canvas coordinates."""
+    (H_win, W_win); this offsets them to full-canvas coordinates.
+
+    ``run_windows`` is the sole authority for assigning ``window_id`` (per the
+    ``Fragment`` contract): every fragment collected from window ``i`` (0-based
+    enumerate index) gets ``window_id=i``, overriding whatever value ``fn`` set.
+    All fragments from the same window share the same id so ``merge_fragments``
+    correctly skips intra-tile pairs; fragments from different windows have
+    distinct ids so genuine seam instances are linkable.
+    """
     h, w = image.shape[0], image.shape[1]
     collected: list[Fragment] = []
-    for win in windows:
+    for i, win in enumerate(windows):
         crop = image[win.y0 : win.y0 + win.h, win.x0 : win.x0 + win.w]
         for frag in fn(crop, win):
             if frag.mask.shape[0] < win.h or frag.mask.shape[1] < win.w:
@@ -194,7 +202,7 @@ def run_windows(
                     mask=canvas,
                     score=frag.score,
                     category_id=frag.category_id,
-                    window_id=frag.window_id,
+                    window_id=i,
                 )
             )
     return collected
