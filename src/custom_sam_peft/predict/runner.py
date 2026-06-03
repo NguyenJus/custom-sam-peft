@@ -11,11 +11,20 @@ Design notes (spec §2, §9):
     so the base-model-only hot path never triggers that import.
   - ``queries_to_coco_results`` is called per-image (hard-asserts batch==1).
   - v1 calls postprocess per-image even when --batch-size > 1 (spec §12, §13).
+
+Tiling extension (spec §5.2):
+  - When ``tiling_engaged(orig_h, orig_w)`` is True the image is sliced into
+    overlapping tiles; each tile runs the same transform→model→postprocess
+    forward via ``_predict_one_tile``.  Fragments are merged across tiles and
+    then converted to the same prediction-entry dicts the direct path emits.
+  - Small images (max edge <= SAM3_IMAGE_SIZE) take the DIRECT path, which is
+    byte-for-byte identical to the pre-tiling code (spec §5.2 hard requirement).
 """
 
 from __future__ import annotations
 
 import contextlib
+import functools
 import hashlib
 import json
 import logging
@@ -23,7 +32,7 @@ import random
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Literal, cast
+from typing import TYPE_CHECKING, Any, Literal, cast
 
 import numpy as np
 import torch
@@ -31,6 +40,10 @@ import torch
 from custom_sam_peft import profiling
 from custom_sam_peft.cli._progress import progress as P
 from custom_sam_peft.runtime._runtime import coerce_dtype_for_capability
+
+if TYPE_CHECKING:
+    from custom_sam_peft.data.tiling import Fragment, MergedInstance
+    from custom_sam_peft.oom import OomLadder
 
 logger = logging.getLogger(__name__)
 
@@ -247,6 +260,168 @@ def _int_image_id(path: Path) -> int:
 
 
 # ---------------------------------------------------------------------------
+# Tiling helpers (spec §5.2)
+# ---------------------------------------------------------------------------
+
+
+def _merged_instance_to_entry(
+    mi: MergedInstance,
+    *,
+    image_id: int,
+    category_id: int,
+) -> dict[str, object]:
+    """Convert a MergedInstance (full-canvas bool mask) to a COCO result entry dict.
+
+    The mask is already at (orig_h, orig_w) — no resize needed.  bbox is
+    derived from the bounding rectangle of the non-zero pixels (x, y, w, h);
+    a zero-pixel mask yields bbox [0, 0, 0, 0].
+
+    This is intentionally NOT used by the direct path; the direct path goes
+    through ``queries_to_coco_results`` so its RLE encoding stays byte-for-byte
+    identical to pre-tiling output (spec §5.2 hard requirement).
+    """
+    import numpy as np
+    import pycocotools.mask as _mask_utils
+
+    mask_u8 = mi.mask.astype(np.uint8)
+    rle: dict[str, object] = _mask_utils.encode(np.asfortranarray(mask_u8))
+    counts = rle["counts"]
+    rle["counts"] = counts.decode("ascii") if isinstance(counts, bytes) else counts
+
+    # Bounding box from the mask itself
+    rows = np.any(mi.mask, axis=1)
+    cols = np.any(mi.mask, axis=0)
+    if rows.any():
+        y_min, y_max = int(np.argmax(rows)), int(len(rows) - 1 - np.argmax(rows[::-1]))
+        x_min, x_max = int(np.argmax(cols)), int(len(cols) - 1 - np.argmax(cols[::-1]))
+        bbox = [float(x_min), float(y_min), float(x_max - x_min), float(y_max - y_min)]
+    else:
+        bbox = [0.0, 0.0, 0.0, 0.0]
+
+    return {
+        "image_id": int(image_id),
+        "category_id": int(category_id),
+        "bbox": bbox,
+        "score": float(mi.score),
+        "segmentation": rle,
+    }
+
+
+def _predict_one_tile(
+    crop_np: np.ndarray[Any, Any],
+    _window: object,
+    *,
+    model: torch.nn.Module,
+    transforms: object,
+    prompts: list[str],
+    score_threshold: float,
+    device: str,
+    dtype: torch.dtype,
+    ladder: OomLadder,
+    category_id_offset: int,
+) -> list[Fragment]:
+    """Run the transform→model→postprocess forward on a single tile crop.
+
+    Returns tile-local Fragments (masks at crop resolution) for every
+    surviving (score >= score_threshold) per-(tile, category) instance.
+    The caller (``run_windows``) offsets these to full-canvas coordinates and
+    assigns ``window_id`` — callers must not set ``window_id`` for uniqueness
+    purposes; ``run_windows`` is the sole authority (per the ``Fragment`` contract).
+
+    ``_window`` is the ``Window`` passed by ``run_windows``; it is accepted to
+    satisfy the ``fn(crop, window)`` signature but is not used inside this
+    function (``run_windows`` owns canvas placement and ``window_id`` assignment).
+    ``category_id_offset`` is the 0-based start index of the class group
+    within ``prompts``; returned Fragments carry ``category_id = offset+1``.
+
+    OOM behaviour: mirrors the direct-path forward loop exactly.  On a CUDA OOM
+    the ladder is queried and the decision mapped as follows:
+      RETRY_B    — ladder halved B (shared sticky state); continue to retry the
+                   same group (the tile already runs at B=1, so the next retry
+                   will immediately get RETRY_K / FLOOR_RETRY / TERMINAL);
+      RETRY_K    — ladder halved K; continue to resume from j at smaller K_g;
+      FLOOR_RETRY — one-shot retry of the same forward;
+      TERMINAL   — all rungs exhausted; raise with a descriptive message.
+    top_k is intentionally NOT applied per-tile; it is applied post-merge only
+    (per spec §4.6) so that low-scoring fragments that would merge into a
+    kept instance are not prematurely discarded.
+    """
+    import torch
+
+    from custom_sam_peft.data.base import TextPrompts
+    from custom_sam_peft.data.tiling import Fragment
+    from custom_sam_peft.eval.evaluator import _row_outputs
+    from custom_sam_peft.eval.postprocess import queries_to_coco_results
+    from custom_sam_peft.oom import OomDecision, is_cuda_oom
+    from custom_sam_peft.predict.tiling_preprocess import preprocess_tile
+
+    tile_h, tile_w = crop_np.shape[0], crop_np.shape[1]
+    tile_hw = (tile_h, tile_w)
+
+    # Shared per-tile preprocessing (design C): pad raw-0 -> normalize, byte-identical
+    # to the eval tiled path. (1, C, H, W) — model input.
+    img_tensor = preprocess_tile(crop_np, transforms, device=device, dtype=dtype).unsqueeze(0)
+
+    fragments: list[Fragment] = []
+    j = 0
+    while j < len(prompts):
+        K_g = min(ladder.effective_K, len(prompts) - j)
+        group = prompts[j : j + K_g]
+        prompts_g = [TextPrompts(classes=list(group))]
+        try:
+            with torch.no_grad():
+                outputs = model(img_tensor, prompts_g, support=None)
+        except RuntimeError as oom_err:
+            if not is_cuda_oom(oom_err):
+                raise
+            decision = ladder.on_oom()
+            if decision is OomDecision.RETRY_B:
+                continue  # ladder halved B; retry the same group (next OOM will reduce K)
+            if decision is OomDecision.RETRY_K:
+                continue  # resume from j at the smaller K_g
+            if decision is OomDecision.FLOOR_RETRY:
+                continue  # retry same forward once
+            raise RuntimeError(
+                "OOM at classes_per_forward=1 on a single tile; "
+                "use a larger GPU or smaller image_size."
+            ) from oom_err
+
+        # Postprocess per (tile, class) row — mask upsampled to tile_hw (tile-local)
+        for kk in range(K_g):
+            r = kk  # batch size = 1, so row index == class-within-group index
+            cat_id = (category_id_offset + j + kk) + 1
+            entries = queries_to_coco_results(
+                _row_outputs(outputs, r),
+                image_id=0,  # placeholder; only mask + score used
+                category_id=cat_id,
+                original_hw=tile_hw,
+                mask_threshold=0.0,
+            )
+            for e in entries:
+                score = float(cast("float", e["score"]))
+                if score < score_threshold:
+                    continue
+                # Decode the tile-local RLE → bool mask
+                from custom_sam_peft.predict.writers import decode_rle_to_uint8
+
+                mask_u8 = decode_rle_to_uint8(e["segmentation"])  # type: ignore[arg-type]
+                mask_bool = mask_u8.astype(bool)
+                fragments.append(
+                    Fragment(
+                        mask=mask_bool,
+                        score=score,
+                        category_id=cat_id,
+                        window_id=0,  # placeholder; run_windows overrides with enumerate index
+                    )
+                )
+
+        j += K_g
+
+    # top_k is applied post-merge only (spec §4.6); do NOT slice per-tile here.
+    return fragments
+
+
+# ---------------------------------------------------------------------------
 # Main entry point
 # ---------------------------------------------------------------------------
 
@@ -396,9 +571,16 @@ def run_predict(opts: PredictOptions) -> PredictReport:
     # ---------------------------------------------------------------------------
     # Step 9: forward loop — index-driven while loops with OomLadder B-then-K recovery
     # ---------------------------------------------------------------------------
+    from custom_sam_peft.data.tiling import (
+        DEFAULT_OVERLAP,
+        iter_windows,
+        merge_fragments,
+        run_windows,
+        tiling_engaged,
+    )
     from custom_sam_peft.eval.evaluator import _row_outputs
     from custom_sam_peft.eval.postprocess import queries_to_coco_results
-    from custom_sam_peft.models.sam3 import MULTIPLEX_CAP
+    from custom_sam_peft.models.sam3 import MULTIPLEX_CAP, SAM3_IMAGE_SIZE
     from custom_sam_peft.oom import OomDecision, OomLadder, is_cuda_oom
 
     is_semantic = rcfg.task == "semantic"
@@ -422,8 +604,13 @@ def run_predict(opts: PredictOptions) -> PredictReport:
     id_to_path: dict[int, Path] = {}
     id_to_stem: dict[int, str] = {}
     originals: dict[int, tuple[int, int]] = {}
+    id_to_spatial_meta: dict[int, Any] = {}  # image_id -> SpatialMeta (geo)
+    id_to_dicom_meta: dict[int, Any] = {}  # image_id -> SpatialMeta (dicom, spec §7.3)
     n_successful = 0
     t_start = time.perf_counter()
+    # Tiling provenance counters (spec §5.2 run.json record)
+    tiling_any_engaged = False
+    n_windows_total = 0
 
     # Initialise progress inner bar to the real image count (no-op outside a session).
     image_path_list = list(image_paths)
@@ -443,16 +630,22 @@ def run_predict(opts: PredictOptions) -> PredictReport:
         chunk_paths = image_path_list[i : i + bs_cur]
         chunk_t0 = time.perf_counter()
 
-        # --- open + transform each image in the chunk (preserved from original) ---
+        # --- open each image in the chunk; split into direct vs. tiling groups ---
+        # raw numpy images for tiling candidates; transformed tensors for direct batch
         imgs: list[torch.Tensor] = []
         metas: list[tuple[int, int, int]] = []  # (image_id, orig_h, orig_w)
         chunk_paths_ok: list[Path] = []  # parallel to metas; used for verbose logging
+        # Tiling images are handled immediately on read (see below); direct-path images
+        # accumulate in imgs/metas as before.
+        tiled_entries_this_chunk: list[dict[str, object]] = []
+        tiled_metas_this_chunk: list[tuple[int, int, int]] = []
+        tiled_paths_this_chunk: list[Path] = []
 
         for img_path in chunk_paths:
             try:
-                from custom_sam_peft.data.io import read_image as _read_image
+                from custom_sam_peft.data.io import read_image_with_meta as _read_image_with_meta
 
-                img_np = _read_image(img_path, rcfg.channels)
+                img_np, spatial_meta = _read_image_with_meta(img_path, rcfg.channels)
             except Exception as exc:
                 logger.warning("Skipping unreadable image %s: %s", img_path, exc)
                 continue
@@ -462,95 +655,157 @@ def run_predict(opts: PredictOptions) -> PredictReport:
             id_to_path[image_id] = img_path.resolve()
             id_to_stem[image_id] = img_path.stem
             originals[image_id] = (orig_h, orig_w)
+            if spatial_meta is not None and spatial_meta.kind == "geo":
+                id_to_spatial_meta[image_id] = spatial_meta
+            elif spatial_meta is not None and spatial_meta.kind == "dicom":
+                id_to_dicom_meta[image_id] = spatial_meta
 
-            transformed = transforms(image=img_np, bboxes=[], class_labels=[], instance_idx=[])
-            imgs.append(transformed["image"].to(rcfg.device, dtype=rcfg.dtype))
-            metas.append((image_id, orig_h, orig_w))
-            chunk_paths_ok.append(img_path)
+            if tiling_engaged(orig_h, orig_w):
+                # --- Tiling path (spec §5.2) ---
+                tiling_any_engaged = True
+                windows = iter_windows(
+                    orig_h, orig_w, tile=SAM3_IMAGE_SIZE, overlap=DEFAULT_OVERLAP
+                )
+                n_windows_total += len(windows)
+                logger.debug(
+                    "Tiling engaged for %s (%dx%d): %d windows",
+                    img_path.name,
+                    orig_h,
+                    orig_w,
+                    len(windows),
+                )
 
-        if not imgs:
+                tile_fn = functools.partial(
+                    _predict_one_tile,
+                    model=model,
+                    transforms=transforms,
+                    prompts=prompts,
+                    score_threshold=opts.score_threshold,
+                    device=rcfg.device,
+                    dtype=rcfg.dtype,
+                    ladder=ladder,
+                    category_id_offset=0,
+                )
+                # run_windows crops, places masks on the full canvas, and assigns
+                # window_id from the enumerate index (spec §5.1; Fragment contract).
+                frags = run_windows(img_np, windows, tile_fn)
+                merged: list[MergedInstance] = merge_fragments(frags, (orig_h, orig_w))
+
+                # Re-apply per-(image, category) score_threshold and top_k on merged (spec §4.6)
+                by_cat: dict[int, list[MergedInstance]] = {}
+                for mi in merged:
+                    by_cat.setdefault(mi.category_id, []).append(mi)
+
+                for cat_id, mis in by_cat.items():
+                    mis_filtered = [m for m in mis if m.score >= opts.score_threshold]
+                    mis_filtered.sort(key=lambda m: m.score, reverse=True)
+                    mis_kept = mis_filtered[: opts.top_k]
+                    for mi_kept in mis_kept:
+                        entry = _merged_instance_to_entry(
+                            mi_kept,
+                            image_id=image_id,
+                            category_id=cat_id,
+                        )
+                        tiled_entries_this_chunk.append(entry)
+
+                tiled_metas_this_chunk.append((image_id, orig_h, orig_w))
+                tiled_paths_this_chunk.append(img_path)
+
+            else:
+                # --- Direct path (spec §5.2): byte-for-byte unchanged ---
+                transformed = transforms(image=img_np, bboxes=[], class_labels=[], instance_idx=[])
+                imgs.append(transformed["image"].to(rcfg.device, dtype=rcfg.dtype))
+                metas.append((image_id, orig_h, orig_w))
+                chunk_paths_ok.append(img_path)
+
+        # At this point:
+        #   tiled_*      → tiling path results (already scored + filtered + converted)
+        #   imgs / metas → direct path images to batch-forward
+
+        if not imgs and not tiled_metas_this_chunk:
             i += len(chunk_paths)  # advance past the (all-unreadable) chunk
             continue
 
-        img_batch = torch.stack(imgs, dim=0)  # (B, C, H, W)
-
-        # --- index-driven inner class loop with the K-rung + buffer-and-commit ---
+        # --- Direct-path batch forward (UNCHANGED from pre-tiling code) ---
         chunk_buf: list[dict[str, object]] = []
         restart_chunk = False
-        j = 0  # class index into prompts
-
         # Semantic: per-image accumulation of (1, k_g, H_m, W_m) logit slices
         # across K-groups; discarded on RETRY_B just like chunk_buf.
         chunk_slices: list[list[torch.Tensor]] = [[] for _ in metas] if is_semantic else []
 
-        while j < len(prompts):
-            K_g = min(ladder.effective_K, len(prompts) - j)
-            group = prompts[j : j + K_g]
-            prompts_g = [TextPrompts(classes=list(group)) for _ in metas]
-            try:
-                with torch.no_grad(), profiling.bucket("predict.forward"):
-                    outputs = model(img_batch, prompts_g, support=None)
-                profiling.incr("predict.forwards")
-            except RuntimeError as oom_err:
-                # OOM may surface as a non-OutOfMemoryError RuntimeError on this
-                # card (see oom.is_cuda_oom); genuine errors re-propagate. (#208)
-                if not is_cuda_oom(oom_err):
-                    raise
-                decision = ladder.on_oom()
-                if decision is OomDecision.RETRY_B:
-                    restart_chunk = True
-                    if is_semantic:
-                        chunk_slices = [[] for _ in metas]  # discard semantic buffer
-                    break  # discard chunk_buf; restart this image-chunk at smaller B
-                if decision is OomDecision.RETRY_K:
-                    continue  # resume from j at the smaller K_g
-                if decision is OomDecision.FLOOR_RETRY:
-                    continue  # retry the same forward once
-                raise RuntimeError(
-                    "OOM at batch_size=1 and classes_per_forward=1; "
-                    "use a larger GPU or smaller image_size."
-                ) from oom_err
+        if imgs:
+            img_batch = torch.stack(imgs, dim=0)  # (B, C, H, W)
 
-            if is_semantic:
-                # Accumulate per-image logit slices (mirrors SemanticEvaluator)
-                b = len(metas)
-                logit_slice = marginalize_group(
-                    outputs,
-                    b,
-                    K_g,
-                    query_reduce=_sem_cfg.query_reduce,
-                    source=_sem_cfg.source,
-                )  # (b, K_g, H_m, W_m)
-                for ii in range(b):
-                    chunk_slices[ii].append(logit_slice[ii : ii + 1])  # (1, K_g, H_m, W_m)
-            else:
-                # postprocess each (image, class) row — category_id uses index arithmetic
-                # (j+kk)+1, value-equivalent to the old prompts.index(group[kk])+1
-                for r in range(len(metas) * K_g):
-                    ii, kk = divmod(r, K_g)
-                    image_id, orig_h, orig_w = metas[ii]
-                    class_idx_one_based = (j + kk) + 1
-                    with profiling.bucket("predict.postprocess"):
-                        entries = queries_to_coco_results(
-                            _row_outputs(outputs, r),
-                            image_id=image_id,
-                            category_id=class_idx_one_based,
-                            original_hw=(orig_h, orig_w),
-                            mask_threshold=0.0,
-                        )
-                    entries = [
-                        e for e in entries if cast(float, e["score"]) >= opts.score_threshold
-                    ]
-                    entries.sort(key=lambda e: cast(float, e["score"]), reverse=True)
-                    entries = entries[: opts.top_k]
-                    chunk_buf.extend(entries)
-            j += K_g  # advance by the ACTUAL group length
+            j = 0  # class index into prompts
+            while j < len(prompts):
+                K_g = min(ladder.effective_K, len(prompts) - j)
+                group = prompts[j : j + K_g]
+                prompts_g = [TextPrompts(classes=list(group)) for _ in metas]
+                try:
+                    with torch.no_grad(), profiling.bucket("predict.forward"):
+                        outputs = model(img_batch, prompts_g, support=None)
+                    profiling.incr("predict.forwards")
+                except RuntimeError as oom_err:
+                    # OOM may surface as a non-OutOfMemoryError RuntimeError on this
+                    # card (see oom.is_cuda_oom); genuine errors re-propagate. (#208)
+                    if not is_cuda_oom(oom_err):
+                        raise
+                    decision = ladder.on_oom()
+                    if decision is OomDecision.RETRY_B:
+                        restart_chunk = True
+                        if is_semantic:
+                            chunk_slices = [[] for _ in metas]  # discard semantic buffer
+                        break  # discard chunk_buf; restart this image-chunk at smaller B
+                    if decision is OomDecision.RETRY_K:
+                        continue  # resume from j at the smaller K_g
+                    if decision is OomDecision.FLOOR_RETRY:
+                        continue  # retry the same forward once
+                    raise RuntimeError(
+                        "OOM at batch_size=1 and classes_per_forward=1; "
+                        "use a larger GPU or smaller image_size."
+                    ) from oom_err
+
+                if is_semantic:
+                    # Accumulate per-image logit slices (mirrors SemanticEvaluator)
+                    b = len(metas)
+                    logit_slice = marginalize_group(
+                        outputs,
+                        b,
+                        K_g,
+                        query_reduce=_sem_cfg.query_reduce,
+                        source=_sem_cfg.source,
+                    )  # (b, K_g, H_m, W_m)
+                    for ii in range(b):
+                        chunk_slices[ii].append(logit_slice[ii : ii + 1])  # (1, K_g, H_m, W_m)
+                else:
+                    # postprocess each (image, class) row — category_id uses index arithmetic
+                    # (j+kk)+1, value-equivalent to the old prompts.index(group[kk])+1
+                    for r in range(len(metas) * K_g):
+                        ii, kk = divmod(r, K_g)
+                        image_id, orig_h, orig_w = metas[ii]
+                        class_idx_one_based = (j + kk) + 1
+                        with profiling.bucket("predict.postprocess"):
+                            entries = queries_to_coco_results(
+                                _row_outputs(outputs, r),
+                                image_id=image_id,
+                                category_id=class_idx_one_based,
+                                original_hw=(orig_h, orig_w),
+                                mask_threshold=0.0,
+                            )
+                        entries = [
+                            e for e in entries if cast(float, e["score"]) >= opts.score_threshold
+                        ]
+                        entries.sort(key=lambda e: cast(float, e["score"]), reverse=True)
+                        entries = entries[: opts.top_k]
+                        chunk_buf.extend(entries)
+                j += K_g  # advance by the ACTUAL group length
 
         if restart_chunk:
             continue  # re-enter outer while at smaller B; i unchanged, buffer dropped
 
         # -------------------------------------------------------------------
-        # Semantic post-processing: build label map per image in the chunk
+        # Commit: semantic builds a label map per image; instance combines the
+        # direct-path buffer with the tiling-path entries.
         # -------------------------------------------------------------------
         if is_semantic:
             # opts.output is created implicitly by write_semantic_label_map (parents=True);
@@ -589,27 +844,31 @@ def run_predict(opts: PredictOptions) -> PredictReport:
                         "concepts": list(prompts),
                     }
                 )
+        else:
+            # Combine direct + tiled results and commit.
+            chunk_buf.extend(tiled_entries_this_chunk)
 
         # Chunk completed every class group: commit exactly once.
         all_predictions.extend(chunk_buf)
-        n_successful += len(metas)
-        images_processed += len(metas)
+        n_successful += len(metas) + len(tiled_metas_this_chunk)
+        images_processed += len(metas) + len(tiled_metas_this_chunk)
 
         # Verbose: emit one INFO line per image in the chunk (preserved from original).
+        all_paths_ok = chunk_paths_ok + tiled_paths_this_chunk
         if opts.verbose:
             chunk_latency_ms = (time.perf_counter() - chunk_t0) * 1000.0
-            per_image_ms = chunk_latency_ms / max(len(metas), 1)
-            for img_path in chunk_paths_ok:
+            per_image_ms = chunk_latency_ms / max(len(all_paths_ok), 1)
+            for img_path in all_paths_ok:
                 logger.info(
                     "image %d/%d %s (%.1f ms)",
-                    images_processed - len(metas) + chunk_paths_ok.index(img_path) + 1,
+                    images_processed - len(all_paths_ok) + all_paths_ok.index(img_path) + 1,
                     n_images,
                     img_path.name,
                     per_image_ms,
                 )
 
         # Progress ticks: one advance per image in this chunk (preserved from original).
-        for _ in metas:
+        for _ in range(len(metas) + len(tiled_metas_this_chunk)):
             P.advance_inner()
 
         if images_processed % log_every_n == 0 or images_processed == n_images:
@@ -634,7 +893,9 @@ def run_predict(opts: PredictOptions) -> PredictReport:
     opts.output.mkdir(parents=True, exist_ok=True)
 
     from custom_sam_peft.predict.writers import (
+        write_geotiff_masks,
         write_image_id_map,
+        write_nifti_volumes,
         write_predictions,
         write_run_json,
     )
@@ -664,6 +925,19 @@ def run_predict(opts: PredictOptions) -> PredictReport:
                 save_masks=opts.save_masks,
                 originals=originals,
                 id_to_stem=id_to_stem if opts.save_masks == "png" else None,
+            )
+
+            # GeoTIFF masks — emitted alongside PNG/RLE for geo source images (spec §7.1).
+            # One GeoTIFF per prediction entry, parallel to the PNG naming convention.
+            write_geotiff_masks(
+                all_predictions, id_to_spatial_meta, id_to_stem, originals, opts.output
+            )
+
+            # NIfTI volumes — emitted alongside PNG/RLE for DICOM source images (spec §7.3, §11.5).
+            # DICOM slices are grouped per series and stacked into one .nii.gz per series; one
+            # input dir can therefore yield several volumes. Non-DICOM paths are unaffected.
+            write_nifti_volumes(
+                all_predictions, id_to_dicom_meta, id_to_path, originals, opts.output
             )
 
             if opts.visualize:
@@ -703,6 +977,13 @@ def run_predict(opts: PredictOptions) -> PredictReport:
                 "n_images": n_successful,
                 "n_predictions": len(all_predictions),
                 "elapsed_sec": elapsed_sec,
+                # Tiling provenance (spec §5.2) — additive, never changes existing keys
+                "tiling": {
+                    "engaged": tiling_any_engaged,
+                    "tile": SAM3_IMAGE_SIZE,
+                    "overlap": DEFAULT_OVERLAP,
+                    "n_windows_total": n_windows_total,
+                },
             }
             write_run_json(run_meta, opts.output)
 

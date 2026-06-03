@@ -3,7 +3,8 @@
 Public API:
   - resolve_normalization(model_name, fallback, *, channel_semantics) -> (mean, std)
   - resolve_normalization_with_path(model_name, fallback, *, channel_semantics) -> (mean, std, path)
-  - build_eval_transforms(image_size, *, model_name, normalize, channel_semantics) -> A.Compose
+  - build_eval_transforms(image_size, *, model_name, normalize, channel_semantics,
+                          downscale) -> A.Compose
   - build_train_transforms(aug_cfg, image_size, *, model_name, normalize,
                            channel_semantics, channels) -> A.Compose
   - StainJitter: HED-space stain jitter Albumentations transform
@@ -200,34 +201,45 @@ def build_eval_transforms(
     model_name: str,
     normalize: NormalizeConfig,
     channel_semantics: str = "rgb",
+    downscale: bool = True,
     mask_fill_value: int = 0,
 ) -> A.Compose:
-    """Deterministic eval pipeline: longest-edge resize -> top-left pad -> normalize -> ToTensor."""
+    """Deterministic eval pipeline: longest-edge resize -> top-left pad -> normalize -> ToTensor.
+
+    When *downscale* is False the ``LongestMaxSize`` step is omitted so that
+    oversized rasters are NOT shrunk before padding — used by the eval/val
+    pipeline when per-tile native-res inference is desired (design C §5.4).
+    """
     import albumentations as A
     import cv2
     from albumentations.pytorch import ToTensorV2
 
     mean, std = resolve_normalization(model_name, normalize, channel_semantics=channel_semantics)
-    return A.Compose(
-        [
+    steps: list[object] = []
+    if downscale:
+        steps.append(
             # cite: standard semantic-seg practice
             # (nearest interp; bilinear invents fractional class ids)
             A.LongestMaxSize(
                 max_size=image_size,
                 interpolation=cv2.INTER_LINEAR,
                 mask_interpolation=cv2.INTER_NEAREST,
-            ),
-            A.PadIfNeeded(
-                min_height=image_size,
-                min_width=image_size,
-                border_mode=cv2.BORDER_CONSTANT,
-                fill=0,
-                fill_mask=mask_fill_value,
-                position="top_left",
-            ),
-            A.Normalize(mean=mean, std=std, max_pixel_value=normalize.max_pixel_value),
-            ToTensorV2(),
-        ],
+            )
+        )
+    steps.append(
+        A.PadIfNeeded(
+            min_height=image_size,
+            min_width=image_size,
+            border_mode=cv2.BORDER_CONSTANT,
+            fill=0,
+            fill_mask=mask_fill_value,
+            position="top_left",
+        )
+    )
+    steps.append(A.Normalize(mean=mean, std=std, max_pixel_value=normalize.max_pixel_value))
+    steps.append(ToTensorV2())
+    return A.Compose(
+        steps,
         bbox_params=A.BboxParams(
             format="pascal_voc",
             label_fields=["class_labels", "instance_idx"],

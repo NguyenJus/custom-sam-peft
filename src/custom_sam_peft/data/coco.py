@@ -22,6 +22,7 @@ from custom_sam_peft._registry import register
 from custom_sam_peft.config.schema import TextPromptConfig
 from custom_sam_peft.data.base import Dataset, Example
 from custom_sam_peft.data.io import read_image
+from custom_sam_peft.data.tiling import Window, iter_windows, tiling_engaged
 
 _LOG = logging.getLogger(__name__)
 
@@ -131,6 +132,7 @@ class COCODataset:
         seed: int = 0,
         image_ids: Iterable[int] | None = None,
         channels: int = 3,
+        expand_tiles: bool = True,
     ) -> None:
         self._image_root = Path(images)
         self._channels = channels
@@ -139,6 +141,7 @@ class COCODataset:
         self._seed = seed
         self._multiplex_cap = 16
         self._warned_truncation = False
+        self._expand_tiles = expand_tiles
 
         self._coco = _load_coco_index(annotations)
         sparse_ids, mapping, class_names = _build_category_remap(self._coco)
@@ -176,55 +179,110 @@ class COCODataset:
             annotations,
         )
 
-        # Eager per-image class label sets for stratified subset sampling.
-        # Built once here because _ann_index is already in memory.
+        # Pre-enumerate (image_id, window) samples (spec §5.3 / C6). A raster that
+        # triggers tiling_engaged expands into one sample per iter_windows window;
+        # otherwise a single full-image window. This is the POST-EXPANSION index
+        # space that __len__ / _fetch_raw / __getitem__ and every length consumer
+        # (data.limit subset cap, no-val auto-split, eval per-example alignment)
+        # operate over.
+        self._samples: list[tuple[int, Window]] = []
+        for img_id in self._image_ids:
+            h, w = self._image_hw(img_id)
+            if self._expand_tiles and tiling_engaged(h, w):
+                windows = iter_windows(h, w)
+            else:
+                windows = [Window(0, 0, h, w)]
+            for win in windows:
+                self._samples.append((img_id, win))
+
+        # Eager per-sample class label sets for stratified subset sampling.
+        # Indexed over self._samples (NOT _image_ids) so resolve_subset_indices
+        # sees labels aligned with the expanded len(dataset).
         self.image_class_labels: list[frozenset[int]] = [
             frozenset(
                 self._cat_id_to_dense[int(ann["category_id"])]
                 for ann in self._ann_index.get(img_id, [])
             )
-            for img_id in self._image_ids
+            for img_id, _win in self._samples
         ]
 
+    def _image_hw(self, image_id: int) -> tuple[int, int]:
+        """Return ``(height, width)`` for *image_id* without decoding pixels.
+
+        Prefers the COCO record's ``height``/``width`` fields; falls back to a
+        header-only PIL read when either is missing (full-pixel decode at
+        construction is deliberately avoided — this box is I/O-fragile).
+        """
+        rec = self._coco.loadImgs([image_id])[0]
+        h, w = rec.get("height"), rec.get("width")
+        if h and w:
+            return int(h), int(w)
+        from PIL import Image as PILImage
+
+        with PILImage.open(self._image_root / rec["file_name"]) as im:
+            pw, ph = im.size
+        return int(ph), int(pw)
+
     def __len__(self) -> int:
-        return len(self._image_ids)
+        return len(self._samples)
 
     # ------------------------------------------------------------------
     # Internal pipeline helpers
     # ------------------------------------------------------------------
 
-    def _fetch_raw(self, i: int) -> tuple[int, dict[str, Any], list[dict[str, Any]]]:
-        """Return ``(image_id, img_record, annotations)`` for index *i*."""
-        image_id = self._image_ids[i]
+    def _fetch_raw(self, i: int) -> tuple[int, dict[str, Any], list[dict[str, Any]], Window]:
+        """Return ``(image_id, img_record, annotations, window)`` for index *i*.
+
+        *i* indexes the expanded ``self._samples`` space (one entry per tile
+        window), not the raw image list.
+        """
+        image_id, window = self._samples[i]
         rec = self._coco.loadImgs([image_id])[0]
         anns = self._ann_index[image_id]
-        return image_id, rec, anns
+        return image_id, rec, anns, window
 
     def _decode_image(
-        self, raw: tuple[int, dict[str, Any], list[dict[str, Any]]]
+        self, raw: tuple[int, dict[str, Any], list[dict[str, Any]], Window]
     ) -> np.ndarray[Any, Any]:
-        """Load and decode the image for *raw* to an (H, W, C) ndarray."""
-        _image_id, rec, _anns = raw
+        """Load the image, decode to (H, W, C), and crop to the sample's window."""
+        _image_id, rec, _anns, win = raw
         img_path = self._image_root / rec["file_name"]
-        return read_image(img_path, self._channels)
+        np_img = read_image(img_path, self._channels)
+        return np_img[win.y0 : win.y0 + win.h, win.x0 : win.x0 + win.w]
 
     def _decode_targets(
         self,
-        raw: tuple[int, dict[str, Any], list[dict[str, Any]]],
+        raw: tuple[int, dict[str, Any], list[dict[str, Any]], Window],
     ) -> tuple[list[list[float]], list[np.ndarray[Any, Any]], list[int]]:
-        """Decode bounding boxes, masks, and class labels from *raw*.
+        """Decode bounding boxes, masks, and class labels from *raw*, clipped to
+        the sample's window (offset by ``-x0, -y0``; full masks cropped).
 
-        Returns ``(bboxes_xyxy, masks, class_labels)``.
+        Boxes are intersected with the window; instances whose clipped box has
+        non-positive width or height are dropped. Surviving masks are cropped to
+        the window crop. An empty post-clip window is a VALID negative — it simply
+        yields zero instances. Albumentations later applies the same clip via
+        ``BboxParams(min_area=0.0, min_visibility=0.0)``.
+
+        Returns ``(bboxes_xyxy, masks, class_labels)`` in WINDOW-LOCAL coords.
         """
-        _image_id, rec, anns = raw
-        h, w = int(rec["height"]), int(rec["width"])
+        image_id, _rec, anns, win = raw
+        h, w = self._image_hw(image_id)
         bboxes_xyxy: list[list[float]] = []
         masks: list[np.ndarray[Any, Any]] = []
         class_labels: list[int] = []
         for ann in anns:
             x, y, bw, bh = ann["bbox"]
-            bboxes_xyxy.append([float(x), float(y), float(x + bw), float(y + bh)])
-            masks.append(_decode_segmentation(ann, h, w).astype(np.uint8))
+            # Intersect the full-image box with the window, then offset to local.
+            x0 = max(float(x), float(win.x0))
+            y0 = max(float(y), float(win.y0))
+            x1 = min(float(x + bw), float(win.x0 + win.w))
+            y1 = min(float(y + bh), float(win.y0 + win.h))
+            if x1 <= x0 or y1 <= y0:
+                continue  # box does not intersect this window — skip (valid negative)
+            full_mask = _decode_segmentation(ann, h, w).astype(np.uint8)
+            mask_crop = full_mask[win.y0 : win.y0 + win.h, win.x0 : win.x0 + win.w]
+            bboxes_xyxy.append([x0 - win.x0, y0 - win.y0, x1 - win.x0, y1 - win.y0])
+            masks.append(mask_crop)
             class_labels.append(self._cat_id_to_dense[int(ann["category_id"])])
         return bboxes_xyxy, masks, class_labels
 
@@ -258,18 +316,19 @@ class COCODataset:
 
     def _pack_example(
         self,
-        raw: tuple[int, dict[str, Any], list[dict[str, Any]]],
+        raw: tuple[int, dict[str, Any], list[dict[str, Any]], Window],
         image_tensor: Any,
         out_bboxes: list[Any],
         out_masks: list[Any],
         out_classes: list[int],
+        image_native: np.ndarray[Any, Any] | None = None,
     ) -> Example:
         """Assemble `Instance` objects and return the final `Example`."""
         import torch
 
         from custom_sam_peft.data.base import Instance, TextPrompts
 
-        image_id, _rec, _anns = raw
+        image_id, _rec, _anns, _win = raw
 
         instances: list[Instance] = []
         for box, mask_np, cls in zip(out_bboxes, out_masks, out_classes, strict=True):
@@ -306,6 +365,7 @@ class COCODataset:
             image_id=str(image_id),
             prompts=TextPrompts(classes=prompts_list),
             instances=instances,
+            image_native=image_native,
         )
 
     def __getitem__(self, i: int) -> Example:
@@ -315,7 +375,32 @@ class COCODataset:
         image_tensor, out_bboxes, out_masks, out_classes = self._apply_transforms(
             np_img, bboxes_xyxy, masks, class_labels
         )
-        return self._pack_example(raw, image_tensor, out_bboxes, out_masks, out_classes)
+        # Hand the native-res RAW numpy pixels to the evaluator ONLY for oversized
+        # eval/val examples it tiles per-window (design C). With expand_tiles=False the
+        # window is the whole image, so np_img IS the full native-res image (no extra
+        # read). Train and direct/small paths leave image_native None.
+        image_native: np.ndarray[Any, Any] | None = None
+        if not self._expand_tiles:
+            _h, _w = np_img.shape[0], np_img.shape[1]
+            if tiling_engaged(_h, _w):
+                image_native = np_img
+        return self._pack_example(
+            raw, image_tensor, out_bboxes, out_masks, out_classes, image_native=image_native
+        )
+
+    @property
+    def tile_transform(self) -> Any:
+        """The pad-only eval transform the evaluator runs per native-res tile crop.
+
+        For the eval/val pipeline this is built with ``downscale=False`` (no
+        ``LongestMaxSize``), so it is exactly predict's per-tile preprocessing on a
+        ≤1008 crop (design C, spec §5.4). The evaluator consumes this via the shared
+        ``preprocess_tile`` helper so the per-tile model input is byte-identical to
+        predict's. Exposed because the evaluator only holds an ``EvalConfig`` and
+        cannot rebuild the transform from model/normalize/channel-semantics config —
+        reusing the dataset's already-built transform also eliminates drift risk.
+        """
+        return self._transforms
 
     @property
     def class_names(self) -> list[str]:
@@ -367,6 +452,7 @@ def build_coco(
             model_name=model_name,
             normalize=normalize,
             channel_semantics=channel_semantics,
+            downscale=(pipeline != "eval"),
         )
     return COCODataset(
         annotations=split["annotations"],
@@ -375,4 +461,5 @@ def build_coco(
         text_prompt=text_prompt,
         image_ids=[int(s) for s in resolved] if resolved is not None else None,
         channels=int(cfg.get("channels", 3)),
+        expand_tiles=(pipeline == "train"),
     )

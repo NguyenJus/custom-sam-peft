@@ -830,7 +830,8 @@ def test_coco_decode_image_uses_channels(tmp_path, monkeypatch):
     obj = coco_mod.COCODataset.__new__(coco_mod.COCODataset)
     obj._image_root = tmp_path
     obj._channels = 5
-    raw = (1, {"file_name": "a.png"}, [])
+    # Full-image window (h=4, w=5) — the crop is a no-op, isolating channel routing.
+    raw = (1, {"file_name": "a.png"}, [], coco_mod.Window(0, 0, 4, 5))
     out = coco_mod.COCODataset._decode_image(obj, raw)
     assert out.shape == (4, 5, 5)
     assert captured["channels"] == 5
