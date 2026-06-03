@@ -255,6 +255,26 @@ def test_evaluate_falls_back_to_cpu_for_parameterless_model(tiny_text_dataset) -
 # ---------------------------------------------------------------------------
 
 
+def test_iter_predictions_passes_max_dets_cap(stub_model, tiny_text_dataset):
+    """Evaluator must thread the COCO maxDets cap into postprocess so >100-query
+    models are filtered mAP-exactly."""
+    from custom_sam_peft.eval.metrics import coco_max_dets_cap
+
+    cfg = EvalConfig(mode="lite", lite_max_images=1, iou_thresholds=[0.5], batch_size=1)
+    ev = Evaluator(cfg)
+    examples = [tiny_text_dataset[0]]
+    with patch(
+        "custom_sam_peft.eval.evaluator.queries_to_coco_results",
+        wraps=__import__(
+            "custom_sam_peft.eval.postprocess", fromlist=["queries_to_coco_results"]
+        ).queries_to_coco_results,
+    ) as spy:
+        ev._iter_predictions(stub_model, examples, tiny_text_dataset)
+    assert spy.called
+    for _args, kwargs in spy.call_args_list:
+        assert kwargs.get("max_dets") == coco_max_dets_cap()
+
+
 def test_iter_predictions_returns_list(stub_model, tiny_text_dataset):
     """_iter_predictions returns a list of COCO-format prediction dicts."""
     from custom_sam_peft.eval.evaluator import _build_coco_gt_from_examples
