@@ -43,3 +43,17 @@ count), so the common path is fine.
 **Default I chose:** accept for now (lite/in-training is the real path) and file a follow-up
 issue to stream/decode `image_native` per-image in full mode rather than holding all at once.
 **Confirm:** OK to defer the full-mode streaming fix to a follow-up issue? Or want it in #131?
+
+### 4. DICOM spec §8.1 prescribes the WRONG LUT order (MONOCHROME1 invert before VOI) — NEEDS CONFIRM
+
+Spec §8.1 (and the plan's Task 3.2 design note) prescribe the decode order: Modality LUT →
+**MONOCHROME1 invert → VOI**. A review found this is contrary to **DICOM PS3.3 §C.11.2**: VOI
+windowing operates on Modality-LUT (HU-space) output, and MONOCHROME1 inversion is a *display-time*
+step that must come **after** VOI. With the spec's order, a MONOCHROME1 file that carries (or is
+given) a window has its window applied to inverted (non-HU) values → corrupted output. Demonstrated
+empirically (window center=40/width=400 on HU data: 7/8 pixels clip to max under the wrong order).
+**Default I chose:** fixed the CODE to the correct DICOM order (Modality LUT → VOI → MONOCHROME1
+invert), with an in-code comment citing PS3.3 §C.11.2 and noting the deviation from spec §8.1, and
+added tests for the MONOCHROME1+VOI interaction. **Confirm:** please reconcile **spec §8.1** to the
+corrected order (the spec text still says invert-before-VOI). Latent for raw-HU CT (no window, the
+common ML path); only bites MONOCHROME1 + window.
