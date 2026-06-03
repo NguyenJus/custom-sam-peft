@@ -12,6 +12,7 @@ import logging
 from pathlib import Path
 from typing import Any, Literal, cast, overload
 
+from custom_sam_peft import profiling
 from custom_sam_peft._registry import lookup
 from custom_sam_peft.config.schema import TrainConfig
 from custom_sam_peft.data.base import Dataset
@@ -202,6 +203,10 @@ def run_eval(
         except Exception:
             _LOG.warning("eval visualize pass failed; metrics are persisted.", exc_info=True)
 
+    def _maybe_dump_profile(output_path: Path | None) -> None:
+        if profiling.is_enabled() and output_path is not None:
+            profiling.dump(output_path / "profile_snapshot.json")
+
     if return_per_example_iou:
         # We need both the metrics report (and metrics.json on disk) AND the
         # per-example IoUs. `evaluate_and_save` only persists; call `evaluate`
@@ -223,13 +228,16 @@ def run_eval(
         if eval_cfg.save_predictions and eval_cfg.mode == "full":
             (out / "predictions.json").write_text(json.dumps(evaluator._last_predictions))
         _run_viz(per_example_iou)
+        _maybe_dump_profile(out)
         return report, per_example_iou
 
     # Branch 2 (default): when visualize is on, promote to the IoU-shape so the viz
     # pass has its ranking; mirror evaluate_and_save's persistence. When off, keep
     # the original evaluate_and_save call unchanged (no behavior change).
     if not visualize_resolved:
-        return evaluator.evaluate_and_save(wrapper, dataset, out)
+        result = evaluator.evaluate_and_save(wrapper, dataset, out)
+        _maybe_dump_profile(out)
+        return result
 
     out.mkdir(parents=True, exist_ok=True)
     report, per_example_iou = evaluator.evaluate(wrapper, dataset, return_per_example_iou=True)
@@ -246,4 +254,5 @@ def run_eval(
     )
     evaluator._maybe_save_predictions(evaluator._last_predictions, run_dir=out)
     _run_viz(per_example_iou)
+    _maybe_dump_profile(out)
     return report
