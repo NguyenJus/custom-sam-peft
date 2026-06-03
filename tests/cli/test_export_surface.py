@@ -43,6 +43,8 @@ def test_export_requires_output_with_merge(tmp_path: Path) -> None:
 
 def test_run_export_merge_lands_at_output(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     # Library-level: merged weights land at the given output path itself.
+    import custom_sam_peft.models.sam3 as sam3_mod
+    import custom_sam_peft.train.checkpoint as ckpt_mod
     from custom_sam_peft.runs import bundle
 
     out = tmp_path / "merged-out"
@@ -51,20 +53,8 @@ def test_run_export_merge_lands_at_output(tmp_path: Path, monkeypatch: pytest.Mo
     def fake_load_sam31(*a: Any, **k: Any) -> Any:
         return object()
 
-    monkeypatch.setattr("custom_sam_peft.models.sam3.load_sam31", fake_load_sam31)
-    monkeypatch.setattr("custom_sam_peft.train.checkpoint.load_adapter", lambda *a, **k: None)
-    monkeypatch.setattr(
-        "custom_sam_peft.train.checkpoint.save_merged",
-        lambda wrapper, path: captured.__setitem__("path", path),
-    )
-
-    # Patch the symbols as looked up inside bundle.run_export
-    monkeypatch.setattr(bundle, "run_export", bundle.run_export)  # ensure module-level patch
-
-    # Patch via the actual import path used in run_export (inline imports inside the function)
-    import custom_sam_peft.models.sam3 as sam3_mod
-    import custom_sam_peft.train.checkpoint as ckpt_mod
-
+    # Patch where run_export resolves them: inline imports inside the function
+    # bind against the module objects, so patch there.
     monkeypatch.setattr(sam3_mod, "load_sam31", fake_load_sam31)
     monkeypatch.setattr(ckpt_mod, "load_adapter", lambda *a, **k: None)
     monkeypatch.setattr(
@@ -83,3 +73,37 @@ def test_run_export_merge_lands_at_output(tmp_path: Path, monkeypatch: pytest.Mo
     result = bundle.run_export(_Cfg(), tmp_path / "adapter", merge=True, output=out)
     assert captured["path"] == out
     assert result == out
+
+
+def test_run_export_adapter_default_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    # Library-level: non-merge path with output=None lands at checkpoint.parent / "exported".
+    import custom_sam_peft.models.sam3 as sam3_mod
+    import custom_sam_peft.train.checkpoint as ckpt_mod
+    from custom_sam_peft.runs import bundle
+
+    checkpoint = tmp_path / "run" / "adapter"
+    checkpoint.mkdir(parents=True)
+    captured: dict[str, Any] = {}
+
+    def fake_load_sam31(*a: Any, **k: Any) -> Any:
+        return object()
+
+    monkeypatch.setattr(sam3_mod, "load_sam31", fake_load_sam31)
+    monkeypatch.setattr(ckpt_mod, "load_adapter", lambda *a, **k: None)
+    monkeypatch.setattr(
+        ckpt_mod,
+        "save_adapter",
+        lambda wrapper, path: captured.__setitem__("path", path),
+    )
+
+    class _Cfg:
+        class model: ...
+
+        class data:
+            channels = 3
+            channel_semantics = "rgb"
+
+    result = bundle.run_export(_Cfg(), checkpoint, merge=False, output=None)
+    expected = checkpoint.parent / "exported"
+    assert captured["path"] == expected
+    assert result == expected
