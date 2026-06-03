@@ -153,9 +153,10 @@ def _int_image_id(image_id: str) -> int:
 
 def _mask_to_rle(mask: torch.Tensor) -> Any:
     """Convert a (H, W) bool tensor to a pycocotools RLE dict."""
-    arr = mask.cpu().numpy().astype(np.uint8)
-    rle = mask_utils.encode(np.asfortranarray(arr))
-    rle["counts"] = rle["counts"].decode("ascii")
+    with profiling.bucket("eval.gt_rle_encode"):
+        arr = mask.cpu().numpy().astype(np.uint8)
+        rle = mask_utils.encode(np.asfortranarray(arr))
+        rle["counts"] = rle["counts"].decode("ascii")
     return rle
 
 
@@ -1077,7 +1078,8 @@ class Evaluator:
             # Build (n_pred, n_gt) IoU matrix for this example.
             gt_rles = [a["segmentation"] for a in gt_anns]
             iscrowd = [0] * len(gt_rles)
-            iou_mat = mask_utils.iou(pred_rles, gt_rles, iscrowd)
+            with profiling.bucket("eval.pair_iou"):
+                iou_mat = mask_utils.iou(pred_rles, gt_rles, iscrowd)
             # max-IoU greedy: for each GT, the best predicted IoU; mean over thresholds.
             # Spec §6.1: "the MEAN IoU across the eval's IoU thresholds [0.5, …, 0.95]".
             # We compute the per-GT best-pred IoU once, then average across thresholds:

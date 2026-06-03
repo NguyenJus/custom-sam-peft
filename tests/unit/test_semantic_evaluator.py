@@ -8,11 +8,26 @@ from typing import ClassVar
 import pytest
 import torch
 
+import custom_sam_peft.profiling as prof
 from custom_sam_peft.config.schema import EvalConfig
 from custom_sam_peft.data.base import Example, SemanticTarget, TextPrompts
 from custom_sam_peft.eval.metrics import MetricsReport
 from custom_sam_peft.eval.semantic_evaluator import SemanticEvaluator
 from tests.fixtures.tiny_sam3_stub import TinySam3Stub
+
+# ---------------------------------------------------------------------------
+# Fixture: clean profiler state around each test in this module.
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture(autouse=True)
+def _clean_profiler():  # type: ignore[return]
+    """Reset + disable before and after every test."""
+    prof.reset()
+    prof.disable()
+    yield
+    prof.reset()
+    prof.disable()
 
 
 @pytest.fixture
@@ -78,3 +93,76 @@ def test_per_example_iou_returned(stub_semantic_model, tiny_semantic_dataset):
     )
     assert isinstance(per_ex, list)
     assert len(per_ex) == len(tiny_semantic_dataset)
+
+
+# ---------------------------------------------------------------------------
+# Profiling buckets — semantic_eval.* (issue #273 §3b)
+# ---------------------------------------------------------------------------
+
+_SEMANTIC_BUCKETS = [
+    "semantic_eval.total",
+    "semantic_eval.forward",
+    "semantic_eval.upsample",
+    "semantic_eval.transfer",
+    "semantic_eval.confusion",
+]
+
+
+class TestSemanticEvalProfileBuckets:
+    def test_all_buckets_present_after_evaluate(
+        self, stub_semantic_model, tiny_semantic_dataset
+    ) -> None:
+        """SemanticEvaluator.evaluate must record all five semantic_eval.* buckets."""
+        prof.enable()
+        prof.reset()
+
+        ev = SemanticEvaluator(EvalConfig(batch_size=1))
+        ev.evaluate(stub_semantic_model, tiny_semantic_dataset)
+
+        buckets, _meta = prof.snapshot()
+        missing = [b for b in _SEMANTIC_BUCKETS if b not in buckets]
+        assert not missing, f"Missing semantic_eval buckets: {missing}; found: {list(buckets)}"
+
+    def test_meta_keys_present(self, stub_semantic_model, tiny_semantic_dataset) -> None:
+        """profiling.note() must record n_images, K, and sem_forward_dtype in meta."""
+        prof.enable()
+        prof.reset()
+
+        ev = SemanticEvaluator(EvalConfig(batch_size=1))
+        ev.evaluate(stub_semantic_model, tiny_semantic_dataset)
+
+        _buckets, meta = prof.snapshot()
+        assert "n_images" in meta, f"n_images missing from meta: {meta}"
+        assert "K" in meta, f"K missing from meta: {meta}"
+        assert "sem_forward_dtype" in meta, f"sem_forward_dtype missing from meta: {meta}"
+
+    def test_forwards_counter_incremented(self, stub_semantic_model, tiny_semantic_dataset) -> None:
+        """profiling.incr('semantic_eval.forwards') must be called for each forward.
+
+        incr() stores in _META (not _BUCKETS), so the counter is read from meta.
+        """
+        prof.enable()
+        prof.reset()
+
+        ev = SemanticEvaluator(EvalConfig(batch_size=1))
+        ev.evaluate(stub_semantic_model, tiny_semantic_dataset)
+
+        _buckets, meta = prof.snapshot()
+        assert "semantic_eval.forwards" in meta, (
+            f"semantic_eval.forwards counter missing from meta; meta = {list(meta)}"
+        )
+        assert meta["semantic_eval.forwards"] > 0, (
+            "semantic_eval.forwards == 0 in meta; expected > 0"
+        )
+
+    def test_buckets_absent_when_profiler_disabled(
+        self, stub_semantic_model, tiny_semantic_dataset
+    ) -> None:
+        """No bucket must appear when the profiler is disabled (strict no-op)."""
+        # profiler is disabled by autouse fixture
+        ev = SemanticEvaluator(EvalConfig(batch_size=1))
+        ev.evaluate(stub_semantic_model, tiny_semantic_dataset)
+
+        buckets, _ = prof.snapshot()
+        present = [b for b in _SEMANTIC_BUCKETS if b in buckets]
+        assert not present, f"Unexpected semantic_eval buckets when disabled: {present}"
