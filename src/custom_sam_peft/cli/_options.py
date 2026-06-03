@@ -140,7 +140,7 @@ ConfigOpt = Annotated[
 ]
 ConfigArg = Annotated[
     Path | None,
-    typer.Argument(help="Path to config YAML (the launch input)."),
+    typer.Argument(help="Path to config YAML (the launch input).", metavar="CONFIG"),
 ]
 HiddenConfigOpt = Annotated[
     Path | None,
