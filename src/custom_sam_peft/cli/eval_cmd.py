@@ -12,6 +12,7 @@ from rich import print as rprint
 from rich.console import Console
 
 from custom_sam_peft.cli._logging import configure_logging
+from custom_sam_peft.cli._options import Progress, ProgressOpt, VerboseOpt
 from custom_sam_peft.cli._progress import ProgressKind, progress_session, resolve_mode
 from custom_sam_peft.config.loader import load_config
 from custom_sam_peft.eval.runner import run_eval
@@ -46,13 +47,8 @@ def evaluate(
         "--export",
         help="After evaluation, export a run bundle.",
     ),
-    verbose: bool = typer.Option(False, "-v", "--verbose", help="Enable DEBUG logging."),
-    progress_flag: str = typer.Option(
-        "auto",
-        "--progress",
-        help="Progress display mode: auto|on|off|plain.",
-        metavar="MODE",
-    ),
+    verbose: VerboseOpt = False,
+    progress: ProgressOpt = Progress.auto,
     interactive: bool = typer.Option(
         False,
         "--interactive",
@@ -76,7 +72,7 @@ def evaluate(
     split_lit = cast(Literal["val", "test"], split)
 
     mode = resolve_mode(
-        progress_flag if progress_flag != "auto" else None,
+        None if progress is Progress.auto else progress.value,
         os.environ,
         sys.stdout.isatty(),
         Console().is_jupyter,
