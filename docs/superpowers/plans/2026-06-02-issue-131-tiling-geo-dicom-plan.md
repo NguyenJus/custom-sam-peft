@@ -12,6 +12,27 @@
 
 ---
 
+## Amendment (design C) — 2026-06-03
+
+**Status of Phase 1 at amendment time:** Tasks 1.1–1.4 (tiling core + PREDICT path) and Task 1.7 GPU tests are committed; G1 (tiled predict) PASSES. Task 1.5 (train expansion) and Task 1.6 (eval accumulation) are committed but the eval design was **architecturally wrong** — G2 (tiled eval) surfaced the bug.
+
+**The bug.** Both `build_eval_transforms` (`transforms.py:212`) and `build_train_transforms` (`transforms.py:271`) start with `A.LongestMaxSize(max_size=1008)`, which DOWNSCALES the longest edge to 1008, then `PadIfNeeded`. Task 1.5 made `COCODataset` pre-tile EVERY pipeline (train AND eval) into overlapping ≤1008 windows, and `__getitem__` runs the full transform on each window crop (`coco.py:295`). So the eval dataset hands the evaluator a POST-transform ≤1008 tensor (`ex.image`). Consequences:
+
+1. Eval was pre-tiled into OVERLAPPING (`DEFAULT_OVERLAP=0.25`) tiles at the dataset level — double-counting objects in the overlap band, violating the §13.5/§5.4 non-overlap (`EVAL_OVERLAP=0.0`) pin. The evaluator's own `tiling_engaged(ex.image.shape)` check then sees a ≤1008 tile → its internal non-overlapping tiling (the entire point of Task 1.6) NEVER engages → dead code. Viz renders per-tile (G2 failed: panel height ≈ 1058 = 1008 + legend, not 1500).
+2. Naively scoping expansion to train-only is ALSO wrong: a whole oversized eval image would then hit `LongestMaxSize` → compressed to 1008 → defeating issue #131 (native-resolution processing).
+
+The PREDICT path (Task 1.4, G1 passing) is correct: it reads native-res, tiles in its own loop, and applies the transform PER TILE (`runner.py:346`), where `LongestMaxSize` is a no-op on a ≤1008 crop. **Eval must mirror predict.**
+
+**Design C (locked).** Tiling is a loop-level fan-out (1 image → N tiles) feeding ≤1008 crops to a PAD-ONLY transform. It must NOT live inside the Albumentations transform (1-image-in → 1-image-out cannot emit N tiles).
+
+- **Train (Task 1.5):** dataset tile-expansion becomes TRAIN-PIPELINE-ONLY via an `expand_tiles: bool` ctor kwarg; `build_coco` sets `expand_tiles=(pipeline == "train")`. Train keeps `DEFAULT_OVERLAP`. Eval/val do NOT expand at the dataset level.
+- **Eval (Task 1.6 → 1.6a/1.6b/1.6c):** the eval dataset hands the evaluator the NATIVE-RESOLUTION image (1 image = 1 example, no geometric downsize). A new PAD-ONLY transform path (no `LongestMaxSize`) feeds it. The evaluator owns tiling (`tiling_engaged(native_h, native_w)` → non-overlapping `iter_windows` → per-tile pad-to-1008 → forward → non-overlapping accumulation). Viz restitch operates on the full-extent example.
+- **Regression invariants:** for a ≤1008 input the pad-only transform must be byte-for-byte identical to today's `build_eval_transforms` (`LongestMaxSize` is already a no-op there, so dropping it changes nothing). Eval/val datasets do NOT expand, so `len(val) == image count` and `per_example_iou` stays per-image (preserves the #245 alignment + viz selection semantics).
+
+Tasks 1.5, 1.6 (now 1.6a/1.6b/1.6c), the Phase 1 interface contract, and the Task 1.7 note below are rewritten to design C. Phases 2–3 are unchanged except where they consume the eval seam.
+
+---
+
 ## Anchor verification notes (read before starting)
 
 Re-verified against the live worktree (2026-06-02):
@@ -61,9 +82,10 @@ Operates on plain pixels only — no `SpatialMeta`. **EXPOSES (contract consumed
   - `merge_fragments(fragments: list[Fragment], canvas_hw: tuple[int,int], *, threshold: float = MASK_OVERLAP_THRESHOLD) -> list[MergedInstance]` — the §4 union-find merge; `MergedInstance` has `mask: np.ndarray`, `score: float`, `category_id: int`.
   - `run_windows(image, windows, fn)` — applies `fn(crop, window) -> list[Fragment]` per window, collects fragments. (Predict/eval pass the real per-tile forward.)
   - Module constants: `DEFAULT_OVERLAP = 0.25`, `MASK_OVERLAP_THRESHOLD = 0.10`, `EVAL_OVERLAP = 0.0` (each with the §13 comment above).
-- Predict tiling path wired into `predict/runner.py` (auto-engage by size; small images byte-for-byte unchanged); `run.json` gains an additive `"tiling"` provenance record.
-- Train window-gen path in `coco.py` (large rasters expand into independent tile samples; `__len__` reflects expansion).
-- Eval per-tile metric accumulation (non-overlapping) in `eval/evaluator.py`; eval-viz restitch via `merge_fragments`.
+- Predict tiling path wired into `predict/runner.py` (auto-engage by size; small images byte-for-byte unchanged); `run.json` gains an additive `"tiling"` provenance record. The per-tile body is factored into `_predict_one_tile(crop_np, window, *, model, transforms, ...) -> list[Fragment]` (`runner.py:296`) — it transforms a ≤1008 crop, forwards, and returns tile-local fragments.
+- **Tile expansion is TRAIN-PIPELINE-ONLY** (design C). `COCODataset.__init__` takes `expand_tiles: bool` (default `True`); when `True` and `tiling_engaged(h, w)`, an oversized raster expands into one `(image_id, Window)` sample per `iter_windows` window (overlap `DEFAULT_OVERLAP`); otherwise one whole-image `Window(0, 0, h, w)`. `__len__` reflects the expansion. `build_coco` sets `expand_tiles=(pipeline == "train")` — **eval/val never expand**, so `len(val) == image count` and `per_example_iou` stays per-image (#245 alignment + viz selection preserved). No user-facing config knob.
+- **Eval = native-resolution handoff** (design C, mirrors predict). The eval dataset hands the evaluator the native-resolution image as 1 example via a **pad-only transform** `build_eval_transforms(..., downscale: bool = True)` — `downscale=False` drops `LongestMaxSize` (keeps Normalize + top-left `PadIfNeeded` to 1008). For ≤1008 inputs `downscale=False` is byte-for-byte identical to `downscale=True` (LongestMaxSize is a no-op there). The evaluator owns tiling: `tiling_engaged(native_h, native_w)` → non-overlapping `iter_windows(..., overlap=EVAL_OVERLAP)` → per-tile pad-to-1008 (the pad-only transform) → forward → non-overlapping accumulation against tile-local GT (no stitched mask). Viz restitch (`merge_fragments`, `DEFAULT_OVERLAP`) runs on the full-extent example.
+- **Shared predict/eval tile helper (optional interface contract):** predict's `_predict_one_tile` and the evaluator's per-tile forward both do "pad ≤1008 crop → forward → tile-local results". Factor a shared helper between them ONLY if it stays clean; do not force a fragile abstraction across the predict-Fragment vs. eval-COCO-entry shapes. If factored, it lives in `predict/runner.py` or a small shared module and is noted here.
 
 ### Phase 2 — Georeferencing. Tasks 2.x
 
@@ -592,18 +614,34 @@ git commit -m "feat(predict): tiling path — tile->run->merge->one full-extent 
 
 ---
 
-## Task 1.5: TRAIN tile expansion — large rasters → independent tile samples (C6)
+## Task 1.5: TRAIN-ONLY tile expansion — large rasters → independent tile samples (C6) — DESIGN-C AMENDED
+
+> **Amendment (design C):** This task ALREADY landed (commits `9b13b43`, `636e3a3`) implementing **unconditional** expansion for every pipeline. That over-expanded EVAL/VAL (see top-of-plan bug note). This task now ALSO requires gating expansion to the train pipeline via an `expand_tiles` ctor kwarg, so eval/val do NOT pre-tile at the dataset level. The expansion machinery (`self._samples`, per-window crop/clip in `_decode_image`/`_decode_targets`) stays; only the gate + the builder wiring are added.
 
 **Files:**
 
-- Modify: `src/custom_sam_peft/data/coco.py` — `__init__` (`:124-187`), `__len__` (`:189`), `_fetch_raw` (`:196`), `__getitem__` (`:311`), `_decode_targets` (`:211`)
+- Modify: `src/custom_sam_peft/data/coco.py` — `__init__` (add `expand_tiles` param + gate the `self._samples` loop, `:125-191`), `build_coco` (`:378-431`, set `expand_tiles=(pipeline == "train")`)
 - Test: `tests/unit/test_coco_tiling.py`
 
-**Difficulty:** medium-hard (index-space change with subtle invariants). **Gating tests:** C6 (tile expansion + clip + empty-negative + deterministic `__len__`). **Blast radius (HIGH):** changes dataset `__len__` / index mapping. Per spec §14.5 + memory #245: the **`data.limit` subset cap and the no-val auto-split must see the POST-EXPANSION index space**. Run the FULL relevant suite (`tests/unit/test_data_coco.py`, `test_data_subset_limit*`, `test_no_val_auto_split*`) before "done".
+**Difficulty:** medium (the index-space machinery already exists; this adds the gate + builder wiring). **Gating tests:** C6 (train expansion + clip + empty-negative + deterministic `__len__`) PLUS a new case asserting `expand_tiles=False` yields `len == image count` (the eval/val invariant). **Blast radius (HIGH):** changes dataset `__len__` / index mapping for the train pipeline. Per spec §14.5 + memory #245: the **`data.limit` subset cap and the no-val auto-split must see the POST-EXPANSION index space for train, and the per-image space for eval/val**. Run the FULL relevant suite (`tests/unit/test_data_coco.py`, `test_data_subset_limit*`, `test_no_val_auto_split*`, plus the bundle-val alignment tests) before "done".
 
-**Design note:** at construction, pre-enumerate `(image_idx, window)` pairs (deterministic; supports `data.limit` + shuffling per spec §5.3). For each kept image, read only its dimensions cheaply (use COCO `width`/`height` record fields if present; else read the image header — DO NOT decode full pixels at construction on this I/O-fragile box). If `tiling_engaged(h, w)`, expand into one entry per `iter_windows`; else one entry (whole-image window). `__len__` returns the expanded count. `_fetch_raw(i)` maps `i → (image_id, window)`; `__getitem__` decodes the image, crops to the window, and clips annotations to the window before transforms. Reuse `BboxParams(min_area=0.0, min_visibility=0.0)` (`transforms.py:224-228`) clip semantics; an empty post-clip tile is a valid negative.
+**Design note (design C):** add `expand_tiles: bool = True` to `COCODataset.__init__`; store it as `self._expand_tiles`. Gate the existing `self._samples` enumeration:
 
-- [ ] **Step 1: Write the failing test (C6)**
+```python
+self._samples: list[tuple[int, Window]] = []
+for img_id in self._image_ids:
+    h, w = self._image_hw(img_id)
+    if self._expand_tiles and tiling_engaged(h, w):
+        windows = iter_windows(h, w)  # DEFAULT_OVERLAP — train seam coverage / augmentation
+    else:
+        windows = [Window(0, 0, h, w)]  # whole image: native-res, NO geometric downsize
+    for win in windows:
+        self._samples.append((img_id, win))
+```
+
+When `expand_tiles=False`, every image yields exactly one whole-image `Window(0, 0, h, w)` — so `len(ds) == len(self._image_ids)` and `_decode_image` returns the FULL native-resolution image (the window is the whole image; the crop is a no-op). The per-window crop/clip in `_decode_image`/`_decode_targets` is unchanged (a whole-image window crops to itself). `build_coco` passes `expand_tiles=(pipeline == "train")`. **No new user-facing config knob** (spec: tiling auto-engages with zero new user knobs). The expansion overlap stays `DEFAULT_OVERLAP` for train (augmentation + seam coverage); eval's non-overlap accumulation is handled later by the evaluator (Task 1.6b), not the dataset.
+
+- [ ] **Step 1: Write the failing test (C6 + the eval invariant)**
 
 ```python
 # tests/unit/test_coco_tiling.py
@@ -638,11 +676,12 @@ def oversized_coco(tmp_path):
     return str(ann), str(imgs_dir)
 
 
-def test_C6_oversized_raster_expands_into_tiles(oversized_coco, _eval_transforms):
+def test_C6_oversized_raster_expands_into_tiles_when_train(oversized_coco, _eval_transforms):
     ann, imgs = oversized_coco
+    # expand_tiles=True (the train default): 1500x1500 @ tile 1008 overlap 0.25
+    # -> 2x2 = 4 windows -> len == 4 (one image).
     ds = COCODataset(annotations=ann, images=imgs, transforms=_eval_transforms,
-                     text_prompt=TextPromptConfig(), channels=3)
-    # 1500x1500 @ tile 1008 overlap 0.25 -> 2x2 = 4 windows -> len == 4 (one image)
+                     text_prompt=TextPromptConfig(), channels=3, expand_tiles=True)
     assert len(ds) == 4
     # tile containing the top-left object yields >=1 instance; an empty tile is valid.
     n_with, n_empty = 0, 0
@@ -650,98 +689,282 @@ def test_C6_oversized_raster_expands_into_tiles(oversized_coco, _eval_transforms
         ex = ds[k]
         (n_with := n_with + 1) if len(ex.instances) else (n_empty := n_empty + 1)
     assert n_with >= 1 and n_empty >= 1  # empty tiles are valid negatives
+
+
+def test_C6_eval_does_not_expand(oversized_coco, _eval_transforms):
+    ann, imgs = oversized_coco
+    # expand_tiles=False (the eval/val default via build_coco): the oversized image
+    # stays ONE example (native-res handoff; the evaluator owns tiling). len == image count.
+    ds = COCODataset(annotations=ann, images=imgs, transforms=_eval_transforms,
+                     text_prompt=TextPromptConfig(), channels=3, expand_tiles=False)
+    assert len(ds) == 1
 ```
 
-(Provide a `_eval_transforms` fixture in the test building `build_eval_transforms(1008, model_name="<test>", normalize=NormalizeConfig())`.)
+(Provide a `_eval_transforms` fixture in the test building `build_eval_transforms(1008, model_name="<test>", normalize=NormalizeConfig())`. NOTE: with `expand_tiles=False`, `_eval_transforms` runs on the WHOLE 1500x1500 image; the stock `build_eval_transforms` (`downscale=True`) would LongestMaxSize it to 1008 — that downsizing is exactly what design C eliminates in Task 1.6a. For THIS dataset-level test only `len(ds)` matters, so the downscale is acceptable here; the native-res forward path is exercised by Task 1.6b's tests.)
 
 - [ ] **Step 2: Run test to verify it fails**
 
 Run: `uv run pytest tests/unit/test_coco_tiling.py -o "addopts=" -q`
-Expected: FAIL — `__len__` returns 1 (no tile expansion yet).
+Expected: FAIL — `COCODataset.__init__` does not accept `expand_tiles`; and even ignoring it, the unconditional expansion makes `test_C6_eval_does_not_expand` assert `len == 4`, not `1`.
 
-- [ ] **Step 3: Implement tile expansion**
+- [ ] **Step 3: Add the `expand_tiles` gate + wire the builder**
 
-In `__init__`, after `self._image_ids` is finalized (`:164`), build `self._samples: list[tuple[int, Window]]` by reading each image's `width`/`height` from the COCO record (fall back to a header-only PIL read; never full-decode). Use `iter_windows` when `tiling_engaged`, else a single whole-image `Window(0,0,h,w)`. Set `__len__` to `len(self._samples)`. `_fetch_raw(i)` resolves `self._samples[i] = (image_id, window)`. In `__getitem__`, crop `np_img` to the window and clip boxes/masks to the window (offset by `-x0,-y0`, intersect, drop sub-floor boxes). Keep the `data.limit`/auto-split callers operating on `len(self._samples)` (verify their index source is `len(dataset)`, not `len(self._image_ids)`).
+In `COCODataset.__init__`, add `expand_tiles: bool = True` to the signature, store `self._expand_tiles = expand_tiles`, and gate the existing `self._samples` enumeration on it (see the Design note above): expand via `iter_windows` only when `self._expand_tiles and tiling_engaged(h, w)`, else a single whole-image `Window(0, 0, h, w)`. The per-window crop/clip in `_decode_image`/`_decode_targets` is already correct (a whole-image window crops to itself). In `build_coco`, pass `expand_tiles=(pipeline == "train")` to the `COCODataset(...)` constructor (`:424`).
 
 - [ ] **Step 4: Run C6 + the blast-radius suite**
 
 Run: `uv run pytest tests/unit/test_coco_tiling.py tests/unit/test_data_coco.py -o "addopts=" -q`
-Then: `uv run pytest tests/unit/ -o "addopts=" -q -k "subset_limit or auto_split or coco"`
-Expected: PASS — tile expansion is deterministic; limit/split see the expanded index space.
+Then: `uv run pytest tests/unit/ -o "addopts=" -q -k "subset_limit or auto_split or coco or bundle"`
+Expected: PASS — train expansion deterministic; eval/val stay per-image; `data.limit`/auto-split/bundle-val see the correct (per-pipeline) index space.
 
 - [ ] **Step 5: Commit**
 
 ```bash
 git add src/custom_sam_peft/data/coco.py tests/unit/test_coco_tiling.py
-git commit -m "feat(train): window large rasters into independent tile samples (spec §5.3; C6)"
+git commit -m "feat(train): gate tile expansion to the train pipeline via expand_tiles (design C; spec §5.3; C6)"
 ```
 
 ---
 
-## Task 1.6: EVAL per-tile metric accumulation (non-overlapping) + viz restitch
+## Task 1.6: EVAL native-res tiling (design C) — REWRITTEN
+
+> **Amendment (design C):** The original Task 1.6 ("per-tile accumulation + viz restitch") landed (commits `823065b`, `ae0e030`, `0eca310`) but operated on the POST-transform ≤1008 `ex.image` tensor — so `tiling_engaged(ex.image.shape)` was always False (dead code), eval pre-tiled at the dataset level into OVERLAPPING tiles (double-count), and viz rendered per-tile (G2 fail). Design C splits the fix into three sub-tasks. The existing evaluator tiling machinery (`_build_coco_gt_with_tiling`, `_tile_image_id`, `_predictions` tiling branch at `:300-364`, `_compute_per_example_iou`) and the viz `_tiled_pred_entries` (`visualize.py:321`) are largely reusable — they are CORRECT given a native-res `ex.image`; the bug is that `ex.image` was downscaled. **1.6a makes the eval example native-res; 1.6b makes the evaluator pad each tile before the forward; 1.6c is a viz/regression check.**
+
+---
+
+## Task 1.6a: Pad-only / native-res eval transform (design C transform seam)
 
 **Files:**
 
-- Modify: `src/custom_sam_peft/eval/evaluator.py` — per-image postprocess (`:206-228`); engage tiling per `tiling_engaged`
-- Modify: `src/custom_sam_peft/eval/visualize.py` — `write_eval_visualizations` (`:325`) restitch via `merge_fragments`
-- Test: `tests/unit/test_eval_tiling_unit.py`
+- Modify: `src/custom_sam_peft/data/transforms.py` — `build_eval_transforms` (`:197-230`): add a `downscale: bool = True` flag
+- Modify: `src/custom_sam_peft/data/coco.py` — `build_coco` eval branch (`:417-423`): call `build_eval_transforms(..., downscale=(pipeline != "eval"))`
+- Test: `tests/unit/test_transforms_native.py`
 
-**Difficulty:** medium. **Gating tests:** new CPU unit (non-overlap windows for accumulation; viz uses merge); G2 gates the real-model accumulation. **Blast radius:** eval forward path — keep the small-image direct path byte-for-byte. Run `tests/unit/test_eval*` before "done".
+**Difficulty:** easy-medium. **Gating tests:** new CPU unit (≤1008 byte-for-byte invariant; oversized stays native-res, only padded). **Blast radius:** `build_eval_transforms` signature gains a defaulted kwarg (additive). The eval-dataset handoff changes shape for oversized images — covered by 1.6b. Run `tests/unit/test_data_transforms*` before "done".
 
-**Design note (spec §5.4):** when `tiling_engaged`, tile BOTH prediction and GT with `iter_windows(..., overlap=EVAL_OVERLAP)` (non-overlapping — the §13.5 pin); run the per-tile forward; Hungarian-match per tile (matcher already in eval); accumulate metrics across tiles **without** materializing a stitched mask. Restitch (`merge_fragments`) is invoked **only** by `write_eval_visualizations` (uses `DEFAULT_OVERLAP`, not `EVAL_OVERLAP`).
+**Design note (design C):** `LongestMaxSize` is the only downscaling step in `build_eval_transforms`. Gate it behind `downscale`:
+
+```python
+def build_eval_transforms(image_size, *, model_name, normalize, channel_semantics="rgb", downscale=True):
+    steps = []
+    if downscale:
+        steps.append(A.LongestMaxSize(max_size=image_size, interpolation=cv2.INTER_LINEAR))
+    steps += [A.PadIfNeeded(min_height=image_size, min_width=image_size, ...top_left...),
+              A.Normalize(...), ToTensorV2()]
+    return A.Compose(steps, bbox_params=...)
+```
+
+`downscale=False` keeps Normalize + top-left `PadIfNeeded` to `image_size`, drops `LongestMaxSize`. **Regression invariant:** for any input whose longest edge ≤ `image_size`, `LongestMaxSize(max_size=image_size)` is a no-op, so `downscale=False` produces a byte-for-byte identical tensor to `downscale=True`. (Chosen the `downscale` flag over a separate `build_eval_transforms_native()` to keep one builder + one signature; the no-op-on-small invariant makes the flag safe.) `build_coco`'s eval branch passes `downscale=(pipeline != "eval")` — i.e. `downscale=False` for eval/val (native-res handoff), `downscale=True` everywhere the small-image path is wanted. Train (`build_train_transforms`) is UNCHANGED — it expands at the dataset level (1.5) and each ≤1008 tile crop is padded by its own `LongestMaxSize` no-op + pad.
 
 - [ ] **Step 1: Write the failing test**
 
 ```python
-# tests/unit/test_eval_tiling_unit.py
+# tests/unit/test_transforms_native.py
+import numpy as np
+
+from custom_sam_peft.config.schema import NormalizeConfig
+from custom_sam_peft.data.transforms import build_eval_transforms
+
+_MODEL = "facebook/sam3.1"
+
+
+def test_downscale_false_is_byte_identical_for_small_inputs():
+    # <=1008 input: LongestMaxSize is a no-op, so downscale on/off must match exactly.
+    img = (np.random.RandomState(0).rand(700, 900, 3) * 255).astype(np.uint8)
+    t_down = build_eval_transforms(1008, model_name=_MODEL, normalize=NormalizeConfig(), downscale=True)
+    t_native = build_eval_transforms(1008, model_name=_MODEL, normalize=NormalizeConfig(), downscale=False)
+    a = t_down(image=img, bboxes=[], class_labels=[], instance_idx=[])["image"]
+    b = t_native(image=img, bboxes=[], class_labels=[], instance_idx=[])["image"]
+    assert a.shape == b.shape == (3, 1008, 1008)
+    assert np.array_equal(a.numpy(), b.numpy())  # byte-for-byte regression invariant
+
+
+def test_downscale_false_does_not_shrink_oversized():
+    # >1008 input: downscale=True shrinks longest edge to 1008; downscale=False does NOT.
+    img = (np.random.RandomState(1).rand(1500, 1500, 3) * 255).astype(np.uint8)
+    t_down = build_eval_transforms(1008, model_name=_MODEL, normalize=NormalizeConfig(), downscale=True)
+    t_native = build_eval_transforms(1008, model_name=_MODEL, normalize=NormalizeConfig(), downscale=False)
+    a = t_down(image=img, bboxes=[], class_labels=[], instance_idx=[])["image"]
+    b = t_native(image=img, bboxes=[], class_labels=[], instance_idx=[])["image"]
+    assert a.shape == (3, 1008, 1008)  # downscaled then padded
+    assert b.shape == (3, 1500, 1500)  # native-res, only padded (no shrink)
+```
+
+- [ ] **Step 2: Run test to verify it fails**
+
+Run: `uv run pytest tests/unit/test_transforms_native.py -o "addopts=" -q`
+Expected: FAIL — `build_eval_transforms` does not accept `downscale`.
+
+- [ ] **Step 3: Implement the `downscale` flag + wire `build_coco`**
+
+Add `downscale: bool = True` to `build_eval_transforms`; conditionally prepend `LongestMaxSize` as shown in the Design note. In `build_coco`, change the eval-branch call to `build_eval_transforms(SAM3_IMAGE_SIZE, model_name=..., normalize=..., channel_semantics=..., downscale=(pipeline != "eval"))`.
+
+- [ ] **Step 4: Run test + the transforms suite**
+
+Run: `uv run pytest tests/unit/test_transforms_native.py tests/unit/ -o "addopts=" -q -k "transform"`
+Expected: PASS — small-input byte-identity holds; oversized stays native-res.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add src/custom_sam_peft/data/transforms.py src/custom_sam_peft/data/coco.py tests/unit/test_transforms_native.py
+git commit -m "feat(eval): pad-only/native-res eval transform via downscale flag (design C; spec §5.4)"
+```
+
+---
+
+## Task 1.6b: Evaluator native-res tiling — pad each ≤1008 tile before the forward (design C)
+
+**Files:**
+
+- Modify: `src/custom_sam_peft/eval/evaluator.py` — the tiling branch of `_iter_predictions` (`:300-364`): pad each tile crop to 1008 via the pad-only transform before the forward; `_build_coco_gt_with_tiling` (`:74-168`) is already native-coord-correct (it reads `ex.image.shape` which is now native-res — keep it)
+- Test: `tests/unit/test_eval_tiling_unit.py` (append)
+
+**Difficulty:** medium. **Gating tests:** new CPU unit (non-overlap windows; per-tile RLE is tile-sized ≤1008, no stitched mask); G2 gates the real-model accumulation end-to-end. **Blast radius:** eval forward path — the small-image direct path (`:368-...`) stays byte-for-byte. Run `tests/unit/test_eval*` before "done".
+
+**Design note (spec §5.4, design C — mirror predict):** with 1.6a, the eval `Example.image` is now the NATIVE-RESOLUTION normalized tensor (oversized images are no longer pre-tiled or downscaled). `tiling_engaged(orig_h, orig_w)` at `:300` now correctly fires for oversized images. The existing tiling branch crops `ex.image` into non-overlapping `iter_windows(..., overlap=EVAL_OVERLAP)` tiles (`:302-316`) — but it currently feeds the raw `win.h × win.w` crop straight to `model(tile_batch, ...)` (`:328`). **Under design C each tile must first be padded to 1008×1008** (the model is fixed-size), mirroring predict's `_predict_one_tile` which runs the pad-only transform per crop. Two clean options — pick the one that reuses the most code:
+
+1. **Reuse the pad-only transform per tile (preferred, mirrors predict):** build a pad-only transform once (`build_eval_transforms(SAM3_IMAGE_SIZE, ..., downscale=False)`), and for each tile run it on the tile's numpy crop to get a `(C, 1008, 1008)` tensor before the forward. But the evaluator holds the tile as a TENSOR slice of `ex.image`, not numpy. Cleanest: pad the tile tensor directly with `torch.nn.functional.pad` to `(C, 1008, 1008)` top-left with 0 (matches `PadIfNeeded fill=0`, `transforms.py:217`) — since `ex.image` is already Normalized, a 0-pad here is the post-normalize equivalent of the pad-only transform's pre-normalize 0-pad ONLY IF the normalize mean is ~0; to stay exactly faithful, prefer running the pad-only transform on the de-tensored crop, OR pad with the post-normalize value of 0-input. **Decision: run the pad-only Albumentations transform on each tile crop** (de-tensor → numpy is avoided by cropping from the native numpy image instead). See the shared-helper note below.
+2. **Shared helper with predict:** predict already crops from the native NUMPY image (`img_np`) and runs the transform per tile (`_predict_one_tile`, `runner.py:296-405`). The cleanest design C eval mirror is for the evaluator to ALSO tile from a native numpy image + pad-only transform, reusing predict's per-tile structure. If `ex.image` (post-normalize tensor) is the only handle the evaluator has, padding the tensor top-left to 1008 with 0 is acceptable **iff** documented as the post-normalize pad equivalent.
+
+**Locked choice:** pad each tile tensor crop top-left to `(C, SAM3_IMAGE_SIZE, SAM3_IMAGE_SIZE)` with `F.pad(..., value=0.0)` right before `model(tile_batch, ...)` at `:317`. This keeps `ex.image` as the single normalized native-res handle (no second numpy decode in eval), matches `PadIfNeeded(fill=0, position="top_left")` semantics, and the per-tile GT/RLE stay tile-sized (`tile_hw = (win.h, win.w)`, `:310`) so accumulation and the "no stitched mask" invariant are unchanged. Document the 0-pad as the post-normalize equivalent of the pad-only transform's pre-normalize fill=0. **Interface contract:** this is the eval analogue of predict's per-tile pad; if a shared `pad_tile_to_model_size(tensor, size)` helper reads cleanly, factor it (note it in the Phase 1 contract); otherwise keep it inline.
+
+- [ ] **Step 1: Write the failing test**
+
+```python
+# tests/unit/test_eval_tiling_unit.py (append)
+import numpy as np
+import torch
+
 from custom_sam_peft.data.tiling import EVAL_OVERLAP, iter_windows, tiling_engaged
+from custom_sam_peft.models.sam3 import SAM3_IMAGE_SIZE
 
 
 def test_eval_uses_non_overlapping_tiling():
     assert EVAL_OVERLAP == 0.0
     ws = iter_windows(2016, 2016, tile=1008, overlap=EVAL_OVERLAP)
-    # non-overlapping: exactly 4 disjoint 1008x1008 windows, no shared band
-    assert len(ws) == 4
-    starts = sorted({w.y0 for w in ws})
-    assert starts == [0, 1008]
+    assert len(ws) == 4  # disjoint 1008x1008 windows, no shared band
+    assert sorted({w.y0 for w in ws}) == [0, 1008]
 
 
 def test_small_eval_image_direct_path():
     assert tiling_engaged(700, 700) is False
+
+
+def test_tile_is_padded_to_model_size_before_forward():
+    # design C: a native-res tile crop (e.g. 756x756 last-window or 1008x492 edge)
+    # is padded TOP-LEFT to (C, 1008, 1008) with 0 before the fixed-size forward.
+    import torch.nn.functional as F
+
+    tile = torch.ones(3, 1008, 492)  # an edge tile narrower than the model size
+    pad_w = SAM3_IMAGE_SIZE - tile.shape[-1]
+    pad_h = SAM3_IMAGE_SIZE - tile.shape[-2]
+    padded = F.pad(tile, (0, pad_w, 0, pad_h), value=0.0)  # (left,right,top,bottom)
+    assert padded.shape == (3, SAM3_IMAGE_SIZE, SAM3_IMAGE_SIZE)
+    assert padded[:, :, 492:].sum() == 0  # right region zero-filled (top-left placement)
 ```
 
-- [ ] **Step 2: Run test to verify it fails / confirm constant**
+(The third test pins the pad geometry the evaluator must apply; a real-model accumulation test is G2. If a `pad_tile_to_model_size` helper is factored, test it directly instead of inlining `F.pad`.)
+
+- [ ] **Step 2: Run test to verify it fails / confirm constants**
 
 Run: `uv run pytest tests/unit/test_eval_tiling_unit.py -o "addopts=" -q`
-Expected: PASS at the constant level; implementation work is wiring `evaluator.py` + `visualize.py` (verify via Step 4 suite).
+Expected: the constant/geometry tests PASS; the wiring is verified by the Step 4 eval suite + G2.
 
-- [ ] **Step 3: Wire eval**
+- [ ] **Step 3: Wire the per-tile pad in `_iter_predictions`**
 
-In `evaluator.py` per-image postprocess, branch on `tiling_engaged(orig_h, orig_w)`: direct path unchanged; tiling path generates non-overlapping windows, runs the per-tile forward, accumulates per-tile entries against per-tile GT (no stitch). In `visualize.py:write_eval_visualizations`, when the source tiled, call `merge_fragments(..., threshold=MASK_OVERLAP_THRESHOLD)` on per-tile prediction fragments (overlap=DEFAULT_OVERLAP) to render one coherent overlay.
+In the tiling branch (`:308-364`), after cropping `tile_t = ex.image[:, win.y0:win.y0+win.h, win.x0:win.x0+win.w]` (`:312`), pad it top-left to the model size before `to_device`/forward:
+
+```python
+import torch.nn.functional as F
+pad_h = SAM3_IMAGE_SIZE - win.h
+pad_w = SAM3_IMAGE_SIZE - win.w
+# Post-normalize 0-pad == the pad-only transform's pre-normalize PadIfNeeded(fill=0,
+# top_left) (transforms.py:217); the model is fixed-size SAM3_IMAGE_SIZE (design C).
+tile_t = F.pad(tile_t, (0, pad_w, 0, pad_h), value=0.0)
+tile_batch = to_device(tile_t.unsqueeze(0), eval_runtime)
+```
+
+`tile_hw` stays `(win.h, win.w)` so `queries_to_coco_results(..., tile_hw, ...)` (`:360`) crops the upscaled mask back to the tile's real extent — RLEs remain tile-sized (≤1008), GT remains tile-local, no stitched mask is materialized. `_build_coco_gt_with_tiling` is unchanged (it already reads `ex.image.shape` which is now native-res, tiles GT at `EVAL_OVERLAP`).
 
 - [ ] **Step 4: Run eval suite**
 
 Run: `uv run pytest tests/unit/test_eval_tiling_unit.py tests/unit/ -o "addopts=" -q -k "eval"`
-Expected: PASS — small images unchanged; tiled accumulation is non-overlapping; viz restitches.
+Expected: PASS — small images byte-for-byte; tiled accumulation non-overlapping; per-tile RLEs tile-sized.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add src/custom_sam_peft/eval/evaluator.py src/custom_sam_peft/eval/visualize.py tests/unit/test_eval_tiling_unit.py
-git commit -m "feat(eval): per-tile metric accumulation (non-overlap) + viz restitch (spec §5.4)"
+git add src/custom_sam_peft/eval/evaluator.py tests/unit/test_eval_tiling_unit.py
+git commit -m "feat(eval): pad each native-res tile to model size before forward (design C; spec §5.4)"
 ```
 
 ---
 
-## Task 1.7: GPU end-to-end — tiled predict (G1) + tiled eval accumulation (G2)
+## Task 1.6c: Eval viz restitch on the full image (design C regression check)
 
 **Files:**
 
-- Create: `tests/gpu/test_tiling_gpu.py`
+- Verify (likely no change): `src/custom_sam_peft/eval/visualize.py` — `render_eval_pair` (`:383`), `_tiled_pred_entries` (`:321`), `write_eval_visualizations`
+- Test: `tests/unit/test_eval_tiling_unit.py` (append) — assert the viz path keys off the native-res example
 
-**Difficulty:** medium. **Gating tests:** G1, G2 (real SAM 3.1; run ONLY via `scripts/run_gpu_tests.sh`). **Blast radius:** none (test-only).
+**Difficulty:** easy. **Gating tests:** the CPU viz-geometry assertion below + G2's full-extent (`h == 1500`) check (already written to the design-C contract). **Blast radius:** none if 1.6a/1.6b are correct — `_tiled_pred_entries` already crops `example.image` per `DEFAULT_OVERLAP` window and re-places onto the native canvas, and `render_eval_pair`'s `denormalize_to_rgb(example.image, ...)` already renders at the example's extent.
 
-- [ ] **Step 1: Write the GPU tests**
+**Design note (design C):** with 1.6a, `example.image` reaching `render_eval_pair` is native-res (1 image = 1 example), so `tiling_engaged(orig_h, orig_w)` at `visualize.py:413` correctly fires and `_tiled_pred_entries` (already implemented, `:321-380`) merges per-tile fragments onto the full `(orig_h, orig_w)` canvas at `DEFAULT_OVERLAP` (NOT `EVAL_OVERLAP` — viz uses the predict overlap, spec §5.4). The source/GT/pred panels are all at native extent, so the composite height equals the original image height. **No code change is expected** — this task confirms the viz path is correct under the native-res example and adds the regression assertion that G2 mirrors at the GPU level.
+
+- [ ] **Step 1: Add the viz-geometry regression test**
+
+```python
+# tests/unit/test_eval_tiling_unit.py (append)
+def test_tiled_pred_entries_render_on_full_native_canvas():
+    """_tiled_pred_entries must produce fragments/masks at the full native extent,
+    not tile extent (the design-C viz invariant that G2 checks end-to-end)."""
+    from custom_sam_peft.data.tiling import DEFAULT_OVERLAP, iter_windows
+
+    orig_h, orig_w = 1500, 1500
+    windows = iter_windows(orig_h, orig_w, tile=SAM3_IMAGE_SIZE, overlap=DEFAULT_OVERLAP)
+    assert len(windows) > 1  # tiling engaged at native extent
+    # Each window re-places onto the full (orig_h, orig_w) canvas (see _tiled_pred_entries:362).
+    for win in windows:
+        canvas = np.zeros((orig_h, orig_w), bool)
+        canvas[win.y0:win.y0+win.h, win.x0:win.x0+win.w] = True
+        assert canvas.shape == (orig_h, orig_w)
+```
+
+- [ ] **Step 2: Run + confirm viz path needs no change**
+
+Run: `uv run pytest tests/unit/test_eval_tiling_unit.py tests/unit/ -o "addopts=" -q -k "eval or visualize"`
+Expected: PASS. If `render_eval_pair`/`_tiled_pred_entries` reference any pre-design-C downscaled shape, fix it so it keys off the native `example.image` extent; otherwise leave as-is.
+
+- [ ] **Step 3: Commit (only if a change was needed)**
+
+```bash
+git add src/custom_sam_peft/eval/visualize.py tests/unit/test_eval_tiling_unit.py
+git commit -m "test(eval): viz restitch renders on full native canvas (design C regression; spec §5.4)"
+```
+
+If no `visualize.py` change was needed, commit just the regression test:
+
+```bash
+git add tests/unit/test_eval_tiling_unit.py
+git commit -m "test(eval): pin viz full-native-canvas restitch invariant (design C; spec §5.4)"
+```
+
+---
+
+## Task 1.7: GPU end-to-end — tiled predict (G1) + tiled eval accumulation (G2) — DESIGN-C AMENDED
+
+> **Amendment (design C):** `tests/gpu/test_tiling_gpu.py` ALREADY landed (commit `4a7b85d`). G1 (tiled predict) PASSES. G2 (tiled eval) was written to the design-C contract — it asserts the visualization PNG height **equals the full original extent (`h == _OVERSIZED == 1500`)** and that per-tile eval RLEs are tile-sized (`<= 1008`, no stitched mask leak). It currently FAILS against the broken pre-design-C eval (the dataset downscaled the eval example to ≤1008, so viz rendered at ~1058). **No change to the G2 assertions is needed** — they are correct under design C; G2 turns green once Tasks 1.6a/1.6b/1.6c land. This task is now a verification gate: re-run the GPU suite after the 1.6 sub-tasks and confirm G1 still passes and G2 now passes.
+
+**Files:**
+
+- Verify (already created): `tests/gpu/test_tiling_gpu.py` — G2's `h == _OVERSIZED` full-extent + tile-sized-RLE assertions already encode the design-C contract; no edit expected.
+
+**Difficulty:** easy (verification). **Gating tests:** G1, G2 (real SAM 3.1; run ONLY via `scripts/run_gpu_tests.sh`). **Blast radius:** none (test-only).
+
+- [ ] **Step 1: (Reference) the GPU tests as landed**
+
+The committed `tests/gpu/test_tiling_gpu.py` already contains both tests with full bodies. G2's design-C-aligned checks: per-tile prediction RLEs sized `<= _TILE_SIZE` (no stitched mask) and each visualization PNG `h == _OVERSIZED` (full-extent composite). Sketch retained for reference:
 
 ```python
 # tests/gpu/test_tiling_gpu.py
@@ -764,18 +987,20 @@ def test_G2_tiled_eval_accumulates_without_stitch(tmp_path):
     ...
 ```
 
-(Implementer fills the bodies using the existing GPU-test harness patterns in `tests/gpu/`.)
+(The bodies are already filled in the committed file; this sketch is reference only.)
 
-- [ ] **Step 2: Run via the GPU harness**
+- [ ] **Step 2: Re-run the GPU harness AFTER 1.6a/1.6b/1.6c land**
 
 Run: `scripts/run_gpu_tests.sh tests/gpu/test_tiling_gpu.py`
-Expected: PASS on the 5070 Ti.
+Expected: G1 PASS (unchanged); G2 now PASS — eval RLEs tile-sized and viz PNG `h == 1500` (the design-C native-res restitch).
 
-- [ ] **Step 3: Commit**
+- [ ] **Step 3: No commit unless an assertion needs tightening**
+
+The test file is already committed (`4a7b85d`). Only commit if a design-C follow-up requires editing an assertion:
 
 ```bash
 git add tests/gpu/test_tiling_gpu.py
-git commit -m "test(gpu): G1 tiled predict + G2 tiled eval accumulation (spec §12.2)"
+git commit -m "test(gpu): tighten G2 design-C assertions (spec §12.2)"
 ```
 
 ---
@@ -1472,8 +1697,8 @@ For each of spec §15.1–§15.6 (DICOM-SEG dropped; CRS reprojection; resample-
 | §4 fragment-merge (union-find, IoMin, threshold, area-weighted score, re-threshold) | 1.2 |
 | §5.1 sliding-window utility (iter_windows, run_windows, merge, overlap const) | 1.1, 1.2, 1.3 |
 | §5.2 predict tile→run→merge→one mask + run.json | 1.4 |
-| §5.3 train tile expansion (clip, negatives, `__len__`) | 1.5 |
-| §5.4 eval per-tile accumulation (non-overlap) + viz restitch | 1.6 |
+| §5.3 train tile expansion (clip, negatives, `__len__`); train-ONLY via `expand_tiles` (design C) | 1.5 |
+| §5.4 eval native-res tiling (design C): pad-only transform / evaluator per-tile pad / viz full-extent restitch | 1.6a, 1.6b, 1.6c |
 | §6.1/§6.2 SpatialMeta seam + read_image_with_meta | 2.1, 2.2 |
 | §6.3 rasterio replaces tifffile + nodata zero-fill | 2.2 |
 | §6.4 tiling × affine composition | 2.3 |
@@ -1488,7 +1713,7 @@ For each of spec §15.1–§15.6 (DICOM-SEG dropped; CRS reprojection; resample-
 | §12.1 C1–C14 | C1→1.1, C2/C3/C4→1.2, C5→1.1/1.4, C6→1.5, C7→2.2/2.4, C8→2.3, C9→2.2/2.4, C10→3.2, C11→3.3, C12→3.1, C13→2.1/2.2, C14→2.2 |
 | §12.2 G1, G2 | 1.7 |
 | §13 tbd pins | resolved in the pinned-resolutions section; carried into code at 1.1 (overlap, eval-overlap), 1.2 (metric, threshold, score-agg), 2.2 (nodata), 2.2/3.1 (floors) |
-| §14 risks | 14.1→1.2 (+G1), 14.2 (cost) documented in 1.4, 14.3 (rasterio wheel) verified 2.2, 14.4 (DICOM geometry) 3.3, 14.5 (limit×expansion) 1.5 |
+| §14 risks | 14.1→1.2 (+G1), 14.2 (cost) documented in 1.4, 14.3 (rasterio wheel) verified 2.2, 14.4 (DICOM geometry) 3.3, 14.5 (limit×expansion) 1.5 — design C confines expansion to train so eval/val limit + #245 bundle-val stay per-image |
 | §15 follow-ups | 3.4 |
 
 **No uncovered spec sections.** §8.3 needs no dedicated task (it asserts the tiling utility is shared, which Tasks 1.x already guarantee). §7.2 is "(reserved)" — intentionally empty.
