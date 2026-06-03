@@ -367,12 +367,14 @@ def build_hf(
     model_name: str,
     pipeline: Literal["train", "eval"],
 ) -> Dataset:
-    """Build an `HFDataset` from a validated DataConfig dict."""
+    """Build an HFDataset (instance) or SemanticHFDataset (semantic) from a DataConfig dict."""
     from custom_sam_peft.config.schema import AugmentationsConfig, NormalizeConfig
     from custom_sam_peft.data.transforms import build_eval_transforms, build_train_transforms
 
     if pipeline not in ("train", "eval"):
         raise ValueError(f"pipeline must be 'train' or 'eval'; got {pipeline!r}")
+
+    task: str = str(cfg.get("task", "instance"))
     hf_cfg = cfg["hf"]
     resolved = (cfg.get("_resolved_image_ids") or {}).get(pipeline)
     if pipeline == "eval" and cfg.get("val") is None and resolved is not None:
@@ -382,9 +384,95 @@ def build_hf(
     from custom_sam_peft.models.sam3 import SAM3_IMAGE_SIZE
 
     normalize = NormalizeConfig.model_validate(cfg.get("normalize", {}))
-    text_prompt = TextPromptConfig.model_validate(cfg.get("text_prompt", {}))
     field_map = HFFieldMap.model_validate(hf_cfg.get("field_map", {}))
     channel_semantics: str = str(cfg.get("channel_semantics", "rgb"))
+    channels = int(cfg.get("channels", 3))
+
+    if task == "semantic":
+        # -- semantic branch: build SemanticHFDataset --
+        from custom_sam_peft.data.semantic_hf import SemanticHFDataset
+
+        label_map_field = field_map.label_map
+        if label_map_field is None:
+            raise ValueError(
+                "build_hf: task=semantic requires data.hf.field_map.label_map to be set "
+                "to the HF feature name holding the (H,W) per-pixel label image."
+            )
+
+        # Resolve semantic sub-config once; used for transforms + class-name resolution.
+        sem = cfg.get("semantic") or {}
+        ignore_index: int = int(sem.get("ignore_index", 255))
+        class_map_path: str = str(sem.get("class_map") or "")
+
+        if pipeline == "train":
+            aug = AugmentationsConfig.model_validate(cfg.get("augmentations", {}))
+            transforms = build_train_transforms(
+                aug,
+                SAM3_IMAGE_SIZE,
+                model_name=model_name,
+                normalize=normalize,
+                channel_semantics=channel_semantics,
+                channels=channels,
+                mask_fill_value=ignore_index,
+            )
+        else:
+            transforms = build_eval_transforms(
+                SAM3_IMAGE_SIZE,
+                model_name=model_name,
+                normalize=normalize,
+                channel_semantics=channel_semantics,
+                mask_fill_value=ignore_index,
+            )
+
+        # Resolve class_names + value_to_label from cfg["semantic"].class_map or HF ClassLabel.
+
+        hf_ds = hf_load_dataset(hf_cfg["name"], split=split)
+
+        if class_map_path:
+            from custom_sam_peft.data._semantic_encode import build_value_to_label
+
+            class_names, value_to_label, _ = build_value_to_label(
+                class_map_path, ignore_index=ignore_index, background_class_name=None
+            )
+        else:
+            # Try to derive class names from the HF label feature's ClassLabel.names.
+            # For segmentation datasets the per-pixel label feature is typically an
+            # Image feature (no names) or a ClassLabel (has .names). We inspect
+            # features[label_map_field] and look for a .names attribute.
+            feats = getattr(hf_ds, "features", None)
+            label_feat = feats.get(label_map_field) if isinstance(feats, dict) else None
+            feat_names: list[str] | None = getattr(label_feat, "names", None)
+            if feat_names is not None:
+                from custom_sam_peft.data._semantic_encode import build_value_to_label_from_dict
+
+                raw_map = {str(i): name for i, name in enumerate(feat_names)}
+                class_names, value_to_label, _ = build_value_to_label_from_dict(
+                    raw_map, ignore_index=ignore_index, background_class_name=None
+                )
+            else:
+                raise ValueError(
+                    "build_hf: task=semantic: cannot resolve class names. "
+                    "Provide data.semantic.class_map (path to a JSON pixel-value->name map), "
+                    "or use an HF dataset whose label feature is a ClassLabel with .names."
+                )
+
+        row_indices: list[int] | None = [int(s) for s in resolved] if resolved is not None else None
+        if row_indices is not None:
+            hf_ds = hf_ds.select(row_indices)
+
+        return SemanticHFDataset(
+            hf_ds,
+            image_field=field_map.image,
+            label_map_field=label_map_field,
+            class_names=class_names,
+            ignore_index=ignore_index,
+            transforms=transforms,
+            channels=channels,
+            value_to_label=value_to_label,
+        )
+
+    # -- instance branch (unchanged) --
+    text_prompt = TextPromptConfig.model_validate(cfg.get("text_prompt", {}))
     if pipeline == "train":
         aug = AugmentationsConfig.model_validate(cfg.get("augmentations", {}))
         transforms = build_train_transforms(
@@ -393,7 +481,7 @@ def build_hf(
             model_name=model_name,
             normalize=normalize,
             channel_semantics=channel_semantics,
-            channels=int(cfg.get("channels", 3)),
+            channels=channels,
         )
     else:
         transforms = build_eval_transforms(
@@ -409,5 +497,5 @@ def build_hf(
         text_prompt=text_prompt,
         field_map=field_map,
         row_indices=[int(s) for s in resolved] if resolved is not None else None,
-        channels=int(cfg.get("channels", 3)),
+        channels=channels,
     )

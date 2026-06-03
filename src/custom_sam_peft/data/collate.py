@@ -13,7 +13,8 @@ def collate_batch(examples: list[Example]) -> dict[str, Any]:
     """Stack images, keep ragged prompts/instances as Python lists.
 
     Returns a dict with keys: "images" (B,3,H,W), "image_ids" (list[str]),
-    "prompts" (list[Prompts]), "instances" (list[list[Instance]]).
+    "prompts" (list[Prompts]), "instances" (list[list[Instance]]),
+    "semantic" (list[SemanticTarget | None], [None]*B under instance task).
 
     Raises:
         ValueError: empty input or mismatched image shapes across the batch.
@@ -31,4 +32,5 @@ def collate_batch(examples: list[Example]) -> dict[str, Any]:
         "image_ids": [ex.image_id for ex in examples],
         "prompts": [ex.prompts for ex in examples],
         "instances": [list(ex.instances) for ex in examples],
+        "semantic": [ex.semantic for ex in examples],  # [None]*B under instance
     }

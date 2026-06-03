@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import os
 import sys
 from pathlib import Path
@@ -16,6 +17,17 @@ from custom_sam_peft.cli._options import Progress, ProgressOpt, VerboseOpt
 from custom_sam_peft.cli._progress import ProgressKind, progress_session, resolve_mode
 from custom_sam_peft.predict.adapter_load import detect_adapter_kind
 from custom_sam_peft.predict.runner import PredictOptions, PredictReport, run_predict
+
+logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# Option defaults — single source of truth for both typer.Option() and the
+# instance-only-flags guard.  If a default changes, update here only.
+# ---------------------------------------------------------------------------
+
+_DEFAULT_SCORE_THRESHOLD: float = 0.3
+_DEFAULT_TOP_K: int = 100
+_DEFAULT_SAVE_MASKS: str = "rle"
 
 # ---------------------------------------------------------------------------
 # Validation callbacks (spec §8, §10)
@@ -64,8 +76,13 @@ def _validate_checkpoint(value: Path | None) -> Path | None:
 
 def predict(
     images: Path = typer.Option(..., "--images", help="Dir / glob / manifest / single file."),
-    prompts: str = typer.Option(
-        ..., "--prompts", help="Comma-separated class names or path to one-per-line file."
+    prompts: str | None = typer.Option(
+        None,
+        "--prompts",
+        help=(
+            "Comma-separated class names or path to one-per-line file. "
+            "Required for instance task; defaults to class_map names under task: semantic."
+        ),
     ),
     output: Path = typer.Option(..., "--output", help="Output directory (created if missing)."),
     checkpoint: Path | None = typer.Option(
@@ -73,22 +90,22 @@ def predict(
     ),
     config: Path | None = typer.Option(None, "--config", help="Path to config YAML."),
     score_threshold: float = typer.Option(
-        0.3,
+        _DEFAULT_SCORE_THRESHOLD,
         "--score-threshold",
         callback=_validate_unit_interval,
         help="Minimum score to keep a prediction [0.0, 1.0].",
     ),
     top_k: int = typer.Option(
-        100,
+        _DEFAULT_TOP_K,
         "--top-k",
         callback=_validate_positive_int,
         help="Max predictions per (image, class) pair.",
     ),
     save_masks: str = typer.Option(
-        "rle",
+        _DEFAULT_SAVE_MASKS,
         "--save-masks",
         click_type=click.Choice(["rle", "png", "none"]),
-        help="Mask output format: rle | png | none.",
+        help="Mask output format: rle | png | none. Ignored under task: semantic.",
     ),
     visualize: bool = typer.Option(False, "--visualize", help="Write per-image overlay PNGs."),
     batch_size: str = typer.Option(
@@ -117,12 +134,78 @@ def predict(
         _interactive.require_tty()
         _interactive.run_predict_interactive(force=False)
         return
+
     # Derive merge: LoRA folds deltas into base weights (forward-equivalent, speed/memory only);
     # QLoRA merge dequantizes 4-bit→compute_dtype (memory blowup), so unmerged is safe default.
     merge_adapter = detect_adapter_kind(checkpoint) == "lora" if checkpoint is not None else False
+
+    # --- Resolve task from config (if present); parse YAML once and reuse ---
+    resolved_task = "instance"
+    raw_cfg: dict[str, object] = {}
+    if config is not None:
+        try:
+            import yaml
+
+            raw_cfg = yaml.safe_load(config.read_text(encoding="utf-8")) or {}
+            resolved_task = str(raw_cfg.get("task", "instance"))
+        except Exception as _exc:
+            logger.debug("predict CLI: could not read task from config: %s", _exc)
+
+    # --- Prompt defaulting under semantic task ---
+    resolved_prompts: str
+    if prompts is not None:
+        resolved_prompts = prompts
+    elif resolved_task == "semantic" and config is not None:
+        # Derive class_names from data.semantic.class_map (reuse already-parsed raw_cfg)
+        try:
+            from custom_sam_peft.data._semantic_encode import build_value_to_label
+
+            data_section = raw_cfg.get("data", {})
+            sem_section = data_section.get("semantic", {}) if isinstance(data_section, dict) else {}
+            class_map_path = sem_section.get("class_map") if isinstance(sem_section, dict) else None
+            ignore_index = (
+                int(sem_section.get("ignore_index", 255)) if isinstance(sem_section, dict) else 255
+            )
+            if class_map_path is None:
+                raise typer.BadParameter(
+                    "--prompts is required: no data.semantic.class_map in config",
+                    param_hint="--prompts",
+                )
+            class_names, _, _ = build_value_to_label(
+                class_map_path,
+                ignore_index=ignore_index,
+                background_class_name=None,
+            )
+            resolved_prompts = ",".join(class_names)
+        except typer.BadParameter:
+            raise
+        except Exception as exc:
+            raise typer.BadParameter(
+                f"--prompts omitted and could not derive class_names from config: {exc}",
+                param_hint="--prompts",
+            ) from exc
+    else:
+        # Instance path or no config: --prompts is required
+        raise typer.BadParameter(
+            "--prompts is required for instance task (or provide --config with task: semantic)",
+            param_hint="--prompts",
+        )
+
+    # --- Instance-only flags under semantic: emit ONE INFO and ignore ---
+    _INSTANCE_ONLY_FLAGS_SET = (
+        score_threshold != _DEFAULT_SCORE_THRESHOLD
+        or top_k != _DEFAULT_TOP_K
+        or save_masks != _DEFAULT_SAVE_MASKS
+    )
+    if resolved_task == "semantic" and _INSTANCE_ONLY_FLAGS_SET:
+        logger.info(
+            "predict: --score-threshold, --top-k, and --save-masks are instance-only "
+            "and are ignored under task: semantic."
+        )
+
     opts = PredictOptions(
         images=images,
-        prompts=prompts,
+        prompts=resolved_prompts,
         output=output,
         checkpoint=checkpoint,
         merge_adapter=merge_adapter,

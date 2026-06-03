@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Protocol, runtime_checkable
 
 import torch
@@ -45,13 +45,27 @@ class Instance:
 
 
 @dataclass(frozen=True)
-class Example:
-    """One training/eval example."""
+class SemanticTarget:
+    """Dense per-pixel class labels for one image (semantic task).
 
-    image: torch.Tensor  # (3, H, W) normalized
+    `labels` holds class ids in {0..K} where 0 == background and 1..K == concept
+    dense_id + 1 (the +1 makes room for the background channel). Pixels equal to
+    `ignore_index` are void: excluded from loss and metrics.
+    """
+
+    labels: torch.Tensor  # (H, W) int64, values in {0..K} union {ignore_index}
+    ignore_index: int  # carried so collate/loss/eval need no extra plumbing
+
+
+@dataclass(frozen=True)
+class Example:
+    """One training/eval example. Carries instances XOR a semantic target."""
+
+    image: torch.Tensor  # (C, H, W) normalized  (C from data.channels)
     image_id: str
     prompts: Prompts
-    instances: list[Instance]
+    instances: list[Instance] = field(default_factory=list)  # populated iff task == instance
+    semantic: SemanticTarget | None = None  # populated iff task == semantic
 
 
 @runtime_checkable

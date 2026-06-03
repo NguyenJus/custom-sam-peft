@@ -439,6 +439,7 @@ class Evaluator:
         (output_dir / "metrics.json").write_text(
             json.dumps(
                 {
+                    "task": "instance",
                     "overall": report.overall,
                     "per_class": report.per_class,
                     "n_images": report.n_images,
