@@ -10,7 +10,7 @@ Any other non-empty value enables the profiler.
 Greppable dot-namespaced bucket names::
 
     eval.forward          eval.coco_aggregate   eval.mask_upsample
-    eval.transfer_binarize  eval.rle_encode
+    eval.transfer_binarize  eval.rle_encode     eval.proxy_iou
     train.forward         train.loss            train.backward
     train.optim_step
     predict.forward       predict.postprocess   predict.write

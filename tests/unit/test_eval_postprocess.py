@@ -8,7 +8,10 @@ import pytest
 import torch
 
 from custom_sam_peft.eval.metrics import coco_max_dets_cap
-from custom_sam_peft.eval.postprocess import queries_to_coco_results
+from custom_sam_peft.eval.postprocess import (
+    queries_to_coco_results,
+    score_and_topk_filter,
+)
 
 
 def _outputs(
@@ -194,6 +197,64 @@ def test_bfloat16_inputs_run_without_error():
     assert len(entries) == 2
     for e in entries:
         assert np.isfinite(e["score"])
+
+
+# --- score_and_topk_filter helper (DRY: shared by lite proxy + exact path) ---
+
+
+def _inline_scores_and_keep(
+    out: dict[str, torch.Tensor], max_dets: int | None
+) -> tuple[torch.Tensor, torch.Tensor | None]:
+    """Re-implement the ORIGINAL inline logic so the helper can be diffed against it."""
+    pred_logits = out["pred_logits"]
+    presence = out["presence_logit_dec"]
+    p_obj = torch.sigmoid(pred_logits.float()).squeeze(-1).squeeze(0)
+    p_presence = torch.sigmoid(presence.float()).reshape(())
+    scores = p_obj * p_presence
+    n = scores.shape[0]
+    keep_idx: torch.Tensor | None = None
+    if max_dets is not None and n > max_dets:
+        kth = torch.topk(scores, max_dets).values.min()
+        keep_idx = (scores >= kth).nonzero(as_tuple=False).squeeze(-1)
+        scores = scores[keep_idx]
+    return scores, keep_idx
+
+
+def test_score_and_topk_filter_matches_inline_with_ties_at_kth():
+    # 6 distinct high scores + 3 tied at 0.3; max_dets=8 makes the 8th-highest
+    # score land INSIDE the tie → the >= threshold keeps all 3 tied (superset).
+    scores = [0.9 - i * 0.001 for i in range(6)] + [0.3, 0.3, 0.3]  # 6 distinct + 3 ties
+    out = _outputs_with_scores(scores)
+    exp_scores, exp_keep = _inline_scores_and_keep(out, max_dets=8)
+    got_scores, got_keep = score_and_topk_filter(out, max_dets=8)
+    assert got_keep is not None and exp_keep is not None
+    assert torch.equal(got_keep, exp_keep)
+    assert torch.equal(got_scores, exp_scores)
+    # superset semantics: 6 distinct + all 3 tied at 0.3 = 9 survivors (> max_dets=8).
+    assert got_keep.shape[0] == 9
+
+
+def test_score_and_topk_filter_no_filter_when_max_dets_none():
+    out = _outputs_with_scores([0.9, 0.5, 0.1])
+    exp_scores, exp_keep = _inline_scores_and_keep(out, max_dets=None)
+    got_scores, got_keep = score_and_topk_filter(out, max_dets=None)
+    assert got_keep is None
+    assert exp_keep is None
+    assert torch.equal(got_scores, exp_scores)
+
+
+def test_score_and_topk_filter_no_filter_when_n_le_max_dets():
+    out = _outputs_with_scores([0.9, 0.5, 0.1])
+    got_scores, got_keep = score_and_topk_filter(out, max_dets=100)
+    assert got_keep is None
+    assert got_scores.shape[0] == 3
+
+
+def test_score_and_topk_filter_nonfinite_raises():
+    out = _outputs(n=1)
+    out["pred_logits"][0, 0, 0] = float("nan")
+    with pytest.raises(RuntimeError, match="non-finite"):
+        score_and_topk_filter(out, max_dets=None)
 
 
 # --- top-N filter tests ---
