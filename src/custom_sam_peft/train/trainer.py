@@ -14,7 +14,7 @@ import torch
 import yaml
 from torch.utils.data import DataLoader
 
-from custom_sam_peft import paths
+from custom_sam_peft import paths, profiling
 from custom_sam_peft.cli._progress import progress as P
 from custom_sam_peft.config._duration import format_seconds, parse_duration_to_seconds
 from custom_sam_peft.config.schema import LRSchedule, Optimizer, TrainConfig
@@ -849,6 +849,12 @@ class Trainer:
                 )
         finally:
             self.tracker.close()
+            # Self-dump the profile snapshot on every exit path (normal, early
+            # stop, time/RAM limit, or exception) when CSP_PROFILE is enabled —
+            # mirrors eval/predict runners so `CSP_PROFILE=1 csp train` lands a
+            # profile_snapshot.json in the run dir. No-op when disabled.
+            if profiling.is_enabled():
+                profiling.dump(run_dir / "profile_snapshot.json")
 
         if stop is not None:
             return self._time_limited_artifacts(run_dir, stop, budget_seconds, oom_state)
