@@ -2,22 +2,36 @@ name: Re-author Dependabot commits
 
 # Dependabot commits land authored by `dependabot[bot]` and often carry
 # `Co-authored-by: Claude`, `Co-authored-by: dependabot`, and
-# `Signed-off-by: dependabot` trailers. These leak into the squash-merge commit
-# and the repo's contributors graph. This workflow rewrites every commit on a
-# Dependabot PR branch to be authored by the repo owner and strips those
-# trailers, then force-pushes the branch so the eventual squash-merge inherits
-# clean attribution.
+# `Signed-off-by: dependabot` trailers. Left alone these leak into the repo's
+# contributors graph. This workflow rewrites every commit on a Dependabot PR
+# branch to be authored by the repo owner and strips those trailers, then
+# force-pushes the branch — and finally enables **rebase** auto-merge.
+#
+# IMPORTANT — why rebase, NOT squash:
+#   A squash-merge stamps the merge commit's author with the *PR author*
+#   (`dependabot[bot]`), regardless of how the branch commits are authored.
+#   Re-authoring the branch therefore CANNOT survive a squash — the bot
+#   reappears in the contributors graph. A rebase-merge instead replays the
+#   branch commits verbatim, preserving the re-authored owner as the author
+#   (committer becomes the merging PAT owner). So Dependabot PRs must be
+#   rebase-merged. This job enables rebase auto-merge so that happens
+#   automatically once required checks pass. Never squash a Dependabot PR.
 #
 # IMPORTANT — secret placement:
 #   Workflows triggered by Dependabot receive *Dependabot* secrets, NOT Actions
 #   secrets. Add the PAT under Settings -> Secrets and variables -> Dependabot
-#   as `REAUTHOR_PAT` (a fine-grained PAT with `contents: write` on this repo).
-#   An Actions-scoped secret of the same name will be empty in this context.
+#   as `REAUTHOR_PAT` (a fine-grained PAT with `contents: write` AND
+#   `pull-requests: write` on this repo — PR write is needed to enable
+#   auto-merge below). An Actions-scoped secret of the same name will be empty
+#   in this context.
 #
 # IMPORTANT — why a PAT, not GITHUB_TOKEN:
 #   `main`'s ruleset requires status checks. A push made with the default
 #   GITHUB_TOKEN does not re-trigger those checks, so the PR could never become
 #   mergeable. A real user PAT does re-trigger them.
+#
+# Repo settings this relies on (Settings -> General -> Pull Requests):
+#   "Allow rebase merging" and "Allow auto-merge" must both be enabled.
 
 on:
   pull_request:
@@ -29,6 +43,7 @@ concurrency:
 
 permissions:
   contents: write
+  pull-requests: write
 
 jobs:
   reauthor:
@@ -71,8 +86,16 @@ jobs:
           new="$(git rev-parse HEAD)"
           if [ "$orig" = "$new" ]; then
             echo "Already clean — nothing to rewrite."
-            exit 0
+          else
+            echo "Rewrote ${orig} -> ${new}; force-pushing ${HEAD_REF}."
+            git push --force-with-lease="${HEAD_REF}:${orig}" origin "HEAD:${HEAD_REF}"
           fi
 
-          echo "Rewrote ${orig} -> ${new}; force-pushing ${HEAD_REF}."
-          git push --force-with-lease="${HEAD_REF}:${orig}" origin "HEAD:${HEAD_REF}"
+      - name: Enable rebase auto-merge
+        # Rebase (not squash) so the re-authored owner survives onto main. Merges
+        # automatically once required checks pass; the merge is performed by the
+        # PAT owner, keeping the bot out of both author and committer fields.
+        env:
+          GH_TOKEN: ${{ secrets.REAUTHOR_PAT }}
+          PR_URL: ${{ github.event.pull_request.html_url }}
+        run: gh pr merge --rebase --auto "$PR_URL"
