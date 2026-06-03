@@ -27,6 +27,7 @@ The PREDICT path (Task 1.4, G1 passing) is correct: it reads native-res, tiles i
 
 - **Train (Task 1.5):** dataset tile-expansion becomes TRAIN-PIPELINE-ONLY via an `expand_tiles: bool` ctor kwarg; `build_coco` sets `expand_tiles=(pipeline == "train")`. Train keeps `DEFAULT_OVERLAP`. Eval/val do NOT expand at the dataset level.
 - **Eval (Task 1.6 → 1.6a/1.6b/1.6c):** the eval dataset hands the evaluator the NATIVE-RESOLUTION image (1 image = 1 example, no geometric downsize). A new PAD-ONLY transform path (no `LongestMaxSize`) feeds it. The evaluator owns tiling (`tiling_engaged(native_h, native_w)` → non-overlapping `iter_windows` → per-tile pad-to-1008 → forward → non-overlapping accumulation). Viz restitch operates on the full-extent example.
+- **Eval per-tile preprocessing must be NUMERICALLY IDENTICAL to predict's (faithfulness fix, 1.6b).** The Albumentations order in `build_eval_transforms` (`transforms.py:210-223`) is `LongestMaxSize → PadIfNeeded(fill=0, top_left) → Normalize → ToTensorV2` — **`PadIfNeeded` runs BEFORE `Normalize`**, so the pad region holds raw `0` that is THEN normalized: the model sees `normalize(0)` (≈ `-mean/std`, a non-zero per-channel value) in the padded extent. Predict's proven tiled path (`_predict_one_tile`, G1 passes) runs this exact transform on each native-res numpy crop. Therefore the evaluator MUST apply the same pad-only transform per tile (pad raw-0 → normalize), **not** pad an already-normalized tile tensor with literal `0` via `F.pad(value=0.0)` — literal-0 padding writes `0` (not `normalize(0)`) into the pad region, a different model input than predict/train produce, skewing eval metrics. This matches spec §6.3 (nodata/pad fill=0) which the `# tbd:` resolution #6 ties to `PadIfNeeded(fill=0)` taken BEFORE normalize. The fix: a shared `preprocess_tile` helper used by BOTH predict and eval guarantees byte-parity by construction, with a mandatory CPU parity test (1.6b).
 - **Regression invariants:** for a ≤1008 input the pad-only transform must be byte-for-byte identical to today's `build_eval_transforms` (`LongestMaxSize` is already a no-op there, so dropping it changes nothing). Eval/val datasets do NOT expand, so `len(val) == image count` and `per_example_iou` stays per-image (preserves the #245 alignment + viz selection semantics).
 
 Tasks 1.5, 1.6 (now 1.6a/1.6b/1.6c), the Phase 1 interface contract, and the Task 1.7 note below are rewritten to design C. Phases 2–3 are unchanged except where they consume the eval seam.
@@ -84,8 +85,12 @@ Operates on plain pixels only — no `SpatialMeta`. **EXPOSES (contract consumed
   - Module constants: `DEFAULT_OVERLAP = 0.25`, `MASK_OVERLAP_THRESHOLD = 0.10`, `EVAL_OVERLAP = 0.0` (each with the §13 comment above).
 - Predict tiling path wired into `predict/runner.py` (auto-engage by size; small images byte-for-byte unchanged); `run.json` gains an additive `"tiling"` provenance record. The per-tile body is factored into `_predict_one_tile(crop_np, window, *, model, transforms, ...) -> list[Fragment]` (`runner.py:296`) — it transforms a ≤1008 crop, forwards, and returns tile-local fragments.
 - **Tile expansion is TRAIN-PIPELINE-ONLY** (design C). `COCODataset.__init__` takes `expand_tiles: bool` (default `True`); when `True` and `tiling_engaged(h, w)`, an oversized raster expands into one `(image_id, Window)` sample per `iter_windows` window (overlap `DEFAULT_OVERLAP`); otherwise one whole-image `Window(0, 0, h, w)`. `__len__` reflects the expansion. `build_coco` sets `expand_tiles=(pipeline == "train")` — **eval/val never expand**, so `len(val) == image count` and `per_example_iou` stays per-image (#245 alignment + viz selection preserved). No user-facing config knob.
-- **Eval = native-resolution handoff** (design C, mirrors predict). The eval dataset hands the evaluator the native-resolution image as 1 example via a **pad-only transform** `build_eval_transforms(..., downscale: bool = True)` — `downscale=False` drops `LongestMaxSize` (keeps Normalize + top-left `PadIfNeeded` to 1008). For ≤1008 inputs `downscale=False` is byte-for-byte identical to `downscale=True` (LongestMaxSize is a no-op there). The evaluator owns tiling: `tiling_engaged(native_h, native_w)` → non-overlapping `iter_windows(..., overlap=EVAL_OVERLAP)` → per-tile pad-to-1008 (the pad-only transform) → forward → non-overlapping accumulation against tile-local GT (no stitched mask). Viz restitch (`merge_fragments`, `DEFAULT_OVERLAP`) runs on the full-extent example.
-- **Shared predict/eval tile helper (optional interface contract):** predict's `_predict_one_tile` and the evaluator's per-tile forward both do "pad ≤1008 crop → forward → tile-local results". Factor a shared helper between them ONLY if it stays clean; do not force a fragile abstraction across the predict-Fragment vs. eval-COCO-entry shapes. If factored, it lives in `predict/runner.py` or a small shared module and is noted here.
+- **Eval = native-resolution handoff** (design C, mirrors predict). The eval dataset hands the evaluator the native-resolution image as 1 example. For oversized eval examples the evaluator owns tiling: `tiling_engaged(native_h, native_w)` → non-overlapping `iter_windows(..., overlap=EVAL_OVERLAP)` → per-tile preprocessing via the shared `preprocess_tile` helper (pad-only transform: pad raw-0 → normalize, byte-identical to predict) → forward → non-overlapping accumulation against tile-local GT (no stitched mask). To run the pad-only transform per tile the evaluator needs the **native-res numpy** crop (mirroring predict's `_predict_one_tile`, which crops `img_np`); the eval dataset therefore exposes the native-res numpy pixels for oversized examples (see Task 1.6b for the `Example` reconciliation). `example.image` (the native-res normalized tensor) remains the handle viz/GT-geometry use. Viz restitch (`merge_fragments`, `DEFAULT_OVERLAP`) runs on the full-extent example.
+- **Shared predict/eval per-tile preprocessing helper (REQUIRED interface contract).** Eval per-tile preprocessing MUST be numerically identical to predict's for the same native-res crop. Because byte-parity is now a hard requirement (not an optimization), a single shared helper applies the pad-only transform so parity holds **by construction** rather than via two parallel implementations that can drift:
+  - `preprocess_tile(crop_np: np.ndarray, transform, *, device, dtype) -> torch.Tensor` — applies the pad-only Albumentations transform (`build_eval_transforms(..., downscale=False)` from Task 1.6a: `LongestMaxSize` no-op on a ≤1008 crop → `PadIfNeeded(fill=0, top_left)` to 1008 → `Normalize` → `ToTensorV2`) to a native-res numpy crop and returns the `(C, 1008, 1008)` model-input tensor on-device. Keep it minimal — JUST the transform application + to-device. It lives in a small shared module (or `predict/runner.py`).
+  - **Consumed by predict:** `_predict_one_tile` (`runner.py:296`) calls `preprocess_tile` for its crop, then wraps the forward to emit `Fragment`s.
+  - **Consumed by eval:** the evaluator's tiling branch crops the **native-res numpy** image per non-overlapping window and calls the SAME `preprocess_tile` before the forward, then emits per-tile COCO entries. Predict already crops from native numpy (`img_np`); eval mirrors that exactly.
+  - **Why faithful:** because both paths pad raw-0 THEN normalize (the `PadIfNeeded`-before-`Normalize` order, `transforms.py:213-221`), the padded extent equals `normalize(0)` (≈ `-mean/std`, a non-zero per-channel value) identically in both. A post-normalize literal-0 pad of the tensor would write `0` (not `normalize(0)`) into the pad region — a DIFFERENT input than predict/train feed the model, skewing eval metrics. This is forbidden.
 
 ### Phase 2 — Georeferencing. Tasks 2.x
 
@@ -813,21 +818,27 @@ git commit -m "feat(eval): pad-only/native-res eval transform via downscale flag
 
 ---
 
-## Task 1.6b: Evaluator native-res tiling — pad each ≤1008 tile before the forward (design C)
+## Task 1.6b: Evaluator native-res tiling — pad each ≤1008 tile via the SHARED pad-only transform (design C)
 
 **Files:**
 
-- Modify: `src/custom_sam_peft/eval/evaluator.py` — the tiling branch of `_iter_predictions` (`:300-364`): pad each tile crop to 1008 via the pad-only transform before the forward; `_build_coco_gt_with_tiling` (`:74-168`) is already native-coord-correct (it reads `ex.image.shape` which is now native-res — keep it)
-- Test: `tests/unit/test_eval_tiling_unit.py` (append)
+- Modify: `src/custom_sam_peft/data/base.py` — add an OPTIONAL native-res numpy handle to `Example` (e.g. `image_native: np.ndarray | None = None`, default `None`, frozen-safe) so the evaluator can run the pad-only transform per tile (mirrors predict, which crops from `img_np`). Default-`None` keeps both existing constructors valid.
+- Modify: `src/custom_sam_peft/data/coco.py` — the `__getitem__`/`_make_example` eval path (`:311`/`:357`) populates `image_native` with the native-res numpy pixels ONLY for the eval/val pipeline (`expand_tiles=False`) when `tiling_engaged(h, w)`; train and direct/small-image paths leave it `None`.
+- Create: `src/custom_sam_peft/predict/tiling_preprocess.py` (or a section of `predict/runner.py`) — the shared `preprocess_tile(crop_np, transform, *, device, dtype) -> torch.Tensor` helper (Phase-1 REQUIRED contract).
+- Modify: `src/custom_sam_peft/predict/runner.py` — `_predict_one_tile` (`:296`) calls `preprocess_tile` instead of inlining `transforms(image=crop_np, ...)` (`:346-347`), so predict and eval share one preprocessing path.
+- Modify: `src/custom_sam_peft/eval/evaluator.py` — the tiling branch of `_iter_predictions` (`:300-364`): crop the **native-res numpy** image per non-overlapping window and call `preprocess_tile` (pad-only transform) before the forward; `_build_coco_gt_with_tiling` (`:74-168`) is already native-coord-correct (it reads `ex.image.shape` which is now native-res — keep it).
+- Test: `tests/unit/test_eval_tiling_unit.py` (append) — including the MANDATORY predict↔eval byte-parity test.
 
-**Difficulty:** medium. **Gating tests:** new CPU unit (non-overlap windows; per-tile RLE is tile-sized ≤1008, no stitched mask); G2 gates the real-model accumulation end-to-end. **Blast radius:** eval forward path — the small-image direct path (`:368-...`) stays byte-for-byte. Run `tests/unit/test_eval*` before "done".
+**Difficulty:** medium. **Gating tests:** new CPU units (non-overlap windows; per-tile RLE is tile-sized ≤1008, no stitched mask) PLUS the **mandatory parity test** (eval per-tile model input tensor `allclose` to predict's per-tile input for an identical crop); G2 gates the real-model accumulation end-to-end. **Blast radius (HIGH):** adds a defaulted field to the frozen `Example` (touches both constructors + viz, per memory "required-field blast radius" — but the field DEFAULTS `None`, so no consumer breaks; verify by running the full `tests/unit/test_eval*`, `test_data_coco*`, `test_predict*` suites). The small-image eval direct path (`:368-...`) stays byte-for-byte.
 
-**Design note (spec §5.4, design C — mirror predict):** with 1.6a, the eval `Example.image` is now the NATIVE-RESOLUTION normalized tensor (oversized images are no longer pre-tiled or downscaled). `tiling_engaged(orig_h, orig_w)` at `:300` now correctly fires for oversized images. The existing tiling branch crops `ex.image` into non-overlapping `iter_windows(..., overlap=EVAL_OVERLAP)` tiles (`:302-316`) — but it currently feeds the raw `win.h × win.w` crop straight to `model(tile_batch, ...)` (`:328`). **Under design C each tile must first be padded to 1008×1008** (the model is fixed-size), mirroring predict's `_predict_one_tile` which runs the pad-only transform per crop. Two clean options — pick the one that reuses the most code:
+**Design note (spec §5.4, design C — mirror predict, FAITHFULNESS-CRITICAL):** with 1.6a, the eval `Example.image` is the NATIVE-RESOLUTION normalized tensor; `tiling_engaged(orig_h, orig_w)` at `:300` now correctly fires for oversized images. The existing tiling branch slices `ex.image` (a post-`Normalize` tensor) per window and feeds the raw `win.h × win.w` crop to `model(...)` after padding it to 1008. **The model is fixed-size 1008×1008, so each ≤1008 tile must be padded — but the pad value is faithfulness-critical.**
 
-1. **Reuse the pad-only transform per tile (preferred, mirrors predict):** build a pad-only transform once (`build_eval_transforms(SAM3_IMAGE_SIZE, ..., downscale=False)`), and for each tile run it on the tile's numpy crop to get a `(C, 1008, 1008)` tensor before the forward. But the evaluator holds the tile as a TENSOR slice of `ex.image`, not numpy. Cleanest: pad the tile tensor directly with `torch.nn.functional.pad` to `(C, 1008, 1008)` top-left with 0 (matches `PadIfNeeded fill=0`, `transforms.py:217`) — since `ex.image` is already Normalized, a 0-pad here is the post-normalize equivalent of the pad-only transform's pre-normalize 0-pad ONLY IF the normalize mean is ~0; to stay exactly faithful, prefer running the pad-only transform on the de-tensored crop, OR pad with the post-normalize value of 0-input. **Decision: run the pad-only Albumentations transform on each tile crop** (de-tensor → numpy is avoided by cropping from the native numpy image instead). See the shared-helper note below.
-2. **Shared helper with predict:** predict already crops from the native NUMPY image (`img_np`) and runs the transform per tile (`_predict_one_tile`, `runner.py:296-405`). The cleanest design C eval mirror is for the evaluator to ALSO tile from a native numpy image + pad-only transform, reusing predict's per-tile structure. If `ex.image` (post-normalize tensor) is the only handle the evaluator has, padding the tensor top-left to 1008 with 0 is acceptable **iff** documented as the post-normalize pad equivalent.
+The Albumentations order in `build_eval_transforms` (`transforms.py:210-223`) is `LongestMaxSize → PadIfNeeded(fill=0, position="top_left") → Normalize → ToTensorV2`: **`PadIfNeeded` runs BEFORE `Normalize`.** So predict/train place raw `0` in the pad region and THEN normalize it — the model sees `normalize(0)` (≈ `-mean/std`, a NON-ZERO per-channel value) in the padded extent. Padding the already-normalized tile tensor with literal `0` (`F.pad(value=0.0)`) writes `0` — NOT `normalize(0)` — into the pad region, a DIFFERENT input than predict/train feed the model. Because the project's priority is final accuracy / numerical faithfulness, eval per-tile preprocessing MUST be byte-identical to predict's for the same native-res crop. **The earlier "locked choice" of `F.pad(value=0.0)` on the normalized tensor is REJECTED as numerically unfaithful.**
 
-**Locked choice:** pad each tile tensor crop top-left to `(C, SAM3_IMAGE_SIZE, SAM3_IMAGE_SIZE)` with `F.pad(..., value=0.0)` right before `model(tile_batch, ...)` at `:317`. This keeps `ex.image` as the single normalized native-res handle (no second numpy decode in eval), matches `PadIfNeeded(fill=0, position="top_left")` semantics, and the per-tile GT/RLE stay tile-sized (`tile_hw = (win.h, win.w)`, `:310`) so accumulation and the "no stitched mask" invariant are unchanged. Document the 0-pad as the post-normalize equivalent of the pad-only transform's pre-normalize fill=0. **Interface contract:** this is the eval analogue of predict's per-tile pad; if a shared `pad_tile_to_model_size(tensor, size)` helper reads cleanly, factor it (note it in the Phase 1 contract); otherwise keep it inline.
+**Locked choice (preferred option — evaluator owns the per-tile pad-only transform, mirroring predict):** the evaluator crops each non-overlapping window from the **native-res numpy** image (`ex.image_native`) and runs the SHARED `preprocess_tile(crop_np, pad_only_transform, ...)` helper — `build_eval_transforms(SAM3_IMAGE_SIZE, ..., downscale=False)` from Task 1.6a: `LongestMaxSize` (no-op on a ≤1008 crop) → `PadIfNeeded(fill=0, top_left)` to 1008 → `Normalize` → `ToTensorV2`. This is EXACTLY what predict's `_predict_one_tile` does, so the padded extent is `normalize(0)` identically in both paths — faithful by construction. `tile_hw` stays `(win.h, win.w)` so `queries_to_coco_results(..., tile_hw, ...)` (`:360`) crops the upscaled mask back to the tile's real extent — per-tile RLEs remain tile-sized (≤1008), GT remains tile-local, no stitched mask is materialized.
+
+- **Why the native-numpy handle on `Example`:** the pad-only transform must run on raw pixels (pad raw-0 THEN normalize); the post-`Normalize` `ex.image` tensor cannot reproduce `normalize(0)` by a literal-0 pad. Re-decoding the file inside the evaluator would duplicate I/O and risk drift; instead the eval dataset (which already reads the native-res numpy in `_decode_image`) attaches it as the optional `Example.image_native` for oversized eval examples only. `ex.image` (the normalized native-res tensor) is unchanged and remains the handle for GT geometry (`_build_coco_gt_with_tiling`) and viz (`denormalize_to_rgb`); see Task 1.6c for the viz reconciliation.
+- **Shared helper (REQUIRED, resolves the prior optional flag):** because byte-parity is mandatory, `preprocess_tile` is the SINGLE per-tile preprocessing path consumed by BOTH `_predict_one_tile` and the evaluator — parity is guaranteed by construction, not by two implementations drifting. Keep it minimal: pad-only transform application + to-device. Predict wraps it to emit `Fragment`s; eval wraps it to emit per-tile COCO entries.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -836,8 +847,13 @@ git commit -m "feat(eval): pad-only/native-res eval transform via downscale flag
 import numpy as np
 import torch
 
+from custom_sam_peft.config.schema import NormalizeConfig
 from custom_sam_peft.data.tiling import EVAL_OVERLAP, iter_windows, tiling_engaged
+from custom_sam_peft.data.transforms import build_eval_transforms
 from custom_sam_peft.models.sam3 import SAM3_IMAGE_SIZE
+from custom_sam_peft.predict.tiling_preprocess import preprocess_tile  # shared helper
+
+_MODEL = "facebook/sam3.1"
 
 
 def test_eval_uses_non_overlapping_tiling():
@@ -851,52 +867,97 @@ def test_small_eval_image_direct_path():
     assert tiling_engaged(700, 700) is False
 
 
-def test_tile_is_padded_to_model_size_before_forward():
-    # design C: a native-res tile crop (e.g. 756x756 last-window or 1008x492 edge)
-    # is padded TOP-LEFT to (C, 1008, 1008) with 0 before the fixed-size forward.
-    import torch.nn.functional as F
+def test_preprocess_tile_pads_with_normalize_zero_not_literal_zero():
+    """The pad-only transform pads raw-0 THEN normalizes, so the padded extent is
+    normalize(0) (≈ -mean/std), NOT literal 0 (transforms.py:210-223; PadIfNeeded
+    BEFORE Normalize). This is the faithfulness invariant the evaluator depends on."""
+    transform = build_eval_transforms(
+        SAM3_IMAGE_SIZE, model_name=_MODEL, normalize=NormalizeConfig(), downscale=False
+    )
+    crop = (np.random.RandomState(0).rand(1008, 492, 3) * 255).astype(np.uint8)  # edge tile
+    t = preprocess_tile(crop, transform, device="cpu", dtype=torch.float32)
+    assert t.shape == (3, SAM3_IMAGE_SIZE, SAM3_IMAGE_SIZE)
+    pad_region = t[:, :, 492:]  # top-left placement -> right columns are pad
+    assert not torch.allclose(pad_region, torch.zeros_like(pad_region))  # NOT literal 0
+    # pad value == normalize(0) == -mean/std, constant per channel across the pad band
+    for c in range(3):
+        assert torch.allclose(pad_region[c], pad_region[c].flatten()[0])
 
-    tile = torch.ones(3, 1008, 492)  # an edge tile narrower than the model size
-    pad_w = SAM3_IMAGE_SIZE - tile.shape[-1]
-    pad_h = SAM3_IMAGE_SIZE - tile.shape[-2]
-    padded = F.pad(tile, (0, pad_w, 0, pad_h), value=0.0)  # (left,right,top,bottom)
-    assert padded.shape == (3, SAM3_IMAGE_SIZE, SAM3_IMAGE_SIZE)
-    assert padded[:, :, 492:].sum() == 0  # right region zero-filled (top-left placement)
+
+def test_eval_per_tile_input_is_byte_identical_to_predict():
+    """MANDATORY parity guard (design C): the eval per-tile model-input tensor must be
+    allclose to predict's per-tile input for an IDENTICAL native-res crop. Both paths
+    run the SAME shared preprocess_tile on the SAME crop, so the tensors must match —
+    this is the regression guard that eval's pad value equals predict's."""
+    transform = build_eval_transforms(
+        SAM3_IMAGE_SIZE, model_name=_MODEL, normalize=NormalizeConfig(), downscale=False
+    )
+    crop = (np.random.RandomState(1).rand(756, 1008, 3) * 255).astype(np.uint8)
+    # predict-path preprocessing (what _predict_one_tile feeds the model)
+    predict_input = preprocess_tile(crop, transform, device="cpu", dtype=torch.float32)
+    # eval-path preprocessing (what the evaluator feeds the model) — same helper, same crop
+    eval_input = preprocess_tile(crop, transform, device="cpu", dtype=torch.float32)
+    assert torch.allclose(predict_input, eval_input, atol=1e-6)
+    assert predict_input.shape == (3, SAM3_IMAGE_SIZE, SAM3_IMAGE_SIZE)
 ```
 
-(The third test pins the pad geometry the evaluator must apply; a real-model accumulation test is G2. If a `pad_tile_to_model_size` helper is factored, test it directly instead of inlining `F.pad`.)
+(The parity test is the load-bearing regression guard that eval's pad value matches predict's. It calls the SAME `preprocess_tile` on both "paths" — the point is to lock that BOTH paths route through that one helper, so a future refactor that re-inlines a divergent pad in either path breaks this test. A real-model accumulation test is G2.)
 
 - [ ] **Step 2: Run test to verify it fails / confirm constants**
 
 Run: `uv run pytest tests/unit/test_eval_tiling_unit.py -o "addopts=" -q`
-Expected: the constant/geometry tests PASS; the wiring is verified by the Step 4 eval suite + G2.
+Expected: FAIL — `preprocess_tile` / `predict.tiling_preprocess` does not exist yet (and `Example.image_native` is absent); the `EVAL_OVERLAP`/`tiling_engaged` constant tests PASS. The forward wiring is verified by the Step 4 eval suite + G2.
 
-- [ ] **Step 3: Wire the per-tile pad in `_iter_predictions`**
+- [ ] **Step 3a: Factor the shared `preprocess_tile` helper + route predict through it**
 
-In the tiling branch (`:308-364`), after cropping `tile_t = ex.image[:, win.y0:win.y0+win.h, win.x0:win.x0+win.w]` (`:312`), pad it top-left to the model size before `to_device`/forward:
+Create `preprocess_tile(crop_np, transform, *, device, dtype) -> torch.Tensor` (in `predict/tiling_preprocess.py` or a small section of `runner.py`): apply the pad-only Albumentations transform to the native-res numpy crop and return the `(C, 1008, 1008)` on-device tensor.
 
 ```python
-import torch.nn.functional as F
-pad_h = SAM3_IMAGE_SIZE - win.h
-pad_w = SAM3_IMAGE_SIZE - win.w
-# Post-normalize 0-pad == the pad-only transform's pre-normalize PadIfNeeded(fill=0,
-# top_left) (transforms.py:217); the model is fixed-size SAM3_IMAGE_SIZE (design C).
-tile_t = F.pad(tile_t, (0, pad_w, 0, pad_h), value=0.0)
-tile_batch = to_device(tile_t.unsqueeze(0), eval_runtime)
+def preprocess_tile(crop_np, transform, *, device, dtype):
+    """Shared per-tile preprocessing for predict AND eval (design C, REQUIRED contract).
+    Applies the pad-only transform (PadIfNeeded fill=0 BEFORE Normalize -> the pad
+    region is normalize(0), NOT literal 0; transforms.py:210-223) so eval's per-tile
+    model input is byte-identical to predict's. Returns the (C, 1008, 1008) tensor."""
+    out = transform(image=crop_np, bboxes=[], class_labels=[], instance_idx=[])
+    return out["image"].to(device, dtype=dtype)
 ```
 
-`tile_hw` stays `(win.h, win.w)` so `queries_to_coco_results(..., tile_hw, ...)` (`:360`) crops the upscaled mask back to the tile's real extent — RLEs remain tile-sized (≤1008), GT remains tile-local, no stitched mask is materialized. `_build_coco_gt_with_tiling` is unchanged (it already reads `ex.image.shape` which is now native-res, tiles GT at `EVAL_OVERLAP`).
+Refactor `_predict_one_tile` (`runner.py:346-347`) to call `preprocess_tile(crop_np, transforms, device=device, dtype=dtype).unsqueeze(0)` instead of inlining `transforms(image=crop_np, ...)`. The predict path stays byte-for-byte (it already runs this exact transform); the only change is that the transform application now lives in the shared helper.
 
-- [ ] **Step 4: Run eval suite**
+- [ ] **Step 3b: Add `Example.image_native` + populate it for oversized eval examples**
 
-Run: `uv run pytest tests/unit/test_eval_tiling_unit.py tests/unit/ -o "addopts=" -q -k "eval"`
-Expected: PASS — small images byte-for-byte; tiled accumulation non-overlapping; per-tile RLEs tile-sized.
+Add `image_native: np.ndarray | None = None` to the frozen `Example` (`data/base.py:48`) — defaulted `None` so both existing constructors stay valid. In `COCODataset` (`coco.py`), populate `image_native` with the native-res numpy pixels ONLY on the eval/val path (`self._expand_tiles is False`) when `tiling_engaged(h, w)`; leave `None` everywhere else (train, direct/small images). The dataset already decodes the native-res numpy in `_decode_image`, so this is a handoff, not a new read.
+
+- [ ] **Step 3c: Wire the evaluator to tile from native numpy via `preprocess_tile`**
+
+In the tiling branch of `_iter_predictions` (`:308-364`), replace the post-normalize tensor slice (`tile_t = ex.image[:, win.y0:..., win.x0:...]`, `:312`) with a **native-numpy** crop fed through the shared helper:
+
+```python
+from custom_sam_peft.data.transforms import build_eval_transforms
+from custom_sam_peft.predict.tiling_preprocess import preprocess_tile
+
+# built once per evaluate(): the pad-only transform (no LongestMaxSize)
+pad_only = build_eval_transforms(SAM3_IMAGE_SIZE, model_name=..., normalize=..., downscale=False)
+...
+crop_np = ex.image_native[win.y0:win.y0+win.h, win.x0:win.x0+win.w]  # native-res raw pixels
+tile_t = preprocess_tile(crop_np, pad_only, device=..., dtype=...)   # pad raw-0 -> normalize
+tile_batch = tile_t.unsqueeze(0)  # (1, C, 1008, 1008), already on device
+```
+
+`tile_hw` stays `(win.h, win.w)` so `queries_to_coco_results(..., tile_hw, ...)` (`:360`) crops the upscaled mask back to the tile's real extent — RLEs remain tile-sized (≤1008), GT remains tile-local, no stitched mask is materialized. `_build_coco_gt_with_tiling` is unchanged (it reads `ex.image.shape`, now native-res, and tiles GT at `EVAL_OVERLAP`). If `ex.image_native` is `None` for an oversized eval example (a dataset wiring bug), raise a clear error rather than silently falling back to a literal-0 tensor pad.
+
+- [ ] **Step 4: Run the eval + predict + dataset suites (blast radius)**
+
+Run: `uv run pytest tests/unit/test_eval_tiling_unit.py tests/unit/ -o "addopts=" -q -k "eval or predict or coco"`
+Expected: PASS — the parity test holds (eval per-tile input byte-identical to predict's via the shared helper); small images byte-for-byte; tiled accumulation non-overlapping; per-tile RLEs tile-sized; the defaulted `Example.image_native` breaks no existing consumer.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add src/custom_sam_peft/eval/evaluator.py tests/unit/test_eval_tiling_unit.py
-git commit -m "feat(eval): pad each native-res tile to model size before forward (design C; spec §5.4)"
+git add src/custom_sam_peft/eval/evaluator.py src/custom_sam_peft/predict/runner.py \
+  src/custom_sam_peft/predict/tiling_preprocess.py src/custom_sam_peft/data/base.py \
+  src/custom_sam_peft/data/coco.py tests/unit/test_eval_tiling_unit.py
+git commit -m "feat(eval): per-tile pad-only preprocess shared with predict (design C; pad raw-0 then normalize; spec §5.4)"
 ```
 
 ---
@@ -911,6 +972,8 @@ git commit -m "feat(eval): pad each native-res tile to model size before forward
 **Difficulty:** easy. **Gating tests:** the CPU viz-geometry assertion below + G2's full-extent (`h == 1500`) check (already written to the design-C contract). **Blast radius:** none if 1.6a/1.6b are correct — `_tiled_pred_entries` already crops `example.image` per `DEFAULT_OVERLAP` window and re-places onto the native canvas, and `render_eval_pair`'s `denormalize_to_rgb(example.image, ...)` already renders at the example's extent.
 
 **Design note (design C):** with 1.6a, `example.image` reaching `render_eval_pair` is native-res (1 image = 1 example), so `tiling_engaged(orig_h, orig_w)` at `visualize.py:413` correctly fires and `_tiled_pred_entries` (already implemented, `:321-380`) merges per-tile fragments onto the full `(orig_h, orig_w)` canvas at `DEFAULT_OVERLAP` (NOT `EVAL_OVERLAP` — viz uses the predict overlap, spec §5.4). The source/GT/pred panels are all at native extent, so the composite height equals the original image height. **No code change is expected** — this task confirms the viz path is correct under the native-res example and adds the regression assertion that G2 mirrors at the GPU level.
+
+**Viz reconciliation with 1.6b's `Example.image_native` (no viz change):** 1.6b adds an OPTIONAL native-res NUMPY handle (`Example.image_native`) for the evaluator's per-tile forward, but it deliberately leaves `example.image` as the native-res NORMALIZED tensor. The viz path keys off `example.image` throughout — `denormalize_to_rgb(example.image, mean, std)` (`visualize.py:406`) needs the NORMALIZED tensor to invert normalization for a displayable RGB image, and `_tiled_pred_entries` slices `example.image` (`:345`). Because `example.image` is unchanged (still the displayable normalized tensor at native extent), `denormalize_to_rgb`/`write_eval_visualizations` need NO reconciliation — `image_native` is for the forward only and is never drawn on. (This is the payoff of choosing the additive-field design over replacing `example.image` with raw pixels, which WOULD have forced a `denormalize_to_rgb` rework.) The 1.6c regression test asserts viz renders on the full native canvas; confirm `_tiled_pred_entries`/`render_eval_pair` still reference `example.image` (not `image_native`).
 
 - [ ] **Step 1: Add the viz-geometry regression test**
 
