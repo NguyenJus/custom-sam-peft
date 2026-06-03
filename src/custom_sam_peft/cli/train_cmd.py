@@ -12,7 +12,15 @@ from rich.console import Console
 
 from custom_sam_peft.cli._host_ram import format_host_ram_message
 from custom_sam_peft.cli._logging import configure_logging
-from custom_sam_peft.cli._options import OverrideOpt, Progress, ProgressOpt, VerboseOpt
+from custom_sam_peft.cli._options import (
+    NameOpt,
+    OutputDirOpt,
+    OverrideOpt,
+    Progress,
+    ProgressOpt,
+    VerboseOpt,
+    merge_cli_overrides,
+)
 from custom_sam_peft.cli._progress import ProgressKind, progress_session, resolve_mode
 from custom_sam_peft.cli._time_limit import format_time_limit_message
 from custom_sam_peft.config._duration import parse_duration_to_seconds
@@ -29,6 +37,8 @@ _LATEST_SENTINEL = "__latest__"
 def train(
     config: Path = typer.Option(..., "--config", help="Path to training config YAML."),
     override: OverrideOpt = [],  # noqa: B006 — Typer creates a new list per invocation
+    name: NameOpt = None,
+    output_dir: OutputDirOpt = None,
     resume: str | None = typer.Option(
         None,
         "--resume",
@@ -62,7 +72,8 @@ def train(
 ) -> None:
     """Run a finetune. The order is fixed: train → eval → export. Flags only toggle inclusion."""
     configure_logging(verbose)
-    cfg = load_config(config, overrides=override)
+    merged = merge_cli_overrides(override, name=name, output_dir=output_dir)
+    cfg = load_config(config, overrides=merged)
 
     if time_limit is not None:
         try:

@@ -12,7 +12,7 @@ from __future__ import annotations
 
 from enum import StrEnum
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, Optional
 
 import typer
 
@@ -97,21 +97,21 @@ DryRunOpt = Annotated[
     typer.Option("--dry-run", help="Preview resolved inputs/config; do not run."),
 ]
 NameOpt = Annotated[
-    "str | None",
+    Optional[str],  # noqa: UP045 — `str | None` becomes a ForwardRef under PEP 563; Typer needs the real type
     typer.Option("--name", help="Convenience for run.name (synthesizes an --override)."),
 ]
 OutputDirOpt = Annotated[
-    "Path | None",
+    Optional[Path],  # noqa: UP045
     typer.Option(
         "--output-dir",
         help="Convenience for run.output_dir, a run directory (synthesizes an --override).",
     ),
 ]
 ConfigOpt = Annotated[
-    "Path | None",
+    Optional[Path],  # noqa: UP045
     typer.Option("--config", help="Path to config YAML."),
 ]
 ConfigArg = Annotated[
-    "Path | None",
+    Optional[Path],  # noqa: UP045
     typer.Argument(help="Path to config YAML (the launch input)."),
 ]

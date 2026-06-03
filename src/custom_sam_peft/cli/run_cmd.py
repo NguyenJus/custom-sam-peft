@@ -22,7 +22,15 @@ from rich.console import Console
 
 from custom_sam_peft.cli._host_ram import format_host_ram_message
 from custom_sam_peft.cli._logging import configure_logging
-from custom_sam_peft.cli._options import OverrideOpt, Progress, ProgressOpt, VerboseOpt
+from custom_sam_peft.cli._options import (
+    NameOpt,
+    OutputDirOpt,
+    OverrideOpt,
+    Progress,
+    ProgressOpt,
+    VerboseOpt,
+    merge_cli_overrides,
+)
 from custom_sam_peft.cli._progress import ProgressKind, ProgressMode, progress_session, resolve_mode
 from custom_sam_peft.cli._time_limit import format_time_limit_message
 from custom_sam_peft.cli.init_cmd import run_init
@@ -318,6 +326,8 @@ def run(
         ),
     ),
     override: OverrideOpt = [],  # noqa: B006 — Typer creates a new list per invocation
+    name: NameOpt = None,
+    output_dir: OutputDirOpt = None,
     verbose: VerboseOpt = False,
     progress: ProgressOpt = Progress.auto,
     visualize: bool = typer.Option(
@@ -337,7 +347,8 @@ def run(
             f"[yellow]{config} not initialized — auto-init (formula, no probe) then run.[/yellow]"
         )
         run_init("coco-text-lora", config, force=False)
-    cfg = load_config(config, overrides=override)
+    merged = merge_cli_overrides(override, name=name, output_dir=output_dir)
+    cfg = load_config(config, overrides=merged)
     cfg = cfg.model_copy(update={"eval": cfg.eval.model_copy(update={"visualize": visualize})})
     if finalize:
         if resume is None:
