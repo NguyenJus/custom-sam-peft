@@ -185,8 +185,16 @@ class Evaluator:
                                 )
                             profiling.incr("eval.forwards")
                             if profiling.is_enabled():
+                                # Report the forward OUTPUT dtype (bf16), not the
+                                # input image dtype (always fp32) — capturing the
+                                # input mislabels the compute dtype, the exact
+                                # confusion #250 (d06cd96) corrected.
                                 profiling.note(
-                                    eval_forward_dtype=str(images_t.dtype),
+                                    eval_forward_dtype=str(
+                                        outputs["pred_masks"].dtype
+                                        if isinstance(outputs.get("pred_masks"), torch.Tensor)
+                                        else "unknown"
+                                    ),
                                     n_classes=n_classes,
                                     model_input_hw=tuple(images_t.shape[-2:]),
                                 )
