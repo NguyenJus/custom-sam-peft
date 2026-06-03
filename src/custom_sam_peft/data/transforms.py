@@ -3,7 +3,8 @@
 Public API:
   - resolve_normalization(model_name, fallback, *, channel_semantics) -> (mean, std)
   - resolve_normalization_with_path(model_name, fallback, *, channel_semantics) -> (mean, std, path)
-  - build_eval_transforms(image_size, *, model_name, normalize, channel_semantics) -> A.Compose
+  - build_eval_transforms(image_size, *, model_name, normalize, channel_semantics,
+                          downscale) -> A.Compose
   - build_train_transforms(aug_cfg, image_size, *, model_name, normalize,
                            channel_semantics, channels) -> A.Compose
   - StainJitter: HED-space stain jitter Albumentations transform

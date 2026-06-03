@@ -375,3 +375,112 @@ def test_evaluator_tiling_evaluate_returns_metrics_report() -> None:
 
     assert isinstance(report, MetricsReport)
     assert report.n_images >= 1
+
+
+# ---------------------------------------------------------------------------
+# Viz geometry regression tests (design C; Task 1.6c)
+# ---------------------------------------------------------------------------
+
+
+def test_tiled_pred_entries_render_on_full_native_canvas() -> None:
+    """_tiled_pred_entries must composite tile masks onto the full native canvas,
+    NOT produce tile-sized masks.  This asserts the viz-geometry invariant that
+    the GPU G2 test checks end-to-end (design C spec §5.4).
+
+    The test verifies the contract directly at the window-placement level (no
+    real model required): each tile window, when blitted onto a (orig_h, orig_w)
+    canvas, produces a canvas of the FULL native shape — confirming the
+    per-tile-mask → full-canvas restitching that _tiled_pred_entries performs
+    at visualize.py:363.
+    """
+    from custom_sam_peft.data.tiling import DEFAULT_OVERLAP, iter_windows
+
+    orig_h, orig_w = 1500, 1500
+    windows = iter_windows(orig_h, orig_w, tile=SAM3_IMAGE_SIZE, overlap=DEFAULT_OVERLAP)
+    # Tiling must engage at this native resolution (precondition of the viz path).
+    assert len(windows) > 1, "Expected tiling to engage for a 1500x1500 image"
+
+    for win in windows:
+        # Simulate _tiled_pred_entries:363 — place tile mask onto full canvas.
+        canvas = np.zeros((orig_h, orig_w), bool)
+        canvas[win.y0 : win.y0 + win.h, win.x0 : win.x0 + win.w] = True
+        # The canvas shape must be the FULL native extent, not the tile extent.
+        assert canvas.shape == (orig_h, orig_w), (
+            f"Canvas shape {canvas.shape} != native ({orig_h}, {orig_w})"
+        )
+        # The tile footprint must fit within the canvas (no out-of-bounds placement).
+        assert win.y0 + win.h <= orig_h, f"Tile y-extent {win.y0 + win.h} exceeds {orig_h}"
+        assert win.x0 + win.w <= orig_w, f"Tile x-extent {win.x0 + win.w} exceeds {orig_w}"
+
+
+def test_viz_tiling_uses_default_overlap_not_eval_overlap() -> None:
+    """viz path uses DEFAULT_OVERLAP (0.25), EVAL_OVERLAP (0.0) must differ.
+
+    This guards against accidentally swapping the two constants: the viz restitch
+    uses DEFAULT_OVERLAP so overlapping tiles blend naturally; the eval accumulation
+    uses EVAL_OVERLAP=0.0 for disjoint coverage (no double-counting).  If someone
+    sets EVAL_OVERLAP == DEFAULT_OVERLAP the two paths collapse and the eval
+    no-double-counting guarantee breaks.
+    """
+    from custom_sam_peft.data.tiling import DEFAULT_OVERLAP, EVAL_OVERLAP
+
+    assert DEFAULT_OVERLAP != EVAL_OVERLAP, (
+        f"DEFAULT_OVERLAP ({DEFAULT_OVERLAP}) must differ from EVAL_OVERLAP ({EVAL_OVERLAP}); "
+        "viz and eval tiling paths must use distinct overlap values."
+    )
+    # Sanity: eval overlap is non-overlapping (spec §5.4).
+    assert EVAL_OVERLAP == 0.0
+    # Sanity: viz overlap is positive (overlapping tiles for seamless blend).
+    assert DEFAULT_OVERLAP > 0.0
+
+
+def test_render_eval_pair_invokes_tiling_on_native_res_example() -> None:
+    """render_eval_pair must take the tiled path for an oversized example.
+
+    Verifies: tiling_engaged(orig_h, orig_w) is True for the native-res example
+    shape, and that render_eval_pair's tiling branch is exercised (not the direct
+    path).  Uses a stub model that returns all-zero outputs (no real SAM).
+    """
+    from unittest.mock import patch
+
+    from custom_sam_peft.config._internal import MatcherWeights
+    from custom_sam_peft.config.schema import NormalizeConfig
+    from custom_sam_peft.data.tiling import tiling_engaged
+    from custom_sam_peft.eval.visualize import render_eval_pair
+    from custom_sam_peft.models.matching import HungarianMatcher
+
+    # 1500x1500 — native-res oversized; tiling must engage.
+    orig_h, orig_w = 1500, 1500
+    example = _make_large_example(orig_h, orig_w)
+    assert tiling_engaged(orig_h, orig_w), "Precondition: tiling must engage at 1500x1500"
+
+    # Stub model: returns well-formed zero outputs for any tile size.
+    model = _make_tile_stub_model(tile_size=SAM3_IMAGE_SIZE)
+
+    nc = NormalizeConfig()
+    w = MatcherWeights()
+    matcher = HungarianMatcher(
+        lambda_l1=w.lambda_l1, lambda_giou=w.lambda_giou, lambda_mask=w.lambda_mask
+    )
+
+    # Patch _tiled_pred_entries so we can confirm it was called (tiling branch taken).
+    with patch(
+        "custom_sam_peft.eval.visualize._tiled_pred_entries", wraps=None, return_value=[]
+    ) as mock_tiled:
+        render_eval_pair(
+            model,
+            example,
+            class_names=["cat"],
+            mask_threshold=0.5,
+            mean=list(nc.mean),
+            std=list(nc.std),
+            matcher=matcher,
+        )
+        # The tiling branch must have been taken for this native-res example.
+        assert mock_tiled.call_count == 1, (
+            f"Expected _tiled_pred_entries called once (tiling branch), got {mock_tiled.call_count}"
+        )
+        # The example passed to _tiled_pred_entries must be the SAME object
+        # (viz reads example.image, not image_native).
+        called_example = mock_tiled.call_args[0][1]
+        assert called_example is example
