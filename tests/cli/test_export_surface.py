@@ -64,7 +64,8 @@ def test_run_export_merge_lands_at_output(tmp_path: Path, monkeypatch: pytest.Mo
     )
 
     class _Cfg:
-        class model: ...
+        class model:
+            pass
 
         class data:
             channels = 3
@@ -97,7 +98,8 @@ def test_run_export_adapter_default_path(tmp_path: Path, monkeypatch: pytest.Mon
     )
 
     class _Cfg:
-        class model: ...
+        class model:
+            pass
 
         class data:
             channels = 3
