@@ -914,7 +914,8 @@ def test_generate_config_happy_path_with_limit_step(tmp_path, monkeypatch) -> No
 # ---------------------------------------------------------------------------
 
 
-def test_render_with_val_emits_plateau(tmp_path) -> None:
+def test_render_with_val_emits_poly(tmp_path) -> None:
+    # LR schedule is decoupled from the val/metric signal (#264): poly regardless.
     answers = {
         "run": {"name": "r"},
         "data": {
@@ -927,10 +928,11 @@ def test_render_with_val_emits_plateau(tmp_path) -> None:
         "train": {"epochs": 1, "loss": {"preset": "natural", "class_imbalance": "balanced"}},
     }
     rendered = sw.render(answers, run_mode="train")
-    assert "lr_schedule: plateau" in rendered
+    assert "lr_schedule: poly" in rendered
 
 
-def test_render_without_val_emits_cosine(tmp_path) -> None:
+def test_render_without_val_emits_poly(tmp_path) -> None:
+    # Without a val set the schedule is still poly — no plateau/cosine branch (#264).
     answers = {
         "run": {"name": "r"},
         "data": {
@@ -942,7 +944,7 @@ def test_render_without_val_emits_cosine(tmp_path) -> None:
         "train": {"epochs": 1, "loss": {"preset": "natural", "class_imbalance": "balanced"}},
     }
     rendered = sw.render(answers, run_mode="train")
-    assert "lr_schedule: cosine" in rendered
+    assert "lr_schedule: poly" in rendered
 
 
 # ---------------------------------------------------------------------------

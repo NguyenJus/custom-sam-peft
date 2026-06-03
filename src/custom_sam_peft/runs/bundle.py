@@ -365,12 +365,6 @@ def _ladder_event_lines(events: LadderEvents | None) -> list[str]:
     if events is None:
         return []
     lines: list[str] = []
-    for c in events.cuts:
-        ratio = c.new_lr / c.old_lr if c.old_lr else 0.0
-        lines.append(
-            f"- LR cut x{ratio:.3g} -> {c.new_lr:.3g} at eval step {c.step}"
-            f" (mAP {c.triggering_map:.4f})"
-        )
     if events.stop_reason:
         lines.append(f"- early stop: {events.stop_reason}")
     return lines
