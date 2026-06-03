@@ -149,7 +149,10 @@ Row schema (every section uses these six columns):
 | `config/schema.py:SemanticLossOverrides.focal_alpha` | `None` | `index-only` | — | — | `None`-sentinel: inherit focal α from preset. |
 | `config/schema.py:SemanticLossOverrides.tversky_alpha` | `None` | `index-only` | — | — | `None`-sentinel: inherit Tversky α from preset. |
 | `config/schema.py:SemanticLossOverrides.tversky_gamma` | `None` | `index-only` | — | — | `None`-sentinel: inherit Tversky γ from preset. |
+| `config/schema.py:SemanticLossOverrides.w_ce` | `None` | `index-only` | — | — | `None`-sentinel: inherit cross-entropy weight from preset. |
+| `config/schema.py:SemanticLossOverrides.w_region` | `None` | `index-only` | — | — | `None`-sentinel: inherit region-loss weight (Dice/Tversky/Boundary term) from preset. |
 | `config/schema.py:SemanticLossOverrides.boundary_weight` | `None` | `index-only` | — | — | `None`-sentinel: inherit boundary weight from preset. |
+| `config/schema.py:TrainConfig.task` | `"instance"` | `index-only` | — | — | Backward-compat default: omitting `task:` in a config preserves the pre-#113 instance path exactly. Set `task: semantic` to opt in. |
 
 ## data/aug_presets.py
 

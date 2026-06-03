@@ -294,7 +294,7 @@ def test_doctor_json_carries_task_and_semantic_loss(
         result = runner.invoke(app, ["--config", str(semantic_config_yaml), "--json"])
 
     assert result.exit_code == 0, result.output
-    blob = json.loads(result.output)
+    blob = json.loads(result.stdout)
 
     # Top-level task in resolved_config
     assert "resolved_config" in blob
@@ -338,7 +338,7 @@ def test_doctor_instance_still_renders_resolved_losses_and_task(
 
     # JSON: task=instance, loss key present, no semantic_loss key
     assert json_result.exit_code == 0, json_result.output
-    blob = json.loads(json_result.output)
+    blob = json.loads(json_result.stdout)
     rc = blob["resolved_config"]
     assert rc["task"] == "instance"
     assert "loss" in rc
