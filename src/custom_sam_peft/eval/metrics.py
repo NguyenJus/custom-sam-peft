@@ -39,6 +39,49 @@ class MetricsReport:
     n_predictions: int = 0
 
 
+@dataclass(frozen=True)
+class SemanticMetrics:
+    """Result of compute_semantic_metrics — pure confusion-matrix mIoU (§8.1)."""
+
+    mean_iou: float
+    pixel_accuracy: float
+    per_class_iou: dict[str, float]  # class_name (incl "background") -> IoU
+
+
+def compute_semantic_metrics(
+    # (K+1, K+1) int64, rows=GT, cols=pred
+    confusion: np.ndarray[tuple[int, int], np.dtype[np.int64]],
+    class_names: list[str],  # len K; index 0 reported as "background"
+) -> SemanticMetrics:
+    """Compute mIoU + pixel accuracy from a pre-built confusion matrix.
+
+    ``ignore_index`` pixels are excluded upstream (never added to the matrix).
+    Classes with zero GT support are excluded from the mIoU average but are
+    still reported in ``per_class_iou`` for transparency.
+    """
+    names = ["background", *class_names]
+    conf = confusion.astype(np.float64)
+    tp = np.diag(conf)
+    gt = conf.sum(axis=1)  # row sums = GT per class
+    pred = conf.sum(axis=0)  # col sums = pred per class
+    denom = gt + pred - tp
+    per_class: dict[str, float] = {}
+    ious_with_gt: list[float] = []
+    for c, name in enumerate(names):
+        iou = float(tp[c] / denom[c]) if denom[c] > 0 else 0.0
+        per_class[name] = iou
+        if gt[c] > 0:  # only classes with GT support count toward mIoU
+            ious_with_gt.append(iou)
+    mean_iou = float(np.mean(ious_with_gt)) if ious_with_gt else 0.0
+    total = float(conf.sum())
+    pixel_accuracy = float(tp.sum() / total) if total > 0 else 0.0
+    return SemanticMetrics(
+        mean_iou=mean_iou,
+        pixel_accuracy=pixel_accuracy,
+        per_class_iou=per_class,
+    )
+
+
 def _silent_evaluate(coco_eval: COCOeval) -> None:
     """Run COCOeval.evaluate/accumulate/summarize without pycocotools' prints."""
     with contextlib.redirect_stdout(io.StringIO()):

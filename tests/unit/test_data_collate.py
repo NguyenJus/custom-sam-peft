@@ -78,3 +78,48 @@ def test_collate_image_shape_mismatch_raises() -> None:
     msg = str(exc.value)
     assert "(3, 64, 64)" in msg
     assert "(3, 32, 32)" in msg
+
+
+def test_collate_adds_semantic_key_none_under_instance() -> None:
+    from custom_sam_peft.data.base import SemanticTarget  # noqa: F401
+
+    exs = [
+        Example(
+            image=torch.zeros(3, 8, 8),
+            image_id="a",
+            prompts=TextPrompts(classes=["cat"]),
+            instances=[],
+        ),
+        Example(
+            image=torch.zeros(3, 8, 8),
+            image_id="b",
+            prompts=TextPrompts(classes=["cat"]),
+            instances=[],
+        ),
+    ]
+    out = collate_batch(exs)
+    assert out["semantic"] == [None, None]
+    assert out["instances"] == [[], []]
+
+
+def test_collate_carries_semantic_targets() -> None:
+    from custom_sam_peft.data.base import SemanticTarget
+
+    tgt = SemanticTarget(torch.zeros(8, 8, dtype=torch.int64), ignore_index=255)
+    exs = [
+        Example(
+            image=torch.zeros(3, 8, 8),
+            image_id="a",
+            prompts=TextPrompts(classes=["road"]),
+            semantic=tgt,
+        ),
+        Example(
+            image=torch.zeros(3, 8, 8),
+            image_id="b",
+            prompts=TextPrompts(classes=["road"]),
+            semantic=tgt,
+        ),
+    ]
+    out = collate_batch(exs)
+    assert out["semantic"] == [tgt, tgt]
+    assert out["instances"] == [[], []]

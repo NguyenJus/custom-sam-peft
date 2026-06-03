@@ -200,6 +200,7 @@ def build_eval_transforms(
     model_name: str,
     normalize: NormalizeConfig,
     channel_semantics: str = "rgb",
+    mask_fill_value: int = 0,
 ) -> A.Compose:
     """Deterministic eval pipeline: longest-edge resize -> top-left pad -> normalize -> ToTensor."""
     import albumentations as A
@@ -209,13 +210,19 @@ def build_eval_transforms(
     mean, std = resolve_normalization(model_name, normalize, channel_semantics=channel_semantics)
     return A.Compose(
         [
-            A.LongestMaxSize(max_size=image_size, interpolation=cv2.INTER_LINEAR),
+            # cite: standard semantic-seg practice
+            # (nearest interp; bilinear invents fractional class ids)
+            A.LongestMaxSize(
+                max_size=image_size,
+                interpolation=cv2.INTER_LINEAR,
+                mask_interpolation=cv2.INTER_NEAREST,
+            ),
             A.PadIfNeeded(
                 min_height=image_size,
                 min_width=image_size,
                 border_mode=cv2.BORDER_CONSTANT,
                 fill=0,
-                fill_mask=0,
+                fill_mask=mask_fill_value,
                 position="top_left",
             ),
             A.Normalize(mean=mean, std=std, max_pixel_value=normalize.max_pixel_value),
@@ -238,6 +245,7 @@ def build_train_transforms(
     normalize: NormalizeConfig,
     channel_semantics: str = "rgb",
     channels: int = 3,
+    mask_fill_value: int = 0,
 ) -> A.Compose:
     """Train pipeline: resolved presets → ordered Albumentations step list.
 
@@ -268,13 +276,19 @@ def build_train_transforms(
     resolved = resolve(aug_cfg)
     mean, std = resolve_normalization(model_name, normalize, channel_semantics=channel_semantics)
     steps: list[object] = [
-        A.LongestMaxSize(max_size=image_size, interpolation=cv2.INTER_LINEAR),
+        # cite: standard semantic-seg practice
+        # (nearest interp; bilinear invents fractional class ids)
+        A.LongestMaxSize(
+            max_size=image_size,
+            interpolation=cv2.INTER_LINEAR,
+            mask_interpolation=cv2.INTER_NEAREST,
+        ),
         A.PadIfNeeded(
             min_height=image_size,
             min_width=image_size,
             border_mode=cv2.BORDER_CONSTANT,
             fill=0,
-            fill_mask=0,
+            fill_mask=mask_fill_value,
             position="top_left",
         ),
     ]
@@ -292,7 +306,7 @@ def build_train_transforms(
                 p=0.5,
                 fit_output=False,
                 fill=0,
-                fill_mask=0,
+                fill_mask=mask_fill_value,
             )
         )
 
