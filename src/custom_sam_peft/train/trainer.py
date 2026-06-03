@@ -7,7 +7,7 @@ import logging
 import random
 import time
 from pathlib import Path
-from typing import Any, cast
+from typing import Any, cast, get_args
 
 import numpy as np
 import torch
@@ -35,7 +35,7 @@ from custom_sam_peft.train.checkpoint import (
     save_full_state,
 )
 from custom_sam_peft.train.close_out import close_out
-from custom_sam_peft.train.ladder import LadderEvents, LadderState, LrCut, StopDecision
+from custom_sam_peft.train.ladder import LadderEvents, LadderState, StopDecision
 from custom_sam_peft.train.loop import (
     OomState,
     _EarlyStop,
@@ -74,25 +74,16 @@ def _build_optimizer(
     raise ValueError(f"unknown optimizer name: {name!r}")
 
 
+_POLY_POWER = 0.9
+# cite: Detectron2 WarmupPolyLR / MMSegmentation PolyLR (power=0.9) (#264)
+
+
 def _build_scheduler(
     optimizer: torch.optim.Optimizer,
     cfg: TrainConfig,
     total_steps: int,
     effective_schedule: str,
 ) -> PlateauOrLambda:
-    if effective_schedule == "plateau":
-        return torch.optim.lr_scheduler.ReduceLROnPlateau(
-            optimizer,
-            mode="max",
-            factor=cfg.train.lr_decay_on_plateau.factor,
-            patience=cfg.train.lr_decay_on_plateau.patience,
-            threshold=cfg.train.early_stop.min_delta,
-            # threshold_mode="abs" + threshold=min_delta must stay in sync with
-            # the rung-2 improvement test in LadderState.observe (mAP > best + min_delta).
-            threshold_mode="abs",  # absolute mAP units — matches the early-stop test
-            min_lr=cfg.train.lr_decay_on_plateau.min_lr,
-        )
-
     warmup = cfg.train.warmup_steps
 
     def lr_lambda(step: int) -> float:
@@ -103,6 +94,8 @@ def _build_scheduler(
             return 1.0
         if effective_schedule == "linear":
             return max(0.0, 1.0 - progress)
+        if effective_schedule == "poly":
+            return float((1.0 - min(progress, 1.0)) ** _POLY_POWER)
         return 0.5 * (1.0 + float(np.cos(np.pi * min(progress, 1.0))))
 
     return torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda=lr_lambda)
@@ -204,7 +197,6 @@ class Trainer:
         self._best_metric_key: str = "mAP"
         # Ladder state (reset on each fit() call).
         self._ladder: LadderState = LadderState()
-        self._ladder_cuts: list[LrCut] = []
         self._early_stop: StopDecision | None = None
         self._scheduler: Any = None  # set in fit() after _build_scheduler
         self._scheduler_kind: str = ""  # set in fit() after effective_schedule is resolved
@@ -299,7 +291,6 @@ class Trainer:
         oom_state: OomState | None = None,
         deadline: float | None = None,
         should_stop_early: Any = None,
-        effective_schedule: str | None = None,
         host_ram_floor_bytes: int | None = None,
     ) -> tuple[int, int]:
         """Run one training epoch; returns (global_step, nan_streak)."""
@@ -322,7 +313,6 @@ class Trainer:
             oom_state=oom_state,
             deadline=deadline,
             should_stop_early=should_stop_early,
-            effective_schedule=effective_schedule,
             flush_extra=lambda: {
                 "ladder": self._ladder.state_dict(),
                 "best_metric_value": self._best_metric_value,
@@ -366,17 +356,7 @@ class Trainer:
             self.tracker.log_scalars(step, report.overall)
             self._maybe_save_best(report, step, run_dir)
             mAP = report.overall.get(self._best_metric_key)
-            decision = self._ladder.observe(mAP, step, self._scheduler, self.cfg)
-            if self._ladder.last_cut is not None:
-                cut = self._ladder.last_cut
-                self._ladder_cuts.append(cut)
-                _LOG.info(
-                    "LR cut x%.3g -> %.3g at eval step %d (mAP %.4f)",
-                    cut.new_lr / cut.old_lr if cut.old_lr else 0.0,
-                    cut.new_lr,
-                    cut.step,
-                    cut.triggering_map,
-                )
+            decision = self._ladder.observe(mAP, step, self.cfg)
             if decision.should_stop:
                 self._early_stop = decision
                 _LOG.info(
@@ -688,19 +668,29 @@ class Trainer:
         optimizer = self._build_optimizer()
         total_steps = cfg.train.epochs * steps_per_epoch
         effective_schedule = cfg.train.lr_schedule
-        if cfg.train.lr_schedule == "plateau" and self.val_ds is None:
-            _LOG.warning(
-                "lr_schedule=plateau requires a validation set for the plateau signal; "
-                "no val set provided — falling back to lr_schedule=cosine. "
-                "Early stop is a no-op."
-            )
-            effective_schedule = "cosine"
         # On resume, the persisted scheduler_kind governs construction so the
         # rebuilt scheduler type matches the persisted state_dict (spec §8.3).
+        # A legacy/invalid persisted kind (e.g. the removed "plateau") falls back
+        # to cfg.train.lr_schedule rather than crashing.
         resume_kind: str | None = None
         if resume_from is not None:
             peek = torch.load(resume_from / "training_state.pt", weights_only=False)
             resume_kind = peek.get("scheduler_kind")
+        valid_schedules = get_args(LRSchedule)
+        # When the persisted kind is present but not a valid current LRSchedule
+        # (e.g. the removed "plateau"), the persisted scheduler state_dict is
+        # incompatible with the rebuilt poly LambdaLR, so it must NOT be loaded.
+        legacy_incompatible_scheduler = (
+            resume_kind is not None and resume_kind not in valid_schedules
+        )
+        if resume_kind is not None and resume_kind not in valid_schedules:
+            _LOG.warning(
+                "resume: persisted scheduler_kind=%s is not a valid lr_schedule "
+                "(legacy/removed); falling back to cfg lr_schedule=%s.",
+                resume_kind,
+                effective_schedule,
+            )
+            resume_kind = None
         if resume_kind is not None and resume_kind != effective_schedule:
             _LOG.warning(
                 "resume: persisted scheduler_kind=%s overrides cfg lr_schedule=%s "
@@ -714,7 +704,6 @@ class Trainer:
         self._scheduler = scheduler
         self._scheduler_kind = effective_schedule
         self._ladder = LadderState()
-        self._ladder_cuts = []
         self._early_stop = None
 
         rs = ResumeState(
@@ -723,7 +712,14 @@ class Trainer:
             nan_streak=0,
         )
         if resume_from is not None:
-            rs = load_full_state(resume_from, self.model, optimizer, scheduler, cfg)
+            rs = load_full_state(
+                resume_from,
+                self.model,
+                optimizer,
+                scheduler,
+                cfg,
+                load_scheduler_state=not legacy_incompatible_scheduler,
+            )
             if rs.best_metric_value is not None:
                 self._best_metric_value = rs.best_metric_value
             resume_run_dir = resume_from.parent.parent
@@ -737,6 +733,10 @@ class Trainer:
             self._ladder.best = self._best_metric_value
             if rs.ladder is not None:
                 self._ladder.load_state_dict(rs.ladder)
+            # Never resume with a ladder best below the best mAP actually
+            # achieved on disk; this only ever makes resume MORE conservative
+            # and cannot cause a premature stop (#264).
+            self._ladder.best = max(self._ladder.best, self._best_metric_value)
         global_step = rs.start_step
         nan_streak = rs.nan_streak
         start_epoch = rs.start_epoch
@@ -814,7 +814,6 @@ class Trainer:
                         oom_state=oom_state,
                         deadline=deadline,
                         should_stop_early=should_stop_early,
-                        effective_schedule=effective_schedule,
                         host_ram_floor_bytes=host_ram_floor_bytes,
                     )
                     P.advance_outer()
@@ -830,12 +829,9 @@ class Trainer:
 
             if stop is None and ram_stop is None:
                 final_epoch = _early.epoch if _early is not None else cfg.train.epochs - 1
-                _cuts = tuple(self._ladder_cuts)
                 _stop_reason = _early.reason if _early is not None else None
                 ladder_events = (
-                    LadderEvents(cuts=_cuts, stop_reason=_stop_reason)
-                    if (_cuts or _stop_reason is not None)
-                    else None
+                    LadderEvents(stop_reason=_stop_reason) if _stop_reason is not None else None
                 )
                 close_out_result = close_out(
                     run_dir,

@@ -8,7 +8,7 @@ from pathlib import Path
 
 from custom_sam_peft.presets import PresetDecision
 from custom_sam_peft.runs.bundle import BundleContext, write_bundle
-from custom_sam_peft.train.ladder import LadderEvents, LrCut
+from custom_sam_peft.train.ladder import LadderEvents
 
 
 def _make_preset() -> PresetDecision:
@@ -51,13 +51,12 @@ def test_bundle_context_accepts_ladder_events(tmp_path: Path) -> None:
     (run_dir / "best" / "best.json").write_text(
         json.dumps({"metric": "mAP", "value": 0.8, "global_step": 6})
     )
-    events = LadderEvents(cuts=(LrCut(6, 1e-4, 1e-5, 0.5),), stop_reason="early stop: 10 evals")
+    events = LadderEvents(stop_reason="early stop: 10 evals")
     ctx = _ctx(run_dir, ladder_events=events)
-    # No-val path → summary.md only; must not raise and must mention the cut/stop.
+    # No-val path → summary.md only; must not raise and must mention the stop.
     write_bundle(ctx, None, val_dataset=None, model_wrapper=None)
     body = (run_dir / "summary.md").read_text()
     assert "best checkpoint" in body or "best/" in body
-    assert "LR cut" in body
     assert "early stop" in body
 
 
@@ -67,4 +66,4 @@ def test_bundle_default_ladder_events_renders_unchanged(tmp_path: Path) -> None:
     ctx = _ctx(run_dir)  # ladder_events defaults to None
     write_bundle(ctx, None, val_dataset=None, model_wrapper=None)
     body = (run_dir / "summary.md").read_text()
-    assert "LR cut" not in body  # nothing rendered for a no-ladder run
+    assert "early stop" not in body  # nothing rendered for a no-ladder run

@@ -30,7 +30,7 @@ def test_failed_eval_does_not_tick(tmp_path: Path, monkeypatch) -> None:
     cfg = cfg.model_copy(
         update={
             "train": cfg.train.model_copy(
-                update={"lr_schedule": "plateau", "eval_every": 1, "epochs": 1}
+                update={"lr_schedule": "poly", "eval_every": 1, "epochs": 1}
             )
         }
     )

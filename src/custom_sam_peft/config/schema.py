@@ -99,7 +99,7 @@ QuantType = Literal["nf4", "fp4"]
 # "auto" resolves at trainer construction via peft_method.recommended_optimizer()
 # (src/custom_sam_peft/train/trainer.py): adamw8bit for QLoRA, adamw for LoRA.
 Optimizer = Literal["adamw", "adamw8bit", "auto"]
-LRSchedule = Literal["constant", "cosine", "linear", "plateau"]
+LRSchedule = Literal["constant", "cosine", "linear", "poly"]
 TrackerBackend = Literal["local", "tensorboard", "wandb", "none"]
 TextPromptMode = Literal["present", "all", "present_plus_negatives", "sampled_fixed_k"]
 LoraScope = Literal["vision", "vision_decoder", "vision_decoder_concept", "all"]
@@ -609,27 +609,20 @@ class MultiplexConfig(_Strict):
     classes_per_forward: int = Field(default=16, ge=1, le=16)  # cite: models/sam3.py:MULTIPLEX_CAP
 
 
-class LrDecayOnPlateauConfig(_Strict):
-    """Rung-1 reduce-on-plateau knobs. Active only when lr_schedule == "plateau"."""
-
-    patience: PositiveInt = 5
-    factor: PositiveFloat = 0.1
-    min_lr: PositiveFloat = 1.0e-6
-
-    @field_validator("factor")
-    @classmethod
-    def _factor_must_shrink(cls, v: float) -> float:
-        if v >= 1.0:
-            raise ValueError(f"lr_decay_on_plateau.factor must be < 1.0 (got {v})")
-        return v
-
-
 class EarlyStopConfig(_Strict):
-    """Rung-2 early-stop knobs. monitor/min_delta are the SHARED improvement
-    definition consumed by rung 1 too: when early_stop.enabled is false while
-    lr_schedule is plateau, these two fields still configure the rung-1 LR-decay
-    threshold (they feed ReduceLROnPlateau's threshold and the monitored metric).
-    Documented wart, spec §5.4 / docs/config-schema.md."""
+    """Early-stop knobs gating the no-improvement counter.
+
+    monitor/min_delta define the improvement test (mAP > best + min_delta,
+    strict). The counter that drives early stop only accrues once BOTH grace
+    conditions are satisfied:
+
+      - adaptive baseline (PRIMARY): the first eval producing a non-zero mAP
+        "wakes" the run. Until then mAP is pinned at 0.0 (cold) and the counter
+        never climbs — self-scaling, no magic threshold.
+      - warmup_floor_steps (BACKSTOP): a fixed floor in optimizer steps below
+        which the counter may not accrue regardless of mAP.
+
+    A model that never produces a non-zero mAP trains to the horizon."""
 
     enabled: bool = True
     # issue: on by default (research §7, issue acceptance criteria).
@@ -638,6 +631,10 @@ class EarlyStopConfig(_Strict):
     # only mAP is validated/wired for now.
     min_delta: PositiveFloat = 0.001
     stop_patience: PositiveInt = 10
+    warmup_floor_steps: int = Field(default=1000, ge=0)
+    # cite: Detectron2 SOLVER.WARMUP_ITERS (default 1000) — backstop grace floor
+    # in optimizer steps before the no-improvement counter may accrue (#264).
+    # 0 disables the backstop (adaptive-baseline-only grace).
 
 
 class TrainHyperparams(_Strict):
@@ -646,9 +643,9 @@ class TrainHyperparams(_Strict):
     grad_accum_steps: PositiveInt = 8
     optimizer: Optimizer = "auto"
     learning_rate: PositiveFloat = 1.0e-4
-    lr_schedule: LRSchedule = "plateau"
-    # cite: ReduceLROnPlateau (PyTorch/Keras) + the canonical early-stop pairing
-    #       (research §2-§4); # tbd: #197 — the cosine->plateau default flip.
+    lr_schedule: LRSchedule = "poly"
+    # cite: WarmupPolyLR (Detectron2) / PolyLR (MMSegmentation) — the fixed-horizon
+    #       poly-decay norm (#264).
     warmup_steps: int = Field(default=100, ge=0)
     save_every: PositiveInt | None = Field(
         default=None,
@@ -701,7 +698,6 @@ class TrainHyperparams(_Strict):
             "cannot be caught in Python, so we must stop proactively."
         ),
     )
-    lr_decay_on_plateau: LrDecayOnPlateauConfig = Field(default_factory=LrDecayOnPlateauConfig)
     early_stop: EarlyStopConfig = Field(default_factory=EarlyStopConfig)
 
     loss: LossConfig = Field(default_factory=LossConfig)

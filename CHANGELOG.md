@@ -9,6 +9,34 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Breaking — decouple LR schedule from mAP cold-start; remove plateau (#264)
+
+- **train**: default `lr_schedule` changed from `"plateau"` (ReduceLROnPlateau-on-mAP) to
+  `"poly"` (polynomial decay to horizon, power 0.9). The `"plateau"` value is **removed**;
+  any config carrying `train.lr_schedule: plateau` will fail Pydantic validation on load.
+  Migration: delete or replace the line — e.g. `train.lr_schedule: poly`.
+- **schema**: the `train.lr_decay_on_plateau.*` config block (`LrDecayOnPlateauConfig`) is
+  **removed**. Any YAML carrying `train.lr_decay_on_plateau:` will fail with a Pydantic
+  `extra_forbidden` error. Migration: delete the block.
+- **internals**: `LrDecayOnPlateauConfig`, `LrCut`, and `LadderEvents.cuts` are removed from
+  the public API.
+
+### Changed — early-stop gains adaptive-baseline + warmup-floor grace (#264)
+
+- **train**: `train.early_stop` now applies cold-mAP grace. The no-improvement counter only
+  accrues once the run is "woken" — its first strictly-positive mAP (baseline floor `0.0`,
+  no magic threshold) — AND `step >= warmup_floor_steps`. A run pinned at mAP `0.0` (before the
+  0.5 IoU threshold is cleared) is never counted as plateaued and trains to the horizon, so
+  cold mAP can no longer trigger a premature stop.
+- **train**: new `train.early_stop.warmup_floor_steps` field (int ≥0, default `1000`) — a
+  backstop floor in optimizer steps below which the no-improvement counter may not accrue,
+  even after the run is woken. `0` disables the backstop (adaptive-baseline-only grace).
+- **train**: the LR schedule is fully decoupled from the metric — LR is now a pure function of
+  step (poly/cosine/linear/constant LambdaLR) and is never cut by mAP.
+- **resume**: resuming from a legacy checkpoint that carried a plateau LR state falls back to
+  the schedule specified in the loaded config and skips the incompatible scheduler state,
+  emitting a one-time warning.
+
 <!-- Add entries for the next milestone here. -->
 
 ## [v0.10.0] — 2026-06-03

@@ -167,7 +167,7 @@ Training hyperparameters and schedule.
 | `train.grad_accum_steps` | int (>0) | `8` | common | Gradient accumulation steps before one optimizer step; effective batch = `batch_size × grad_accum_steps`. |
 | `train.optimizer` | `"adamw"` \| `"adamw8bit"` \| `"auto"` | `"auto"` | common | Optimizer; `"auto"` selects `adamw8bit` for QLoRA and `adamw` for LoRA. |
 | `train.learning_rate` | float (>0) | `1.0e-4` | common | Peak learning rate after warm-up. |
-| `train.lr_schedule` | `"constant"` \| `"cosine"` \| `"linear"` \| `"plateau"` | `"plateau"` | common | Learning-rate schedule. `"plateau"` reduces LR on a validation-mAP plateau (rung 1) and is paired with early stop (rung 2); falls back to `"cosine"` with a warning when no val set is present. |
+| `train.lr_schedule` | `"constant"` \| `"cosine"` \| `"linear"` \| `"poly"` | `"poly"` | common | Learning-rate schedule. `"poly"` applies polynomial decay from peak LR to zero over the full training horizon (power 0.9), which is the recommended schedule. |
 | `train.warmup_steps` | int (≥0) | `100` | common | Steps over which the LR linearly warms up from 0. |
 | `train.save_every` | int (>0) \| null | `null` | common | Checkpoint every N optimizer steps. `null` auto-resolves to `steps_per_epoch` (one checkpoint per epoch). |
 | `train.log_every` | int (>0) | `50` | common | Log scalar metrics every N optimizer steps. |
@@ -207,21 +207,11 @@ code (`src/custom_sam_peft/train/loss/`). Per-knob `overrides` replace individua
 | `train.nan_abort_after` | int (>0) | `20` | advanced | Abort training after this many consecutive steps with NaN loss. |
 | `train.num_workers` | int (≥0) | min(4, cpu_count) | advanced | DataLoader worker processes. `0` disables multiprocessing. |
 | `train.multiplex.classes_per_forward` | int [1, 16] | `16` | advanced | Class prompts per multiplex forward pass. `1` = legacy per-class regime. |
-| `train.lr_decay_on_plateau.patience` | int (>0) | `5` | advanced | Non-improving evals before one LR cut (plateau mode only, rung 1). |
-| `train.lr_decay_on_plateau.factor` | float (0, 1) | `0.1` | advanced | LR multiplier applied on each cut (plateau mode only). |
-| `train.lr_decay_on_plateau.min_lr` | float (>0) | `1e-6` | advanced | LR floor; cuts never go below this value (plateau mode only). |
-| `train.early_stop.enabled` | bool | `true` | advanced | Stop after `stop_patience` consecutive non-improving evals (rung 2). Works under any `lr_schedule` (unlike the rung-1 `lr_decay_on_plateau.*` knobs, which need `plateau`); requires a validation set for the mAP signal. |
-| `train.early_stop.monitor` | `"mAP"` | `"mAP"` | advanced | Monitored metric (only `"mAP"` is wired). See §5.4 wart note below. |
-| `train.early_stop.min_delta` | float (>0) | `0.001` | advanced | Shared improvement threshold for BOTH rungs (see §5.4 wart note below). |
+| `train.early_stop.enabled` | bool | `true` | advanced | Stop after `stop_patience` consecutive non-improving evals. Requires a validation set for the mAP signal. |
+| `train.early_stop.monitor` | `"mAP"` | `"mAP"` | advanced | Monitored metric (only `"mAP"` is wired). |
+| `train.early_stop.min_delta` | float (>0) | `0.001` | advanced | Minimum improvement in the monitored metric to count as a new best. |
 | `train.early_stop.stop_patience` | int (>0) | `10` | advanced | Non-improving evals before early stop fires. |
-
-**§5.4 wart — shared `monitor`/`min_delta` across both rungs:** `early_stop.monitor` and
-`early_stop.min_delta` live under the `early_stop` sub-block but configure the definition of
-"improvement" for **both** rung 1 (LR decay) and rung 2 (early stop). Even when
-`early_stop.enabled=false`, these two fields still drive the rung-1 LR-decay threshold:
-`monitor` selects the metric fed to `ReduceLROnPlateau` and `min_delta` sets its `threshold`
-argument. This coupling is a known design wart (#197, §5.4) — the fields are named after the
-early-stop rung but have cross-rung effect.
+| `train.early_stop.warmup_floor_steps` | int (≥0) | `1000` | advanced | Early stop is suppressed for this many optimizer steps. Allows mAP to escape the cold-start floor (0.0 before the 0.5 IoU threshold is cleared) before the patience counter begins. |
 
 ---
 

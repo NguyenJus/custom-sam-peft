@@ -1,58 +1,56 @@
-"""Scheduler split: per-step warmup vs per-eval plateau cut (spec §6, §14.3)."""
+"""Scheduler tests: all schedules are per-step LambdaLR (#264).
+
+Replaces the old plateau-scheduler tests. With plateau removed, every schedule
+(constant/cosine/linear/poly) is a LambdaLR and step_per_train_step(scheduler)
+calls scheduler.step() unconditionally on every optimizer step.
+"""
 
 from __future__ import annotations
 
 import torch
 
 from custom_sam_peft.train._scheduler import step_per_train_step
+from custom_sam_peft.train.trainer import _build_scheduler
 
 
 def _opt(lr: float = 1e-4):
     return torch.optim.SGD([torch.nn.Parameter(torch.zeros(1))], lr=lr)
 
 
-def test_warmup_ramp_then_hold_in_plateau_mode() -> None:
-    opt = _opt(lr=1e-4)
-    sched = torch.optim.lr_scheduler.ReduceLROnPlateau(opt, mode="max")
-    base_lr, warmup = 1e-4, 100
-    # Mid-warmup step 49 → lr = base * 50/100.
-    step_per_train_step(sched, global_step=49, base_lr=base_lr, warmup_steps=warmup, mode="plateau")
-    assert abs(opt.param_groups[0]["lr"] - base_lr * 50 / 100) < 1e-12
-    # After warmup, the per-step helper holds the LR (no write, no plateau step).
-    opt.param_groups[0]["lr"] = base_lr
-    step_per_train_step(
-        sched, global_step=150, base_lr=base_lr, warmup_steps=warmup, mode="plateau"
-    )
-    assert opt.param_groups[0]["lr"] == base_lr
+def _fake_cfg(warmup_steps: int = 0):
+    class _Cfg:
+        class train:
+            warmup_steps = 0
+
+    _Cfg.train.warmup_steps = warmup_steps
+    return _Cfg()
 
 
-def test_plateau_scheduler_not_stepped_per_train_step() -> None:
-    """In plateau mode the per-step helper never calls ReduceLROnPlateau.step()."""
-    opt = _opt(lr=1e-4)
-    sched = torch.optim.lr_scheduler.ReduceLROnPlateau(opt, mode="max")
-    calls = {"n": 0}
-    orig = sched.step
-
-    def spy(*a, **k):
-        calls["n"] += 1
-        return orig(*a, **k)
-
-    sched.step = spy  # type: ignore[method-assign]
-    for s in range(0, 300):
-        step_per_train_step(sched, global_step=s, base_lr=1e-4, warmup_steps=100, mode="plateau")
-    assert calls["n"] == 0  # plateau scheduler only ticks at evals
+# ---------------------------------------------------------------------------
+# step_per_train_step always calls scheduler.step()
+# ---------------------------------------------------------------------------
 
 
-def test_lambda_lr_stepped_per_train_step_in_non_plateau_mode() -> None:
+def test_step_per_train_step_calls_step() -> None:
+    """step_per_train_step(scheduler) calls scheduler.step() exactly once."""
     opt = _opt(lr=1e-4)
     sched = torch.optim.lr_scheduler.LambdaLR(opt, lr_lambda=lambda s: 0.5)
-    step_per_train_step(sched, global_step=0, base_lr=1e-4, warmup_steps=0, mode="cosine")
-    # LambdaLR.step() applied the 0.5 multiplier.
+    step_per_train_step(sched)
     assert abs(opt.param_groups[0]["lr"] - 0.5e-4) < 1e-12
 
 
+def test_step_per_train_step_called_every_optimizer_step() -> None:
+    """Calling step_per_train_step N times advances the scheduler N times."""
+    opt = _opt(lr=1e-4)
+    sched = torch.optim.lr_scheduler.LambdaLR(opt, lr_lambda=lambda s: 1.0 - s * 0.01)
+    for _ in range(5):
+        step_per_train_step(sched)
+    # After 5 steps, lr_lambda(5) = 1 - 0.05 = 0.95.
+    assert abs(opt.param_groups[0]["lr"] - 1e-4 * 0.95) < 1e-12
+
+
 def test_param_groups_lr_matches_get_last_lr_for_lambda() -> None:
-    """Regression: the param_groups read equals get_last_lr() for LambdaLR (§14.3)."""
+    """Regression: param_groups lr equals get_last_lr() for LambdaLR."""
     opt = _opt(lr=1e-4)
     sched = torch.optim.lr_scheduler.LambdaLR(opt, lr_lambda=lambda s: 1.0 - s * 0.01)
     for _s in range(5):
@@ -60,42 +58,89 @@ def test_param_groups_lr_matches_get_last_lr_for_lambda() -> None:
     assert abs(opt.param_groups[0]["lr"] - sched.get_last_lr()[0]) < 1e-12
 
 
-def test_cosine_mode_steps_lambda_lr_and_decays() -> None:
-    """step_per_train_step with mode='cosine' on a decaying LambdaLR must call
-    scheduler.step() so the LR actually falls below base_lr after warmup.
+# ---------------------------------------------------------------------------
+# build_scheduler always returns a LambdaLR
+# ---------------------------------------------------------------------------
 
-    This test would FAIL under the FIX-1 bug: if step_per_train_step received
-    mode='plateau' (the requested schedule) instead of mode='cosine' (the
-    effective/fallback schedule), it would take the plateau warmup/no-op branch
-    and never call LambdaLR.step(), leaving the LR constant after warmup.
-    """
+
+def test_build_scheduler_returns_lambda_lr_for_all_schedules() -> None:
+    for schedule in ("constant", "cosine", "linear", "poly"):
+        opt = _opt(lr=1e-4)
+        sched = _build_scheduler(opt, _fake_cfg(), 100, schedule)
+        assert isinstance(sched, torch.optim.lr_scheduler.LambdaLR), (
+            f"{schedule} did not return a LambdaLR"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Warmup ramp applies to all non-constant schedules
+# ---------------------------------------------------------------------------
+
+
+def test_warmup_ramp_then_decay_for_cosine() -> None:
+    """Cosine schedule: LR ramps during warmup then decays below base_lr."""
     base_lr = 1e-3
     warmup = 5
     total_steps = 50
-
-    import math
-
-    def lr_lambda(step: int) -> float:
-        if step < warmup:
-            return (step + 1) / max(warmup, 1)
-        progress = (step - warmup) / max(total_steps - warmup, 1)
-        return 0.5 * (1.0 + math.cos(math.pi * min(progress, 1.0)))
-
     opt = _opt(lr=base_lr)
-    sched = torch.optim.lr_scheduler.LambdaLR(opt, lr_lambda=lr_lambda)
+    sched = _build_scheduler(opt, _fake_cfg(warmup_steps=warmup), total_steps, "cosine")
 
-    # Drive many steps past warmup using mode="cosine" (effective/fallback schedule).
-    for step in range(total_steps):
-        step_per_train_step(
-            sched, global_step=step, base_lr=base_lr, warmup_steps=warmup, mode="cosine"
-        )
+    # Drive all steps.
+    for _ in range(total_steps):
+        step_per_train_step(sched)
 
     final_lr = opt.param_groups[0]["lr"]
-    # After 50 steps with cosine decay, LR must be well below base_lr.
-    # At progress=1.0: lr_lambda = 0.5*(1+cos(pi)) = 0.0, so final_lr ~= 0.
-    # We just assert it decayed significantly (< 10% of base_lr).
     assert final_lr < base_lr * 0.1, (
-        f"LambdaLR cosine decay did not fire: final_lr={final_lr:.6f} >= "
-        f"{base_lr * 0.1:.6f}. step_per_train_step may have used mode='plateau' "
-        "instead of mode='cosine' (effective/fallback)."
+        f"cosine LR did not decay: final_lr={final_lr:.6f} >= {base_lr * 0.1:.6f}"
+    )
+
+
+def test_warmup_ramp_then_decay_for_poly() -> None:
+    """Poly schedule: LR ramps during warmup then poly-decays to near-zero."""
+    base_lr = 1e-3
+    warmup = 5
+    total_steps = 50
+    opt = _opt(lr=base_lr)
+    sched = _build_scheduler(opt, _fake_cfg(warmup_steps=warmup), total_steps, "poly")
+
+    for _ in range(total_steps):
+        step_per_train_step(sched)
+
+    final_lr = opt.param_groups[0]["lr"]
+    assert final_lr < base_lr * 0.1, (
+        f"poly LR did not decay: final_lr={final_lr:.6f} >= {base_lr * 0.1:.6f}"
+    )
+
+
+def test_warmup_ramp_then_decay_for_linear() -> None:
+    """Linear schedule: LR decays to 0 by the end."""
+    base_lr = 1e-3
+    warmup = 5
+    total_steps = 50
+    opt = _opt(lr=base_lr)
+    sched = _build_scheduler(opt, _fake_cfg(warmup_steps=warmup), total_steps, "linear")
+
+    for _ in range(total_steps):
+        step_per_train_step(sched)
+
+    final_lr = opt.param_groups[0]["lr"]
+    assert final_lr < base_lr * 0.05, f"linear LR did not decay to near-zero: {final_lr:.6f}"
+
+
+def test_constant_schedule_holds_after_warmup() -> None:
+    """Constant schedule: LR equals base_lr after warmup, never decays."""
+    base_lr = 1e-4
+    warmup = 10
+    total_steps = 100
+    opt = _opt(lr=base_lr)
+    sched = _build_scheduler(opt, _fake_cfg(warmup_steps=warmup), total_steps, "constant")
+
+    # Advance through warmup + beyond.
+    for _ in range(total_steps):
+        step_per_train_step(sched)
+
+    # After warmup the constant schedule returns 1.0, so LR == base_lr.
+    final_lr = opt.param_groups[0]["lr"]
+    assert abs(final_lr - base_lr) < 1e-10, (
+        f"constant schedule drifted: {final_lr:.6f} != {base_lr:.6f}"
     )
