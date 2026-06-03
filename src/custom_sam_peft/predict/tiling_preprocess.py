@@ -8,7 +8,7 @@ byte-identical across both paths (spec §5.4, faithfulness-critical).
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, cast
 
 import numpy as np
 import torch
@@ -40,4 +40,4 @@ def preprocess_tile(
     """
     out = transform(image=crop_np, bboxes=[], class_labels=[], instance_idx=[])
     moved = to_device(out["image"], Runtime(device=device, dtype=dtype))
-    return moved.to(dtype)
+    return cast("torch.Tensor", moved.to(dtype))

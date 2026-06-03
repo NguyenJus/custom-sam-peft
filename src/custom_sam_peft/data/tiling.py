@@ -6,10 +6,14 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
 
 from custom_sam_peft.models.sam3 import SAM3_IMAGE_SIZE
+
+if TYPE_CHECKING:
+    from affine import Affine
 
 # Overlap fraction of the ROI/tile size. Cited: MONAI sliding_window_inference
 # default overlap=0.25 (https://docs.monai.io/en/stable/inferers.html#monai.inferers.sliding_window_inference).
@@ -84,7 +88,7 @@ class Fragment:
     must assign a globally-unique id per tile.
     """
 
-    mask: np.ndarray  # (H, W) bool, full-canvas coordinates
+    mask: np.ndarray[Any, Any]  # (H, W) bool, full-canvas coordinates
     score: float
     category_id: int
     window_id: int
@@ -92,7 +96,7 @@ class Fragment:
 
 @dataclass
 class MergedInstance:
-    mask: np.ndarray
+    mask: np.ndarray[Any, Any]
     score: float
     category_id: int
 
@@ -111,7 +115,7 @@ class _UnionFind:
         self._p[self.find(a)] = self.find(b)
 
 
-def _intersection_over_min(a: np.ndarray, b: np.ndarray) -> float:
+def _intersection_over_min(a: np.ndarray[Any, Any], b: np.ndarray[Any, Any]) -> float:
     inter = int(np.logical_and(a, b).sum())
     if inter == 0:
         return 0.0
@@ -167,7 +171,7 @@ def merge_fragments(
     return out
 
 
-def tile_affine(parent_affine, window):
+def tile_affine(parent_affine: Affine, window: Window) -> Affine:
     """Per-tile affine = parent affine offset by the window origin (y0, x0) in
     pixel space — a pure pixel translation, no scale change (tiles are native-res;
     spec §6.4). The stitched output keeps the parent affine."""
@@ -177,9 +181,9 @@ def tile_affine(parent_affine, window):
 
 
 def run_windows(
-    image: np.ndarray,
+    image: np.ndarray[Any, Any],
     windows: list[Window],
-    fn: Callable[[np.ndarray, Window], list[Fragment]],
+    fn: Callable[[np.ndarray[Any, Any], Window], list[Fragment]],
 ) -> list[Fragment]:
     """Apply `fn(crop, window)` to each window's crop and collect fragments,
     re-placing each tile-local fragment mask onto the full-image canvas at the

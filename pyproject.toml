@@ -131,8 +131,24 @@ module = [
   "peft.*",
   "google.colab",
   "psutil",
+  # rasterio/affine are core deps but ship no type stubs / py.typed marker.
+  "rasterio.*",
+  "affine.*",
 ]
 ignore_missing_imports = true
+
+# pydicom/nibabel live in the optional `dicom` extra, which CI's mypy env does NOT
+# install (ci.yml syncs dev+cu130+qlora+wandb+jupyter). follow_imports=skip treats
+# them as untyped regardless of whether the extra is installed, so local mypy (with
+# the extra) matches CI's result (without it) — neither analyzes these libraries'
+# partially-stubbed surface (e.g. pydicom.pixels LUT helpers absent from __all__).
+[[tool.mypy.overrides]]
+module = [
+  "pydicom.*",
+  "nibabel.*",
+]
+ignore_missing_imports = true
+follow_imports = "skip"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

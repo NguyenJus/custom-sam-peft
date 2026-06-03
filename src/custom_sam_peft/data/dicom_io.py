@@ -4,7 +4,8 @@ lazy-imported so base install/import never requires them."""
 from __future__ import annotations
 
 import types
-from typing import TYPE_CHECKING, Any
+from collections.abc import Sequence
+from typing import TYPE_CHECKING, Any, cast
 
 import numpy as np
 
@@ -19,7 +20,7 @@ def _require_pydicom() -> types.ModuleType:
     try:
         import pydicom
 
-        return pydicom
+        return cast("types.ModuleType", pydicom)
     except ImportError as exc:
         raise RuntimeError(_MISSING) from exc
 
@@ -123,15 +124,15 @@ def read_dcm_with_meta(
     return pixels, meta
 
 
-def _slice_normal(orientation: Any) -> np.ndarray:
+def _slice_normal(orientation: Any) -> np.ndarray[Any, Any]:
     """Slice-normal unit vector = cross product of the two ImageOrientationPatient
     direction-cosine triplets (row dir cross column dir)."""
     iop = np.asarray(orientation, dtype=float).reshape(2, 3)
     row_dir, col_dir = iop[0], iop[1]
-    return np.cross(row_dir, col_dir)
+    return cast("np.ndarray[Any, Any]", np.cross(row_dir, col_dir))
 
 
-def group_series(paths: list[str | PathLike[str]]) -> dict[str, list[Any]]:
+def group_series(paths: Sequence[str | PathLike[str]]) -> dict[str, list[Any]]:
     """Bucket `.dcm` files by SeriesInstanceUID and order each bucket geometrically.
 
     Each bucket is sorted by the projection of ``ImagePositionPatient`` onto the
@@ -164,7 +165,7 @@ def group_series(paths: list[str | PathLike[str]]) -> dict[str, list[Any]]:
     return ordered
 
 
-def series_affine(ordered_datasets: list[Any]) -> np.ndarray:
+def series_affine(ordered_datasets: list[Any]) -> np.ndarray[Any, Any]:
     """Build the 4x4 voxel->world affine for an ordered DICOM series (spec §8.2).
 
     Follows nibabel's documented DICOM->world convention

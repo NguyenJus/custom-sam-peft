@@ -299,7 +299,7 @@ def _merged_instance_to_entry(
 
 
 def _predict_one_tile(
-    crop_np: np.ndarray,
+    crop_np: np.ndarray[Any, Any],
     _window: object,
     *,
     model: torch.nn.Module,
@@ -389,7 +389,7 @@ def _predict_one_tile(
                 mask_threshold=0.0,
             )
             for e in entries:
-                score = float(e["score"])
+                score = float(cast("float", e["score"]))
                 if score < score_threshold:
                     continue
                 # Decode the tile-local RLE → bool mask

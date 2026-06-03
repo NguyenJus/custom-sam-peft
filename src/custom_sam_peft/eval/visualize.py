@@ -19,7 +19,7 @@ import math
 import re
 from collections.abc import Sequence
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import numpy as np
 import pycocotools.mask as mask_utils
@@ -357,7 +357,7 @@ def _tiled_pred_entries(
             )
             for e in entries:
                 seg = e["segmentation"]
-                mask_u8 = mask_utils.decode(seg)  # type: ignore[arg-type]
+                mask_u8 = mask_utils.decode(seg)
                 mask_bool = mask_u8.astype(bool)
                 # Place the tile-local mask onto the full canvas.
                 canvas = np.zeros(canvas_hw, dtype=bool)
@@ -367,8 +367,8 @@ def _tiled_pred_entries(
                 all_fragments.append(
                     Fragment(
                         mask=canvas,
-                        score=float(e["score"]),
-                        category_id=int(e["category_id"]),
+                        score=float(cast("float", e["score"])),
+                        category_id=int(cast("int", e["category_id"])),
                         window_id=t_idx,
                     )
                 )
