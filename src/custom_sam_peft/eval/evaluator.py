@@ -331,10 +331,18 @@ class Evaluator:
                                         if not is_cuda_oom(oom_exc):
                                             raise
                                         decision = ladder.on_oom()
-                                        if decision is OomDecision.RETRY_B:
-                                            # B is already 1 per tile; OOM ladder
-                                            # moves to K reduction on next hit.
-                                            continue
+                                        # A per-tile forward is already B=1, so halving
+                                        # B (RETRY_B) cannot shrink THIS forward. Drain
+                                        # the B rung without re-running the identical
+                                        # forward, mirroring the direct path's
+                                        # restart-and-advance: keep applying on_oom()
+                                        # until the ladder progresses to K reduction
+                                        # (RETRY_K), the single FLOOR_RETRY, or TERMINAL.
+                                        # The ladder is monotonic (B then K only
+                                        # decrease, FLOOR_RETRY fires once), so this
+                                        # loop is bounded and always reaches a non-B rung.
+                                        while decision is OomDecision.RETRY_B:
+                                            decision = ladder.on_oom()
                                         if decision is OomDecision.RETRY_K:
                                             continue
                                         if decision is OomDecision.FLOOR_RETRY:
@@ -545,6 +553,46 @@ class Evaluator:
         gt_direct, _ = _build_coco_gt_from_examples(examples, dataset)
         return report, self._compute_per_example_iou(examples, predictions, gt_direct)
 
+    def _full_image_pred_rles(
+        self,
+        ex: Example,
+        orig_h: int,
+        orig_w: int,
+        preds_by_image: dict[int, list[dict[str, object]]],
+    ) -> list[Any]:
+        """Return full-image predicted-mask RLEs for one example.
+
+        Direct path: the example's predictions were stored under the full-image
+        id, so their RLEs are already full-image — return them as-is.
+
+        Tiling path: predictions were stored under TILE-LOCAL ids with masks in
+        tile-local coordinates. Because eval accumulation tiles are NON-overlapping
+        (EVAL_OVERLAP=0.0), the tile masks are disjoint on the full canvas, so a
+        correct full-image predicted mask per entry is just that tile-local mask
+        placed back at its (win.y0, win.x0) offset on a (orig_h, orig_w) canvas
+        (no merge/dedup needed). The windows are recomputed deterministically from
+        the example dims — iter_windows is deterministic and matched the windows
+        used during accumulation — so a reverse map tile_id -> window is exact.
+        """
+        if not tiling_engaged(orig_h, orig_w):
+            int_id = _int_image_id(ex.image_id)
+            return [p["segmentation"] for p in preds_by_image.get(int_id, [])]
+
+        windows = iter_windows(orig_h, orig_w, tile=SAM3_IMAGE_SIZE, overlap=EVAL_OVERLAP)
+        full_rles: list[Any] = []
+        for t_idx, win in enumerate(windows):
+            tile_id = _tile_image_id(ex.image_id, t_idx)
+            for p in preds_by_image.get(tile_id, []):
+                tile_mask = mask_utils.decode(p["segmentation"]).astype(bool)  # (win.h, win.w)
+                canvas = np.zeros((orig_h, orig_w), dtype=np.uint8)
+                canvas[win.y0 : win.y0 + win.h, win.x0 : win.x0 + win.w] = tile_mask[
+                    : win.h, : win.w
+                ]
+                rle = mask_utils.encode(np.asfortranarray(canvas))
+                rle["counts"] = rle["counts"].decode("ascii")
+                full_rles.append(rle)
+        return full_rles
+
     def _compute_per_example_iou(
         self,
         examples: Sequence[Example],
@@ -559,27 +607,36 @@ class Evaluator:
         (vacuous match — consistent with COCO's empty-image handling). Examples
         skipped during model inference are marked NaN; pick_samples treats NaN
         as -inf for ranking and they are eligible only as 'worst' picks.
+
+        Tiled examples (tiling_engaged True) have their predictions stored under
+        tile-local ids; ``_full_image_pred_rles`` reconstructs the disjoint
+        tile masks back onto a full-image canvas so the IoU is computed against
+        the SAME full-image GT and with the IDENTICAL definition as the direct
+        path (the only difference is where the predicted masks come from).
         """
         out: list[float] = []
-        # Group predictions by image_id for cheap lookup.
+        # Group predictions by image_id for cheap lookup. For tiled examples the
+        # keys are tile-local ids; for direct examples they are full-image ids.
         preds_by_image: dict[int, list[dict[str, object]]] = {}
         for entry in predictions:
             preds_by_image.setdefault(int(entry["image_id"]), []).append(entry)  # type: ignore[call-overload]
 
         for ex in examples:
             int_id = _int_image_id(ex.image_id)
+            orig_h, orig_w = int(ex.image.shape[-2]), int(ex.image.shape[-1])
             gt_anns = gt.imgToAnns.get(int_id, [])
-            ex_preds = preds_by_image.get(int_id, [])
+            # Full-image predicted RLEs: as-stored on the direct path, reconstructed
+            # from disjoint tiles on the tiling path.
+            pred_rles = self._full_image_pred_rles(ex, orig_h, orig_w, preds_by_image)
 
-            if not gt_anns and not ex_preds:
+            if not gt_anns and not pred_rles:
                 out.append(1.0)  # vacuous match
                 continue
-            if not gt_anns or not ex_preds:
+            if not gt_anns or not pred_rles:
                 out.append(0.0)
                 continue
 
             # Build (n_pred, n_gt) IoU matrix for this example.
-            pred_rles = [p["segmentation"] for p in ex_preds]
             gt_rles = [a["segmentation"] for a in gt_anns]
             iscrowd = [0] * len(gt_rles)
             iou_mat = mask_utils.iou(pred_rles, gt_rles, iscrowd)

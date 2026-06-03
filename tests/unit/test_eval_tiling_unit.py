@@ -220,6 +220,72 @@ def test_evaluator_small_image_direct_path_unchanged() -> None:
     assert img_arg.shape[-2] == 8 and img_arg.shape[-1] == 8
 
 
+def _make_topleft_hit_model(hit: int = 10) -> MagicMock:
+    """A mock model whose query 0 predicts a strong mask over the tile's
+    top-left ``hit`` x ``hit`` region (matching the GT placed at the full-image
+    top-left), and query 1 predicts nothing.
+
+    The stub emits the same prediction for every tile because the example image
+    is all-zeros (tiles are indistinguishable by content). Only tile 0's
+    reconstructed prediction lands on the GT (canvas[0:hit, 0:hit]); other tiles'
+    predictions land at their own offsets where there is no GT, so they
+    contribute zero IoU. This isolates the tile-0 overlap deterministically.
+    """
+
+    def _forward(
+        images: torch.Tensor, prompts: Any, support: Any = None
+    ) -> dict[str, torch.Tensor]:
+        b = images.shape[0]
+        k_g = len(prompts[0].classes) if prompts else 1
+        rows = b * k_g
+        h, w = int(images.shape[-2]), int(images.shape[-1])
+        # query 0: strong positive logits over the top-left hit x hit block,
+        # strongly negative elsewhere; query 1: all negative (empty mask).
+        masks = torch.full((rows, 2, h, w), -50.0)
+        masks[:, 0, 0:hit, 0:hit] = 50.0
+        return {
+            # query 0 confidently present; query 1 absent.
+            "pred_logits": torch.tensor([[[50.0], [-50.0]]]).expand(rows, 2, 1).contiguous(),
+            "pred_boxes": torch.zeros(rows, 2, 4),
+            "pred_masks": masks,
+            "presence_logit_dec": torch.full((rows, 1), 50.0),
+        }
+
+    model = MagicMock(side_effect=_forward)
+    model.training = False
+    del model.parameters
+    return model
+
+
+def test_tiled_per_example_iou_is_nonzero_for_overlapping_pred() -> None:
+    """Regression for the BLOCKING finding: per_example_iou must be a correct
+    NONZERO full-image IoU for a tiled image whose prediction overlaps GT.
+
+    Before the fix, tiled predictions were stored under tile-local ids while
+    _compute_per_example_iou looked them up by full-image id, so the lookup
+    returned [] and every tiled example scored 0.0. The fix reconstructs the
+    disjoint tile masks onto a full-image canvas and computes IoU against the
+    full-image GT. The stub's tile-0 prediction exactly matches the 10x10 GT,
+    so the example score must be close to 1.0 (and definitely not 0.0).
+    """
+    from custom_sam_peft.config.schema import EvalConfig
+    from custom_sam_peft.eval.evaluator import Evaluator
+
+    dataset = _TilingCallCountDataset()  # 2016x2016, GT mask at [0:10, 0:10]
+    model = _make_topleft_hit_model(hit=10)
+
+    cfg = EvalConfig(mode="full", iou_thresholds=[0.5], batch_size=1)
+    _report, per_example_iou = Evaluator(cfg).evaluate(model, dataset, return_per_example_iou=True)
+
+    # Length contract (#245): exactly one value per example.
+    assert len(per_example_iou) == len(dataset) == 1
+    # The tile-0 reconstructed prediction matches the GT exactly -> IoU == 1.0,
+    # so the threshold-mean score (best_iou >= 0.5) is 1.0. The load-bearing
+    # assertion is simply that it is NOT 0.0 (the pre-fix bug value).
+    assert per_example_iou[0] > 0.0, "tiled per-example IoU collapsed to 0.0"
+    assert per_example_iou[0] == 1.0
+
+
 def test_evaluator_tiling_evaluate_returns_metrics_report() -> None:
     """Full evaluate() on a tiled image returns a valid MetricsReport."""
     from custom_sam_peft.config.schema import EvalConfig
