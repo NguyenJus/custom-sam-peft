@@ -270,6 +270,12 @@ class TestDominantPath:
         m_row = next(r for r in data.rows if r.name == "train.matcher")
         assert m_row.kind == "cpu"
 
+    def test_train_backward_is_gpu(self) -> None:
+        """Autograd backward is GPU compute, not CPU — the split must reflect that."""
+        data = attribute_snapshot(_train_snap())
+        bw = next(r for r in data.rows if r.name == "train.backward")
+        assert bw.kind == "gpu"
+
 
 # ---------------------------------------------------------------------------
 # C. Structural facts from meta

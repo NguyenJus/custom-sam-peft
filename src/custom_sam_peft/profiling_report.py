@@ -37,16 +37,20 @@ BUCKET_KINDS: dict[str, str] = {
     "semantic_eval.upsample": "gpu",
     "train.forward": "gpu",
     "predict.forward": "gpu",
+    # GPU-tensor compute on the train surface: autograd backward, the loss math,
+    # and the optimizer param update all run CUDA kernels (not host work).
+    "train.backward": "gpu",
+    "train.loss": "gpu",
+    "train.optim_step": "gpu",
     # CPU spans
     "eval.rle_encode": "cpu",
     "eval.gt_rle_encode": "cpu",
     "eval.coco_aggregate": "cpu",
     "eval.pair_iou": "cpu",
     "semantic_eval.confusion": "cpu",
+    # The matcher's linear_sum_assignment runs on the host (numpy/scipy) after a
+    # device->host sync — the CPU/sync cost candidate #2 targets.
     "train.matcher": "cpu",
-    "train.loss": "cpu",
-    "train.backward": "cpu",
-    "train.optim_step": "cpu",
     "predict.postprocess": "cpu",
     "predict.write": "cpu",
     # Sync (host↔device transfer) spans
