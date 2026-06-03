@@ -318,7 +318,7 @@ def _order_image_ids(
     ordered_datasets: list[Any],
     path_by_id: dict[int, Path],
 ) -> list[int]:
-    """Map geometrically-ordered datasets back to image_ids via source .dcm path."""
+    """Map geometrically-ordered datasets back to image_ids via source .dcm resolved path."""
     stem_to_id = {Path(p).resolve(): iid for iid, p in path_by_id.items()}
     result: list[int] = []
     used: set[int] = set()

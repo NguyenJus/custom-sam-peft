@@ -173,13 +173,17 @@ def series_affine(ordered_datasets: list[Any]) -> np.ndarray:
     world space is RAS+, so the L and P axes are negated (flip the sign of the
     first two rows of the rotation/translation) to convert LPS->RAS.
 
-    Construction (nibabel "Defining the affine"): columns of the 3x3 are the
-    direction cosines scaled by spacing -
-      - col 0 = row-direction cosine * column-spacing (PixelSpacing[1], between cols),
-      - col 1 = column-direction cosine * row-spacing (PixelSpacing[0], between rows),
-      - col 2 = slice-normal * inter-slice spacing (distance between consecutive
-        ImagePositionPatient along the normal),
-    and the translation is the first slice's ImagePositionPatient - all in LPS,
+    Construction (nibabel "Defining the affine",
+    https://nipy.org/nibabel/dicom/dicom_orientation.html): columns of the 3x3
+    are the direction cosines scaled by spacing -
+      - col 0 = IOP[3:6] (col-direction) * PixelSpacing[0] (row-spacing, Δr):
+                moving along voxel axis 0 (row index) steps Δr mm in the col-direction.
+      - col 1 = IOP[0:3] (row-direction) * PixelSpacing[1] (col-spacing, Δc):
+                moving along voxel axis 1 (col index) steps Δc mm in the row-direction.
+      - col 2 = slice-normal * whole-series average inter-slice spacing: signed
+                distance (T_N - T_1)/(N-1) where T_i = ImagePositionPatient of
+                slice i; preserves sign (direction) along the normal.
+    The translation is the first slice's ImagePositionPatient. All in LPS,
     then negated on the L/P axes for RAS+.
 
     Raises ValueError (spec §11.4) when a multi-slice series lacks the geometry tags
@@ -207,22 +211,30 @@ def series_affine(ordered_datasets: list[Any]) -> np.ndarray:
     row_spacing, col_spacing = float(spacing[0]), float(spacing[1])
     pos0 = np.asarray(ipp, dtype=float)
 
-    # Inter-slice spacing: signed distance between the first two slices along the
-    # normal. Single-slice series default to row-spacing (no z extent to measure).
+    # Inter-slice spacing: whole-series average (T_N - T_1) / (N-1), the signed
+    # displacement along the normal from first to last slice divided by the number
+    # of gaps (nibabel DICOM-orientation multi-slice convention). This equals the
+    # per-gap spacing for uniform series (the normal case) and is well-defined for
+    # slightly non-uniform series. Single-slice series default to row-spacing.
     if len(ordered_datasets) >= 2:
-        ipp_next = getattr(ordered_datasets[1], "ImagePositionPatient", None)
-        if ipp_next is None:
+        ipp_last = getattr(ordered_datasets[-1], "ImagePositionPatient", None)
+        if ipp_last is None:
             raise ValueError(
                 "DICOM series slice is missing ImagePositionPatient; cannot derive "
                 "inter-slice spacing for a multi-slice NIfTI volume."
             )
-        slice_spacing = float(np.dot(np.asarray(ipp_next, dtype=float) - pos0, normal))
+        n_gaps = len(ordered_datasets) - 1
+        slice_spacing = float(np.dot(np.asarray(ipp_last, dtype=float) - pos0, normal) / n_gaps)
     else:
         slice_spacing = row_spacing
 
+    # Build in-plane affine columns following DICOM/nibabel convention
+    # (https://nipy.org/nibabel/dicom/dicom_orientation.html):
+    #   col 0 -> voxel axis 0 (row index r): col-direction (IOP[3:6]) * row-spacing (dr)
+    #   col 1 -> voxel axis 1 (col index c): row-direction (IOP[0:3]) * col-spacing (dc)
     affine = np.eye(4, dtype=float)
-    affine[:3, 0] = row_dir * col_spacing
-    affine[:3, 1] = col_dir * row_spacing
+    affine[:3, 0] = col_dir * row_spacing
+    affine[:3, 1] = row_dir * col_spacing
     affine[:3, 2] = normal * slice_spacing
     affine[:3, 3] = pos0
     # LPS (DICOM) → RAS+ (nibabel/NIfTI): negate the L and P (x, y) axes.

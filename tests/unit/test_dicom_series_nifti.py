@@ -43,6 +43,62 @@ def test_C11_series_groups_sorts_stacks_with_affine(tmp_path):
     assert np.allclose(vol.affine, affine)
 
 
+def test_series_affine_anisotropic_spacing(tmp_path):
+    """Regression guard: in-plane affine columns must use the correct spacing↔direction
+    pairing (nibabel DICOM-orientation convention).
+
+    Geometry: axial IOP=[1,0,0,0,1,0], PixelSpacing=[2.0, 3.0] (row-spacing=2,
+    col-spacing=3), slices at z=0, 2, 4.
+
+    Expected RAS+ affine:
+      col 0 (+1 row index):  [0, -2, 0]   (col-dir [0,1,0] * row-spacing 2, Y-flipped)
+      col 1 (+1 col index):  [-3, 0, 0]   (row-dir [1,0,0] * col-spacing 3, X-flipped)
+      col 2 (+1 slice):      [0, 0, 2]    (z-step 2, z unaffected by X/Y flip)
+      col 3 (translation):   [-10, -20, 0] (first IPP [10,20,0] with X,Y flip)
+
+    The BUGGY (pre-fix) code swaps col 0 and col 1, giving [-3,0,0] and [0,-2,0].
+    """
+    from tests.unit.test_dicom_decode import _make_ct
+
+    series = "1.2.3.aniso"
+    paths = []
+    for z in (4.0, 0.0, 2.0):  # deliberately unsorted
+        p = _make_ct(
+            tmp_path,
+            np.full((4, 4), 10, np.int16),
+            signed=1,
+            name=f"aniso_z{z}.dcm",
+        )
+        ds = pydicom.dcmread(p)
+        ds.SeriesInstanceUID = series
+        ds.ImageOrientationPatient = [1, 0, 0, 0, 1, 0]
+        ds.PixelSpacing = [2.0, 3.0]  # row-spacing=2, col-spacing=3
+        ds.ImagePositionPatient = [10, 20, z]  # IPP shifted to [10,20,z]
+        ds.save_as(p, enforce_file_format=True)
+        paths.append(p)
+
+    groups = group_series(paths)
+    ordered = groups[series]
+    affine = series_affine(ordered)
+
+    # +1 row index -> col-dir [0,1,0] * row-spacing 2 -> LPS-P=2, RAS-Y=-2
+    assert np.allclose(affine[:3, 0], [0.0, -2.0, 0.0]), (
+        f"col 0 (row-index step) expected [0,-2,0], got {affine[:3, 0]}"
+    )
+    # +1 col index -> row-dir [1,0,0] * col-spacing 3 -> LPS-L=3, RAS-X=-3
+    assert np.allclose(affine[:3, 1], [-3.0, 0.0, 0.0]), (
+        f"col 1 (col-index step) expected [-3,0,0], got {affine[:3, 1]}"
+    )
+    # +1 slice → z-step 2 (whole-series avg: (4-0)/(3-1)=2), z unaffected by X/Y flip
+    assert np.allclose(affine[:3, 2], [0.0, 0.0, 2.0]), (
+        f"col 2 (slice step) expected [0,0,2], got {affine[:3, 2]}"
+    )
+    # translation = first IPP [10,20,0] with LPS→RAS X,Y negation
+    assert np.allclose(affine[:3, 3], [-10.0, -20.0, 0.0]), (
+        f"col 3 (translation) expected [-10,-20,0], got {affine[:3, 3]}"
+    )
+
+
 def _make_rle(binary_mask):
     import pycocotools.mask as mask_utils
 
