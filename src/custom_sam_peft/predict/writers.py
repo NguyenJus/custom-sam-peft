@@ -8,13 +8,16 @@ from __future__ import annotations
 import json
 import subprocess
 from pathlib import Path
-from typing import Any, Literal
+from typing import TYPE_CHECKING, Any, Literal
 
 import numpy as np
 import pycocotools.mask as mask_utils
 from PIL import Image
 
 import custom_sam_peft
+
+if TYPE_CHECKING:
+    from custom_sam_peft.data.spatial_meta import SpatialMeta
 
 
 def encode_rle_dict(mask: np.ndarray[Any, np.dtype[np.uint8]]) -> dict[str, Any]:
@@ -143,7 +146,7 @@ def write_image_id_map(id_to_path: dict[int, Path], output_dir: Path) -> None:
 
 def write_geotiff_mask(
     mask: np.ndarray[Any, np.dtype[np.uint8]],
-    meta: Any,
+    meta: SpatialMeta,
     out_path: Path,
 ) -> None:
     """Write a same-extent GeoTIFF mask carrying the source CRS + affine (spec §7.1).
@@ -171,6 +174,46 @@ def write_geotiff_mask(
         nodata=nodata_val,
     ) as dst:
         dst.write(arr, 1)
+
+
+def write_geotiff_masks(
+    all_predictions: list[dict[str, Any]],
+    id_to_spatial_meta: dict[int, SpatialMeta],
+    id_to_stem: dict[int, str],
+    originals: dict[int, tuple[int, int]],
+    output_dir: Path,
+) -> None:
+    """Emit one GeoTIFF mask per prediction entry for geo-source images (spec §7.1),
+    alongside PNG/RLE. Mirrors the PNG mask naming (<stem>_<cat>_<inst>.tif).
+
+    No-ops when ``id_to_spatial_meta`` is empty.
+    """
+    if not id_to_spatial_meta:
+        return
+
+    from PIL import Image as _PILImage
+
+    masks_dir = Path(output_dir) / "masks"
+    masks_dir.mkdir(parents=True, exist_ok=True)
+    inst_counter_geo: dict[tuple[int, int], int] = {}
+    for entry in all_predictions:
+        image_id = int(entry["image_id"])
+        geo_meta = id_to_spatial_meta.get(image_id)
+        if geo_meta is None:
+            continue
+        cat_id = int(entry["category_id"])
+        key = (image_id, cat_id)
+        inst_idx = inst_counter_geo.get(key, 0)
+        inst_counter_geo[key] = inst_idx + 1
+        stem = id_to_stem[image_id]
+        tif_file = masks_dir / f"{stem}_{cat_id}_{inst_idx}.tif"
+        mask_arr = decode_rle_to_uint8(entry["segmentation"])
+        h, w = originals[image_id]
+        if mask_arr.shape != (h, w):
+            pil_mask = _PILImage.fromarray(mask_arr * 255)
+            pil_mask = pil_mask.resize((w, h), _PILImage.Resampling.NEAREST)
+            mask_arr = (np.array(pil_mask) > 127).astype(np.uint8)
+        write_geotiff_mask(mask_arr, geo_meta, tif_file)
 
 
 def write_run_json(run_meta: dict[str, Any], output_dir: Path) -> None:

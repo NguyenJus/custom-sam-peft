@@ -795,8 +795,7 @@ def run_predict(opts: PredictOptions) -> PredictReport:
     opts.output.mkdir(parents=True, exist_ok=True)
 
     from custom_sam_peft.predict.writers import (
-        decode_rle_to_uint8,
-        write_geotiff_mask,
+        write_geotiff_masks,
         write_image_id_map,
         write_predictions,
         write_run_json,
@@ -812,30 +811,7 @@ def run_predict(opts: PredictOptions) -> PredictReport:
 
     # GeoTIFF masks — emitted alongside PNG/RLE for geo source images (spec §7.1).
     # One GeoTIFF per prediction entry, parallel to the PNG naming convention.
-    if id_to_spatial_meta:
-        from PIL import Image as _PILImage
-
-        masks_dir = opts.output / "masks"
-        masks_dir.mkdir(parents=True, exist_ok=True)
-        inst_counter_geo: dict[tuple[int, int], int] = {}
-        for entry in all_predictions:
-            image_id = int(cast(int, entry["image_id"]))
-            geo_meta = id_to_spatial_meta.get(image_id)
-            if geo_meta is None:
-                continue
-            cat_id = int(cast(int, entry["category_id"]))
-            key = (image_id, cat_id)
-            inst_idx = inst_counter_geo.get(key, 0)
-            inst_counter_geo[key] = inst_idx + 1
-            stem = id_to_stem[image_id]
-            tif_file = masks_dir / f"{stem}_{cat_id}_{inst_idx}.tif"
-            mask_arr = decode_rle_to_uint8(entry["segmentation"])  # type: ignore[arg-type]
-            h, w = originals[image_id]
-            if mask_arr.shape != (h, w):
-                pil_mask = _PILImage.fromarray(mask_arr * 255)
-                pil_mask = pil_mask.resize((w, h), _PILImage.Resampling.NEAREST)
-                mask_arr = (np.array(pil_mask) > 127).astype(np.uint8)
-            write_geotiff_mask(mask_arr, geo_meta, tif_file)
+    write_geotiff_masks(all_predictions, id_to_spatial_meta, id_to_stem, originals, opts.output)
 
     if opts.visualize:
         from custom_sam_peft.predict.visualize import write_visualization
