@@ -18,7 +18,12 @@ from rich import print as rprint
 
 from custom_sam_peft.cli._config_rewrite import _rewrite_sizing_block
 from custom_sam_peft.cli._logging import configure_logging
-from custom_sam_peft.cli._options import VerboseOpt
+from custom_sam_peft.cli._options import (
+    ClassImbalanceChoice,
+    IntensityChoice,
+    PresetChoice,
+    VerboseOpt,
+)
 from custom_sam_peft.config.loader import load_config
 from custom_sam_peft.config.schema import ClassImbalance, Intensity, Preset
 from custom_sam_peft.presets import decide_preset
@@ -207,8 +212,8 @@ def init(
         "--template",
         help=f"Starter config template. One of: {', '.join(TEMPLATES)}.",
     ),
-    preset: str = typer.Option(
-        "natural",
+    preset: PresetChoice = typer.Option(
+        PresetChoice.natural,
         "--preset",
         case_sensitive=False,
         help=(
@@ -216,14 +221,14 @@ def init(
             "microscopy, none, custom."
         ),
     ),
-    intensity: str = typer.Option(
-        "medium",
+    intensity: IntensityChoice = typer.Option(
+        IntensityChoice.medium,
         "--intensity",
         case_sensitive=False,
         help="Augmentation intensity tier. One of: safe, medium, aggressive.",
     ),
-    class_imbalance: str = typer.Option(
-        "balanced",
+    class_imbalance: ClassImbalanceChoice = typer.Option(
+        ClassImbalanceChoice.balanced,
         "--class-imbalance",
         case_sensitive=False,
         help="Loss-bundle class-imbalance tier. One of: balanced, moderate, severe.",
@@ -283,9 +288,9 @@ def init(
         run_init(
             template,
             output,
-            preset=preset.lower(),
-            intensity=intensity.lower(),
-            class_imbalance=class_imbalance.lower(),
+            preset=preset.value,
+            intensity=intensity.value,
+            class_imbalance=class_imbalance.value,
             force=force,
         )
     except ValueError as e:

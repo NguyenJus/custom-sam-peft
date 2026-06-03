@@ -33,6 +33,33 @@ class Split(StrEnum):
     test = "test"
 
 
+class PresetChoice(StrEnum):
+    """Augmentation/loss domain preset for `init --preset`."""
+
+    natural = "natural"
+    medical = "medical"
+    satellite = "satellite"
+    microscopy = "microscopy"
+    none = "none"
+    custom = "custom"
+
+
+class IntensityChoice(StrEnum):
+    """Augmentation intensity tier for `init --intensity`."""
+
+    safe = "safe"
+    medium = "medium"
+    aggressive = "aggressive"
+
+
+class ClassImbalanceChoice(StrEnum):
+    """Loss-bundle class-imbalance tier for `init --class-imbalance`."""
+
+    balanced = "balanced"
+    moderate = "moderate"
+    severe = "severe"
+
+
 def discover_config(checkpoint: Path) -> Path:
     """Walk up from *checkpoint* to the nearest sibling/ancestor config.yaml.
 
