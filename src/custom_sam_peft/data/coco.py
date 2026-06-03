@@ -210,7 +210,7 @@ class COCODataset:
         """
         rec = self._coco.loadImgs([image_id])[0]
         h, w = rec.get("height"), rec.get("width")
-        if h is not None and w is not None:
+        if h and w:
             return int(h), int(w)
         from PIL import Image as PILImage
 
@@ -260,8 +260,8 @@ class COCODataset:
 
         Returns ``(bboxes_xyxy, masks, class_labels)`` in WINDOW-LOCAL coords.
         """
-        _image_id, rec, anns, win = raw
-        h, w = int(rec["height"]), int(rec["width"])
+        image_id, _rec, anns, win = raw
+        h, w = self._image_hw(image_id)
         bboxes_xyxy: list[list[float]] = []
         masks: list[np.ndarray[Any, Any]] = []
         class_labels: list[int] = []
