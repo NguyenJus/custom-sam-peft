@@ -20,7 +20,7 @@ from custom_sam_peft.runs.bundle import run_export
 def export(
     checkpoint: Path = typer.Option(..., "--checkpoint", help="Path to adapter checkpoint."),
     merge: bool = typer.Option(False, "--merge", help="Also export merged full-model weights."),
-    output: Path | None = typer.Option(None, "--output", help="Output directory."),
+    output: Path = typer.Option(..., "--output", help="Output directory (created if missing)."),
     config: Path | None = typer.Option(None, "--config", help="Explicit config path."),
     verbose: VerboseOpt = False,
     progress: ProgressOpt = Progress.auto,
@@ -38,11 +38,8 @@ def export(
     config_path = config if config is not None else discover_config(checkpoint)
     cfg = load_config(config_path)
 
-    try:
-        with progress_session(kind=ProgressKind.EXPORT_MERGE, total_batches_per_epoch=0, mode=mode):
-            out = run_export(cfg, checkpoint, merge=merge, output=output)
-    except ValueError as e:
-        raise typer.BadParameter(str(e), param_hint="--output") from e
+    with progress_session(kind=ProgressKind.EXPORT_MERGE, total_batches_per_epoch=0, mode=mode):
+        out = run_export(cfg, checkpoint, merge=merge, output=output)
 
     if merge:
         rprint(f"[green]merged[/green] {out}")
