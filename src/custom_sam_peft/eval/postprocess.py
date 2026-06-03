@@ -42,20 +42,14 @@ def _upsample_mask_logits(masks_logits: Tensor, original_hw: tuple[int, int]) ->
     ).squeeze(1)
 
 
-def _logits_to_rle(mask_bin: np.ndarray[tuple[int, int], np.dtype[np.uint8]]) -> dict[str, object]:
-    """mask_bin: (H, W) bool/uint8. Returns pycocotools RLE dict with ascii counts."""
-    rle: dict[str, object] = mask_utils.encode(np.asfortranarray(mask_bin.astype(np.uint8)))
-    counts = rle["counts"]
-    rle["counts"] = counts.decode("ascii") if isinstance(counts, bytes) else counts
-    return rle
-
-
 def queries_to_coco_results(
     outputs: dict[str, Tensor],
     image_id: int,
     category_id: int,
     original_hw: tuple[int, int],
     mask_threshold: float = 0.0,
+    *,
+    max_dets: int | None = None,
 ) -> list[dict[str, object]]:
     """Convert one per-class forward output into a list of COCO results entries.
 
@@ -67,7 +61,14 @@ def queries_to_coco_results(
     Masks are bilinear-upsampled to ``original_hw`` and binarized at
     ``mask_threshold`` on the logits.
 
-    All queries are returned; no filtering or NMS applied.
+    When ``max_dets`` is given, keep only queries whose score is >= the
+    ``max_dets``-th-highest score (a threshold, NOT exactly ``max_dets`` —
+    boundary ties are kept as a superset). This is mAP-EXACT: pycocotools'
+    COCOeval already truncates to ``max(params.maxDets)`` (=100) detections by
+    score per (image, category), so dropping the strictly-lower-scored remainder
+    cannot change the metric. Citation: pycocotools maxDets=[1,10,100] semantics.
+    ``max_dets=None`` (default) returns ALL queries unchanged (predict/visualize
+    need every query).
     """
     pred_logits = outputs["pred_logits"]
     pred_boxes = outputs["pred_boxes"]
@@ -93,6 +94,20 @@ def queries_to_coco_results(
             "(pred_logits or presence_logit_dec contains NaN/Inf)"
         )
 
+    # --- top-N filter (mAP-exact; spec §3.3) ---
+    # Rank by the SAME score COCOeval uses; keep all queries with score >= the
+    # max_dets-th-highest score (threshold, not exactly max_dets) so the survivor
+    # set is a SUPERSET of whatever 100 the scorer would keep under its own
+    # tie-break. Done BEFORE upsample/transfer/RLE so those costs only touch
+    # survivors.
+    keep_idx: Tensor | None = None
+    if max_dets is not None and n > max_dets:
+        kth = torch.topk(scores, max_dets).values.min()  # the max_dets-th-highest score
+        keep_idx = (scores >= kth).nonzero(as_tuple=False).squeeze(-1)  # (M,), M >= max_dets
+        scores = scores[keep_idx]
+
+    m = scores.shape[0]  # survivor count (== n when no filter / n <= max_dets)
+
     # --- boxes ---
     boxes_norm = pred_boxes.float().squeeze(0)  # (N, 4)
     if not torch.isfinite(boxes_norm).all():
@@ -100,7 +115,9 @@ def queries_to_coco_results(
             "non-finite box coordinates in postprocess; check model outputs "
             "(pred_boxes contains NaN/Inf)"
         )
-    boxes_xywh = _denorm_cxcywh_to_xywh(boxes_norm, original_hw)  # (N, 4)
+    if keep_idx is not None:
+        boxes_norm = boxes_norm[keep_idx]
+    boxes_xywh = _denorm_cxcywh_to_xywh(boxes_norm, original_hw)  # (M, 4)
 
     # --- masks ---
     # Guard the note at the call site: its arguments (int(n), tuple(...)) are
@@ -114,24 +131,38 @@ def queries_to_coco_results(
             "non-finite mask logits in postprocess; check model outputs "
             "(pred_masks contains NaN/Inf)"
         )
+    if keep_idx is not None:
+        masks_logits = masks_logits[keep_idx]
     with profiling.bucket("eval.mask_upsample"):
-        masks_up = _upsample_mask_logits(masks_logits, original_hw)  # (N, H, W)
+        masks_up = _upsample_mask_logits(masks_logits, original_hw)  # (M, H, W)
     with profiling.bucket("eval.transfer_binarize"):
-        masks_bin = (masks_up > mask_threshold).cpu().numpy()  # (N, H, W) bool
+        masks_bin = (masks_up > mask_threshold).cpu().numpy()  # (M, H, W) bool
 
     entries: list[dict[str, object]] = []
     with profiling.bucket("eval.box_transfer"):
         boxes_list = boxes_xywh.cpu().tolist()
         scores_list = scores.cpu().tolist()
+    # Batched RLE: encode all survivor masks in ONE pycocotools call.
+    # masks_bin is (M, H, W) bool; encode wants Fortran (H, W, M) uint8.
     with profiling.bucket("eval.rle_encode"):
-        for i in range(n):
+        if m:
+            masks_fortran = np.asfortranarray(
+                np.ascontiguousarray(masks_bin).transpose(1, 2, 0).astype(np.uint8)
+            )
+            rles = mask_utils.encode(masks_fortran)  # list[M] of RLE dicts
+        else:
+            rles = []
+        for i in range(m):
+            rle = rles[i]
+            counts = rle["counts"]
+            rle["counts"] = counts.decode("ascii") if isinstance(counts, bytes) else counts
             entries.append(
                 {
                     "image_id": int(image_id),
                     "category_id": int(category_id),
                     "bbox": [float(v) for v in boxes_list[i]],
                     "score": float(scores_list[i]),
-                    "segmentation": _logits_to_rle(masks_bin[i]),
+                    "segmentation": rle,
                 }
             )
     return entries

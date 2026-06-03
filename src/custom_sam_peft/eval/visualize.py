@@ -155,7 +155,7 @@ def denormalize_to_rgb(
 def _mask_to_rle(mask: torch.Tensor) -> dict[str, object]:
     """(H, W) bool/uint8 mask -> pycocotools RLE dict with ASCII counts.
 
-    Mirrors eval/postprocess.py::_logits_to_rle's encode + ascii-decode.
+    Inline encode + ascii-decode of a binary mask via pycocotools.
     """
     arr = np.asfortranarray(mask.cpu().numpy().astype(np.uint8))
     rle: dict[str, object] = mask_utils.encode(arr)

@@ -21,7 +21,7 @@ from custom_sam_peft import profiling
 from custom_sam_peft.cli._progress import progress as P
 from custom_sam_peft.config.schema import EvalConfig
 from custom_sam_peft.data.base import Dataset, Example, TextPrompts
-from custom_sam_peft.eval.metrics import MetricsReport, compute_coco_map
+from custom_sam_peft.eval.metrics import MetricsReport, coco_max_dets_cap, compute_coco_map
 from custom_sam_peft.eval.postprocess import queries_to_coco_results
 from custom_sam_peft.models.sam3 import MULTIPLEX_CAP
 from custom_sam_peft.oom import OomDecision, OomLadder, is_cuda_oom
@@ -146,14 +146,18 @@ class Evaluator:
             model.eval()
 
         try:
-            param_device = next(model.parameters()).device
+            _p = next(model.parameters())
+            param_device = _p.device
+            param_dtype = _p.dtype
         except (StopIteration, AttributeError):
             param_device = torch.device("cpu")
-        eval_runtime = Runtime(device=param_device, dtype=torch.float32)
+            param_dtype = torch.float32
+        eval_runtime = Runtime(device=param_device, dtype=param_dtype)
 
         # Replace the old state dict with the shared ladder. effective_K starts at
         # min(MULTIPLEX_CAP, n_classes); micro_batch_size at the resolved cfg.batch_size.
         n_classes = len(dataset.class_names)
+        max_dets_cap = coco_max_dets_cap()  # top-N cap, derived from COCOeval maxDets
         ladder = OomLadder(
             micro_batch_size=int(cfg.batch_size),
             effective_K=min(MULTIPLEX_CAP, n_classes) if n_classes else 1,
@@ -235,6 +239,7 @@ class Evaluator:
                                 cat_idx + 1,
                                 original_hw,
                                 cfg.mask_threshold,
+                                max_dets=max_dets_cap,
                             )
                             chunk_buf.extend(entries)
                         j += K_g  # advance by the ACTUAL group length
