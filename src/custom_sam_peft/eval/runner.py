@@ -117,6 +117,9 @@ def run_eval(
 
     if val_dataset is None:
         cfg_dict = cfg.data.model_dump()
+        # Thread task into the data dict so format-specific builders (e.g. build_hf)
+        # can branch on it without coupling to TrainConfig directly.
+        cfg_dict["task"] = cfg.task
         if split == "test":
             cfg_dict["val"] = cfg_dict["test"]
         elif split == "val" and cfg.data.val_split is not None:

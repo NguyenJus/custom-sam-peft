@@ -14,22 +14,23 @@ import json
 _BACKGROUND_NAMES = frozenset({"background", "bg", "none", "unlabeled"})
 
 
-def build_value_to_label(
-    class_map_path: str,
+def build_value_to_label_from_dict(
+    raw: dict[str, str],
     *,
     ignore_index: int,
     background_class_name: str | None,
 ) -> tuple[list[str], dict[int, int], int]:
-    """Return (class_names, value_to_label, ignore_index).
+    """Return (class_names, value_to_label, ignore_index) from an in-memory dict.
 
-    - class_names: concept names in ASCENDING class_map pixel-value order, with any
-      explicit background class removed. len == K.
-    - value_to_label: pixel value -> GT label, where 0 == background, i+1 == concept
-      with dense_id i. The configured ignore_index value is NOT placed in this map;
-      callers remap it separately (it always wins, SS4.5).
+    `raw` maps str(pixel_value) -> class_name, identical to the JSON format parsed
+    by build_value_to_label. This helper is the shared core; the path-based function
+    parses JSON then delegates here. Used by the semantic HF adapter (SS5.4) to avoid
+    writing a temp file when deriving the map from HF ClassLabel.names.
+
+    - class_names: concept names in ASCENDING pixel-value order, background excluded.
+    - value_to_label: pixel value -> GT label (0=bg, 1..K=concept).
+    - ignore_index: passed through unchanged.
     """
-    with open(class_map_path, encoding="utf-8") as fh:
-        raw: dict[str, str] = json.load(fh)
     # Sort by integer pixel value ascending.
     pairs = sorted(((int(v), name) for v, name in raw.items()), key=lambda kv: kv[0])
 
@@ -51,3 +52,24 @@ def build_value_to_label(
         class_names.append(name)
         value_to_label[value] = dense_id + 1  # +1 for the prepended background channel
     return class_names, value_to_label, ignore_index
+
+
+def build_value_to_label(
+    class_map_path: str,
+    *,
+    ignore_index: int,
+    background_class_name: str | None,
+) -> tuple[list[str], dict[int, int], int]:
+    """Return (class_names, value_to_label, ignore_index).
+
+    - class_names: concept names in ASCENDING class_map pixel-value order, with any
+      explicit background class removed. len == K.
+    - value_to_label: pixel value -> GT label, where 0 == background, i+1 == concept
+      with dense_id i. The configured ignore_index value is NOT placed in this map;
+      callers remap it separately (it always wins, SS4.5).
+    """
+    with open(class_map_path, encoding="utf-8") as fh:
+        raw: dict[str, str] = json.load(fh)
+    return build_value_to_label_from_dict(
+        raw, ignore_index=ignore_index, background_class_name=background_class_name
+    )

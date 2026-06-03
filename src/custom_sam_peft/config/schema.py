@@ -324,6 +324,7 @@ class HFFieldMap(_Strict):
     segmentation: str | None = "objects.segmentation"
     categories_feature: str = "categories"
     bbox_format: Literal["xywh", "xyxy"] = "xyxy"
+    label_map: str | None = None  # cite: #113 -- HF feature holding the (H,W) label image
 
 
 class HFDatasetConfig(_Strict):
