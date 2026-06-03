@@ -24,6 +24,8 @@ import torch
 import typer
 
 from custom_sam_peft import __version__ as _PKG_VERSION
+from custom_sam_peft.cli._logging import configure_logging
+from custom_sam_peft.cli._options import VerboseOpt
 from custom_sam_peft.config.schema import ModelConfig, PEFTConfig
 from custom_sam_peft.oom import is_cuda_oom
 from custom_sam_peft.presets import (
@@ -548,8 +550,10 @@ def calibrate(
     output: Path = typer.Option(Path(CACHE_FILENAME), "--output", help="Cache file path."),
     force: bool = typer.Option(False, "--force", help="Re-probe even if the cache is fresh."),
     config: Path = typer.Option(Path("config.yaml"), "--config", help="Training config YAML path."),
+    verbose: VerboseOpt = False,
 ) -> None:
     """Probe peak VRAM at the config's (method, r, k, batch) and cache the result."""
+    configure_logging(verbose)
     if not torch.cuda.is_available():
         typer.echo(f"ERROR: {_CUDA_HINT}", err=True)
         raise typer.Exit(code=2)

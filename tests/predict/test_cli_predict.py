@@ -1,6 +1,9 @@
 """tests/predict/test_cli_predict.py — Typer-level CLI tests for ``csp predict``.
 
-All 17 test names from Plan Step P6-1.
+Originally the 17 test names from Plan Step P6-1; the Phase-2 flag audit removed the
+``--merge-adapter``/``--no-merge-adapter``/``--device``/``--dtype``/``--seed`` cases
+(merge is now derived from adapter kind, the rest are fixed internal defaults). Those
+removals are covered by ``tests/cli/test_predict_surface.py``.
 """
 
 from __future__ import annotations
@@ -60,22 +63,23 @@ def test_predict_help_exit_zero() -> None:
         "--prompts",
         "--output",
         "--checkpoint",
-        "--merge-adapter",
-        "--no-merge-adapter",
         "--config",
         "--score-threshold",
         "--top-k",
         "--save-masks",
         "--visualize",
-        "--device",
-        "--dtype",
         "--batch-size",
-        "--seed",
         "--dry-run",
         "--verbose",
     }
     missing = expected_flags - declared_flags
     assert not missing, f"missing flags on predict command: {sorted(missing)}"
+
+    # Phase 2 removed these from the CLI surface (merge is derived from adapter
+    # kind; device/dtype/seed are fixed internal defaults). Guard the regression.
+    removed_flags = {"--merge-adapter", "--no-merge-adapter", "--device", "--dtype", "--seed"}
+    present = removed_flags & declared_flags
+    assert not present, f"flags removed in Phase 2 reappeared: {sorted(present)}"
 
 
 # ---------------------------------------------------------------------------
@@ -111,15 +115,8 @@ def test_predict_argv_round_trip_to_options(tmp_path: Path) -> None:
                 "50",
                 "--batch-size",
                 "2",
-                "--seed",
-                "42",
-                "--no-merge-adapter",
                 "--save-masks",
                 "png",
-                "--device",
-                "cpu",
-                "--dtype",
-                "float32",
             ],
             catch_exceptions=False,
         )
@@ -133,11 +130,7 @@ def test_predict_argv_round_trip_to_options(tmp_path: Path) -> None:
         assert opts.score_threshold == pytest.approx(0.5)
         assert opts.top_k == 50
         assert opts.batch_size == 2
-        assert opts.seed == 42
-        assert opts.merge_adapter is False
         assert opts.save_masks == "png"
-        assert opts.device == "cpu"
-        assert opts.dtype == "float32"
         assert opts.prompts == "cat,dog"
 
 
@@ -200,26 +193,6 @@ def test_save_masks_bad_choice_rejected() -> None:
 
 
 # ---------------------------------------------------------------------------
-# 8. --device bad choice
-# ---------------------------------------------------------------------------
-
-
-def test_device_bad_choice_rejected() -> None:
-    result = runner.invoke(app, ["predict", *_REQUIRED, "--device", "gpu"])
-    assert result.exit_code == 2
-
-
-# ---------------------------------------------------------------------------
-# 9. --dtype bad choice
-# ---------------------------------------------------------------------------
-
-
-def test_dtype_bad_choice_rejected() -> None:
-    result = runner.invoke(app, ["predict", *_REQUIRED, "--dtype", "fp16"])
-    assert result.exit_code == 2
-
-
-# ---------------------------------------------------------------------------
 # 10. --checkpoint with missing path
 # ---------------------------------------------------------------------------
 
@@ -243,77 +216,6 @@ def test_checkpoint_lacks_adapter_config_rejected(tmp_path: Path) -> None:
     result = runner.invoke(app, ["predict", *_REQUIRED, "--checkpoint", str(bad_ckpt)])
     assert result.exit_code == 2
     assert "adapter_config.json" in result.output
-
-
-# ---------------------------------------------------------------------------
-# 12. --merge-adapter default is ON
-# ---------------------------------------------------------------------------
-
-
-def test_merge_adapter_default_on(tmp_path: Path) -> None:
-    images_dir = tmp_path / "imgs"
-    images_dir.mkdir()
-    output_dir = tmp_path / "out"
-
-    captured: list[PredictOptions] = []
-
-    def fake_run_predict(opts: PredictOptions) -> PredictReport:
-        captured.append(opts)
-        return PredictReport(n_images=0, n_predictions=0, elapsed_sec=0.0)
-
-    with patch("custom_sam_peft.cli.predict_cmd.run_predict", side_effect=fake_run_predict):
-        runner.invoke(
-            app,
-            [
-                "predict",
-                "--images",
-                str(images_dir),
-                "--prompts",
-                "cat",
-                "--output",
-                str(output_dir),
-            ],
-            catch_exceptions=False,
-        )
-
-    if captured:
-        assert captured[0].merge_adapter is True
-
-
-# ---------------------------------------------------------------------------
-# 13. --no-merge-adapter flips merge_adapter to False
-# ---------------------------------------------------------------------------
-
-
-def test_no_merge_adapter_flips_off(tmp_path: Path) -> None:
-    images_dir = tmp_path / "imgs"
-    images_dir.mkdir()
-    output_dir = tmp_path / "out"
-
-    captured: list[PredictOptions] = []
-
-    def fake_run_predict(opts: PredictOptions) -> PredictReport:
-        captured.append(opts)
-        return PredictReport(n_images=0, n_predictions=0, elapsed_sec=0.0)
-
-    with patch("custom_sam_peft.cli.predict_cmd.run_predict", side_effect=fake_run_predict):
-        runner.invoke(
-            app,
-            [
-                "predict",
-                "--images",
-                str(images_dir),
-                "--prompts",
-                "cat",
-                "--output",
-                str(output_dir),
-                "--no-merge-adapter",
-            ],
-            catch_exceptions=False,
-        )
-
-    if captured:
-        assert captured[0].merge_adapter is False
 
 
 # ---------------------------------------------------------------------------

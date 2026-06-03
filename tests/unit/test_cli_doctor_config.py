@@ -127,7 +127,9 @@ def test_doctor_config_json_output_has_dataset_field(
         result = runner.invoke(app, ["--config", str(valid_config_yaml), "--json"])
 
     assert result.exit_code == 0, result.output
-    blob = json.loads(result.output)
+    # Parse stdout, not the merged `.output` stream: `--config` now emits INFO logs
+    # to stderr (configure_logging, added with -v), which `.output` would interleave.
+    blob = json.loads(result.stdout)
     assert blob["dataset"] is not None
     assert "train_kept" in blob["dataset"]
     assert "val_kept" in blob["dataset"]
@@ -137,5 +139,5 @@ def test_doctor_json_output_dataset_null_without_config() -> None:
     """--json without --config: blob['dataset'] is null."""
     result = runner.invoke(app, ["--json"])
     assert result.exit_code == 0
-    blob = json.loads(result.output)
+    blob = json.loads(result.stdout)
     assert blob["dataset"] is None

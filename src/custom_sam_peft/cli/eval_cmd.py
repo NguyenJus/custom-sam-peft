@@ -12,6 +12,14 @@ from rich import print as rprint
 from rich.console import Console
 
 from custom_sam_peft.cli._logging import configure_logging
+from custom_sam_peft.cli._options import (
+    DryRunOpt,
+    Progress,
+    ProgressOpt,
+    Split,
+    VerboseOpt,
+    discover_config,
+)
 from custom_sam_peft.cli._progress import ProgressKind, progress_session, resolve_mode
 from custom_sam_peft.config.loader import load_config
 from custom_sam_peft.eval.runner import run_eval
@@ -25,7 +33,7 @@ def evaluate(
         "--checkpoint",
         help="Path to adapter checkpoint. Omit to evaluate baseline (zero-shot) SAM.",
     ),
-    split: str = typer.Option("val", "--split", help="Dataset split: val | test."),
+    split: Split = typer.Option(Split.val, "--split", help="Dataset split: val | test."),
     output: Path | None = typer.Option(
         None,
         "--output",
@@ -46,13 +54,9 @@ def evaluate(
         "--export",
         help="After evaluation, export a run bundle.",
     ),
-    verbose: bool = typer.Option(False, "-v", "--verbose", help="Enable DEBUG logging."),
-    progress_flag: str = typer.Option(
-        "auto",
-        "--progress",
-        help="Progress display mode: auto|on|off|plain.",
-        metavar="MODE",
-    ),
+    dry_run: DryRunOpt = False,
+    verbose: VerboseOpt = False,
+    progress: ProgressOpt = Progress.auto,
     interactive: bool = typer.Option(
         False,
         "--interactive",
@@ -69,14 +73,25 @@ def evaluate(
         _interactive.run_eval_interactive(output=output, force=False)
         return
     if config is None:
-        raise typer.BadParameter("--config is required", param_hint="--config")
-    if split not in ("val", "test"):
-        raise typer.BadParameter(f"--split must be val|test; got {split!r}", param_hint="--split")
+        if checkpoint is not None:
+            config = discover_config(checkpoint)
+        else:
+            raise typer.BadParameter(
+                "--config is required for baseline (zero-shot) eval",
+                param_hint="--config",
+            )
     cfg = load_config(config)
     split_lit = cast(Literal["val", "test"], split)
 
+    if dry_run:
+        rprint(
+            f"[cyan]dry-run[/cyan] config={config} run.name={cfg.run.name} "
+            f"output_dir={cfg.run.output_dir}"
+        )
+        return
+
     mode = resolve_mode(
-        progress_flag if progress_flag != "auto" else None,
+        None if progress is Progress.auto else progress.value,
         os.environ,
         sys.stdout.isatty(),
         Console().is_jupyter,

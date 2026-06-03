@@ -238,7 +238,9 @@ def test_doctor_json_with_config_has_loss_block(tmp_path) -> None:
     )
     res = CliRunner().invoke(app, ["doctor", "--config", str(cfg_path), "--json"])
     assert res.exit_code == 0
-    body = json.loads(_plain(res.output))
+    # Parse stdout, not the merged `.output` stream: `--config` now emits INFO logs
+    # to stderr (configure_logging, added with -v), which `.output` would interleave.
+    body = json.loads(_plain(res.stdout))
     assert "resolved_config" in body
     assert "loss" in body["resolved_config"]
     loss = body["resolved_config"]["loss"]
@@ -269,7 +271,7 @@ def test_doctor_json_without_config_no_loss_block() -> None:
 
     res = CliRunner().invoke(app, ["doctor", "--json"])
     assert res.exit_code == 0
-    body = json.loads(_plain(res.output))
+    body = json.loads(_plain(res.stdout))
     if "resolved_config" in body:
         assert "loss" not in body["resolved_config"]
 

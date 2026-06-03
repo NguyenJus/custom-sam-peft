@@ -54,10 +54,15 @@ def run_export(
 ) -> Path:
     """Load an adapter from *checkpoint* and export it.
 
+    The CLI ``export`` command always supplies *output* explicitly.  Library
+    callers (``train --export``, ``eval --export``) may omit it; in that case a
+    safe default is used: ``<run_dir>/merged`` when *merge* is True, or
+    ``<run_dir>/exported`` when *merge* is False.
+
     When *merge* is True, LoRA deltas are folded into the base weights and the
-    merged ``state_dict`` is written to *output* (default: ``<run_dir>/merged``).
-    When *merge* is False, the raw adapter files are copied to *output*
-    (required when not merging, to avoid overwriting the source).
+    merged ``state_dict`` is written directly into *output* (no nested
+    sub-directory).  When *merge* is False, the raw adapter files are copied to
+    *output*.
 
     Returns the path to the written output directory.
     """
@@ -74,11 +79,7 @@ def run_export(
         out = output if output is not None else (run_dir / "merged")
         save_merged(wrapper, out)
     else:
-        if output is None:
-            raise ValueError(
-                "output is required when not merging (refusing to overwrite source checkpoint)"
-            )
-        out = output
+        out = output if output is not None else (run_dir / "exported")
         save_adapter(wrapper, out)
 
     return out

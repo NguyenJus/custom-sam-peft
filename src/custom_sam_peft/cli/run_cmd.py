@@ -22,6 +22,18 @@ from rich.console import Console
 
 from custom_sam_peft.cli._host_ram import format_host_ram_message
 from custom_sam_peft.cli._logging import configure_logging
+from custom_sam_peft.cli._options import (
+    ConfigArg,
+    DryRunOpt,
+    HiddenConfigOpt,
+    NameOpt,
+    OutputDirOpt,
+    OverrideOpt,
+    Progress,
+    ProgressOpt,
+    VerboseOpt,
+    merge_cli_overrides,
+)
 from custom_sam_peft.cli._progress import ProgressKind, ProgressMode, progress_session, resolve_mode
 from custom_sam_peft.cli._time_limit import format_time_limit_message
 from custom_sam_peft.cli.init_cmd import run_init
@@ -288,7 +300,8 @@ def _finalize(
 
 
 def run(
-    config: Path = typer.Option(..., "--config", help="Path to config YAML."),
+    config_arg: ConfigArg = None,
+    config_opt: HiddenConfigOpt = None,
     resume: str | None = typer.Option(
         None,
         "--resume",
@@ -316,13 +329,12 @@ def run(
             "metrics/bundle. Runs NO training. Requires --resume; rejects --time-limit."
         ),
     ),
-    verbose: bool = typer.Option(False, "-v", "--verbose", help="Enable DEBUG logging."),
-    progress_flag: str = typer.Option(
-        "auto",
-        "--progress",
-        help="Progress display mode: auto|on|off|plain.",
-        metavar="MODE",
-    ),
+    override: OverrideOpt = [],  # noqa: B006 — Typer creates a new list per invocation
+    name: NameOpt = None,
+    output_dir: OutputDirOpt = None,
+    dry_run: DryRunOpt = False,
+    verbose: VerboseOpt = False,
+    progress: ProgressOpt = Progress.auto,
     visualize: bool = typer.Option(
         True,
         "--visualize/--no-visualize",
@@ -334,13 +346,18 @@ def run(
     Use this when you want the full pipeline in one command. The Colab
     notebook uses `run` for the canonical end-to-end flow.
     """
+    config = config_arg if config_arg is not None else config_opt
+    if config is None:
+        rprint("[red]error[/red] a config path is required (positional or --config).")
+        raise typer.Exit(code=1)
     configure_logging(verbose)
     if not config.is_file():
         rprint(
             f"[yellow]{config} not initialized — auto-init (formula, no probe) then run.[/yellow]"
         )
         run_init("coco-text-lora", config, force=False)
-    cfg = load_config(config)
+    merged = merge_cli_overrides(override, name=name, output_dir=output_dir)
+    cfg = load_config(config, overrides=merged)
     cfg = cfg.model_copy(update={"eval": cfg.eval.model_copy(update={"visualize": visualize})})
     if finalize:
         if resume is None:
@@ -360,8 +377,16 @@ def run(
         cfg = cfg.model_copy(
             update={"train": cfg.train.model_copy(update={"time_limit": time_limit})}
         )
+
+    if dry_run:
+        rprint(
+            f"[cyan]dry-run[/cyan] config={config} run.name={cfg.run.name} "
+            f"output_dir={cfg.run.output_dir}"
+        )
+        return
+
     mode = resolve_mode(
-        progress_flag if progress_flag != "auto" else None,
+        None if progress is Progress.auto else progress.value,
         os.environ,
         sys.stdout.isatty(),
         Console().is_jupyter,
