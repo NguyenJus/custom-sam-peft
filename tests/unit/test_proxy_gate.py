@@ -17,23 +17,19 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
-from unittest.mock import patch
 
 import numpy as np
 import pytest
 
 from custom_sam_peft.eval.proxy_gate import (
-    GateResult,
-    ScaleCheck,
     SweepRecord,
     adjacent_inversion_check,
     compute_spearman,
+    evaluate_gate,
     restrict_to_nonzero_exact,
     scale_check,
-    evaluate_gate,
 )
 from custom_sam_peft.eval.sweep import discover_checkpoints, run_sweep
-
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -420,7 +416,7 @@ class TestRunSweep:
 
         records = run_sweep(tmp_path / "checkpoints", fake_eval)
         assert len(records) == 3
-        assert len(call_log) == 6  # 3 checkpoints × 2 calls each
+        assert len(call_log) == 6  # 3 checkpoints x 2 calls each
 
     def test_exact_env_var_toggled_correctly(self, tmp_path: Path):
         """CSP_LITE_EXACT_MAP must be set to '1' for exact, unset for proxy."""

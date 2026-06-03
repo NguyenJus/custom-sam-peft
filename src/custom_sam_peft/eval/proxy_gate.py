@@ -165,7 +165,8 @@ def compute_spearman(
     result = spearmanr(x, y)
     rho = float(result.statistic)
     # scipy returns nan when variance is zero; propagate that faithfully.
-    return rho if math.isfinite(rho) or math.isnan(rho) else float("nan")
+    # spearmanr only returns finite or nan values, never ±inf.
+    return rho
 
 
 def restrict_to_nonzero_exact(records: list[SweepRecord]) -> list[SweepRecord]:
