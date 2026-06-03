@@ -213,18 +213,19 @@ def run_eval(
         out.mkdir(parents=True, exist_ok=True)
         report, per_example_iou = evaluator.evaluate(wrapper, dataset, return_per_example_iou=True)
 
-        (out / "metrics.json").write_text(
-            json.dumps(
-                {
-                    "overall": report.overall,
-                    "per_class": report.per_class,
-                    "n_images": report.n_images,
-                    "n_predictions": report.n_predictions,
-                },
-                indent=2,
-            )
-        )
+        payload: dict[str, object] = {
+            "overall": report.overall,
+            "per_class": report.per_class,
+            "n_images": report.n_images,
+            "n_predictions": report.n_predictions,
+        }
+        if cfg.task == "semantic":
+            payload = {"task": "semantic", **payload}
+        (out / "metrics.json").write_text(json.dumps(payload, indent=2))
         if eval_cfg.save_predictions and eval_cfg.mode == "full" and cfg.task != "semantic":
+            # cfg.task != "semantic" guarantees evaluator is an Evaluator at runtime;
+            # cast is a static-only assertion (no runtime cost). isinstance is avoided
+            # because tests monkeypatch Evaluator to a lambda, which isinstance rejects.
             (out / "predictions.json").write_text(
                 json.dumps(cast(Evaluator, evaluator)._last_predictions)
             )
@@ -239,18 +240,19 @@ def run_eval(
 
     out.mkdir(parents=True, exist_ok=True)
     report, per_example_iou = evaluator.evaluate(wrapper, dataset, return_per_example_iou=True)
-    (out / "metrics.json").write_text(
-        json.dumps(
-            {
-                "overall": report.overall,
-                "per_class": report.per_class,
-                "n_images": report.n_images,
-                "n_predictions": report.n_predictions,
-            },
-            indent=2,
-        )
-    )
+    payload2: dict[str, object] = {
+        "overall": report.overall,
+        "per_class": report.per_class,
+        "n_images": report.n_images,
+        "n_predictions": report.n_predictions,
+    }
+    if cfg.task == "semantic":
+        payload2 = {"task": "semantic", **payload2}
+    (out / "metrics.json").write_text(json.dumps(payload2, indent=2))
     if cfg.task != "semantic":
+        # cfg.task != "semantic" guarantees evaluator is an Evaluator at runtime;
+        # cast is a static-only assertion (no runtime cost). isinstance is avoided
+        # because tests monkeypatch Evaluator to a lambda, which isinstance rejects.
         cast(Evaluator, evaluator)._maybe_save_predictions(
             cast(Evaluator, evaluator)._last_predictions, run_dir=out
         )
