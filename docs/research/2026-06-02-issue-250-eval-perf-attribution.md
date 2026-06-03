@@ -176,5 +176,64 @@ removal (#1) — then removes the Phase-1 instrumentation (`eval/_profile.py`,
 
 ### Before/After
 
-*To be filled by Phase 2 Task 2.6 (re-profile after the filter + batching land; mAP
-proven unchanged).*
+Re-profiled on the same RTX 5070 Ti, same 8-image COCO `val2017` subset, same
+zero-shot baseline (`checkpoint=None`), same instrumented profiler driver — the
+**after** run uses the post-Phase-2 code (top-`max(maxDets)` filter + batched
+transfer/RLE + dtype-label fix) with the Phase-1 timers temporarily restored for an
+apples-to-apples bucket comparison, then reverted (uncommitted).
+
+| bucket (timed) | before (s) | after (s) | after/before |
+| --- | ---: | ---: | ---: |
+| `forward` (GPU) | 13.978 | 13.587 | 0.97× (unchanged) |
+| `mask_upsample` | 1.369 | 0.696 | 0.51× |
+| `transfer_binarize` | 9.442 | 5.805 | 0.61× |
+| `rle_encode` | 89.100 | 48.513 | 0.54× |
+| `coco_aggregate` | 0.077 | 0.049 | 0.64× |
+| **TOTAL(timed)** | **113.966** | **68.650** | **0.60× → 1.66× speedup** |
+
+**Eval timed wall-time: 113.97 s → 68.65 s — a 1.66× speedup (−40%)** on this
+config, with the GPU `forward` bucket unchanged (as expected — the levers touch only
+postprocess). Per-image timed cost drops 14.25 s → 8.58 s.
+
+**mAP proven unchanged (the optimization is free).** Full `MetricsReport` is
+bit-identical before vs after:
+
+| metric | before | after |
+| --- | ---: | ---: |
+| `mAP` | 0.0 | 0.0 |
+| `mAP_50` | 0.0 | 0.0 |
+| `mAP_75` | 0.0 | 0.0 |
+| `per_class` | `{}` | `{}` |
+
+The mAP is 0.0 because this is the **zero-shot** baseline (no PEFT adapter), so the
+before/after equality is empirically trivial here. The substantive mAP-exactness
+proof is therefore **analytic + unit-tested**, not from this run: pycocotools'
+COCOeval truncates to `max(params.maxDets)` = 100 detections by score per
+`(image, category)`, so dropping strictly-lower-scored survivors cannot move the
+metric. This is locked in by `tests/unit/test_eval_postprocess.py`
+(`test_filter_keeps_top_cap_by_score`, `test_filter_boundary_ties_keep_superset`,
+`test_filter_no_op_when_n_le_cap`, `test_filter_n_zero_returns_empty`) and the
+batched-RLE characterization test (`test_batched_rle_decodes_identically`).
+
+**Filter is live and tie-safe.** Emitted detections drop **128 000 → 64 635**
+(8 images × 80 classes × N): the filter caps each `(image, category)` group at the
+top-100 by score, and the +635 over a hard `8 × 80 × 100 = 64 000` is the **tie-safe
+superset** — boundary ties at the 100th-highest score are kept (`score >= kth`), never
+truncated below the cap. mAP is unaffected because COCOeval re-truncates to 100 by
+score anyway.
+
+**Per-lever realized contribution.**
+
+- **Top-`max(maxDets)` filter (#2a) — dominant.** Halving the survivor count
+  (N=200 → ~100) roughly halves every postprocess bucket: `mask_upsample` 0.51×,
+  `transfer_binarize` 0.61×, `rle_encode` 0.54×. This is the bulk of the 1.66×.
+- **Batched transfer + RLE (#3) — marginal here.** Per-mask, RLE cost is essentially
+  flat (before 89.100 s / 128 000 ≈ 696 µs/mask; after 48.513 s / 64 635 ≈ 750 µs/mask).
+  `pycocotools mask_utils.encode` is **C-encode-bound by mask area**, not Python-loop
+  bound, so collapsing the per-query loop into one batched call removes little wall-time
+  on full-resolution masks (the `(M,H,W) → Fortran (H,W,M)` copy offsets the loop saving).
+  The change remains valuable as a bitwise-identical simplification and avoids per-query
+  Python overhead that would matter more for many small masks, but on this config the
+  realized win comes from the filter.
+- **Dtype-label removal (#1) — cosmetic.** Zero runtime effect (confirmed: eval
+  `forward` bucket unchanged); the eval forward was already bf16.
