@@ -67,18 +67,34 @@ def test_preprocess_tile_pads_with_normalize_zero_not_literal_zero() -> None:
 
 
 def test_eval_per_tile_input_is_byte_identical_to_predict() -> None:
-    """MANDATORY parity guard (design C): the eval per-tile model-input tensor must be
-    allclose to predict's per-tile input for an IDENTICAL native-res crop. Both paths
-    run the SAME shared preprocess_tile on the SAME crop, so the tensors must match —
-    this is the regression guard that eval's pad value equals predict's."""
-    transform = _pad_only_transform()
+    """MANDATORY parity guard (design C): predict's downscale=True transform and eval's
+    downscale=False transform must produce BYTE-IDENTICAL tensors on a real tile crop.
+
+    The faithfulness guarantee rests on iter_windows tiles having their longest edge
+    exactly 1008, so LongestMaxSize(1008) is a no-op inside the downscale=True transform.
+    This test uses a 756x1008 crop (one axis < 1008, longest edge == 1008) — the
+    DISTINGUISHING case where the two transforms would diverge if LongestMaxSize were
+    ever NOT a no-op.  Both must produce identical (3, 1008, 1008) tensors.
+    """
+    # predict uses downscale=True (its default); eval uses downscale=False
+    predict_transform = build_eval_transforms(
+        SAM3_IMAGE_SIZE, model_name=_MODEL, normalize=NormalizeConfig(), downscale=True
+    )
+    eval_transform = build_eval_transforms(
+        SAM3_IMAGE_SIZE, model_name=_MODEL, normalize=NormalizeConfig(), downscale=False
+    )
+    # 756x1008: one axis < 1008 (the distinguishing case), longest edge exactly 1008
     crop = (np.random.RandomState(1).rand(756, 1008, 3) * 255).astype(np.uint8)
-    # predict-path preprocessing (what _predict_one_tile feeds the model)
-    predict_input = preprocess_tile(crop, transform, device="cpu", dtype=torch.float32)
-    # eval-path preprocessing (what the evaluator feeds the model) — same helper, same crop
-    eval_input = preprocess_tile(crop, transform, device="cpu", dtype=torch.float32)
-    assert torch.allclose(predict_input, eval_input, atol=1e-6)
+    # predict-path preprocessing (what _predict_one_tile feeds the model — downscale=True)
+    predict_input = preprocess_tile(crop, predict_transform, device="cpu", dtype=torch.float32)
+    # eval-path preprocessing (what the evaluator feeds the model — downscale=False)
+    eval_input = preprocess_tile(crop, eval_transform, device="cpu", dtype=torch.float32)
     assert predict_input.shape == (3, SAM3_IMAGE_SIZE, SAM3_IMAGE_SIZE)
+    assert eval_input.shape == (3, SAM3_IMAGE_SIZE, SAM3_IMAGE_SIZE)
+    assert torch.allclose(predict_input, eval_input, atol=1e-6), (
+        "predict (downscale=True) and eval (downscale=False) tensors diverged — "
+        "LongestMaxSize(1008) is NOT a no-op on a 756x1008 tile; faithfulness bug."
+    )
 
 
 # ---------------------------------------------------------------------------
