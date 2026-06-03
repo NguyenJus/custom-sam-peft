@@ -247,7 +247,11 @@ def validate(rendered: str) -> None:
 
 
 def _launch_command(output: Path, run_mode: RunMode) -> str:
-    return f"custom-sam-peft {_LAUNCH_VERB[run_mode]} --config {output}"
+    verb = _LAUNCH_VERB[run_mode]
+    # eval is Tier-B: config is a named --config flag, not a positional argument
+    if run_mode == "eval":
+        return f"custom-sam-peft {verb} --config {output}"
+    return f"custom-sam-peft {verb} {output}"
 
 
 def _header(launch: str, generating_command: str = "custom-sam-peft init --interactive") -> str:
@@ -439,11 +443,7 @@ def run_predict_interactive(*, force: bool) -> None:
         default="rgb",
     )
 
-    # P4: merge (only when checkpoint given)
-    if checkpoint:
-        merge_adapter = ask_confirm("Merge adapter weights before inference?", default=True)
-
-    # P5: threshold
+    # P4: threshold
     threshold = float(
         ask_text(
             "Minimum score to keep a prediction [0.0-1.0]?",
@@ -452,23 +452,23 @@ def run_predict_interactive(*, force: bool) -> None:
         )
     )
 
-    # P6: save_masks
+    # P5: save_masks
     save_masks = ask_choice(
         "Mask output format?",
         ["rle", "png", "none"],
         default="rle",
     )
 
-    # P7: visualize
+    # P6: visualize
     visualize = ask_confirm("Write per-image overlay PNGs?", default=False)
 
-    # P8: images
+    # P7: images
     images = ask_text("Images: dir / glob / manifest / single file?")
 
-    # P9: prompts
+    # P8: prompts
     prompts = ask_text("Class prompts (comma-separated) or path to a one-per-line file?")
 
-    # P10: output
+    # P9: output
     output = ask_text("Output directory?")
 
     # --- thin config ---
@@ -502,7 +502,6 @@ def run_predict_interactive(*, force: bool) -> None:
     ]
     if checkpoint:
         parts.append(f"--checkpoint {shlex.quote(checkpoint)}")
-        parts.append("--merge-adapter" if merge_adapter else "--no-merge-adapter")
     parts.append(f"--score-threshold {threshold}")
     parts.append(f"--save-masks {save_masks}")
     if visualize:
@@ -512,6 +511,6 @@ def run_predict_interactive(*, force: bool) -> None:
 
     typer.echo(" ".join(parts))
     typer.echo(
-        "note: --top-k, --device, --dtype, --batch-size, --seed stay at defaults;"
+        "note: --top-k, --batch-size stay at defaults;"
         " append them as flags if you need to override them."
     )

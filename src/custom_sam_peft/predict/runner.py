@@ -37,6 +37,7 @@ import numpy as np
 import torch
 
 from custom_sam_peft.cli._progress import progress as P
+from custom_sam_peft.runtime._runtime import coerce_dtype_for_capability
 
 if TYPE_CHECKING:
     from custom_sam_peft.data.tiling import Fragment, MergedInstance
@@ -210,6 +211,10 @@ def _resolve_config(opts: PredictOptions) -> _ResolvedConfig:
         dtype_str = opts.dtype
 
     dtype_torch = torch.bfloat16 if dtype_str == "bfloat16" else torch.float32
+
+    if device_str == "cuda":
+        dtype_torch = coerce_dtype_for_capability(dtype_torch, device=torch.device("cuda"))
+        dtype_str = "float16" if dtype_torch is torch.float16 else dtype_str
 
     # --- normalization (resolve_normalization with fallback) ---
     from custom_sam_peft.config.schema import NormalizeConfig

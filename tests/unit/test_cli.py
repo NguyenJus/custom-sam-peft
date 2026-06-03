@@ -34,7 +34,8 @@ def test_root_help_exits_zero() -> None:
 def test_train_help_exits_zero() -> None:
     result = runner.invoke(app, ["train", "--help"])
     assert result.exit_code == 0
-    assert "--config" in _plain(result.stdout)
+    assert "[CONFIG]" in _plain(result.stdout)  # positional config metavar
+    assert "--config" not in _plain(result.stdout)  # hidden alias must not appear
 
 
 def test_eval_help_exits_zero() -> None:

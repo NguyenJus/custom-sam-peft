@@ -44,11 +44,7 @@ def _patch_export(monkeypatch: pytest.MonkeyPatch, captured: dict[str, object]) 
             out = output if output is not None else (checkpoint.parent / "merged")  # type: ignore[union-attr]
             captured["saved_merged_to"] = out
         else:
-            if output is None:
-                raise ValueError(
-                    "output is required when not merging (refusing to overwrite source checkpoint)"
-                )
-            out = output
+            out = output if output is not None else (checkpoint.parent / "exported")  # type: ignore[union-attr]
             captured["saved_adapter_to"] = out
         return out
 
@@ -76,16 +72,14 @@ def test_export_no_merge_requires_output(
     assert "--output" in result.output or "output" in result.output.lower()
 
 
-def test_export_merge_defaults_output_to_run_dir_merged(
-    fake_run_dir: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    captured: dict[str, object] = {}
-    _patch_export(monkeypatch, captured)
+def test_export_merge_requires_output(fake_run_dir: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """--output is always required at the CLI; omitting it must fail even with --merge."""
+    _patch_export(monkeypatch, {})
     result = CliRunner().invoke(
         app, ["export", "--checkpoint", str(fake_run_dir / "adapter"), "--merge"]
     )
-    assert result.exit_code == 0, result.output
-    assert captured["saved_merged_to"] == fake_run_dir / "merged"
+    assert result.exit_code != 0
+    assert "--output" in result.output or "output" in result.output.lower()
 
 
 def test_export_config_not_found(tmp_path: Path) -> None:

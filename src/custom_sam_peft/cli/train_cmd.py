@@ -12,6 +12,18 @@ from rich.console import Console
 
 from custom_sam_peft.cli._host_ram import format_host_ram_message
 from custom_sam_peft.cli._logging import configure_logging
+from custom_sam_peft.cli._options import (
+    ConfigArg,
+    DryRunOpt,
+    HiddenConfigOpt,
+    NameOpt,
+    OutputDirOpt,
+    OverrideOpt,
+    Progress,
+    ProgressOpt,
+    VerboseOpt,
+    merge_cli_overrides,
+)
 from custom_sam_peft.cli._progress import ProgressKind, progress_session, resolve_mode
 from custom_sam_peft.cli._time_limit import format_time_limit_message
 from custom_sam_peft.config._duration import parse_duration_to_seconds
@@ -26,10 +38,11 @@ _LATEST_SENTINEL = "__latest__"
 
 
 def train(
-    config: Path = typer.Option(..., "--config", help="Path to training config YAML."),
-    override: list[str] = typer.Option(
-        [], "--override", help="Override config keys: dotted.key=value."
-    ),
+    config_arg: ConfigArg = None,
+    config_opt: HiddenConfigOpt = None,
+    override: OverrideOpt = [],  # noqa: B006 — Typer creates a new list per invocation
+    name: NameOpt = None,
+    output_dir: OutputDirOpt = None,
     resume: str | None = typer.Option(
         None,
         "--resume",
@@ -58,17 +71,18 @@ def train(
         "--export",
         help="After training (and eval, if --eval), export a run bundle.",
     ),
-    verbose: bool = typer.Option(False, "-v", "--verbose", help="Enable DEBUG logging."),
-    progress_flag: str = typer.Option(
-        "auto",
-        "--progress",
-        help="Progress display mode: auto|on|off|plain.",
-        metavar="MODE",
-    ),
+    dry_run: DryRunOpt = False,
+    verbose: VerboseOpt = False,
+    progress: ProgressOpt = Progress.auto,
 ) -> None:
     """Run a finetune. The order is fixed: train → eval → export. Flags only toggle inclusion."""
+    config = config_arg if config_arg is not None else config_opt
+    if config is None:
+        rprint("[red]error[/red] a config path is required (positional or --config).")
+        raise typer.Exit(code=1)
     configure_logging(verbose)
-    cfg = load_config(config, overrides=override)
+    merged = merge_cli_overrides(override, name=name, output_dir=output_dir)
+    cfg = load_config(config, overrides=merged)
 
     if time_limit is not None:
         try:
@@ -80,8 +94,15 @@ def train(
             update={"train": cfg.train.model_copy(update={"time_limit": time_limit})}
         )
 
+    if dry_run:
+        rprint(
+            f"[cyan]dry-run[/cyan] config={config} run.name={cfg.run.name} "
+            f"output_dir={cfg.run.output_dir}"
+        )
+        return
+
     mode = resolve_mode(
-        progress_flag if progress_flag != "auto" else None,
+        None if progress is Progress.auto else progress.value,
         os.environ,
         sys.stdout.isatty(),
         Console().is_jupyter,
