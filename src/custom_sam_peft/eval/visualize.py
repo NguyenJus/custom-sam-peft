@@ -29,10 +29,20 @@ from PIL import Image, ImageDraw, ImageFont
 from custom_sam_peft.config._internal import MatcherWeights
 from custom_sam_peft.config.schema import NormalizeConfig
 from custom_sam_peft.data.base import Dataset, Example, Instance, TextPrompts
+from custom_sam_peft.data.tiling import (
+    DEFAULT_OVERLAP,
+    MASK_OVERLAP_THRESHOLD,
+    Fragment,
+    MergedInstance,
+    iter_windows,
+    merge_fragments,
+    tiling_engaged,
+)
 from custom_sam_peft.data.transforms import resolve_normalization
 from custom_sam_peft.eval.evaluator import _row_outputs
 from custom_sam_peft.eval.postprocess import queries_to_coco_results
 from custom_sam_peft.models.matching import HungarianMatcher, meta_to_canonical
+from custom_sam_peft.models.sam3 import SAM3_IMAGE_SIZE
 from custom_sam_peft.predict.visualize import color_for_class, render_overlay
 from custom_sam_peft.runtime import Runtime, to_device
 
@@ -274,6 +284,106 @@ def _matched_pred_entries(
     return out_entries
 
 
+def _merged_instance_to_render_entry(
+    mi: MergedInstance,
+    *,
+    category_id: int,
+) -> dict[str, object]:
+    """Convert a MergedInstance (full-canvas bool mask) to a render-entry dict.
+
+    The RLE segmentation is at the full-canvas resolution (no resize needed).
+    Used by the tiled viz path to render restitched predictions as overlays.
+    """
+    import pycocotools.mask as _mask_utils
+
+    mask_u8 = mi.mask.astype(np.uint8)
+    rle: dict[str, object] = _mask_utils.encode(np.asfortranarray(mask_u8))
+    counts = rle["counts"]
+    rle["counts"] = counts.decode("ascii") if isinstance(counts, bytes) else counts
+
+    rows = np.any(mi.mask, axis=1)
+    cols = np.any(mi.mask, axis=0)
+    if rows.any():
+        y_min = int(np.argmax(rows))
+        y_max = int(len(rows) - 1 - np.argmax(rows[::-1]))
+        x_min = int(np.argmax(cols))
+        x_max = int(len(cols) - 1 - np.argmax(cols[::-1]))
+        bbox = [float(x_min), float(y_min), float(x_max - x_min), float(y_max - y_min)]
+    else:
+        bbox = [0.0, 0.0, 0.0, 0.0]
+
+    return {
+        "category_id": int(category_id),
+        "bbox": bbox,
+        "score": float(mi.score),
+        "segmentation": rle,
+    }
+
+
+def _tiled_pred_entries(
+    model: Any,
+    example: Example,
+    class_names: list[str],
+    *,
+    mask_threshold: float,
+    runtime: Runtime,
+) -> list[dict[str, object]]:
+    """Tiled prediction for viz: per-tile forwards at DEFAULT_OVERLAP, then
+    merge_fragments → render entries at full-canvas resolution (spec §5.4 viz).
+
+    Unlike _matched_pred_entries, this path does NOT perform Hungarian matching
+    (matching across tile boundaries would require tiling the GT too).  It shows
+    ALL merged prediction instances — sufficient for a coherent visual overlay.
+    """
+    orig_h = int(example.image.shape[-2])
+    orig_w = int(example.image.shape[-1])
+    canvas_hw = (orig_h, orig_w)
+
+    windows = iter_windows(orig_h, orig_w, tile=SAM3_IMAGE_SIZE, overlap=DEFAULT_OVERLAP)
+
+    all_fragments: list[Fragment] = []
+    for t_idx, win in enumerate(windows):
+        # Crop image tensor: (C, H, W) → (1, C, win.h, win.w)
+        tile_t = example.image[:, win.y0 : win.y0 + win.h, win.x0 : win.x0 + win.w]
+        tile_batch = to_device(tile_t.unsqueeze(0), runtime)
+        tile_hw = (win.h, win.w)
+
+        for cls_idx, class_name in enumerate(class_names):
+            outputs = model(tile_batch, [TextPrompts(classes=[class_name])], support=None)
+            entries = queries_to_coco_results(
+                _row_outputs(outputs, 0),
+                image_id=0,
+                category_id=cls_idx + 1,
+                original_hw=tile_hw,
+                mask_threshold=mask_threshold,
+            )
+            for e in entries:
+                seg = e["segmentation"]
+                import pycocotools.mask as _mask_utils
+
+                mask_u8 = _mask_utils.decode(seg)  # type: ignore[arg-type]
+                mask_bool = mask_u8.astype(bool)
+                # Place the tile-local mask onto the full canvas.
+                canvas = np.zeros(canvas_hw, dtype=bool)
+                canvas[win.y0 : win.y0 + win.h, win.x0 : win.x0 + win.w] = mask_bool[
+                    : win.h, : win.w
+                ]
+                all_fragments.append(
+                    Fragment(
+                        mask=canvas,
+                        score=float(e["score"]),
+                        category_id=int(e["category_id"]),
+                        window_id=t_idx,
+                    )
+                )
+
+    if not all_fragments:
+        return []
+
+    merged = merge_fragments(all_fragments, canvas_hw, threshold=MASK_OVERLAP_THRESHOLD)
+    return [_merged_instance_to_render_entry(mi, category_id=mi.category_id) for mi in merged]
+
+
 def render_eval_pair(
     model: Any,
     example: Example,
@@ -302,14 +412,28 @@ def render_eval_pair(
     gt_entries = gt_instances_to_entries(example.instances)
     gt_panel = render_overlay(source, gt_entries, prompts=class_names)
 
-    pred_entries = _matched_pred_entries(
-        model,
-        example,
-        class_names,
-        mask_threshold=mask_threshold,
-        matcher=matcher,
-        runtime=runtime,
-    )
+    orig_h = int(example.image.shape[-2])
+    orig_w = int(example.image.shape[-1])
+    if tiling_engaged(orig_h, orig_w):
+        # Tiling path (spec §5.4 viz): per-tile forwards at DEFAULT_OVERLAP,
+        # merge_fragments at MASK_OVERLAP_THRESHOLD → coherent full-canvas overlay.
+        pred_entries = _tiled_pred_entries(
+            model,
+            example,
+            class_names,
+            mask_threshold=mask_threshold,
+            runtime=runtime,
+        )
+    else:
+        # Direct path: unchanged.
+        pred_entries = _matched_pred_entries(
+            model,
+            example,
+            class_names,
+            mask_threshold=mask_threshold,
+            matcher=matcher,
+            runtime=runtime,
+        )
     pred_panel = render_overlay(source, pred_entries, prompts=class_names)
 
     # Legend = union of classes present in either panel.

@@ -20,9 +20,14 @@ from pycocotools.coco import COCO
 from custom_sam_peft.cli._progress import progress as P
 from custom_sam_peft.config.schema import EvalConfig
 from custom_sam_peft.data.base import Dataset, Example, TextPrompts
+from custom_sam_peft.data.tiling import (
+    EVAL_OVERLAP,
+    iter_windows,
+    tiling_engaged,
+)
 from custom_sam_peft.eval.metrics import MetricsReport, compute_coco_map
 from custom_sam_peft.eval.postprocess import queries_to_coco_results
-from custom_sam_peft.models.sam3 import MULTIPLEX_CAP
+from custom_sam_peft.models.sam3 import MULTIPLEX_CAP, SAM3_IMAGE_SIZE
 from custom_sam_peft.oom import OomDecision, OomLadder, is_cuda_oom
 from custom_sam_peft.paths import predictions_path
 from custom_sam_peft.runtime import Runtime, to_device
@@ -52,6 +57,115 @@ def _mask_to_rle(mask: torch.Tensor) -> Any:
     rle = mask_utils.encode(np.asfortranarray(arr))
     rle["counts"] = rle["counts"].decode("ascii")
     return rle
+
+
+def _tile_image_id(image_id: str, tile_idx: int) -> int:
+    """Stable int id for a (image_id, tile_idx) pair.
+
+    Uses the same blake2s scheme as _int_image_id so COCO evaluation alignment
+    between per-tile predictions and per-tile GT is guaranteed to use the same id.
+    """
+    return int(
+        hashlib.blake2s(f"{image_id}:{tile_idx}".encode(), digest_size=8).hexdigest(),
+        16,
+    )
+
+
+def _build_coco_gt_with_tiling(
+    examples: Sequence[Example],
+    dataset: Dataset,
+) -> COCO:
+    """Build an in-memory COCO ground-truth, tiling large images (spec §5.4).
+
+    For images where ``tiling_engaged`` is True, the GT is decomposed into
+    non-overlapping tiles (EVAL_OVERLAP=0.0) and each tile's GT instances are
+    cropped to tile-local coordinates.  The tile-local image_id is produced by
+    ``_tile_image_id(ex.image_id, tile_idx)``.  Small images are added as-is
+    using ``_int_image_id`` (direct path, byte-for-byte unchanged).
+    """
+    images: list[dict[str, object]] = []
+    annotations: list[dict[str, object]] = []
+    seen_ids: dict[int, str] = {}
+    ann_id = 1
+
+    for ex in examples:
+        orig_h, orig_w = int(ex.image.shape[-2]), int(ex.image.shape[-1])
+
+        if not tiling_engaged(orig_h, orig_w):
+            # Direct path — unchanged.
+            int_id = _int_image_id(ex.image_id)
+            prior = seen_ids.get(int_id)
+            if prior is not None and prior != ex.image_id:
+                raise RuntimeError(
+                    f"image_id hash collision: {ex.image_id!r} and {prior!r} both hash to {int_id}"
+                )
+            seen_ids[int_id] = ex.image_id
+            images.append({"id": int_id, "height": orig_h, "width": orig_w})
+            for inst in ex.instances:
+                rle = _mask_to_rle(inst.mask)
+                area = int(mask_utils.area(rle))
+                x1, y1, x2, y2 = (float(v) for v in inst.box.tolist())
+                annotations.append(
+                    {
+                        "id": ann_id,
+                        "image_id": int_id,
+                        "category_id": int(inst.class_id) + 1,
+                        "iscrowd": 0,
+                        "bbox": [x1, y1, x2 - x1, y2 - y1],
+                        "area": area,
+                        "segmentation": rle,
+                    }
+                )
+                ann_id += 1
+        else:
+            # Tiling path — decompose into non-overlapping tiles.
+            windows = iter_windows(orig_h, orig_w, tile=SAM3_IMAGE_SIZE, overlap=EVAL_OVERLAP)
+            for t_idx, win in enumerate(windows):
+                tile_int_id = _tile_image_id(ex.image_id, t_idx)
+                images.append({"id": tile_int_id, "height": win.h, "width": win.w})
+                for inst in ex.instances:
+                    # Crop the instance mask to the tile window.
+                    inst_mask_np = inst.mask.cpu().numpy()  # (orig_h, orig_w) bool
+                    tile_mask_np = inst_mask_np[win.y0 : win.y0 + win.h, win.x0 : win.x0 + win.w]
+                    if not tile_mask_np.any():
+                        continue  # instance has no pixels in this tile; skip
+                    tile_mask_t = torch.from_numpy(tile_mask_np)
+                    rle = _mask_to_rle(tile_mask_t)
+                    area = int(mask_utils.area(rle))
+                    # Derive tile-local bbox from the cropped mask.
+                    rows = np.any(tile_mask_np, axis=1)
+                    cols = np.any(tile_mask_np, axis=0)
+                    y_min = int(np.argmax(rows))
+                    y_max = int(len(rows) - 1 - np.argmax(rows[::-1]))
+                    x_min = int(np.argmax(cols))
+                    x_max = int(len(cols) - 1 - np.argmax(cols[::-1]))
+                    annotations.append(
+                        {
+                            "id": ann_id,
+                            "image_id": tile_int_id,
+                            "category_id": int(inst.class_id) + 1,
+                            "iscrowd": 0,
+                            "bbox": [
+                                float(x_min),
+                                float(y_min),
+                                float(x_max - x_min),
+                                float(y_max - y_min),
+                            ],
+                            "area": area,
+                            "segmentation": rle,
+                        }
+                    )
+                    ann_id += 1
+
+    categories = [{"id": idx + 1, "name": name} for idx, name in enumerate(dataset.class_names)]
+    gt = COCO()
+    gt.dataset = {
+        "images": images,
+        "categories": categories,
+        "annotations": annotations,
+    }
+    gt.createIndex()
+    return gt
 
 
 def _build_coco_gt_from_examples(
@@ -137,6 +251,16 @@ class Evaluator:
         image-chunk at the smaller B; RETRY_K resumes from the current class index
         at the smaller K, keeping chunk_buf; FLOOR_RETRY retries once; TERMINAL
         raises RuntimeError. Buffer-and-commit ensures no dup/drop on any path.
+
+        When tiling_engaged(orig_h, orig_w) is True for an example, the image
+        tensor is sliced into non-overlapping tiles (EVAL_OVERLAP=0.0 per spec
+        §5.4/§13.5) and the forward is run per tile.  Predictions carry tile-local
+        image_ids (from _tile_image_id) and tile-local original_hw — they
+        align with _build_coco_gt_with_tiling's tile-local GT entries, so
+        compute_coco_map sees paired (pred, GT) at the same coordinate frame.
+        No stitched full-image mask is ever materialized.  Tiled images bypass
+        the batch-chunk loop and are processed one image at a time (batch_size=1
+        per tile, shared OomLadder).
         """
         cfg = self.cfg
 
@@ -166,65 +290,135 @@ class Evaluator:
                 while i < len(examples):
                     bs = ladder.micro_batch_size
                     image_chunk = list(examples[i : i + bs])
-                    images_t = to_device(
-                        torch.stack([ex.image for ex in image_chunk]), eval_runtime
-                    )
-                    chunk_buf: list[dict[str, object]] = []
-                    restart_chunk = False
-                    j = 0  # class index into dataset.class_names
-                    while j < n_classes:
-                        K_g = min(ladder.effective_K, n_classes - j)
-                        group = dataset.class_names[j : j + K_g]
-                        prompts_g = [TextPrompts(classes=list(group)) for _ in image_chunk]
-                        try:
-                            outputs = cast(
-                                "dict[str, torch.Tensor]",
-                                model(images_t, prompts_g, support=None),
+
+                    # Split chunk into direct-path and tiling-path examples.
+                    # Tiled examples are processed immediately, one image at a time.
+                    direct_chunk: list[Example] = []
+                    for ex in image_chunk:
+                        orig_h = int(ex.image.shape[-2])
+                        orig_w = int(ex.image.shape[-1])
+                        if tiling_engaged(orig_h, orig_w):
+                            # --- Tiling path (spec §5.4): non-overlapping tiles ---
+                            windows = iter_windows(
+                                orig_h,
+                                orig_w,
+                                tile=SAM3_IMAGE_SIZE,
+                                overlap=EVAL_OVERLAP,
                             )
-                        except RuntimeError as oom_exc:
-                            # OOM may surface as a non-OutOfMemoryError RuntimeError
-                            # on this card (see oom.is_cuda_oom). (#208)
-                            if not is_cuda_oom(oom_exc):
-                                raise
-                            decision = ladder.on_oom()
-                            if decision is OomDecision.RETRY_B:
-                                # Image set per forward changed: discard the buffer
-                                # and restart this image-chunk at the smaller B.
-                                restart_chunk = True
-                                break
-                            if decision is OomDecision.RETRY_K:
-                                # Resume from the SAME class index at the smaller K_g
-                                # (recomputed at the top of the loop). Completed
-                                # K-groups' rows in chunk_buf stay valid.
-                                continue
-                            if decision is OomDecision.FLOOR_RETRY:
-                                continue  # retry the same forward once
-                            raise RuntimeError(
-                                "eval OOM at batch_size=1 and classes_per_forward=1; "
-                                "use a larger GPU or smaller image_size."
-                            ) from None
-                        for r in range(len(image_chunk) * K_g):
-                            ii, kk = divmod(r, K_g)
-                            ex = image_chunk[ii]
-                            original_hw = (
-                                int(ex.image.shape[-2]),
-                                int(ex.image.shape[-1]),
-                            )
-                            int_id = _int_image_id(ex.image_id)
-                            cat_idx = dataset.class_names.index(group[kk])
-                            entries = queries_to_coco_results(
-                                _row_outputs(outputs, r),
-                                int_id,
-                                cat_idx + 1,
-                                original_hw,
-                                cfg.mask_threshold,
-                            )
-                            chunk_buf.extend(entries)
-                        j += K_g  # advance by the ACTUAL group length
-                    if restart_chunk:
-                        continue  # re-enter outer while at smaller B; i unchanged
-                    # Completed every class group for this image-chunk: commit once.
-                    predictions.extend(chunk_buf)
+                            for t_idx, win in enumerate(windows):
+                                tile_int_id = _tile_image_id(ex.image_id, t_idx)
+                                tile_hw = (win.h, win.w)
+                                # Crop image tensor: (C, H, W) -> (C, win.h, win.w)
+                                tile_t = ex.image[
+                                    :,
+                                    win.y0 : win.y0 + win.h,
+                                    win.x0 : win.x0 + win.w,
+                                ]
+                                tile_batch = to_device(
+                                    tile_t.unsqueeze(0), eval_runtime
+                                )  # (1, C, win.h, win.w)
+                                j = 0
+                                while j < n_classes:
+                                    K_g = min(ladder.effective_K, n_classes - j)
+                                    group = dataset.class_names[j : j + K_g]
+                                    prompts_g = [TextPrompts(classes=list(group))]
+                                    try:
+                                        outputs = cast(
+                                            "dict[str, torch.Tensor]",
+                                            model(tile_batch, prompts_g, support=None),
+                                        )
+                                    except RuntimeError as oom_exc:
+                                        if not is_cuda_oom(oom_exc):
+                                            raise
+                                        decision = ladder.on_oom()
+                                        if decision is OomDecision.RETRY_B:
+                                            # B is already 1 per tile; OOM ladder
+                                            # moves to K reduction on next hit.
+                                            continue
+                                        if decision is OomDecision.RETRY_K:
+                                            continue
+                                        if decision is OomDecision.FLOOR_RETRY:
+                                            continue
+                                        raise RuntimeError(
+                                            "eval OOM at classes_per_forward=1 on a"
+                                            " single tile; use a larger GPU."
+                                        ) from None
+                                    for kk in range(K_g):
+                                        cat_idx = dataset.class_names.index(group[kk])
+                                        entries = queries_to_coco_results(
+                                            _row_outputs(outputs, kk),
+                                            tile_int_id,
+                                            cat_idx + 1,
+                                            tile_hw,
+                                            cfg.mask_threshold,
+                                        )
+                                        predictions.extend(entries)
+                                    j += K_g
+                        else:
+                            direct_chunk.append(ex)
+
+                    # --- Direct path (unchanged): batch forward over direct_chunk ---
+                    if direct_chunk:
+                        images_t = to_device(
+                            torch.stack([ex.image for ex in direct_chunk]), eval_runtime
+                        )
+                        chunk_buf: list[dict[str, object]] = []
+                        restart_chunk = False
+                        j = 0  # class index into dataset.class_names
+                        while j < n_classes:
+                            K_g = min(ladder.effective_K, n_classes - j)
+                            group = dataset.class_names[j : j + K_g]
+                            prompts_g = [TextPrompts(classes=list(group)) for _ in direct_chunk]
+                            try:
+                                outputs = cast(
+                                    "dict[str, torch.Tensor]",
+                                    model(images_t, prompts_g, support=None),
+                                )
+                            except RuntimeError as oom_exc:
+                                # OOM may surface as a non-OutOfMemoryError RuntimeError
+                                # on this card (see oom.is_cuda_oom). (#208)
+                                if not is_cuda_oom(oom_exc):
+                                    raise
+                                decision = ladder.on_oom()
+                                if decision is OomDecision.RETRY_B:
+                                    # Image set per forward changed: discard the buffer
+                                    # and restart this image-chunk at the smaller B.
+                                    restart_chunk = True
+                                    break
+                                if decision is OomDecision.RETRY_K:
+                                    # Resume from the SAME class index at the smaller K_g
+                                    # (recomputed at the top of the loop). Completed
+                                    # K-groups' rows in chunk_buf stay valid.
+                                    continue
+                                if decision is OomDecision.FLOOR_RETRY:
+                                    continue  # retry the same forward once
+                                raise RuntimeError(
+                                    "eval OOM at batch_size=1 and classes_per_forward=1; "
+                                    "use a larger GPU or smaller image_size."
+                                ) from None
+                            for r in range(len(direct_chunk) * K_g):
+                                ii, kk = divmod(r, K_g)
+                                ex = direct_chunk[ii]
+                                original_hw = (
+                                    int(ex.image.shape[-2]),
+                                    int(ex.image.shape[-1]),
+                                )
+                                int_id = _int_image_id(ex.image_id)
+                                cat_idx = dataset.class_names.index(group[kk])
+                                entries = queries_to_coco_results(
+                                    _row_outputs(outputs, r),
+                                    int_id,
+                                    cat_idx + 1,
+                                    original_hw,
+                                    cfg.mask_threshold,
+                                )
+                                chunk_buf.extend(entries)
+                            j += K_g  # advance by the ACTUAL group length
+                        if restart_chunk:
+                            continue  # re-enter outer while at smaller B; i unchanged
+                        # Completed every class group for this image-chunk: commit once.
+                        predictions.extend(chunk_buf)
+
                     i += len(image_chunk)
                     img_idx_global += len(image_chunk)
                     for _ in range(len(image_chunk)):
@@ -332,7 +526,11 @@ class Evaluator:
         n_total = len(dataset)
         n = n_total if cfg.mode == "full" else min(cfg.lite_max_images, n_total)
         examples = [dataset[i] for i in range(n)]
-        gt, _ = _build_coco_gt_from_examples(examples, dataset)
+
+        # Use tiling-aware GT builder: large images are decomposed into
+        # non-overlapping tiles (EVAL_OVERLAP=0.0); small images use the
+        # direct path unchanged (spec §5.4).
+        gt = _build_coco_gt_with_tiling(examples, dataset)
 
         predictions = self._iter_predictions(model, examples, dataset)
         report = self._aggregate_metrics(predictions, gt, dataset)
@@ -341,7 +539,11 @@ class Evaluator:
 
         if not return_per_example_iou:
             return report
-        return report, self._compute_per_example_iou(examples, predictions, gt)
+        # For per_example_iou, build a direct-path GT (full-image) for the
+        # IoU computation which works on full-image entries and is only used
+        # for visualization sample selection — not the metric itself.
+        gt_direct, _ = _build_coco_gt_from_examples(examples, dataset)
+        return report, self._compute_per_example_iou(examples, predictions, gt_direct)
 
     def _compute_per_example_iou(
         self,
