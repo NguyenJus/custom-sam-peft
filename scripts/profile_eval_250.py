@@ -41,6 +41,16 @@ def main() -> None:
 
     buckets, meta = _profile.snapshot()
     total = sum(buckets.values()) or 1.0
+
+    # Durable dump FIRST — print() is block-buffered under redirection, so a
+    # killed/throttled run would otherwise lose everything (issue #250 gotcha).
+    import json
+
+    snap_path = Path(cfg.run.output_dir) / "profile_snapshot.json"
+    snap_path.parent.mkdir(parents=True, exist_ok=True)
+    snap_path.write_text(json.dumps({"buckets": buckets, "meta": meta}, default=str, indent=2))
+    print(f"\nwrote {snap_path}", flush=True)  # noqa: T201
+
     print("\n=== issue #250 eval profile ===")  # noqa: T201
     print(f"metadata: {meta}")  # noqa: T201
     print(f"{'bucket':<22}{'seconds':>12}{'% of timed':>14}")  # noqa: T201
