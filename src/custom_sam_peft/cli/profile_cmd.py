@@ -39,7 +39,9 @@ _EVAL_BUCKET_ORDER = [
     "eval.mask_upsample",
     "eval.transfer_binarize",
     "eval.rle_encode",
+    "eval.gt_rle_encode",
     "eval.coco_aggregate",
+    "eval.pair_iou",
     "eval.total",
 ]
 

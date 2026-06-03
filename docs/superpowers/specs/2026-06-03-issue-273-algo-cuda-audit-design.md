@@ -4,7 +4,11 @@
 attribution workflow).
 **Date:** 2026-06-03
 **Type:** research / measurement protocol + analysis tooling. **No optimization code
-lands under #273.** Analysis tooling (#256) does land as code.
+lands under #273.** Analysis tooling lands as code: the #256 attribution reader (§3)
+**and** permanent profiling instrumentation on the candidate spans (§3b). Both are
+measurement infrastructure — not optimization — so neither violates the "no
+optimization code" rule (same justification as #265's permanent `eval.dataset_load`
+timer).
 
 ---
 
@@ -88,6 +92,46 @@ This tooling is **analysis**, not optimization — landing it does not violate #
 
 ---
 
+## 3b. Deliverable 1b — profiling instrumentation (lands as code)
+
+**Amendment (2026-06-03).** The audit measures *per-candidate* bucket share, but
+several candidate spans have **no permanent profiling bucket today** — a stock
+`CSP_PROFILE` snapshot cannot attribute them. The semantic evaluator emits **zero**
+buckets; the instance-eval and train surfaces lack candidate-granular buckets for
+#1/#2/#5. Rather than measure these with throwaway/uncommitted timers, **add the
+missing buckets to the permanent harness.** This is permanent measurement
+infrastructure (analysis, not optimization — parallels #265's `eval.dataset_load`), so
+it lands as code without violating #273's no-optimization rule, and it strengthens
+#256's "repeatable attribution" goal: future audits get these buckets for free.
+
+**Buckets added** (each a `with profiling.bucket(...)` around the named span):
+
+| Bucket | Span | Class | Candidate |
+|---|---|---|---|
+| `eval.gt_rle_encode` | `_mask_to_rle` body (`evaluator.py:154`) — all GT-side COCO encode | CPU | #1 |
+| `train.matcher` | `HungarianMatcher.__call__` per-image cost-build + `linear_sum_assignment(cost.cpu().numpy())` (`matching.py`) | CPU/sync | #2 |
+| `semantic_eval.forward` | `model(...)` call in `_iter_semantic_predictions` | GPU | #3 (baseline) |
+| `semantic_eval.upsample` | `F.interpolate` + `semantic_argmax` (on-device) | GPU | #3 (baseline) |
+| `semantic_eval.transfer` | `pred/gt.cpu().numpy()` host move (`semantic_evaluator.py:195-196`) | sync | **#3** |
+| `semantic_eval.confusion` | `bincount` + accumulate + per-example metrics (`:199-207`) | CPU | **#3** |
+| `semantic_eval.total` | whole forward loop (parent / wall denominator) | — | #3 |
+| `eval.pair_iou` | `mask_utils.iou` in `_compute_per_example_iou` (`evaluator.py:1080`) | CPU | #5 |
+
+Semantic meta via `note()`/`incr()`: `n_images`, `K` (classes), `sem_forward_dtype`,
+`semantic_eval.forwards`. **Candidate #3's target share** = `semantic_eval.transfer` +
+`semantic_eval.confusion`, measured against `semantic_eval.forward` as the GPU
+baseline. Already-covered spans need no new bucket: **#4** → existing
+`eval.mask_upsample` + `eval.transfer_binarize`; **#6** → existing `train.forward`.
+
+**Testing.** TDD against the existing convention (`tests/unit/test_profiling.py`,
+`tests/cli/test_profile_surface.py`): enable the profiler, drive each span on tiny CPU
+inputs (matcher fixtures from `test_matching.py`; `TinySam3Stub` + the synthetic
+semantic dataset from `test_semantic_evaluator.py`; a hand-built mask for
+`_mask_to_rle`), then assert the new bucket appears in `snapshot()`. All run on the CPU
+suite — no GPU. The lint gate (ruff/ruff-format/mypy/markdownlint) applies.
+
+---
+
 ## 4. Deliverable 2 — #273 triage record (no optimization code)
 
 - A triage doc at `docs/research/2026-06-03-issue-273-algo-cuda-audit.md` (matches the
@@ -114,6 +158,9 @@ not print**) across the surfaces, on real-checkpoint GPU runs:
 | **train** (instance) | forward-dominated | #2, #6 |
 | **semantic-eval** (+ quick semantic-train confirm) | per-image host confusion matrix | #3 |
 
+**Precondition.** The candidate-granular and semantic buckets land first (§3b); this
+pass consumes the permanent harness *including* those new buckets — no temporary timers.
+
 **Dataset (small — required).** All runs use a small/capped **DataFusionContest** subset
 (the `runs/.../subset.json` path), to fit the 16 GB box and keep each run short
 (session-crash guard).
@@ -124,6 +171,11 @@ not print**) across the surfaces, on real-checkpoint GPU runs:
 - Set `eval.visualize=False` (it defaults True and injects extra RLE + memory that skews
   attribution).
 - Keep each run short; dump JSON, don't print.
+- **`eval.pair_iou` is request-gated.** `_compute_per_example_iou` runs only when
+  per-example IoU is requested (lite-val `return_per_example_iou` or viz sample-picking).
+  The `visualize=False` attribution run will show `eval.pair_iou` ≈ 0 — that is correct,
+  not a miss. Attribute #5 from a *separate*, tiny run that forces the per-example-IoU
+  path (`return_per_example_iou=True` / `visualize=True`).
 
 **Checkpoint policy.**
 - Use the existing `runs/test-dfc-20260603-035435/adapter/` adapter if it loads cleanly.
@@ -167,6 +219,10 @@ before kicking off each GPU run** — it does not launch them autonomously.
 | 5 | Per-example IoU for **viz sample-picking** (`evaluator.py:408` `mask_utils.iou` per image) → reuse #276's `eval/proxy_map.py::dense_iou_matrix` | cuda | eval-full | shared GPU kernel vs pycocotools `iou` | **looser bar** — only ranks which examples get *visualized*; does not touch reported metrics |
 | 6 | Forward levers: `torch.compile` / `channels_last` / CUDA-graph on the PEFT forward (interacts with bf16 autocast `train/loop.py:215` and the VRAM K-autosize OOM ladder #203/#204) | cuda | train | **time-boxed spike**, not a clean microbench (dynamic shapes can cause recompile thrash) | may spawn its own dedicated spike issue rather than resolve here |
 
+**Instrumentation note (§3b):** #1/#2/#3/#5 are attributed via buckets newly added to
+the permanent harness; #4/#6 use existing buckets. `eval.pair_iou` (#5) is
+request-gated — see §5.
+
 Out of scope / already tracked (do not duplicate): #266/#253 (threading), #269/#276
 (lite proxy — landed), #265 (prefetch — NO-GO), #260 (full-mode native-res memory),
 #259 (predict double-forward), #252 (semantic train G× memory).
@@ -175,6 +231,9 @@ Out of scope / already tracked (do not duplicate): #266/#253 (threading), #269/#
 
 ## 8. Acceptance
 
+- [ ] Profiling instrumentation (§3b) landed: `eval.gt_rle_encode`, `train.matcher`,
+      `semantic_eval.*`, `eval.pair_iou` buckets added to the permanent harness with CPU
+      unit tests; no optimization behavior changed (analysis-only).
 - [ ] #256 attribution tool delivered (reader + report template + CPU unit tests over
       synthetic snapshots); regression-compare path exercised.
 - [ ] Checkpoint validated end-to-end (or a fresh one-epoch adapter trained); the
@@ -197,3 +256,7 @@ Out of scope / already tracked (do not duplicate): #266/#253 (threading), #269/#
 - Exact home of the #256 attribution reader (`scripts/` vs a module vs a `csp` subcommand).
 - Final small-subset size / image cap for each surface (tune to the 16 GB box).
 - Confirm or move the 5% triage threshold once the first real distribution is in hand.
+- Whether `eval.pair_iou` (#5) is attributed from its own targeted per-example-IoU run
+  or analytically (its bucket is request-gated; see §5).
+- Semantic-eval bucket granularity (`forward`/`upsample`/`transfer`/`confusion`/`total`)
+  is fixed in §3b; revisit only if a span needs finer split to attribute #3.

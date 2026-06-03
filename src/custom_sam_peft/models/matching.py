@@ -63,6 +63,7 @@ def meta_to_canonical(outputs: dict[str, Tensor]) -> CanonicalOutputs:
 from scipy.optimize import linear_sum_assignment  # noqa: E402
 from torch.nn.functional import interpolate  # noqa: E402
 
+from custom_sam_peft import profiling  # noqa: E402
 from custom_sam_peft.data.base import Instance  # noqa: E402
 
 
@@ -136,37 +137,38 @@ class HungarianMatcher:
                     )
                 )
                 continue
-            # Matching is @torch.no_grad and the per-image volume is small
-            # (queries x targets is at most a few hundred), so we upcast model
-            # outputs to fp32 here. torch.cdist has no bf16/fp16 kernel on
-            # CPU or CUDA (NotImplementedError "cdist_cuda" / "cdist" for
-            # BFloat16), and downstream cost terms expect a consistent dtype.
-            # Targets are already fp32 from the dataset.
-            pred_boxes_i = outputs.pred_boxes[i].float()
-            pred_masks_i = outputs.pred_masks[i].float()
+            with profiling.bucket("train.matcher"):
+                # Matching is @torch.no_grad and the per-image volume is small
+                # (queries x targets is at most a few hundred), so we upcast model
+                # outputs to fp32 here. torch.cdist has no bf16/fp16 kernel on
+                # CPU or CUDA (NotImplementedError "cdist_cuda" / "cdist" for
+                # BFloat16), and downstream cost terms expect a consistent dtype.
+                # Targets are already fp32 from the dataset.
+                pred_boxes_i = outputs.pred_boxes[i].float()
+                pred_masks_i = outputs.pred_masks[i].float()
 
-            tgt_boxes = torch.stack([t.box for t in tgts]).to(outputs.pred_boxes.device)
-            cost_l1 = torch.cdist(pred_boxes_i, tgt_boxes, p=1)
-            cost_giou = -_giou(
-                _box_cxcywh_to_xyxy(pred_boxes_i),
-                _box_cxcywh_to_xyxy(tgt_boxes),
-            )
+                tgt_boxes = torch.stack([t.box for t in tgts]).to(outputs.pred_boxes.device)
+                cost_l1 = torch.cdist(pred_boxes_i, tgt_boxes, p=1)
+                cost_giou = -_giou(
+                    _box_cxcywh_to_xyxy(pred_boxes_i),
+                    _box_cxcywh_to_xyxy(tgt_boxes),
+                )
 
-            tgt_masks = torch.stack([t.mask for t in tgts]).to(outputs.pred_masks.device)
-            tgt_masks_low = interpolate(
-                tgt_masks[None].float(),
-                size=(mask_h, mask_w),
-                mode="bilinear",
-                align_corners=False,
-            )[0]
-            cost_mask = _dice_cost(pred_masks_i, tgt_masks_low)
+                tgt_masks = torch.stack([t.mask for t in tgts]).to(outputs.pred_masks.device)
+                tgt_masks_low = interpolate(
+                    tgt_masks[None].float(),
+                    size=(mask_h, mask_w),
+                    mode="bilinear",
+                    align_corners=False,
+                )[0]
+                cost_mask = _dice_cost(pred_masks_i, tgt_masks_low)
 
-            cost = (
-                self.lambda_l1 * cost_l1
-                + self.lambda_giou * cost_giou
-                + self.lambda_mask * cost_mask
-            )
-            row_ind, col_ind = linear_sum_assignment(cost.cpu().numpy())
+                cost = (
+                    self.lambda_l1 * cost_l1
+                    + self.lambda_giou * cost_giou
+                    + self.lambda_mask * cost_mask
+                )
+                row_ind, col_ind = linear_sum_assignment(cost.cpu().numpy())
             results.append(
                 (
                     torch.as_tensor(row_ind, dtype=torch.long),

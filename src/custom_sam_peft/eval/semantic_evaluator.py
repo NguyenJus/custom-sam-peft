@@ -15,6 +15,7 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 
+from custom_sam_peft import profiling
 from custom_sam_peft.cli._progress import progress as P
 from custom_sam_peft.config.schema import EvalConfig, SemanticLossConfig
 from custom_sam_peft.data.base import Dataset, Example, TextPrompts
@@ -101,110 +102,130 @@ class SemanticEvaluator:
             effective_K=min(MULTIPLEX_CAP, K) if K else 1,
         )
 
+        _meta_noted = False  # emit profiling.note once for the whole run
         try:
             with torch.no_grad(), P.push_subtask("sem_eval", total=len(examples)) as sub:
                 i = 0
                 img_idx_global = 0
                 while i < len(examples):
-                    chunk_bs = ladder.micro_batch_size
-                    image_chunk = list(examples[i : i + chunk_bs])
-                    images_t = to_device(
-                        torch.stack([ex.image for ex in image_chunk]), eval_runtime
-                    )
-                    # slices[image_idx] accumulates (k_g, H_m, W_m) per K-group
-                    chunk_slices: list[list[torch.Tensor]] = [[] for _ in image_chunk]
-                    restart_chunk = False
-                    j = 0  # class index into dataset.class_names
-                    while j < K:
-                        K_g = min(ladder.effective_K, K - j)
-                        group = dataset.class_names[j : j + K_g]
-                        prompts_g = [TextPrompts(classes=list(group)) for _ in image_chunk]
-                        try:
-                            outputs = cast(
-                                "dict[str, torch.Tensor]",
-                                model(images_t, prompts_g, support=None),
-                            )
-                        except RuntimeError as oom_exc:
-                            if not is_cuda_oom(oom_exc):
-                                raise
-                            decision = ladder.on_oom()
-                            if decision is OomDecision.RETRY_B:
-                                # Discard buffer and restart at smaller B.
-                                chunk_slices = [[] for _ in image_chunk]
-                                restart_chunk = True
-                                break
-                            if decision is OomDecision.RETRY_K:
-                                # Resume from same class index at smaller K_g.
-                                continue
-                            if decision is OomDecision.FLOOR_RETRY:
-                                continue
-                            raise RuntimeError(
-                                "semantic eval OOM at batch_size=1 and "
-                                "classes_per_forward=1; use a larger GPU or "
-                                "smaller image_size."
-                            ) from None
-
-                        b = len(image_chunk)
-                        # marginalize_group returns (b, K_g, H_m, W_m)
-                        logit_slice = marginalize_group(
-                            outputs,
-                            b,
-                            K_g,
-                            query_reduce=sem_cfg.query_reduce,
-                            source=sem_cfg.source,
+                    with profiling.bucket("semantic_eval.total"):
+                        chunk_bs = ladder.micro_batch_size
+                        image_chunk = list(examples[i : i + chunk_bs])
+                        images_t = to_device(
+                            torch.stack([ex.image for ex in image_chunk]), eval_runtime
                         )
-                        # Distribute per-image slices into chunk_slices.
-                        for ii in range(b):
-                            chunk_slices[ii].append(logit_slice[ii : ii + 1])  # (1, K_g, H_m, W_m)
-
-                        j += K_g
-
-                    if restart_chunk:
-                        continue  # re-enter outer while at smaller B; i unchanged
-
-                    # All K-groups done for this chunk. Build full semantic logits
-                    # and accumulate confusion per image.
-                    for ii, ex in enumerate(image_chunk):
-                        if ex.semantic is None:
-                            _LOG.warning(
-                                "semantic eval: example %s has no SemanticTarget; skipping",
-                                ex.image_id,
+                        if not _meta_noted:
+                            profiling.note(
+                                n_images=len(examples),
+                                K=K,
+                                sem_forward_dtype=str(images_t.dtype),
                             )
-                            per_example_ious.append(float("nan"))
-                            continue
+                            _meta_noted = True
+                        # slices[image_idx] accumulates (k_g, H_m, W_m) per K-group
+                        chunk_slices: list[list[torch.Tensor]] = [[] for _ in image_chunk]
+                        restart_chunk = False
+                        j = 0  # class index into dataset.class_names
+                        while j < K:
+                            K_g = min(ladder.effective_K, K - j)
+                            group = dataset.class_names[j : j + K_g]
+                            prompts_g = [TextPrompts(classes=list(group)) for _ in image_chunk]
+                            try:
+                                with profiling.bucket("semantic_eval.forward"):
+                                    outputs = cast(
+                                        "dict[str, torch.Tensor]",
+                                        model(images_t, prompts_g, support=None),
+                                    )
+                                profiling.incr("semantic_eval.forwards")
+                            except RuntimeError as oom_exc:
+                                if not is_cuda_oom(oom_exc):
+                                    raise
+                                decision = ladder.on_oom()
+                                if decision is OomDecision.RETRY_B:
+                                    # Discard buffer and restart at smaller B.
+                                    chunk_slices = [[] for _ in image_chunk]
+                                    restart_chunk = True
+                                    break
+                                if decision is OomDecision.RETRY_K:
+                                    # Resume from same class index at smaller K_g.
+                                    continue
+                                if decision is OomDecision.FLOOR_RETRY:
+                                    continue
+                                raise RuntimeError(
+                                    "semantic eval OOM at batch_size=1 and "
+                                    "classes_per_forward=1; use a larger GPU or "
+                                    "smaller image_size."
+                                ) from None
 
-                        # chunk_slices[ii] is already a list of (1, k_g, H_m, W_m)
-                        # tensors — exactly the shape build_semantic_logits expects.
-                        sem_logits_b = build_semantic_logits(
-                            chunk_slices[ii],
-                            background_logit=sem_cfg.background_logit,
-                        )  # (1, K+1, H_m, W_m)
+                            b = len(image_chunk)
+                            # marginalize_group returns (b, K_g, H_m, W_m)
+                            logit_slice = marginalize_group(
+                                outputs,
+                                b,
+                                K_g,
+                                query_reduce=sem_cfg.query_reduce,
+                                source=sem_cfg.source,
+                            )
+                            # Distribute per-image slices into chunk_slices.
+                            for ii in range(b):
+                                chunk_slices[ii].append(
+                                    logit_slice[ii : ii + 1]
+                                )  # (1, K_g, H_m, W_m)
 
-                        # Upsample to GT label resolution BEFORE argmax (§6.3). Read
-                        # the target HW from the label map itself so the confusion
-                        # comparison is shape-aligned regardless of the loader.
-                        H, W = (int(d) for d in ex.semantic.labels.shape[-2:])
-                        sem_logits_up = F.interpolate(
-                            sem_logits_b,
-                            size=(H, W),
-                            mode="bilinear",
-                            align_corners=False,
-                        )  # (1, K+1, H, W)
+                            j += K_g
 
-                        pred_labels = semantic_argmax(sem_logits_up)  # (1, H, W)
-                        pred = pred_labels[0].cpu().numpy().astype(np.int64)  # (H, W)
-                        gt = ex.semantic.labels.cpu().numpy().astype(np.int64)  # (H, W)
-                        ignore = ex.semantic.ignore_index
+                        if restart_chunk:
+                            continue  # re-enter outer while at smaller B; i unchanged
 
-                        # One per-image confusion block (ignore_index excluded),
-                        # reused for the global accumulate and the per-example IoU.
-                        valid = gt != ignore
-                        idx = (K + 1) * gt[valid] + pred[valid]
-                        ex_conf = np.bincount(idx, minlength=(K + 1) ** 2).reshape(K + 1, K + 1)
-                        confusion += ex_conf
+                        # All K-groups done for this chunk. Build full semantic logits
+                        # and accumulate confusion per image.
+                        for ii, ex in enumerate(image_chunk):
+                            if ex.semantic is None:
+                                _LOG.warning(
+                                    "semantic eval: example %s has no SemanticTarget; skipping",
+                                    ex.image_id,
+                                )
+                                per_example_ious.append(float("nan"))
+                                continue
 
-                        ex_metrics = compute_semantic_metrics(ex_conf, list(dataset.class_names))
-                        per_example_ious.append(ex_metrics.mean_iou)
+                            # chunk_slices[ii] is already a list of (1, k_g, H_m, W_m)
+                            # tensors — exactly the shape build_semantic_logits expects.
+                            sem_logits_b = build_semantic_logits(
+                                chunk_slices[ii],
+                                background_logit=sem_cfg.background_logit,
+                            )  # (1, K+1, H_m, W_m)
+
+                            # Upsample to GT label resolution BEFORE argmax (§6.3). Read
+                            # the target HW from the label map itself so the confusion
+                            # comparison is shape-aligned regardless of the loader.
+                            H, W = (int(d) for d in ex.semantic.labels.shape[-2:])
+                            with profiling.bucket("semantic_eval.upsample"):
+                                sem_logits_up = F.interpolate(
+                                    sem_logits_b,
+                                    size=(H, W),
+                                    mode="bilinear",
+                                    align_corners=False,
+                                )  # (1, K+1, H, W)
+                                pred_labels = semantic_argmax(sem_logits_up)  # (1, H, W)
+
+                            with profiling.bucket("semantic_eval.transfer"):
+                                pred = pred_labels[0].cpu().numpy().astype(np.int64)  # (H, W)
+                                gt = ex.semantic.labels.cpu().numpy().astype(np.int64)  # (H, W)
+                            ignore = ex.semantic.ignore_index
+
+                            # One per-image confusion block (ignore_index excluded),
+                            # reused for the global accumulate and the per-example IoU.
+                            with profiling.bucket("semantic_eval.confusion"):
+                                valid = gt != ignore
+                                idx = (K + 1) * gt[valid] + pred[valid]
+                                ex_conf = np.bincount(idx, minlength=(K + 1) ** 2).reshape(
+                                    K + 1, K + 1
+                                )
+                                confusion += ex_conf
+
+                                ex_metrics = compute_semantic_metrics(
+                                    ex_conf, list(dataset.class_names)
+                                )
+                                per_example_ious.append(ex_metrics.mean_iou)
 
                     i += len(image_chunk)
                     img_idx_global += len(image_chunk)
