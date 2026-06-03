@@ -23,9 +23,14 @@ from torch import Tensor
 from custom_sam_peft import paths
 from custom_sam_peft.cli._progress import progress as P
 from custom_sam_peft.config.schema import TrainConfig
-from custom_sam_peft.data.base import Instance, TextPrompts
-from custom_sam_peft.models.losses import total_loss
+from custom_sam_peft.data.base import Instance, SemanticTarget, TextPrompts
+from custom_sam_peft.models.losses import (
+    build_semantic_loss,
+    resolve_semantic,
+    total_loss,
+)
 from custom_sam_peft.models.sam3 import MULTIPLEX_CAP, Sam3Wrapper
+from custom_sam_peft.models.semantic import build_semantic_logits, marginalize_group
 from custom_sam_peft.oom import OomDecision, OomLadder, _halve_microbatch, is_cuda_oom
 from custom_sam_peft.peft_adapters import PEFTMethod, make_peft_method
 from custom_sam_peft.runtime import Runtime, to_device
@@ -41,6 +46,7 @@ _LOG = logging.getLogger(__name__)
 _AUTO_CHUNK_LOGGED: bool = False
 
 _INSTANCE_LOSS_KEYS: tuple[str, ...] = ("mask", "box", "obj", "presence", "total")
+_SEMANTIC_LOSS_KEYS: tuple[str, ...] = ("ce", "region", "total")
 
 
 class _MicrobatchExhausted(Exception):
@@ -230,6 +236,21 @@ def train_step(
     oom_state: OomState | None = None,
     effective_schedule: str | None = None,
 ) -> StepResult:
+    if cfg.task == "semantic":
+        return _train_step_semantic(
+            model,
+            batch,
+            optimizer,
+            scheduler,
+            cfg,
+            class_names,
+            global_step,
+            nan_streak,
+            peft_method=peft_method,
+            runtime=runtime,
+            oom_state=oom_state,
+            effective_schedule=effective_schedule,
+        )
     _peft_method: PEFTMethod = (
         peft_method if peft_method is not None else make_peft_method(cfg.peft.method)
     )
@@ -460,6 +481,144 @@ def train_step(
     )
 
 
+def _train_step_semantic(
+    model: Sam3Wrapper,
+    batch: dict[str, Any],
+    optimizer: torch.optim.Optimizer,
+    scheduler: torch.optim.lr_scheduler.LRScheduler,
+    cfg: TrainConfig,
+    class_names: list[str],
+    global_step: int,
+    nan_streak: int,
+    peft_method: PEFTMethod | None = None,
+    runtime: Runtime | None = None,
+    oom_state: OomState | None = None,
+    effective_schedule: str | None = None,
+) -> StepResult:
+    """Semantic task step: assemble-then-loss (Spec §10.1).
+
+    Collects graph-connected per-group ``marginalize_group`` slices, concatenates
+    them into one ``(B, K+1, H, W)`` logit volume, computes ONE ``SemanticLoss``
+    over it, and backwards ONCE. No per-class target gather, no Hungarian matching
+    (the whole class vocabulary is prompted per group). The OOM recovery here is
+    the OUTER K-rung shrink (no inner microbatch B-halving): on an OOM the
+    assembled stack is rebuilt from the recomputed groups by the ``while True``
+    replay. The semantic loss bundle is built fresh per step, mirroring how the
+    instance path calls ``total_loss`` fresh each call.
+    """
+    _peft_method: PEFTMethod = (
+        peft_method if peft_method is not None else make_peft_method(cfg.peft.method)
+    )
+    if runtime is None:
+        param_device = next(model.parameters()).device
+        runtime = Runtime(device=param_device, dtype=torch.float32)
+    images: Tensor = to_device(batch["images"], runtime)
+    prompts = batch["prompts"]
+    semantic_targets: list[SemanticTarget] = batch["semantic"]
+    B = images.shape[0]
+
+    classes_in_batch = sorted({c for p in prompts for c in p.classes})
+    if not classes_in_batch:
+        _LOG.warning("train_step: batch has no class prompts; skipping (data condition)")
+        return StepResult.empty(nan_streak=nan_streak, loss_keys=_SEMANTIC_LOSS_KEYS)
+
+    if oom_state is not None:
+        oom_state.step = global_step
+
+    losses: dict[str, Tensor]
+    is_finite: bool
+
+    while True:  # outer K-replay loop (Spec §10.1 / §4)
+        if oom_state is not None:
+            effective_K = oom_state.effective_K
+        else:
+            effective_K = min(cfg.train.multiplex.classes_per_forward, MULTIPLEX_CAP)
+
+        groups = _chunked(classes_in_batch, effective_K)
+
+        try:
+            slices: list[Tensor] = []
+            for group in groups:
+                prompts_g = [TextPrompts(classes=list(group)) for _ in range(B)]
+                with _autocast_ctx(cfg, _peft_method):
+                    out = model(images, prompts_g)
+                    slice_g = marginalize_group(
+                        out,
+                        B,
+                        len(group),
+                        query_reduce=cfg.train.semantic_loss.query_reduce,
+                        source=cfg.train.semantic_loss.source,
+                    )
+                slices.append(slice_g)  # graph-connected; NOT detached
+
+            sem_logits = build_semantic_logits(
+                slices, background_logit=cfg.train.semantic_loss.background_logit
+            )
+            sem_loss = build_semantic_loss(resolve_semantic(cfg.train.semantic_loss))
+            losses = sem_loss(sem_logits, semantic_targets)
+            scaled = losses["total"] / cfg.train.grad_accum_steps
+            is_finite = bool(torch.isfinite(scaled))
+            if is_finite:
+                scaled.backward()  # type: ignore[no-untyped-call]
+            break
+        except RuntimeError as oom_err:
+            # OOM recovery is the outer K-rung shrink (no inner B-halving for the
+            # assemble-then-loss path). Non-OOM RuntimeErrors re-propagate. When
+            # oom_state is None there is no recovery — OOM propagates as the
+            # instance path does. (#208: OOM may surface as a generic RuntimeError.)
+            if oom_state is None or not is_cuda_oom(oom_err):
+                raise
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+            decision = oom_state.on_oom(global_step)
+            if decision in (OomDecision.RETRY_K, OomDecision.FLOOR_RETRY):
+                optimizer.zero_grad(set_to_none=True)
+                continue
+            raise RuntimeError(
+                f"OOM at step {global_step} after classes_per_forward=1. "
+                f"Use a larger GPU or smaller image_size."
+            ) from oom_err
+
+    skipped = not is_finite
+    new_streak = nan_streak + 1 if skipped else 0
+    if new_streak >= cfg.train.nan_abort_after:
+        raise RuntimeError(f"Training aborted: {new_streak} consecutive non-finite micro-steps.")
+
+    if skipped:
+        return StepResult.empty(nan_streak=new_streak, loss_keys=_SEMANTIC_LOSS_KEYS)
+
+    grad_norm: float | None = None
+    if (global_step + 1) % cfg.train.grad_accum_steps == 0:
+        grad_norm = float(
+            torch.nn.utils.clip_grad_norm_(
+                [p for p in model.parameters() if p.requires_grad],
+                cfg.train.max_grad_norm,
+            )
+        )
+        optimizer.step()
+        step_per_train_step(
+            scheduler,
+            global_step=global_step,
+            base_lr=cfg.train.learning_rate,
+            warmup_steps=cfg.train.warmup_steps,
+            mode=effective_schedule if effective_schedule is not None else cfg.train.lr_schedule,
+        )
+        optimizer.zero_grad(set_to_none=True)
+
+    return StepResult(
+        losses={
+            "ce": float(losses["ce"].detach()),
+            "region": float(losses["region"].detach()),
+            "total": float(losses["total"].detach()),
+        },
+        n_classes=len(classes_in_batch),
+        grad_norm=grad_norm,
+        skipped=skipped,
+        nan_streak=new_streak,
+        images_processed=B,
+    )
+
+
 @dataclass
 class _ScalarWindow:
     loss_keys: tuple[str, ...] = field(default_factory=lambda: _INSTANCE_LOSS_KEYS)
@@ -575,7 +734,8 @@ def run_epoch(
     _peft_method: PEFTMethod = (
         peft_method if peft_method is not None else make_peft_method(cfg.peft.method)
     )
-    window = _ScalarWindow()
+    _loss_keys = _SEMANTIC_LOSS_KEYS if cfg.task == "semantic" else _INSTANCE_LOSS_KEYS
+    window = _ScalarWindow(loss_keys=_loss_keys)
     for batch in loader:
         result = train_step(
             model,
