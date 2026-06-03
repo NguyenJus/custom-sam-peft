@@ -112,7 +112,8 @@ def incr(key: str, by: int = 1) -> None:
     """Increment an integer counter.  No-op when disabled."""
     if not _ENABLED:
         return
-    _META[key] = int(_META.get(key, 0)) + by  # type: ignore[arg-type]
+    prev = _META.get(key, 0)
+    _META[key] = (prev if isinstance(prev, int) else 0) + by
 
 
 # ---------------------------------------------------------------------------
