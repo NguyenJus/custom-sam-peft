@@ -394,11 +394,17 @@ def test_G2_tiled_eval_accumulates_without_stitch(tmp_path: Path) -> None:
     for png_path in vis_pngs:
         with Image.open(png_path) as img:
             w, h = img.size
-        # The composite is hstacked [orig|gt|pred], so width is ~3x orig_w.
-        # The panel height must equal the original image height (_OVERSIZED).
-        assert h == _OVERSIZED, (
-            f"Visualization PNG height {h} != {_OVERSIZED}: "
-            f"composite was not rendered at full-image extent"
+        # The composite is hstacked [orig|gt|pred] (~3x orig_w wide) and
+        # _compose_pair stacks a title bar + per-class legend ON TOP of the panels
+        # (total_h = _TITLE_BAR_H + panel_h + legend_h), so the PNG height is the
+        # native image height PLUS a small chrome band. The design-C contract is that
+        # the panels render at full NATIVE extent: pre-design-C eval compressed to a
+        # 1008 tile (height ~1058 < 1500); under design C the panel is native 1500
+        # (height ~1550 >= 1500). Assert >= native extent — exact height varies with
+        # the legend row count, so an equality check would be brittle.
+        assert h >= _OVERSIZED, (
+            f"Visualization PNG height {h} < {_OVERSIZED}: composite rendered at "
+            f"compressed (sub-native) extent — eval did not tile at native resolution"
         )
         assert w >= _OVERSIZED, (
             f"Visualization PNG width {w} < {_OVERSIZED}: "
