@@ -72,6 +72,7 @@ def load_config(
         apply_overrides(raw, overrides)
 
     _resolve_paths(raw, base_dir=Path.cwd())
+    _drop_legacy_train_fields(raw)
 
     try:
         return TrainConfig.model_validate(raw)
@@ -83,6 +84,24 @@ def load_config(
             found=f"{p!r} has one or more schema validation errors (see above)",
             fix="correct the field(s) listed in the validation error above",
         ) from e
+
+
+def _drop_legacy_train_fields(raw: dict[str, Any]) -> None:
+    """Drop pre-#264 LR-schedule fields so old run configs round-trip (issue #278).
+
+    The #264 rework removed ``plateau`` from the ``lr_schedule`` literal and deleted
+    the ``lr_decay_on_plateau`` block. Configs saved by training runs before that
+    change still carry these fields and, under ``extra="forbid"``, hard-fail
+    ``TrainConfig`` validation — blocking ``export``/``eval``/``predict`` on existing
+    ``runs/`` dirs. Strip them in place so the schema's defaults apply. Any still-valid
+    ``lr_schedule`` value is left untouched.
+    """
+    train = raw.get("train")
+    if not isinstance(train, dict):
+        return
+    if train.get("lr_schedule") == "plateau":
+        del train["lr_schedule"]
+    train.pop("lr_decay_on_plateau", None)
 
 
 def apply_overrides(target: dict[str, Any], overrides: Sequence[str]) -> None:

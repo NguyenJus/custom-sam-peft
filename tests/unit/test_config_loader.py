@@ -116,6 +116,61 @@ def test_override_traversing_non_dict_raises() -> None:
         apply_overrides(base, ["a.b.c=1"])
 
 
+def _write_legacy_lr_yaml(p: Path, *, lr_schedule: str, with_decay_block: bool) -> Path:
+    """Minimal config carrying a pre-#264 ``lr_schedule`` (and optional decay block)."""
+    decay = (
+        "  lr_decay_on_plateau: { factor: 0.1, min_lr: 1.0e-6, patience: 5 }\n"
+        if with_decay_block
+        else ""
+    )
+    p.write_text(
+        f"""
+run:
+  name: t
+model:
+  name: facebook/sam3.1
+data:
+  format: coco
+  train: {{ annotations: train.json, images: train/ }}
+  val: {{ annotations: val.json, images: val/ }}
+peft:
+  method: lora
+train:
+  epochs: 3
+  lr_schedule: {lr_schedule}
+{decay}""".lstrip()
+    )
+    return p
+
+
+def test_legacy_plateau_lr_schedule_dropped_falls_back_to_default(tmp_path: Path) -> None:
+    """Pre-#264 ``lr_schedule: plateau`` loads, falling back to the current default (#278)."""
+    cfg_file = _write_legacy_lr_yaml(
+        tmp_path / "c.yaml", lr_schedule="plateau", with_decay_block=False
+    )
+    cfg = load_config(cfg_file)
+    assert cfg.train.lr_schedule == "poly"  # current schema default post-#264
+
+
+def test_legacy_lr_decay_on_plateau_block_dropped(tmp_path: Path) -> None:
+    """The removed ``lr_decay_on_plateau`` block is stripped instead of hard-failing (#278)."""
+    cfg_file = _write_legacy_lr_yaml(
+        tmp_path / "c.yaml", lr_schedule="plateau", with_decay_block=True
+    )
+    cfg = load_config(cfg_file)
+    assert cfg.train.epochs == 3
+    assert cfg.train.lr_schedule == "poly"
+
+
+def test_still_valid_lr_schedule_preserved(tmp_path: Path) -> None:
+    """A still-valid ``lr_schedule`` (e.g. cosine) is left untouched by the #278 shim."""
+    cfg_file = _write_legacy_lr_yaml(
+        tmp_path / "c.yaml", lr_schedule="cosine", with_decay_block=False
+    )
+    cfg = load_config(cfg_file)
+    assert cfg.train.lr_schedule == "cosine"
+
+
 def test_paths_resolved_relative_to_cwd_not_config_file(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
