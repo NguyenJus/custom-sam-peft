@@ -71,12 +71,13 @@ def test_command_assembly_baseline_rgb(tmp_path, monkeypatch, capsys) -> None:
 def test_command_assembly_with_checkpoint(tmp_path, monkeypatch, capsys) -> None:
     monkeypatch.chdir(tmp_path)
     ckpt = _lora_ckpt(tmp_path)
-    _drive(monkeypatch, checkpoint=str(ckpt), channels="3", semantics="rgb", merge=True)
+    _drive(monkeypatch, checkpoint=str(ckpt), channels="3", semantics="rgb")
     itv.run_predict_interactive(force=False)
     out = capsys.readouterr().out
     assert f"--checkpoint {ckpt}" in out
-    assert "--merge-adapter" in out
+    assert "--merge-adapter" not in out
     assert "LoRA" in out  # peek output
+    assert "--batch-size" in out  # note line updated
 
 
 def test_thin_config_emitted_for_non_rgb(tmp_path, monkeypatch, capsys) -> None:
