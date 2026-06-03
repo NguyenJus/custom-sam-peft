@@ -41,9 +41,15 @@ def _zero_like(logits: Tensor) -> Tensor:
 
 
 def _stack_downsample_labels(
-    targets: list[SemanticTarget], size: tuple[int, int], device: torch.device
+    targets: list[SemanticTarget], size: tuple[int, int]
 ) -> tuple[Tensor, int]:
-    """Stack each target's labels, nearest-downsample to `size` -> (B, H, W) int64."""
+    """Stack each target's labels, nearest-downsample to `size` -> (B, H, W) int64.
+
+    Labels stay on their source device here; `forward` co-locates them with the
+    prediction (mirrors the instance loss in compose.py, which moves targets to
+    the prediction's device — device moves stay out of `runtime`/collate's reach
+    by deriving the device from the prediction tensor, never a `device` var).
+    """
     ignore_index = targets[0].ignore_index
     maps: list[Tensor] = []
     for tgt in targets:
@@ -51,7 +57,7 @@ def _stack_downsample_labels(
         if tuple(lbl.shape[-2:]) != size:
             lbl = F.interpolate(lbl[None, None].float(), size=size, mode="nearest")[0, 0]
         maps.append(lbl.to(torch.int64))
-    return torch.stack(maps, dim=0).to(device), ignore_index
+    return torch.stack(maps, dim=0), ignore_index
 
 
 def _multiclass_ce(logits: Tensor, labels: Tensor, ignore_index: int) -> Tensor:
@@ -202,7 +208,8 @@ class SemanticLoss(nn.Module):
         if len(targets) != sem_logits.shape[0]:
             raise ValueError(f"targets length {len(targets)} != batch size {sem_logits.shape[0]}")
         size = (int(sem_logits.shape[-2]), int(sem_logits.shape[-1]))
-        labels, ignore_index = _stack_downsample_labels(targets, size, sem_logits.device)
+        labels, ignore_index = _stack_downsample_labels(targets, size)
+        labels = labels.to(sem_logits.device)
         valid = labels != ignore_index
         probs = F.softmax(sem_logits, dim=1)
         num_channels = int(sem_logits.shape[1])
