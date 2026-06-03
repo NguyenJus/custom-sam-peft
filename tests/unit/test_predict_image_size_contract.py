@@ -48,6 +48,7 @@ _MINIMAL_OPTS = PredictOptions(
     seed=0,
     dry_run=False,
     verbose=False,
+    use_onnx=None,
 )
 
 

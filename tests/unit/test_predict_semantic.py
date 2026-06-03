@@ -60,6 +60,7 @@ def _make_semantic_opts(
         seed=0,
         dry_run=False,
         verbose=False,
+        use_onnx=None,
         batch_size=1,
     )
 
@@ -253,6 +254,7 @@ class TestSemanticRunnerPredictionsJson:
             seed=0,
             dry_run=False,
             verbose=False,
+            use_onnx=None,
             batch_size=1,
         )
 
@@ -292,6 +294,7 @@ class TestSemanticRunnerPredictionsJson:
             seed=0,
             dry_run=False,
             verbose=False,
+            use_onnx=None,
             batch_size=1,
         )
 
@@ -324,6 +327,7 @@ class TestSemanticRunnerPredictionsJson:
             seed=0,
             dry_run=False,
             verbose=False,
+            use_onnx=None,
             batch_size=1,
         )
 
@@ -377,6 +381,7 @@ class TestInstancePathInvariance:
             seed=0,
             dry_run=False,
             verbose=False,
+            use_onnx=None,
             batch_size=1,
         )
 

@@ -56,6 +56,7 @@ def test_G4_real_nchannel_predict(tmp_path):
         seed=42,
         dry_run=False,
         verbose=False,
+        use_onnx=None,
     )
     report = run_predict(opts)
     assert isinstance(report, PredictReport)

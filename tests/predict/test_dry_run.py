@@ -56,6 +56,7 @@ def _make_opts(
         seed=0,
         dry_run=dry_run,
         verbose=False,
+        use_onnx=None,
     )
 
 
@@ -137,6 +138,7 @@ def test_dry_run_writes_nothing(tmp_path: Path) -> None:
         seed=0,
         dry_run=True,
         verbose=False,
+        use_onnx=None,
     )
 
     with mock.patch(

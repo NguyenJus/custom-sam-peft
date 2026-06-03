@@ -190,6 +190,7 @@ def test_G1_tiled_predict_one_full_extent_mask(tmp_path: Path) -> None:
         seed=42,
         dry_run=False,
         verbose=False,
+        use_onnx=None,
     )
     report = run_predict(opts)
     assert isinstance(report, PredictReport)

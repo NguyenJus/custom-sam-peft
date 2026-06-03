@@ -116,6 +116,51 @@ SAM3_IMAGE_SIZE: int = 1008
 MULTIPLEX_CAP: int = 16
 
 
+def validate_forward_inputs(
+    images: Tensor,
+    prompts: list[Prompts],
+    channels: int,
+) -> None:
+    """Validate (images, prompts) against the SAM 3.1 multiplex forward contract.
+
+    Checks: ``images`` is (B, ``channels``, H, W); ``len(prompts) == B``; each
+    prompt is a ``TextPrompts`` carrying 1..MULTIPLEX_CAP classes; all prompts
+    share the same class list in the same order. Shared by ``Sam3Wrapper`` and
+    the ONNX session so both enforce an identical contract.
+    """
+    if images.ndim != 4:
+        raise ValueError(f"images must be (B, {channels}, H, W); got shape {tuple(images.shape)}")
+    if images.shape[1] != channels:
+        raise ValueError(
+            f"images must be (B, {channels}, H, W); got "
+            f"{images.shape[1]} channels in shape {tuple(images.shape)}"
+        )
+    b = images.shape[0]
+    if len(prompts) != b:
+        raise ValueError(f"len(prompts)={len(prompts)} must equal batch size {b}")
+    if not prompts:
+        return
+
+    # After #126, Prompts == TextPrompts. Per-prompt: validate K ∈ [1, MULTIPLEX_CAP].
+    for p in prompts:
+        if not isinstance(p, TextPrompts) or not (1 <= len(p.classes) <= MULTIPLEX_CAP):
+            raise ValueError(
+                f"TextPrompts must contain 1..MULTIPLEX_CAP (={MULTIPLEX_CAP}) classes per "
+                f"call (got {len(p.classes) if isinstance(p, TextPrompts) else 0}). Configure "
+                f"train.multiplex.classes_per_forward to bound K."
+            )
+
+    # Shared-class-list check (multiplex forward assumes shared K-prompt vocab).
+    ref = tuple(prompts[0].classes)
+    for p in prompts[1:]:
+        if tuple(p.classes) != ref:
+            raise ValueError(
+                "All TextPrompts in a batch must carry the same class "
+                "list in the same order (multiplex forward assumes a "
+                "shared K-prompt vocabulary)."
+            )
+
+
 class Sam3Wrapper(nn.Module):
     """Thin wrapper around Meta's SAM 3.1 model.
 
@@ -171,39 +216,10 @@ class Sam3Wrapper(nn.Module):
         prompts: list[Prompts],
         support: SupportPrompts | None,
     ) -> None:
-        if images.ndim != 4:
-            raise ValueError(
-                f"images must be (B, {self.channels}, H, W); got shape {tuple(images.shape)}"
-            )
-        if images.shape[1] != self.channels:
-            raise ValueError(
-                f"images must be (B, {self.channels}, H, W); got "
-                f"{images.shape[1]} channels in shape {tuple(images.shape)}"
-            )
-        b = images.shape[0]
-        if len(prompts) != b:
-            raise ValueError(f"len(prompts)={len(prompts)} must equal batch size {b}")
-        if not prompts:
-            return
-
-        # After #126, Prompts == TextPrompts. Per-prompt: validate K ∈ [1, MULTIPLEX_CAP].
-        for p in prompts:
-            if not isinstance(p, TextPrompts) or not (1 <= len(p.classes) <= MULTIPLEX_CAP):
-                raise ValueError(
-                    f"TextPrompts must contain 1..MULTIPLEX_CAP (={MULTIPLEX_CAP}) classes per "
-                    f"call (got {len(p.classes) if isinstance(p, TextPrompts) else 0}). Configure "
-                    f"train.multiplex.classes_per_forward to bound K."
-                )
-
-        # Shared-class-list check (multiplex forward assumes shared K-prompt vocab).
-        ref = tuple(prompts[0].classes)
-        for p in prompts[1:]:
-            if tuple(p.classes) != ref:
-                raise ValueError(
-                    "All TextPrompts in a batch must carry the same class "
-                    "list in the same order (multiplex forward assumes a "
-                    "shared K-prompt vocabulary)."
-                )
+        # Thin wrapper: the real checks live in the module-level free function so
+        # the ONNX session (OnnxSam3Session) can enforce the identical contract.
+        # ``support`` is reserved/ignored today (the forward is text-only).
+        validate_forward_inputs(images, prompts, self.channels)
 
 
 def _resolve_checkpoint_path(cfg: ModelConfig) -> Path:
@@ -338,10 +354,15 @@ class _Sam3ImageAdapter(nn.Module):
         # Multiplex assembly: B images x K classes -> B*K rows, image-major / class-minor.
         # img_ids  = [0,0,...,0, 1,1,...,1, ..., B-1,B-1,...,B-1]  (each repeated K times)
         # text_ids = [0,1,...,K-1, 0,1,...,K-1, ..., 0,1,...,K-1]  (repeated B times)
+        # Routed through models/_multiplex so the traced ONNX decoder feed and the
+        # ORT predict-side feed share one source of truth for the row ordering.
+        from custom_sam_peft.models._multiplex import multiplex_index_arrays
+
         n_cols = b * k
+        ii, ti = multiplex_index_arrays(b, k)
         find_input = FindStage(
-            img_ids=torch.arange(b, device=device, dtype=torch.long).repeat_interleave(k),
-            text_ids=torch.arange(k, device=device, dtype=torch.long).repeat(b),
+            img_ids=torch.from_numpy(ii).to(device=device),  # already int64/long
+            text_ids=torch.from_numpy(ti).to(device=device),
             input_boxes=None,
             input_boxes_mask=None,
             input_boxes_label=None,

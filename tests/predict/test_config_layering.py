@@ -67,6 +67,7 @@ def _make_opts(
         seed=seed,
         dry_run=dry_run,
         verbose=verbose,
+        use_onnx=None,
     )
 
 
@@ -330,6 +331,7 @@ def test_verbose_emits_per_image_latency_log(
         seed=0,
         dry_run=False,
         verbose=True,
+        use_onnx=None,
     )
 
     with caplog.at_level(logging.INFO):

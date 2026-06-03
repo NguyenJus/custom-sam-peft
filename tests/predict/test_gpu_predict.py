@@ -86,6 +86,7 @@ def _make_base_opts(
         seed=42,
         dry_run=False,
         verbose=False,
+        use_onnx=None,
     )
 
 

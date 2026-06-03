@@ -87,6 +87,7 @@ class PredictOptions:
     seed: int
     dry_run: bool
     verbose: bool
+    use_onnx: Path | None
     batch_size: int | Literal["auto"] = "auto"
 
 
@@ -486,45 +487,87 @@ def run_predict(opts: PredictOptions) -> PredictReport:
         return PredictReport(n_images=0, n_predictions=0, elapsed_sec=0.0)
 
     # ---------------------------------------------------------------------------
-    # Step 4: load model (happens AFTER dry-run check)
-    # ---------------------------------------------------------------------------
-    from custom_sam_peft.config.schema import ModelConfig
-    from custom_sam_peft.models.sam3 import load_sam31
-
-    model_cfg = ModelConfig(name=rcfg.model_name)
-
-    model: torch.nn.Module = load_sam31(
-        model_cfg, channels=rcfg.channels, channel_semantics=rcfg.channel_semantics
-    )
-    model = model.to(rcfg.device, dtype=rcfg.dtype)
-    model.eval()
-
-    # ---------------------------------------------------------------------------
-    # Step 5: adapter load + optional merge (lazy-import peft_adapters here only)
-    # ---------------------------------------------------------------------------
-    kind: str | None = None
-    if opts.checkpoint is not None:
-        from custom_sam_peft.predict import adapter_load as _al
-
-        kind = _al.detect_adapter_kind(opts.checkpoint)
-        model = _al.load_adapter(model, opts.checkpoint, kind)
-        if opts.merge_adapter:
-            model = _al.maybe_merge_adapter(model, merge=True)
-        adapter_kind_str = kind
-
-    # ---------------------------------------------------------------------------
-    # Step 6: build transforms
+    # Step 4/5: load model + build transforms (ONNX-bundle branch vs torch path)
     # ---------------------------------------------------------------------------
     from custom_sam_peft.config.schema import NormalizeConfig
     from custom_sam_peft.data.transforms import build_eval_transforms
 
-    normalize_cfg = NormalizeConfig(mean=rcfg.normalize_mean, std=rcfg.normalize_std)
-    transforms = build_eval_transforms(
-        rcfg.image_size,
-        model_name=rcfg.model_name,
-        normalize=normalize_cfg,
-        channel_semantics=rcfg.channel_semantics,
-    )
+    model: torch.nn.Module
+    onnx_card: dict[str, Any] | None = None
+
+    if opts.use_onnx is not None:
+        # --- ONNX bundle path (spec §8.2, §8.3): sidecar-driven, config-free ---
+        from custom_sam_peft.predict.onnx_bundle import (
+            load_model_card,
+            load_preprocessor,
+            load_prompts,
+        )
+        from custom_sam_peft.predict.onnx_session import OnnxSam3Session
+
+        pp = load_preprocessor(opts.use_onnx)
+        onnx_card = load_model_card(opts.use_onnx)
+
+        # WARN-level cross-check: a --prompts class not in the bundle list warns, proceeds.
+        bundle_classes = set(load_prompts(opts.use_onnx))
+        for cls in prompts:
+            if cls not in bundle_classes:
+                logger.warning(
+                    "predict --use-onnx: prompt class %r is not in the bundle's training "
+                    "class list; the decoder baked a fixed class list, results may be wrong.",
+                    cls,
+                )
+
+        providers = (
+            ["CUDAExecutionProvider", "CPUExecutionProvider"]
+            if rcfg.device == "cuda"
+            else ["CPUExecutionProvider"]
+        )
+        model = cast("torch.nn.Module", OnnxSam3Session(opts.use_onnx, providers=providers))
+        adapter_kind_str = "onnx-bundle"
+
+        # Build transforms from the sidecar preprocessor (NOT config / adapter resolution).
+        # max_pixel_value MUST come from the sidecar (the torch path takes the 255.0 default).
+        normalize_cfg = NormalizeConfig(
+            mean=list(pp["mean"]),
+            std=list(pp["std"]),
+            max_pixel_value=float(pp["max_pixel_value"]),
+        )
+        transforms = build_eval_transforms(
+            int(pp["image_size"]),  # trust the sidecar image_size (== SAM3_IMAGE_SIZE)
+            model_name=str(onnx_card["name"]),
+            normalize=normalize_cfg,
+            channel_semantics=str(pp["channel_semantics"]),
+        )
+    else:
+        from custom_sam_peft.config.schema import ModelConfig
+        from custom_sam_peft.models.sam3 import load_sam31
+
+        model_cfg = ModelConfig(name=rcfg.model_name)
+
+        model = load_sam31(
+            model_cfg, channels=rcfg.channels, channel_semantics=rcfg.channel_semantics
+        )
+        model = model.to(rcfg.device, dtype=rcfg.dtype)
+        model.eval()
+
+        # --- adapter load + optional merge (lazy-import peft_adapters here only) ---
+        kind: str | None = None
+        if opts.checkpoint is not None:
+            from custom_sam_peft.predict import adapter_load as _al
+
+            kind = _al.detect_adapter_kind(opts.checkpoint)
+            model = _al.load_adapter(model, opts.checkpoint, kind)
+            if opts.merge_adapter:
+                model = _al.maybe_merge_adapter(model, merge=True)
+            adapter_kind_str = kind
+
+        normalize_cfg = NormalizeConfig(mean=rcfg.normalize_mean, std=rcfg.normalize_std)
+        transforms = build_eval_transforms(
+            rcfg.image_size,
+            model_name=rcfg.model_name,
+            normalize=normalize_cfg,
+            channel_semantics=rcfg.channel_semantics,
+        )
 
     # ---------------------------------------------------------------------------
     # Step 6b: resolve batch_size (spec §13 AC 13)
@@ -984,7 +1027,14 @@ def run_predict(opts: PredictOptions) -> PredictReport:
                     "overlap": DEFAULT_OVERLAP,
                     "n_windows_total": n_windows_total,
                 },
+                # Model source provenance (spec §8.2): "onnx" when run from a bundle.
+                "model_source": "onnx" if opts.use_onnx is not None else "torch",
             }
+            if opts.use_onnx is not None:
+                run_meta["onnx_bundle"] = str(opts.use_onnx)
+                if onnx_card is not None:
+                    run_meta["onnx_git_sha"] = onnx_card.get("git_sha")
+                    run_meta["onnx_opset"] = onnx_card.get("opset")
             write_run_json(run_meta, opts.output)
 
     if profiling.is_enabled() and opts.output is not None:

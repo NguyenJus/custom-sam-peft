@@ -7,7 +7,6 @@ label-map PNGs (index + colorized) for the semantic task branch.
 from __future__ import annotations
 
 import json
-import subprocess
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
 
@@ -17,6 +16,7 @@ import torch
 from PIL import Image
 
 import custom_sam_peft
+from custom_sam_peft._provenance import git_sha
 
 if TYPE_CHECKING:
     from custom_sam_peft.data.spatial_meta import SpatialMeta
@@ -410,20 +410,8 @@ def write_run_json(run_meta: dict[str, Any], output_dir: Path) -> None:
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    # Resolve package root for git query
-    package_root = Path(custom_sam_peft.__file__).parent
-
-    git_result = subprocess.run(
-        ["git", "rev-parse", "--short", "HEAD"],  # noqa: S607
-        cwd=package_root,
-        check=False,
-        capture_output=True,
-        text=True,
-    )
-    git_sha: str | None = git_result.stdout.strip() if git_result.returncode == 0 else None
-
     record = dict(run_meta)
     record["version"] = custom_sam_peft.__version__
-    record["git_sha"] = git_sha
+    record["git_sha"] = git_sha()
 
     (output_dir / "run.json").write_text(json.dumps(record))

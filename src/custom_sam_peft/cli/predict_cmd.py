@@ -58,6 +58,35 @@ def _validate_batch_size(value: str) -> int | str:
     return n
 
 
+def _validate_onnx_bundle(bundle: Path) -> None:
+    """Validate an ONNX bundle dir has the required sidecars + graphs (spec §4.3)."""
+    import json
+
+    if not bundle.is_dir():
+        raise typer.BadParameter(
+            f"--use-onnx must be an existing bundle directory; got {bundle}",
+            param_hint="--use-onnx",
+        )
+    required = ["decoder.onnx", "preprocessor.json", "model_card.json", "prompts.txt"]
+    # image_encoder.onnx is required unless the card declares include == "decoder".
+    include = "all"
+    card_path = bundle / "model_card.json"
+    if card_path.is_file():
+        try:
+            include = str(json.loads(card_path.read_text(encoding="utf-8")).get("include", "all"))
+        except Exception:  # malformed card -> fall back to requiring the encoder
+            include = "all"
+    if include != "decoder":
+        required.append("image_encoder.onnx")
+
+    missing = [name for name in required if not (bundle / name).is_file()]
+    if missing:
+        raise typer.BadParameter(
+            f"--use-onnx bundle {bundle} is missing required file(s): {', '.join(sorted(missing))}",
+            param_hint="--use-onnx",
+        )
+
+
 def _validate_checkpoint(value: Path | None) -> Path | None:
     if value is None:
         return None
@@ -89,6 +118,12 @@ def predict(
         None, "--checkpoint", callback=_validate_checkpoint, help="Adapter checkpoint directory."
     ),
     config: Path | None = typer.Option(None, "--config", help="Path to config YAML."),
+    use_onnx: Path | None = typer.Option(
+        None,
+        "--use-onnx",
+        help="Run inference from an exported ONNX bundle dir (image_encoder.onnx + decoder.onnx "
+        "+ sidecars) instead of the PyTorch model. Mutually exclusive with --checkpoint/--merge.",
+    ),
     score_threshold: float = typer.Option(
         _DEFAULT_SCORE_THRESHOLD,
         "--score-threshold",
@@ -134,6 +169,16 @@ def predict(
         _interactive.require_tty()
         _interactive.run_predict_interactive(force=False)
         return
+
+    # --- ONNX bundle validation (spec §4.3): mutual exclusion + completeness ---
+    if use_onnx is not None:
+        if checkpoint is not None:
+            raise typer.BadParameter(
+                "--use-onnx and --checkpoint are mutually exclusive; the bundle already "
+                "has the adapter merged in.",
+                param_hint="--use-onnx",
+            )
+        _validate_onnx_bundle(use_onnx)
 
     # Derive merge: LoRA folds deltas into base weights (forward-equivalent, speed/memory only);
     # QLoRA merge dequantizes 4-bit→compute_dtype (memory blowup), so unmerged is safe default.
@@ -220,6 +265,7 @@ def predict(
         seed=0,
         dry_run=dry_run,
         verbose=verbose,
+        use_onnx=use_onnx,
     )
 
     mode = resolve_mode(

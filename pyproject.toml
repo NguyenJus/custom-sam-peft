@@ -36,6 +36,11 @@ dependencies = [
 # apply_voi_lut in pydicom.pixel_data_handlers. nibabel floor 5.2: stable affine
 # API for the NIfTI volume writer (spec §7.3).
 dicom = ["pydicom>=2.4", "nibabel>=5.2"]
+# ONNX export + inference (spec §0). onnx is the export-side serialization lib
+# (torch.onnx.export with dynamo=False writes through it); onnxruntime is the
+# predict-side runtime, lazy-imported in the ORT core (_OrtCore). Both stay an
+# optional extra and NOT core dependencies.
+onnx = ["onnx>=1.16", "onnxruntime>=1.18"]
 wandb = ["wandb>=0.18"]
 tensorboard = ["tensorboard>=2.18"]
 qlora = ["bitsandbytes>=0.43"]

@@ -124,6 +124,7 @@ def _make_opts(
         seed=seed,
         dry_run=dry_run,
         verbose=verbose,
+        use_onnx=None,
     )
 
 

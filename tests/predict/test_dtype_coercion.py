@@ -27,6 +27,7 @@ def _opts(**over: Any) -> PredictOptions:
         seed=0,
         dry_run=True,
         verbose=False,
+        use_onnx=None,
         batch_size="auto",
     )
     base.update(over)
