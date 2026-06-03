@@ -24,9 +24,6 @@ _LOG = logging.getLogger(__name__)
 # Recognized pixel image extensions for enumeration.
 _IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".bmp", ".tif", ".tiff", ".webp"}
 
-# One-time guard for non-'all' text_prompt mode warning.
-_warned_non_all_mode = False
-
 
 class MaskPngDataset:
     """Semantic segmentation dataset backed by paired image + label-PNG directories.
@@ -55,6 +52,7 @@ class MaskPngDataset:
         self._transforms = transforms
         self._text_prompt_cfg = text_prompt
         self._channels = channels
+        self._warned_non_all_mode = False
 
         self._class_names, self._value_to_label, self._ignore_index = build_value_to_label(
             class_map_path, ignore_index=ignore_index, background_class_name=None
@@ -144,9 +142,7 @@ class MaskPngDataset:
         image_tensor: Any = out["image"]
         # ToTensorV2 converts masks to torch.Tensor; bring back to numpy for remapping.
         lbl_out = out["masks"][0]
-        import torch as _torch
-
-        if isinstance(lbl_out, _torch.Tensor):
+        if isinstance(lbl_out, torch.Tensor):
             transformed_lbl: np.ndarray[Any, Any] = lbl_out.numpy()
         else:
             transformed_lbl = np.asarray(lbl_out)
@@ -163,13 +159,12 @@ class MaskPngDataset:
         remapped = lut[clamped]
 
         # --- text prompts: always 'all' for semantic task (SS5.6) ---
-        global _warned_non_all_mode
-        if self._text_prompt_cfg.mode != "all" and not _warned_non_all_mode:
+        if self._text_prompt_cfg.mode != "all" and not self._warned_non_all_mode:
             _LOG.info(
                 "task: semantic forces text-prompt mode 'all'; ignoring mode=%s",
                 self._text_prompt_cfg.mode,
             )
-            _warned_non_all_mode = True
+            self._warned_non_all_mode = True
         prompts = TextPrompts(classes=list(self._class_names))
 
         semantic = SemanticTarget(
