@@ -70,19 +70,65 @@ def test_C10_monochrome1_inverted(tmp_path):
     assert np.unravel_index(a1.argmax(), a1.shape[:2]) == np.unravel_index(
         a2.argmin(), a2.shape[:2]
     )
+    # Full-array guarantee: inversion is exactly max - value (mathematical identity).
+    assert np.allclose(a1, a2.max() - a2)
 
 
 def test_voi_window_override(tmp_path):
-    """Override window wins over file window; meta.voi_window reflects override."""
+    """Override window wins over file window; meta.voi_window reflects override; pixels differ."""
     stored = np.arange(0, 16, dtype=np.uint16).reshape(4, 4)
     file_window = (500.0, 1000.0)
     override_window = (100.0, 200.0)
     p = _make_ct(tmp_path, stored, slope=1.0, intercept=0.0, window=file_window)
 
     # Without override: meta.voi_window == file window
-    _, meta_file = read_dcm_with_meta(p, 1)
+    pix_file, meta_file = read_dcm_with_meta(p, 1)
     assert meta_file.voi_window == file_window
 
     # With override: meta.voi_window == override
-    _, meta_override = read_dcm_with_meta(p, 1, voi_window=override_window)
+    pix_override, meta_override = read_dcm_with_meta(p, 1, voi_window=override_window)
     assert meta_override.voi_window == override_window
+
+    # Override actually changes pixel values, not just metadata.
+    assert not np.allclose(pix_file, pix_override)
+
+
+def test_monochrome1_with_window_uses_hu_space_windowing(tmp_path):
+    """Regression: VOI windowing must precede MONOCHROME1 inversion (DICOM PS3.3 §C.11.2).
+
+    Build a MONOCHROME1 and MONOCHROME2 CT with the same stored pixels and a non-trivial
+    window (center/width that actually clips).  After decoding:
+      - Both see the same HU-space windowing.
+      - MONOCHROME1 result == max(M2_result) - M2_result  (VOI then invert).
+    Under the OLD (buggy) invert-then-VOI order this assertion FAILS because the window
+    would have been applied to already-inverted values for M1.
+    """
+    # 4x4 ramp; slope=1, intercept=0 → HU == stored value.
+    stored = np.arange(0, 16, dtype=np.uint16).reshape(4, 4)
+    # Non-trivial window: center=7, width=6 → clips values outside [4, 10].
+    window = (7.0, 6.0)
+
+    p_m1 = _make_ct(
+        tmp_path,
+        stored,
+        slope=1.0,
+        intercept=0.0,
+        photometric="MONOCHROME1",
+        window=window,
+        name="m1_win.dcm",
+    )
+    p_m2 = _make_ct(
+        tmp_path,
+        stored,
+        slope=1.0,
+        intercept=0.0,
+        photometric="MONOCHROME2",
+        window=window,
+        name="m2_win.dcm",
+    )
+
+    m1_out, _ = read_dcm_with_meta(p_m1, 1)
+    m2_out, _ = read_dcm_with_meta(p_m2, 1)
+
+    # VOI-then-invert: MONOCHROME1 must equal (max - MONOCHROME2).
+    assert np.allclose(m1_out, m2_out.max() - m2_out)
