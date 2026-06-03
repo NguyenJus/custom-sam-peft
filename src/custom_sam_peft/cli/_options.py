@@ -134,10 +134,6 @@ OutputDirOpt = Annotated[
         help="Convenience for run.output_dir, a run directory (synthesizes an --override).",
     ),
 ]
-ConfigOpt = Annotated[
-    Path | None,
-    typer.Option("--config", help="Path to config YAML."),
-]
 ConfigArg = Annotated[
     Path | None,
     typer.Argument(help="Path to config YAML (the launch input).", metavar="CONFIG"),
