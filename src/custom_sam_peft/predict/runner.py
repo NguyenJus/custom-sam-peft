@@ -551,7 +551,8 @@ def run_predict(opts: PredictOptions) -> PredictReport:
         # Semantic post-processing: build label map per image in the chunk
         # -------------------------------------------------------------------
         if is_semantic:
-            opts.output.mkdir(parents=True, exist_ok=True)
+            # opts.output is created implicitly by write_semantic_label_map (parents=True);
+            # the unconditional mkdir at step 10 below covers the no-visualize path too.
             label_maps_dir = opts.output / "label_maps"
 
             for ii, (image_id, orig_h, orig_w) in enumerate(metas):

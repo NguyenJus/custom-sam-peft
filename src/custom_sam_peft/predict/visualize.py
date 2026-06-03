@@ -138,7 +138,10 @@ def render_semantic_overlay(
     image: Image.Image,
     colorized_label_map_path: Path,
     *,
-    alpha: float = 0.5,
+    alpha: float = 0.5,  # intentionally higher than render_overlay (0.4): semantic labels
+    # cover large contiguous regions and benefit from a more opaque blend
+    # to remain legible at a glance, whereas instance overlays are smaller
+    # and need more of the underlying image to be visible.
 ) -> Image.Image:
     """Alpha-blend a colorized label-map PNG over an RGB image.
 

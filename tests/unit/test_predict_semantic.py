@@ -510,12 +510,15 @@ class TestCliPromptDefaulting:
         )
 
     def test_semantic_instance_only_flags_emit_info(
-        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+        self, tmp_path: Path
     ) -> None:
         """Under semantic config, instance-only flags (--score-threshold/--top-k/--save-masks)
-        trigger one INFO log and are ignored (not an error)."""
-        import logging
+        trigger one INFO log and are ignored (not an error).
 
+        Note: configure_logging(..., force=True) installs a new root handler that replaces
+        pytest's caplog handler, so we assert on result.output (CliRunner captures the
+        basicConfig StreamHandler's output) rather than caplog.records.
+        """
         img_dir = _make_image_dir(tmp_path)
         config_path = self._make_full_semantic_config(tmp_path)
         out_dir = tmp_path / "out"
@@ -528,7 +531,7 @@ class TestCliPromptDefaulting:
 
         with mock.patch(
             "custom_sam_peft.cli.predict_cmd.run_predict", side_effect=fake_run_predict
-        ), caplog.at_level(logging.INFO):
+        ):
             result = _cli_runner.invoke(
                 app,
                 [
@@ -553,3 +556,41 @@ class TestCliPromptDefaulting:
         assert result.exit_code == 0, f"CLI exited {result.exit_code}: {result.output}"
         # run_predict must still be called (flags ignored, not errored)
         assert len(captured) == 1
+        # The one-time INFO must appear in the captured output
+        assert "instance-only" in result.output, (
+            f"Expected INFO about instance-only flags in output; got:\n{result.output}"
+        )
+
+    def test_semantic_instance_only_flags_no_info_when_defaults(
+        self, tmp_path: Path
+    ) -> None:
+        """Under semantic config with default flag values, the instance-only INFO is NOT emitted."""
+        img_dir = _make_image_dir(tmp_path)
+        config_path = self._make_full_semantic_config(tmp_path)
+        out_dir = tmp_path / "out"
+
+        def fake_run_predict(opts: PredictOptions) -> PredictReport:
+            return PredictReport(n_images=0, n_predictions=0, elapsed_sec=0.1)
+
+        with mock.patch(
+            "custom_sam_peft.cli.predict_cmd.run_predict", side_effect=fake_run_predict
+        ):
+            result = _cli_runner.invoke(
+                app,
+                [
+                    "predict",
+                    "--images",
+                    str(img_dir),
+                    "--output",
+                    str(out_dir),
+                    "--config",
+                    str(config_path),
+                    # No instance-only flags set — all defaults
+                ],
+                catch_exceptions=False,
+            )
+
+        assert result.exit_code == 0, f"CLI exited {result.exit_code}: {result.output}"
+        assert "instance-only" not in result.output, (
+            f"Unexpected instance-only INFO in output:\n{result.output}"
+        )

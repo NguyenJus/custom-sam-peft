@@ -21,6 +21,15 @@ from custom_sam_peft.predict.runner import PredictOptions, PredictReport, run_pr
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
+# Option defaults — single source of truth for both typer.Option() and the
+# instance-only-flags guard.  If a default changes, update here only.
+# ---------------------------------------------------------------------------
+
+_DEFAULT_SCORE_THRESHOLD: float = 0.3
+_DEFAULT_TOP_K: int = 100
+_DEFAULT_SAVE_MASKS: str = "rle"
+
+# ---------------------------------------------------------------------------
 # Validation callbacks (spec §8, §10)
 # ---------------------------------------------------------------------------
 
@@ -81,19 +90,19 @@ def predict(
     ),
     config: Path | None = typer.Option(None, "--config", help="Path to config YAML."),
     score_threshold: float = typer.Option(
-        0.3,
+        _DEFAULT_SCORE_THRESHOLD,
         "--score-threshold",
         callback=_validate_unit_interval,
         help="Minimum score to keep a prediction [0.0, 1.0].",
     ),
     top_k: int = typer.Option(
-        100,
+        _DEFAULT_TOP_K,
         "--top-k",
         callback=_validate_positive_int,
         help="Max predictions per (image, class) pair.",
     ),
     save_masks: str = typer.Option(
-        "rle",
+        _DEFAULT_SAVE_MASKS,
         "--save-masks",
         click_type=click.Choice(["rle", "png", "none"]),
         help="Mask output format: rle | png | none. Ignored under task: semantic.",
@@ -130,8 +139,9 @@ def predict(
     # QLoRA merge dequantizes 4-bit→compute_dtype (memory blowup), so unmerged is safe default.
     merge_adapter = detect_adapter_kind(checkpoint) == "lora" if checkpoint is not None else False
 
-    # --- Resolve task from config (if present) ---
+    # --- Resolve task from config (if present); parse YAML once and reuse ---
     resolved_task = "instance"
+    raw_cfg: dict[str, object] = {}
     if config is not None:
         try:
             import yaml
@@ -146,13 +156,10 @@ def predict(
     if prompts is not None:
         resolved_prompts = prompts
     elif resolved_task == "semantic" and config is not None:
-        # Derive class_names from data.semantic.class_map
+        # Derive class_names from data.semantic.class_map (reuse already-parsed raw_cfg)
         try:
-            import yaml
-
             from custom_sam_peft.data._semantic_encode import build_value_to_label
 
-            raw_cfg = yaml.safe_load(config.read_text(encoding="utf-8")) or {}
             data_section = raw_cfg.get("data", {})
             sem_section = data_section.get("semantic", {}) if isinstance(data_section, dict) else {}
             class_map_path = sem_section.get("class_map") if isinstance(sem_section, dict) else None
@@ -185,7 +192,11 @@ def predict(
         )
 
     # --- Instance-only flags under semantic: emit ONE INFO and ignore ---
-    _INSTANCE_ONLY_FLAGS_SET = score_threshold != 0.3 or top_k != 100 or save_masks != "rle"
+    _INSTANCE_ONLY_FLAGS_SET = (
+        score_threshold != _DEFAULT_SCORE_THRESHOLD
+        or top_k != _DEFAULT_TOP_K
+        or save_masks != _DEFAULT_SAVE_MASKS
+    )
     if resolved_task == "semantic" and _INSTANCE_ONLY_FLAGS_SET:
         logger.info(
             "predict: --score-threshold, --top-k, and --save-masks are instance-only "
