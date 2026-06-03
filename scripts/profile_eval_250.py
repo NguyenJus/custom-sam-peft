@@ -20,7 +20,7 @@ from pathlib import Path
 
 
 def main() -> None:
-    if os.environ.get("CSP_EVAL_PROFILE", "0") in ("", "0"):
+    if os.environ.get("CSP_EVAL_PROFILE", "0") in ("", "0", "false", "False"):
         raise SystemExit("set CSP_EVAL_PROFILE=1 before running this profiler")
 
     ap = argparse.ArgumentParser()
