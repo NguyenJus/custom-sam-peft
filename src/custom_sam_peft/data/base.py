@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 import torch
+
+if TYPE_CHECKING:
+    import numpy as np
 
 
 @dataclass(frozen=True)
@@ -66,6 +69,12 @@ class Example:
     prompts: Prompts
     instances: list[Instance] = field(default_factory=list)  # populated iff task == instance
     semantic: SemanticTarget | None = None  # populated iff task == semantic
+    # Native-resolution RAW numpy pixels (H, W, C), populated ONLY for oversized
+    # eval/val examples that the evaluator tiles per-window (design C, spec §5.4).
+    # The evaluator pads raw-0 THEN normalizes each tile crop via the shared
+    # preprocess_tile helper, byte-identical to predict — which the post-Normalize
+    # `image` tensor cannot reproduce. None everywhere else (train, direct/small).
+    image_native: np.ndarray[Any, Any] | None = None
 
 
 @runtime_checkable

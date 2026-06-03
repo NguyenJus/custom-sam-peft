@@ -50,6 +50,63 @@ def _coerce_to_channels(obj: object, channels: int) -> np.ndarray[Any, Any]:
     return np.ascontiguousarray(hwc)
 
 
+def _read_tiff_rasterio(path: Path, channels: int) -> tuple[np.ndarray[Any, Any], Any]:
+    """Read a TIFF with rasterio, returning (pixels, SpatialMeta|None).
+
+    Geo TIFFs carry CRS/affine metadata; plain TIFFs return meta=None.
+    Nodata pixels are zero-filled before the model (spec §6.3).
+    """
+    import rasterio
+
+    with rasterio.open(path) as src:
+        arr = src.read()  # always (C, H, W)
+        pixels = _coerce_to_channels(arr, channels)  # preserves C == channels validation
+        if src.crs is None and src.transform.is_identity:
+            return pixels, None  # plain non-geo TIFF — identical behaviour to old tifffile path
+        nodata = src.nodata
+        nodata_mask = None
+        if nodata is not None:
+            nodata_mask = np.any(arr == nodata, axis=0)
+            # nodata pixels zero-filled before the model — matches PadIfNeeded fill=0; spec §6.3.
+            pixels = pixels.copy()
+            pixels[nodata_mask] = 0
+        from custom_sam_peft.data.spatial_meta import SpatialMeta
+
+        return pixels, SpatialMeta(
+            kind="geo",
+            crs=src.crs,
+            affine=src.transform,
+            nodata=nodata,
+            nodata_mask=nodata_mask,
+        )
+
+
+def read_image_with_meta(
+    path: str | Path,
+    channels: int,
+    *,
+    dicom_voi_window: tuple[float, float] | None = None,
+) -> tuple[np.ndarray[Any, Any], Any]:
+    """Read pixels + optional SpatialMeta (spec §6.2).
+
+    Pixels-first; meta is None for plain images.
+    ``read_image`` is a thin wrapper returning pixels only.
+
+    dicom_voi_window: optional (center, width) override for DICOM VOI windowing.
+    None (default) → use each file's own window or skip VOI. Non-DICOM paths
+    ignore this parameter.
+    """
+    path = Path(path)
+    ext = path.suffix.lower()
+    if ext in {".tif", ".tiff"}:
+        return _read_tiff_rasterio(path, channels)
+    if ext == ".dcm":
+        from custom_sam_peft.data.dicom_io import read_dcm_with_meta
+
+        return read_dcm_with_meta(path, channels, voi_window=dicom_voi_window)
+    return read_image(path, channels), None  # plain raster/npy: meta None
+
+
 def read_image(path: str | Path, channels: int) -> np.ndarray[Any, Any]:
     """Read an image file to (H, W, C) with C == channels. Dispatch on extension."""
     path = Path(path)
@@ -65,8 +122,5 @@ def read_image(path: str | Path, channels: int) -> np.ndarray[Any, Any]:
             loaded = loaded[loaded.files[0]]
         return _coerce_to_channels(loaded, channels)
     if ext in {".tif", ".tiff"}:
-        import tifffile
-
-        arr = tifffile.imread(path)  # (C,H,W) for multipage, or (H,W) / (H,W,C)
-        return _coerce_to_channels(arr, channels)
+        return _read_tiff_rasterio(path, channels)[0]
     raise ValueError(f"read_image: unsupported file extension {ext!r} for {path}")
