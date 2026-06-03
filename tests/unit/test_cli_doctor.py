@@ -174,7 +174,9 @@ def test_doctor_json_with_config_has_resolved_block(tmp_path) -> None:
     blob = json.loads(_plain(result.stdout))
     assert "resolved_config" in blob
     rc = blob["resolved_config"]
-    assert set(rc.keys()) == {"augmentations", "normalize", "loss"}
+    # #113 §10.5: the --json resolved_config block always carries "task" (instance here).
+    assert set(rc.keys()) == {"augmentations", "normalize", "loss", "task"}
+    assert rc["task"] == "instance"
     assert rc["augmentations"]["preset"] == "medical"
     assert rc["augmentations"]["intensity"] == "medium"
     assert set(rc["augmentations"]["resolved"].keys()) == {

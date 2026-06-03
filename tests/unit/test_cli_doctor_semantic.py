@@ -225,7 +225,7 @@ def _instance_cfg() -> TrainConfig:
 def test_doctor_semantic_renders_task_and_semantic_loss_table(
     semantic_config_yaml: Path,
 ) -> None:
-    """Table output: Task row, Resolved semantic losses table, Head line, NO instance Resolved losses."""
+    """Table: Task row, semantic-loss table, Head line; instance Resolved-losses suppressed."""
     sem_cfg = _semantic_cfg()
 
     with (
@@ -261,7 +261,6 @@ def test_doctor_semantic_head_indicator_marginalize(
     semantic_config_yaml: Path,
 ) -> None:
     """Head indicator shows 'marginalization (head-free)' for source=marginalize."""
-    from custom_sam_peft.config.schema import SemanticLossConfig
 
     sem_cfg = _semantic_cfg()
     # Default source is "marginalize"
@@ -330,9 +329,7 @@ def test_doctor_instance_still_renders_resolved_losses_and_task(
         patch("custom_sam_peft.diagnostics.run_doctor", return_value=_minimal_report()),
     ):
         table_result = runner.invoke(app, ["--config", str(instance_config_yaml)])
-        json_result = runner.invoke(
-            app, ["--config", str(instance_config_yaml), "--json"]
-        )
+        json_result = runner.invoke(app, ["--config", str(instance_config_yaml), "--json"])
 
     # Table: instance Resolved losses present, semantic table absent
     assert table_result.exit_code == 0, table_result.output
@@ -375,7 +372,7 @@ def _minimal_report():
             exists=False,
             size_bytes=None,
         ),
-        hf_auth=HuggingFaceAuthInfo(token_source="none", has_token=False),
+        hf_auth=HuggingFaceAuthInfo(token_source="none", has_token=False),  # noqa: S106
         dataset=None,
         issues=[],
     )

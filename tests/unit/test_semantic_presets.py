@@ -7,8 +7,6 @@ import ast
 import logging
 from pathlib import Path
 
-import pytest
-
 from custom_sam_peft.config.schema import SemanticLossConfig
 from custom_sam_peft.models.losses.semantic_presets import (
     SEMANTIC_PRESET_TABLE,
@@ -26,7 +24,7 @@ def test_table_is_complete_all_cells():
     for p in _REAL_PRESETS:
         for ci in _IMBALANCE:
             assert (p, ci) in SEMANTIC_PRESET_TABLE, f"missing cell ({p}, {ci})"
-    assert len(SEMANTIC_PRESET_TABLE) == 12  # 9 stored (3 presets×3 ci) + 3 microscopy alias; no strays
+    assert len(SEMANTIC_PRESET_TABLE) == 12  # 9 stored (3 presets x 3 ci) + 3 microscopy alias
 
 
 def test_microscopy_is_alias_of_medical():
@@ -49,7 +47,8 @@ def test_resolve_natural_balanced_is_ce_dice_samed_weights():
 def test_resolve_override_wins():
     r = resolve(
         SemanticLossConfig(
-            preset="natural", class_imbalance="balanced",
+            preset="natural",
+            class_imbalance="balanced",
             overrides={"sem_family": "boundary", "boundary_weight": 0.3},
         )
     )
@@ -62,7 +61,8 @@ def test_locked_off_warns(caplog):
     with caplog.at_level(logging.WARNING):
         resolve(
             SemanticLossConfig(
-                preset="natural", class_imbalance="balanced",
+                preset="natural",
+                class_imbalance="balanced",
                 overrides={"sem_family": "focal_tversky"},
             )
         )
@@ -86,7 +86,11 @@ def test_semantic_presets_is_torch_free():
     # not import torch. Mirrors tests/unit/test_data_import_boundary.py's approach.
     src = (
         Path(__file__).resolve().parents[2]
-        / "src" / "custom_sam_peft" / "models" / "losses" / "semantic_presets.py"
+        / "src"
+        / "custom_sam_peft"
+        / "models"
+        / "losses"
+        / "semantic_presets.py"
     )
     tree = ast.parse(src.read_text(encoding="utf-8"))
     for node in ast.walk(tree):

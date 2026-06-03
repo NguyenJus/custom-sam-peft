@@ -7,7 +7,6 @@ No GPU forward passes are performed.
 from __future__ import annotations
 
 import json
-import tempfile
 import unittest.mock as mock
 from pathlib import Path
 from typing import Any
@@ -340,6 +339,7 @@ class TestSemanticRunnerPredictionsJson:
 # Helper: run_predict with task=semantic wired through a config YAML
 # ---------------------------------------------------------------------------
 
+
 def run_predict_semantic(opts: PredictOptions) -> PredictReport:
     """Thin wrapper so tests import run_predict centrally."""
     from custom_sam_peft.predict.runner import run_predict
@@ -424,7 +424,9 @@ class TestCliPromptDefaulting:
             captured.append(opts)
             return PredictReport(n_images=0, n_predictions=0, elapsed_sec=0.1)
 
-        with mock.patch("custom_sam_peft.cli.predict_cmd.run_predict", side_effect=fake_run_predict):
+        with mock.patch(
+            "custom_sam_peft.cli.predict_cmd.run_predict", side_effect=fake_run_predict
+        ):
             result = _cli_runner.invoke(
                 app,
                 [
@@ -485,7 +487,9 @@ class TestCliPromptDefaulting:
             captured.append(opts)
             return PredictReport(n_images=0, n_predictions=0, elapsed_sec=0.1)
 
-        with mock.patch("custom_sam_peft.cli.predict_cmd.run_predict", side_effect=fake_run_predict):
+        with mock.patch(
+            "custom_sam_peft.cli.predict_cmd.run_predict", side_effect=fake_run_predict
+        ):
             result = _cli_runner.invoke(
                 app,
                 [
@@ -509,9 +513,7 @@ class TestCliPromptDefaulting:
             f"Explicit prompts should override class_map; got {opts.prompts!r}"
         )
 
-    def test_semantic_instance_only_flags_emit_info(
-        self, tmp_path: Path
-    ) -> None:
+    def test_semantic_instance_only_flags_emit_info(self, tmp_path: Path) -> None:
         """Under semantic config, instance-only flags (--score-threshold/--top-k/--save-masks)
         trigger one INFO log and are ignored (not an error).
 
@@ -561,9 +563,7 @@ class TestCliPromptDefaulting:
             f"Expected INFO about instance-only flags in output; got:\n{result.output}"
         )
 
-    def test_semantic_instance_only_flags_no_info_when_defaults(
-        self, tmp_path: Path
-    ) -> None:
+    def test_semantic_instance_only_flags_no_info_when_defaults(self, tmp_path: Path) -> None:
         """Under semantic config with default flag values, the instance-only INFO is NOT emitted."""
         img_dir = _make_image_dir(tmp_path)
         config_path = self._make_full_semantic_config(tmp_path)

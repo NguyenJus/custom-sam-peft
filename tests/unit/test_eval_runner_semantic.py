@@ -47,9 +47,7 @@ def test_run_eval_uses_semantic_evaluator_under_semantic_task(
         ev.evaluate_and_save = MagicMock(return_value=fake_report)
         return ev
 
-    monkeypatch.setattr(
-        "custom_sam_peft.eval.runner.SemanticEvaluator", _fake_semantic_evaluator
-    )
+    monkeypatch.setattr("custom_sam_peft.eval.runner.SemanticEvaluator", _fake_semantic_evaluator)
     # Evaluator must NOT be constructed for the semantic path.
     instance_constructed: list[object] = []
     monkeypatch.setattr(
@@ -102,7 +100,9 @@ def test_run_eval_uses_instance_evaluator_under_instance_task(
     result = run_eval(cfg, checkpoint=tmp_path, split="val", output_dir=tmp_path)
 
     assert seen.get("constructed"), "Evaluator must be constructed for task='instance'"
-    assert semantic_constructed == [], "SemanticEvaluator must NOT be constructed for task='instance'"
+    assert semantic_constructed == [], (
+        "SemanticEvaluator must NOT be constructed for task='instance'"
+    )
     assert result is fake_report
 
 
@@ -146,7 +146,9 @@ def _patch_common_semantic(
     # Evaluator must not be constructed for semantic task.
     monkeypatch.setattr(
         "custom_sam_peft.eval.runner.Evaluator",
-        lambda _cfg: (_ for _ in ()).throw(AssertionError("Evaluator must not be used for semantic")),
+        lambda _cfg: (_ for _ in ()).throw(
+            AssertionError("Evaluator must not be used for semantic")
+        ),
     )
 
 
@@ -171,7 +173,7 @@ def test_inline_return_per_example_iou_semantic_tags_metrics_json(
         f"Expected 'task': 'semantic' in metrics.json; got keys: {list(payload)}"
     )
     # task must be the FIRST key (ordering consistency with evaluate_and_save).
-    assert list(payload.keys())[0] == "task", (
+    assert next(iter(payload)) == "task", (
         f"'task' must be the first key; got ordering: {list(payload.keys())}"
     )
 
@@ -209,7 +211,7 @@ def test_inline_visualize_on_semantic_tags_metrics_json(
     assert payload.get("task") == "semantic", (
         f"Expected 'task': 'semantic' in metrics.json (visualize branch); got keys: {list(payload)}"
     )
-    assert list(payload.keys())[0] == "task", (
+    assert next(iter(payload)) == "task", (
         f"'task' must be the first key; got ordering: {list(payload.keys())}"
     )
 
@@ -242,7 +244,9 @@ def test_inline_return_per_example_iou_instance_no_task_key(
     monkeypatch.setattr("custom_sam_peft.eval.runner.Evaluator", lambda _cfg: ev)
     monkeypatch.setattr(
         "custom_sam_peft.eval.runner.SemanticEvaluator",
-        lambda _cfg: (_ for _ in ()).throw(AssertionError("SemanticEvaluator must not be used for instance")),
+        lambda _cfg: (_ for _ in ()).throw(
+            AssertionError("SemanticEvaluator must not be used for instance")
+        ),
     )
 
     run_eval(cfg, checkpoint=None, split="val", output_dir=tmp_path, return_per_example_iou=True)
