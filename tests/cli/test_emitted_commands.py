@@ -13,3 +13,9 @@ def test_launch_command_positional_train() -> None:
 
 def test_launch_command_positional_run() -> None:
     assert _launch_command(Path("config.yaml"), "run") == "custom-sam-peft run config.yaml"
+
+
+def test_launch_command_eval_uses_flag() -> None:
+    assert (
+        _launch_command(Path("config.yaml"), "eval") == "custom-sam-peft eval --config config.yaml"
+    )
