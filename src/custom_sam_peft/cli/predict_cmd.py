@@ -5,7 +5,6 @@ from __future__ import annotations
 import os
 import sys
 from pathlib import Path
-from typing import Literal, cast
 
 import click
 import typer
@@ -15,6 +14,7 @@ from rich.console import Console
 from custom_sam_peft.cli._logging import configure_logging
 from custom_sam_peft.cli._options import Progress, ProgressOpt, VerboseOpt
 from custom_sam_peft.cli._progress import ProgressKind, progress_session, resolve_mode
+from custom_sam_peft.predict.adapter_load import detect_adapter_kind
 from custom_sam_peft.predict.runner import PredictOptions, PredictReport, run_predict
 
 # ---------------------------------------------------------------------------
@@ -71,9 +71,6 @@ def predict(
     checkpoint: Path | None = typer.Option(
         None, "--checkpoint", callback=_validate_checkpoint, help="Adapter checkpoint directory."
     ),
-    merge_adapter: bool = typer.Option(
-        True, "--merge-adapter/--no-merge-adapter", help="Merge adapter weights before inference."
-    ),
     config: Path | None = typer.Option(None, "--config", help="Path to config YAML."),
     score_threshold: float = typer.Option(
         0.3,
@@ -94,25 +91,12 @@ def predict(
         help="Mask output format: rle | png | none.",
     ),
     visualize: bool = typer.Option(False, "--visualize", help="Write per-image overlay PNGs."),
-    device: str = typer.Option(
-        "auto",
-        "--device",
-        click_type=click.Choice(["auto", "cuda", "cpu"]),
-        help="Compute device: auto | cuda | cpu.",
-    ),
-    dtype: str = typer.Option(
-        "auto",
-        "--dtype",
-        click_type=click.Choice(["auto", "bfloat16", "float32"]),
-        help="Model dtype: auto | bfloat16 | float32.",
-    ),
     batch_size: str = typer.Option(
         "auto",
         "--batch-size",
         callback=_validate_batch_size,
         help="Images per forward pass: 'auto' or a positive int.",
     ),
-    seed: int = typer.Option(0, "--seed", help="Random seed for reproducibility."),
     dry_run: bool = typer.Option(
         False, "--dry-run", help="Preview resolved inputs; skip model load and inference."
     ),
@@ -133,6 +117,9 @@ def predict(
         _interactive.require_tty()
         _interactive.run_predict_interactive(force=False)
         return
+    # Derive merge: LoRA folds deltas into base weights (forward-equivalent, speed/memory only);
+    # QLoRA merge dequantizes 4-bit→compute_dtype (memory blowup), so unmerged is safe default.
+    merge_adapter = detect_adapter_kind(checkpoint) == "lora" if checkpoint is not None else False
     opts = PredictOptions(
         images=images,
         prompts=prompts,
@@ -142,12 +129,12 @@ def predict(
         config=config,
         score_threshold=score_threshold,
         top_k=top_k,
-        save_masks=cast(Literal["rle", "png", "none"], save_masks),
+        save_masks=save_masks,  # type: ignore[arg-type]
         visualize=visualize,
-        device=cast(Literal["auto", "cuda", "cpu"], device),
-        dtype=cast(Literal["auto", "bfloat16", "float32"], dtype),
-        batch_size=cast("int | Literal['auto']", batch_size),
-        seed=seed,
+        device="auto",
+        dtype="auto",
+        batch_size=batch_size,  # type: ignore[arg-type]
+        seed=0,
         dry_run=dry_run,
         verbose=verbose,
     )
