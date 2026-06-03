@@ -34,11 +34,13 @@ from custom_sam_peft.eval.runner import run_eval
 # Ordered bucket display — mirrors the spike runner's display order, extended to
 # the full dot-namespaced set so any eval bucket appears in the table.
 _EVAL_BUCKET_ORDER = [
+    "eval.dataset_load",
     "eval.forward",
     "eval.mask_upsample",
     "eval.transfer_binarize",
     "eval.rle_encode",
     "eval.coco_aggregate",
+    "eval.total",
 ]
 
 
@@ -103,8 +105,20 @@ def profile(
     snap_path = profiling.dump(out_dir / "profile_snapshot.json")
     typer.echo(f"\nwrote {snap_path}", err=False)
 
-    # Human-readable bucket table.
-    total = sum(buckets.values()) or 1.0
+    # Human-readable bucket table.  ``eval.total`` is a PARENT bucket wrapping
+    # the child leaf spans (forward, rle_encode, dataset_load, ...), so it must
+    # not be summed alongside them.  When present it IS the wall-time
+    # denominator; otherwise fall back to the sum of the leaf buckets.  The gap
+    # between eval.total and the summed leaves is the unbucketed residual
+    # (per-chunk to_device, GT build).
+    leaf_total = sum(s for b, s in buckets.items() if b != "eval.total")
+    has_total = "eval.total" in buckets
+    # When eval.total is present it IS the wall-time denominator (% of wall);
+    # otherwise the denominator is the sum of the leaf buckets (% of timed,
+    # the pre-#265 behaviour).  Labels reflect which denominator is in use.
+    total = (buckets["eval.total"] if has_total else leaf_total) or 1.0
+    pct_label = "% of wall" if has_total else "% of timed"
+    total_label = "TOTAL(wall)" if has_total else "TOTAL(timed)"
 
     print(f"\n=== csp profile — {cfg.run.name} ===")  # noqa: T201
     print(f"metadata: {meta}")  # noqa: T201
@@ -115,10 +129,14 @@ def profile(
     extra = sorted(b for b in buckets if b not in _EVAL_BUCKET_ORDER)
     order = known + extra
 
-    print(f"\n{'bucket':<30}{'seconds':>12}{'% of timed':>14}")  # noqa: T201
+    print(f"\n{'bucket':<30}{'seconds':>12}{pct_label:>14}")  # noqa: T201
     print("-" * 56)  # noqa: T201
     for name in order:
         s = buckets.get(name, 0.0)
         print(f"{name:<30}{s:>12.4f}{100 * s / total:>13.1f}%")  # noqa: T201
     print("-" * 56)  # noqa: T201
-    print(f"{'TOTAL(timed)':<30}{total:>12.4f}{100.0:>13.1f}%")  # noqa: T201
+    residual = total - leaf_total if has_total else 0.0
+    if residual > 0:
+        pct = 100 * residual / total
+        print(f"{'(residual = total - leaves)':<30}{residual:>12.4f}{pct:>13.1f}%")  # noqa: T201
+    print(f"{total_label:<30}{total:>12.4f}{100.0:>13.1f}%")  # noqa: T201
