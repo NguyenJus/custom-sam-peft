@@ -333,7 +333,14 @@ class Trainer:
         return bs
 
     def _eval_epoch(self, step: int, run_dir: Path, oom_state: OomState | None = None) -> None:
-        """Run a periodic lite evaluation and log scalars to the tracker."""
+        """Run a periodic lite evaluation and log scalars to the tracker.
+
+        The logged lite ``mAP`` is the fast GPU dense-IoU AP PROXY (#269), a
+        monotone-calibrated ranking signal, NOT exact COCO mAP — its absolute
+        scale differs from the close-out / standalone report, which is built in
+        full mode and reports exact COCO mAP. (``CSP_LITE_EXACT_MAP=1`` forces
+        this lite eval back through the exact path.)
+        """
         if self.val_ds is None:
             return
         try:

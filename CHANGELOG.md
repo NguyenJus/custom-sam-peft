@@ -37,6 +37,16 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   the schedule specified in the loaded config and skips the incompatible scheduler state,
   emitting a one-time warning.
 
+### Changed — fast GPU dense-IoU AP proxy for lite validation (#269)
+
+- **eval**: in-training (`mode="lite"`) validation now computes a fast GPU
+  dense-IoU AP proxy instead of the exact pycocotools RLE + COCOeval pass. The
+  proxy emits `overall["mAP"]` (a monotone-calibrated ranking signal, not exact
+  COCO mAP — its absolute scale differs from full mode) so the in-loop consumers
+  (best-checkpoint selection and early-stop) are untouched. Standalone / final
+  reports (`mode="full"`) are byte-identical and still report exact COCO mAP. Set
+  `CSP_LITE_EXACT_MAP=1` to force lite eval back through the exact path (`#269`).
+
 <!-- Add entries for the next milestone here. -->
 
 ## [v0.10.0] — 2026-06-03

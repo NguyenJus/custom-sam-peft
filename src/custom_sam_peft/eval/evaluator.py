@@ -8,6 +8,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import os
 from collections.abc import Sequence
 from pathlib import Path
 from typing import Any, Literal, cast, overload
@@ -27,13 +28,111 @@ from custom_sam_peft.data.tiling import (
     tiling_engaged,
 )
 from custom_sam_peft.eval.metrics import MetricsReport, coco_max_dets_cap, compute_coco_map
-from custom_sam_peft.eval.postprocess import queries_to_coco_results
+from custom_sam_peft.eval.postprocess import (
+    _upsample_mask_logits,
+    queries_to_coco_results,
+    score_and_topk_filter,
+)
+from custom_sam_peft.eval.proxy_map import ProxyEntry, dense_iou_matrix, proxy_map_from_iou
 from custom_sam_peft.models.sam3 import MULTIPLEX_CAP, SAM3_IMAGE_SIZE
 from custom_sam_peft.oom import OomDecision, OomLadder, is_cuda_oom
 from custom_sam_peft.paths import predictions_path
 from custom_sam_peft.runtime import Runtime, to_device
 
 _LOG = logging.getLogger(__name__)
+
+
+def _lite_exact_map_hatch() -> bool:
+    """Whether the ``CSP_LITE_EXACT_MAP`` escape hatch forces lite -> exact mAP.
+
+    Mirrors ``profiling.py``'s ``CSP_PROFILE`` truthiness: disabled for ``""``,
+    ``"0"``, ``"false"``, ``"False"``; any other non-empty value enables it.
+    Read live (not module-import-time) so tests / runs can toggle the env var.
+    """
+    return os.environ.get("CSP_LITE_EXACT_MAP", "0") not in ("", "0", "false", "False")
+
+
+def _proxy_entry_from_outputs(
+    row_outputs: dict[str, torch.Tensor],
+    gt_bin: torch.Tensor,
+    image_id: int,
+    cat_idx: int,
+    original_hw: tuple[int, int],
+    mask_threshold: float,
+    max_dets: int,
+) -> ProxyEntry:
+    """Build one ``(image, category)`` ProxyEntry from a single forward row.
+
+    Uses the SHARED ``score_and_topk_filter`` + ``_upsample_mask_logits`` helpers
+    so the score/topk/upsample/binarize is byte-identical to the exact RLE path —
+    the only difference is binarization stays ON-DEVICE (no ``.cpu()``) and the
+    dense IoU is a matmul instead of an RLE encode. Emits an entry even when there
+    are zero predictions or zero GT (so npig is complete for the AP aggregation).
+
+    ``gt_bin`` is the stacked ``(M, H, W)`` bool GT for this (image, category) on
+    the model device. ``original_hw`` is the (tile-local) prediction resolution.
+    """
+    scores, keep_idx = score_and_topk_filter(row_outputs, max_dets)
+    pred_masks = row_outputs["pred_masks"]
+    n = pred_masks.shape[1]
+    if n == 0:
+        m = 0
+        pred_bin = torch.zeros(
+            (0, original_hw[0], original_hw[1]), dtype=torch.bool, device=gt_bin.device
+        )
+    else:
+        masks_logits = pred_masks.float().squeeze(0)  # (N, H_m, W_m)
+        if keep_idx is not None:
+            masks_logits = masks_logits[keep_idx]
+        with profiling.bucket("eval.mask_upsample"):
+            masks_up = _upsample_mask_logits(masks_logits, original_hw)  # (M, H, W)
+        # SAME binarization as the exact path (masks_up > mask_threshold) but
+        # kept on-device — bit-identical masks, no logit-resolution binarize.
+        pred_bin = masks_up > mask_threshold
+        m = pred_bin.shape[0]
+    with profiling.bucket("eval.proxy_iou"):
+        iou = dense_iou_matrix(pred_bin, gt_bin)  # (m, M) on device
+    iou_np = iou.cpu().numpy()
+    scores_np = scores.detach().cpu().numpy() if m else np.zeros((0,), dtype=np.float32)
+    return ProxyEntry(
+        image_id=image_id,
+        category_id=cat_idx + 1,
+        iou=iou_np,
+        scores=scores_np,
+    )
+
+
+def _gt_masks_for_category(
+    instances: Sequence[Any],
+    cat_idx: int,
+    hw: tuple[int, int],
+    runtime: Runtime,
+    crop: tuple[int, int, int, int] | None = None,
+) -> torch.Tensor:
+    """Stack GT masks for one category into ``(M, H, W)`` bool on the device.
+
+    Selects this example's instances with ``class_id == cat_idx``. On the tiling
+    path ``crop=(y0, x0, h, w)`` crops each full-image mask to the tile window
+    exactly like ``_build_coco_gt_with_tiling`` (instances with no pixels in the
+    window are dropped). ``hw`` is the (tile-local) prediction resolution that the
+    stacked masks must match. Returns an empty ``(0, H, W)`` tensor when no GT.
+    Device moves route through ``runtime.to_device`` (§9.2 static guard); the
+    masks are already bool (``Instance.mask``), so only the device changes.
+    """
+    masks: list[torch.Tensor] = []
+    for inst in instances:
+        if int(inst.class_id) != cat_idx:
+            continue
+        mask = inst.mask
+        if crop is not None:
+            y0, x0, h, w = crop
+            mask = mask[y0 : y0 + h, x0 : x0 + w]
+            if not bool(mask.any()):
+                continue
+        masks.append(to_device(mask, runtime))
+    if not masks:
+        return torch.zeros((0, hw[0], hw[1]), dtype=torch.bool, device=runtime.device)
+    return torch.stack(masks, dim=0)
 
 
 def _row_outputs(outputs: dict[str, torch.Tensor], r: int) -> dict[str, torch.Tensor]:
@@ -496,6 +595,225 @@ class Evaluator:
 
         return predictions
 
+    def _iter_proxy_iou(
+        self, model: Any, examples: Sequence[Example], dataset: Dataset
+    ) -> tuple[list[ProxyEntry], int]:
+        """Lite dense-IoU proxy forward loop (#269).
+
+        Sibling of ``_iter_predictions`` sharing the SAME OomLadder + tiling /
+        direct scaffold; the only difference is the per-(image, category) emit
+        step, which builds a ``ProxyEntry`` (on-device IoU matmul) via the SHARED
+        ``score_and_topk_filter`` / ``_upsample_mask_logits`` helpers instead of
+        RLE-encoding COCO entries. Masks are therefore bit-identical to the exact
+        path. One ProxyEntry is emitted per VISITED (image, category) even when
+        there are zero preds or zero GT (so per-category ``npig`` is complete).
+
+        Returns ``(entries, n_predictions)`` where ``n_predictions`` is the total
+        survivor count across all entries (informational for the report).
+        """
+        cfg = self.cfg
+
+        from custom_sam_peft.predict.tiling_preprocess import preprocess_tile
+
+        was_training = bool(getattr(model, "training", False))
+        if hasattr(model, "eval"):
+            model.eval()
+
+        try:
+            _p = next(model.parameters())
+            param_device = _p.device
+            param_dtype = _p.dtype
+        except (StopIteration, AttributeError):
+            param_device = torch.device("cpu")
+            param_dtype = torch.float32
+        eval_runtime = Runtime(device=param_device, dtype=param_dtype)
+
+        n_classes = len(dataset.class_names)
+        max_dets_cap = coco_max_dets_cap()
+        ladder = OomLadder(
+            micro_batch_size=int(cfg.batch_size),
+            effective_K=min(MULTIPLEX_CAP, n_classes) if n_classes else 1,
+        )
+        pad_only_transform = getattr(dataset, "tile_transform", None)
+
+        entries: list[ProxyEntry] = []
+
+        def _emit(
+            row_outputs: dict[str, torch.Tensor],
+            instances: Sequence[Any],
+            image_id: int,
+            cat_idx: int,
+            hw: tuple[int, int],
+            crop: tuple[int, int, int, int] | None,
+            into: list[ProxyEntry],
+        ) -> None:
+            # Build the CPU ProxyEntry NOW (the IoU matmul + .cpu() releases this
+            # group's GPU forward output as the class-group loop advances) and
+            # append it to ``into``. The direct path buffers into a chunk-local
+            # list so an OOM RETRY_B can discard it wholesale without dropping or
+            # duplicating committed groups — WITHOUT pinning every group's GPU
+            # output for the whole chunk (the proxy's point is to stay GPU-light).
+            gt_bin = _gt_masks_for_category(instances, cat_idx, hw, eval_runtime, crop)
+            entry = _proxy_entry_from_outputs(
+                row_outputs,
+                gt_bin,
+                image_id,
+                cat_idx,
+                hw,
+                cfg.mask_threshold,
+                max_dets_cap,
+            )
+            into.append(entry)
+
+        try:
+            with torch.no_grad(), P.push_subtask("eval", total=len(examples)) as sub:
+                i = 0
+                while i < len(examples):
+                    bs = ladder.micro_batch_size
+                    image_chunk = list(examples[i : i + bs])
+                    direct_chunk: list[Example] = []
+                    for ex in image_chunk:
+                        orig_h = int(ex.image.shape[-2])
+                        orig_w = int(ex.image.shape[-1])
+                        if tiling_engaged(orig_h, orig_w):
+                            windows = iter_windows(
+                                orig_h, orig_w, tile=SAM3_IMAGE_SIZE, overlap=EVAL_OVERLAP
+                            )
+                            if ex.image_native is None:
+                                raise ValueError(
+                                    "eval tiling path requires Example.image_native "
+                                    f"for image_id={ex.image_id!r}."
+                                )
+                            if pad_only_transform is None:
+                                raise ValueError(
+                                    "eval tiling path requires the dataset's pad-only "
+                                    f"tile_transform; absent for image_id={ex.image_id!r}."
+                                )
+                            for t_idx, win in enumerate(windows):
+                                tile_int_id = _tile_image_id(ex.image_id, t_idx)
+                                tile_hw = (win.h, win.w)
+                                crop = (win.y0, win.x0, win.h, win.w)
+                                crop_np = ex.image_native[
+                                    win.y0 : win.y0 + win.h, win.x0 : win.x0 + win.w
+                                ]
+                                tile_batch = preprocess_tile(
+                                    crop_np,
+                                    pad_only_transform,
+                                    device=eval_runtime.device,
+                                    dtype=eval_runtime.dtype,
+                                ).unsqueeze(0)
+                                j = 0
+                                while j < n_classes:
+                                    K_g = min(ladder.effective_K, n_classes - j)
+                                    group = dataset.class_names[j : j + K_g]
+                                    prompts_g = [TextPrompts(classes=list(group))]
+                                    try:
+                                        with profiling.bucket("eval.forward"):
+                                            outputs = cast(
+                                                "dict[str, torch.Tensor]",
+                                                model(tile_batch, prompts_g, support=None),
+                                            )
+                                        profiling.incr("eval.forwards")
+                                    except RuntimeError as oom_exc:
+                                        if not is_cuda_oom(oom_exc):
+                                            raise
+                                        decision = ladder.on_oom()
+                                        while decision is OomDecision.RETRY_B:
+                                            decision = ladder.on_oom()
+                                        if decision is OomDecision.RETRY_K:
+                                            continue
+                                        if decision is OomDecision.FLOOR_RETRY:
+                                            continue
+                                        raise RuntimeError(
+                                            "eval OOM at classes_per_forward=1 on a"
+                                            " single tile; use a larger GPU."
+                                        ) from None
+                                    for kk in range(K_g):
+                                        cat_idx = dataset.class_names.index(group[kk])
+                                        _emit(
+                                            _row_outputs(outputs, kk),
+                                            ex.instances,
+                                            tile_int_id,
+                                            cat_idx,
+                                            tile_hw,
+                                            crop,
+                                            entries,
+                                        )
+                                    j += K_g
+                        else:
+                            direct_chunk.append(ex)
+
+                    if direct_chunk:
+                        images_t = to_device(
+                            torch.stack([ex.image for ex in direct_chunk]), eval_runtime
+                        )
+                        chunk_buf: list[ProxyEntry] = []
+                        restart_chunk = False
+                        j = 0
+                        while j < n_classes:
+                            K_g = min(ladder.effective_K, n_classes - j)
+                            group = dataset.class_names[j : j + K_g]
+                            prompts_g = [TextPrompts(classes=list(group)) for _ in direct_chunk]
+                            try:
+                                with profiling.bucket("eval.forward"):
+                                    outputs = cast(
+                                        "dict[str, torch.Tensor]",
+                                        model(images_t, prompts_g, support=None),
+                                    )
+                                profiling.incr("eval.forwards")
+                            except RuntimeError as oom_exc:
+                                if not is_cuda_oom(oom_exc):
+                                    raise
+                                decision = ladder.on_oom()
+                                if decision is OomDecision.RETRY_B:
+                                    restart_chunk = True
+                                    break
+                                if decision is OomDecision.RETRY_K:
+                                    continue
+                                if decision is OomDecision.FLOOR_RETRY:
+                                    continue
+                                raise RuntimeError(
+                                    "eval OOM at batch_size=1 and classes_per_forward=1; "
+                                    "use a larger GPU or smaller image_size."
+                                ) from None
+                            for r in range(len(direct_chunk) * K_g):
+                                ii, kk = divmod(r, K_g)
+                                ex = direct_chunk[ii]
+                                original_hw = (
+                                    int(ex.image.shape[-2]),
+                                    int(ex.image.shape[-1]),
+                                )
+                                int_id = _int_image_id(ex.image_id)
+                                cat_idx = dataset.class_names.index(group[kk])
+                                # Build the entry NOW into the chunk-local buffer so
+                                # this group's GPU output is freed as j advances; the
+                                # buffer is committed once the chunk completes all
+                                # class groups (mirrors the exact path's
+                                # buffer-and-commit so an OOM RETRY_B drops nothing).
+                                _emit(
+                                    _row_outputs(outputs, r),
+                                    ex.instances,
+                                    int_id,
+                                    cat_idx,
+                                    original_hw,
+                                    None,
+                                    chunk_buf,
+                                )
+                            j += K_g
+                        if restart_chunk:
+                            continue
+                        entries.extend(chunk_buf)
+
+                    i += len(image_chunk)
+                    for _ in range(len(image_chunk)):
+                        sub.advance()
+        finally:
+            if was_training and hasattr(model, "train"):
+                model.train()
+
+        n_predictions = sum(int(e.scores.shape[0]) for e in entries)
+        return entries, n_predictions
+
     def _aggregate_metrics(
         self,
         predictions: list[dict[str, object]],
@@ -582,10 +900,31 @@ class Evaluator:
         Pure compute — no disk I/O. Restores the model's training/eval state
         after the forward loop.
 
+        Two metric backends, chosen by ``cfg.mode``:
+
+        - ``mode == "full"`` (standalone / final report): the exact pycocotools
+          RLE + COCOeval path. ``overall["mAP"]`` is true COCO mAP.
+        - ``mode == "lite"`` (in-training validation): a fast GPU dense-IoU AP
+          PROXY (#269). ``overall["mAP"]`` is a monotone-calibrated ranking
+          proxy, NOT exact COCO mAP — its absolute units differ from full mode,
+          so the lite and full ``mAP`` curves are not directly comparable. The
+          proxy emits ``mAP`` (+ ``mAP_50`` / ``mAP_75`` iff those thresholds are
+          in ``cfg.iou_thresholds``) so the in-loop control consumers
+          (best-checkpoint selection and early-stop) are untouched.
+          Setting the ``CSP_LITE_EXACT_MAP`` env var (profiling-style truthiness:
+          any non-empty value other than ``"0"``/``"false"``/``"False"``) forces
+          lite back through the exact COCO path — an escape hatch, not a config
+          knob.
+
         When ``return_per_example_iou=True``, also returns a list of per-example
         MEAN IoU values across ``cfg.iou_thresholds`` aligned with dataset indices.
-        The default ``False`` preserves the previous return type for backward
-        compatibility (e.g. `custom_sam_peft eval` CLI, mid-training eval).
+        Per-example IoU is an exact-path artifact (derived from the RLE
+        predictions, used only for viz sample selection), so requesting it ALWAYS
+        routes through the exact path — even in lite mode. The only caller that
+        does so is the once-per-run close-out / standalone eval; the trainer's
+        periodic in-loop eval does not, so it keeps the fast proxy. The default
+        ``False`` preserves the previous return type for backward compatibility
+        (e.g. `custom_sam_peft eval` CLI, mid-training eval).
         """
         # Reset predictions at the start so evaluate_and_save never writes
         # stale data from a prior call that may have failed mid-run.
@@ -607,6 +946,30 @@ class Evaluator:
             with profiling.bucket("eval.dataset_load"):
                 examples = [dataset[i] for i in range(n)]
             profiling.incr("eval.examples_loaded", by=n)
+
+            # Implicit lite=proxy / full=exact split (#269): exact when full OR
+            # when the CSP_LITE_EXACT_MAP escape hatch is set. Also exact whenever
+            # return_per_example_iou is requested — per-example IoU is an
+            # exact-path artifact (derived from the RLE predictions for viz sample
+            # selection), and the only caller that requests it is the once-per-run
+            # close-out / standalone eval, NOT the trainer's periodic in-loop eval.
+            # So the proxy still covers the hot loop (the speedup that matters)
+            # while close-out keeps its pre-#269 exact behaviour transparently.
+            use_exact = cfg.mode == "full" or _lite_exact_map_hatch() or return_per_example_iou
+
+            if not use_exact:
+                # --- Lite dense-IoU AP proxy path (#269) ---
+                proxy_entries, n_preds = self._iter_proxy_iou(model, examples, dataset)
+                overall = proxy_map_from_iou(
+                    proxy_entries, list(cfg.iou_thresholds), coco_max_dets_cap()
+                )
+                self._last_predictions = []
+                return MetricsReport(
+                    overall=overall,
+                    per_class={},
+                    n_images=len(examples),
+                    n_predictions=n_preds,
+                )
 
             # Use tiling-aware GT builder: large images are decomposed into
             # non-overlapping tiles (EVAL_OVERLAP=0.0); small images use the
