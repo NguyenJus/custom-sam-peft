@@ -103,6 +103,23 @@ def test_semantic_mask_png_valid():
     assert cfg.data.semantic.label_suffix == "_labelIds.png"
 
 
+def test_semantic_hf_format_valid():
+    cfg = TrainConfig.model_validate(
+        _base_cfg(
+            task="semantic",
+            data={
+                "format": "hf",
+                "train": {"images": "img", "annotations": "labels"},
+                "semantic": {"class_map": "cm.json"},
+                "hf": {"name": "some/dataset"},
+            },
+        )
+    )
+    assert cfg.task == "semantic"
+    assert cfg.data.format == "hf"
+    assert cfg.data.semantic is not None
+
+
 def test_semantic_rejects_nondefault_eval_iou_thresholds():
     with pytest.raises(ValidationError, match="iou_thresholds"):
         TrainConfig.model_validate(
