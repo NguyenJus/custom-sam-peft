@@ -167,6 +167,15 @@ def merge_fragments(
     return out
 
 
+def tile_affine(parent_affine, window):
+    """Per-tile affine = parent affine offset by the window origin (y0, x0) in
+    pixel space — a pure pixel translation, no scale change (tiles are native-res;
+    spec §6.4). The stitched output keeps the parent affine."""
+    from affine import Affine
+
+    return parent_affine * Affine.translation(window.x0, window.y0)
+
+
 def run_windows(
     image: np.ndarray,
     windows: list[Window],
