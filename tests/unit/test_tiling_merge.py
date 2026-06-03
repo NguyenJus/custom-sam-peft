@@ -43,3 +43,19 @@ def test_C4_distinct_and_cross_category_stay_separate():
     a = _box(canvas, 5, 15, 0, 30, cat=1, wid=0)
     b = _box(canvas, 5, 15, 20, 50, cat=2, wid=1)
     assert len(merge_fragments([a, b], canvas)) == 2
+
+
+def test_threshold_boundary_strict_greater_and_near_miss():
+    canvas = (20, 60)
+    # below threshold: IoM = 8/100 = 0.08 -> incidental adjacency stays separate
+    a = _box(canvas, 0, 10, 0, 10, cat=1, wid=0)  # 100 px
+    b = _box(canvas, 0, 8, 9, 40, cat=1, wid=1)  # inter = 8 px -> 0.08
+    assert len(merge_fragments([a, b], canvas)) == 2
+    # exactly at threshold: IoM = 10/100 = 0.10; strict '>' keeps them separate
+    a2 = _box(canvas, 0, 10, 0, 10, cat=1, wid=0)  # 100 px
+    b2 = _box(canvas, 0, 10, 9, 40, cat=1, wid=1)  # inter = 10 px -> 0.10
+    assert len(merge_fragments([a2, b2], canvas)) == 2
+    # above threshold: IoM = 20/100 = 0.20 -> merge
+    a3 = _box(canvas, 0, 10, 0, 10, cat=1, wid=0)  # 100 px
+    b3 = _box(canvas, 0, 11, 8, 40, cat=1, wid=1)  # inter = 20 px -> 0.20
+    assert len(merge_fragments([a3, b3], canvas)) == 1

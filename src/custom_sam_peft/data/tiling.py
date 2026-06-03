@@ -61,17 +61,27 @@ def iter_windows(
     return out
 
 
-# tbd: mask_overlap_threshold for cross-tile fragment linking. 0.10 chosen by
-# tuning against the C2/C3/C4 synthetic fixtures (spec §4.3): seam-overlap bands
-# achieve IoM ~0.14-0.24 while non-overlapping fragments have IoM=0.0, so 0.10
-# is a robust lower bound. No published canonical value for DETR-fragment
-# association — revisit if real-data over/under-merge is observed.
+# tbd: mask_overlap_threshold for cross-tile fragment linking. Metric is
+# intersection-over-min-fragment-area (spec §4.3). Spec-locked fixtures bind it
+# below 0.143 (C3 a-b IoM = 0.143 is the must-merge constraint); 0.10 sits below
+# that and above the 0.0 non-overlap case, so genuine seam fragments link while
+# distinct objects do not. Intersection-over-min over TOTAL fragment area
+# discriminates weakly against incidental band-clipping adjacency — starting value
+# tuned to synthetic fixtures; revisit against real data, guarded by G1.
 MASK_OVERLAP_THRESHOLD: float = 0.10
 
 
 @dataclass
 class Fragment:
-    """A per-tile instance placed on the full-image canvas (spec §4.2)."""
+    """A per-tile instance placed on the full-image canvas (spec §4.2).
+
+    Contract: `window_id` must be UNIQUE per source tile across the whole
+    `merge_fragments` input. `merge_fragments` skips pairs sharing a `window_id`
+    (in-tile instances are already distinct), so two genuine fragments of one
+    seam object in DIFFERENT tiles that collide on the same `window_id` would be
+    silently NOT merged (spec §14.1 under-merge). The producer (`run_windows`)
+    must assign a globally-unique id per tile.
+    """
 
     mask: np.ndarray  # (H, W) bool, full-canvas coordinates
     score: float
@@ -108,6 +118,10 @@ def _intersection_over_min(a: np.ndarray, b: np.ndarray) -> float:
     # Association metric. Pinned: intersection-over-min-fragment-area (robust to
     # dissimilar fragment sizes; spec §4.3). # tbd: no published canonical metric
     # for DETR-fragment association — revisit against C2/C4 if over/under-merge.
+    # NOTE: denominator is the smaller fragment's TOTAL area, a deliberate deviation
+    # from spec §4.3's "within the overlap band" wording — band-restriction is not
+    # computable from masks alone, and total-area keeps a thin sliver of a large
+    # object linkable.
     return inter / smaller if smaller else 0.0
 
 

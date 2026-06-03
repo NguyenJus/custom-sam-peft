@@ -33,8 +33,8 @@ Every NEW default below ships with a citation OR an explicit `# tbd:` tag (CI no
    `# Overlap fraction of the ROI/tile size. Cited: MONAI sliding_window_inference default overlap=0.25 (https://docs.monai.io/en/stable/inferers.html#monai.inferers.sliding_window_inference).`
 2. **Association metric = intersection-over-min-area (within the overlap band).** Pinned over IoU-of-overlap-band: a small seam sliver of a large object must still link, which IoU-of-band penalizes when fragment sizes differ greatly. Comment:
    `# Cross-tile fragment association metric. Pinned: intersection-over-min-fragment-area (robust to dissimilar fragment sizes; spec §4.3). # tbd: no published canonical metric for DETR-fragment association — revisit against C2/C4 if over/under-merge observed.`
-3. **`mask_overlap_threshold = 0.50`.** No published canonical value for DETR-fragment association. Comment:
-   `# tbd: mask_overlap_threshold for cross-tile fragment linking. 0.50 chosen so genuine same-object seam overlap (≥half the smaller fragment lies in the band) links while incidental adjacency does not (spec §4.3). No published canonical value — tune against the C2/C3/C4 synthetic seam fixtures.`
+3. **`mask_overlap_threshold = 0.10`.** Forced by the spec-locked fixtures, not chosen freely: the association metric is intersection-over-min-fragment-area over the two full-canvas fragment masks (the merge fn has no window extents, so a band-restricted denominator is uncomputable). The C2/C3/C4 fixtures (spec §12.1) constrain it — the must-merge pairs have IoM C2 = 0.235, C3 a–b = 0.143, C3 b–c = 0.167, so the threshold must sit **below the binding 0.143 (C3 a–b)**; the must-NOT-merge case (C4 distinct objects) is IoM 0.0. 0.10 sits comfortably below 0.143 and above 0.0, so genuine seam fragments link while non-overlapping distinct objects do not. Still `# tbd:`: intersection-over-min over TOTAL fragment area discriminates weakly against incidental adjacency that clips the band, so this is a starting value tuned to the synthetic fixtures, to be revisited against real data and guarded by G1 (spec §13.2/§14.1). Comment:
+   `# tbd: mask_overlap_threshold for cross-tile fragment linking. Metric is intersection-over-min-fragment-area (spec §4.3). Spec-locked fixtures bind it below 0.143 (C3 a–b IoM = 0.143 is the must-merge constraint); 0.10 sits below that and above the 0.0 non-overlap case, so genuine seam fragments link while distinct objects do not. Intersection-over-min over TOTAL fragment area discriminates weakly against incidental band-clipping adjacency — starting value tuned to synthetic fixtures; revisit against real data, guarded by G1 (spec §13.2/§14.1).`
 4. **Score aggregation = area-weighted mean.** Pinned over `max` (spec §4.5): `max` lets a thin high-scoring sliver dominate; area-weighting tracks dominant evidence. Comment:
    `# Merged-fragment score aggregation. Pinned: area-weighted mean of fragment scores over plain max (spec §4.5) — area-weighting reflects the object's dominant evidence; max lets a tiny sliver dominate.`
 5. **Eval tiling = non-overlapping** for metric accumulation. Pinned (spec §5.4) to avoid double-counting in the overlap band; documented as differing from predict's overlapping tiling. Comment:
@@ -60,7 +60,7 @@ Operates on plain pixels only — no `SpatialMeta`. **EXPOSES (contract consumed
   - `Fragment` (dataclass): `mask: np.ndarray (H,W bool, full-canvas)`, `score: float`, `category_id: int`, `window_id: int`.
   - `merge_fragments(fragments: list[Fragment], canvas_hw: tuple[int,int], *, threshold: float = MASK_OVERLAP_THRESHOLD) -> list[MergedInstance]` — the §4 union-find merge; `MergedInstance` has `mask: np.ndarray`, `score: float`, `category_id: int`.
   - `run_windows(image, windows, fn)` — applies `fn(crop, window) -> list[Fragment]` per window, collects fragments. (Predict/eval pass the real per-tile forward.)
-  - Module constants: `DEFAULT_OVERLAP = 0.25`, `MASK_OVERLAP_THRESHOLD = 0.50`, `EVAL_OVERLAP = 0.0` (each with the §13 comment above).
+  - Module constants: `DEFAULT_OVERLAP = 0.25`, `MASK_OVERLAP_THRESHOLD = 0.10`, `EVAL_OVERLAP = 0.0` (each with the §13 comment above).
 - Predict tiling path wired into `predict/runner.py` (auto-engage by size; small images byte-for-byte unchanged); `run.json` gains an additive `"tiling"` provenance record.
 - Train window-gen path in `coco.py` (large rasters expand into independent tile samples; `__len__` reflects expansion).
 - Eval per-tile metric accumulation (non-overlapping) in `eval/evaluator.py`; eval-viz restitch via `merge_fragments`.
@@ -308,11 +308,14 @@ Expected: FAIL — `Fragment` / `merge_fragments` not defined.
 Append to `tiling.py`:
 
 ```python
-# tbd: mask_overlap_threshold for cross-tile fragment linking. 0.50 chosen so
-# genuine same-object seam overlap (>= half the smaller fragment lies in the band)
-# links while incidental adjacency does not (spec §4.3). No published canonical
-# value for DETR-fragment association — tune against C2/C3/C4 synthetic fixtures.
-MASK_OVERLAP_THRESHOLD: float = 0.50
+# tbd: mask_overlap_threshold for cross-tile fragment linking. Metric is
+# intersection-over-min-fragment-area (spec §4.3). Spec-locked fixtures bind it
+# below 0.143 (C3 a-b IoM = 0.143 is the must-merge constraint); 0.10 sits below
+# that and above the 0.0 non-overlap case, so genuine seam fragments link while
+# distinct objects do not. Intersection-over-min over TOTAL fragment area
+# discriminates weakly against incidental band-clipping adjacency — starting value
+# tuned to synthetic fixtures; revisit against real data, guarded by G1.
+MASK_OVERLAP_THRESHOLD: float = 0.10
 
 
 @dataclass
