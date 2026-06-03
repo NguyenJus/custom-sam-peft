@@ -12,6 +12,7 @@ from rich.console import Console
 
 from custom_sam_peft.cli._host_ram import format_host_ram_message
 from custom_sam_peft.cli._logging import configure_logging
+from custom_sam_peft.cli._options import OverrideOpt, Progress, ProgressOpt, VerboseOpt
 from custom_sam_peft.cli._progress import ProgressKind, progress_session, resolve_mode
 from custom_sam_peft.cli._time_limit import format_time_limit_message
 from custom_sam_peft.config._duration import parse_duration_to_seconds
@@ -27,9 +28,7 @@ _LATEST_SENTINEL = "__latest__"
 
 def train(
     config: Path = typer.Option(..., "--config", help="Path to training config YAML."),
-    override: list[str] = typer.Option(
-        [], "--override", help="Override config keys: dotted.key=value."
-    ),
+    override: OverrideOpt = [],  # noqa: B006 — Typer creates a new list per invocation
     resume: str | None = typer.Option(
         None,
         "--resume",
@@ -58,13 +57,8 @@ def train(
         "--export",
         help="After training (and eval, if --eval), export a run bundle.",
     ),
-    verbose: bool = typer.Option(False, "-v", "--verbose", help="Enable DEBUG logging."),
-    progress_flag: str = typer.Option(
-        "auto",
-        "--progress",
-        help="Progress display mode: auto|on|off|plain.",
-        metavar="MODE",
-    ),
+    verbose: VerboseOpt = False,
+    progress: ProgressOpt = Progress.auto,
 ) -> None:
     """Run a finetune. The order is fixed: train → eval → export. Flags only toggle inclusion."""
     configure_logging(verbose)
@@ -81,7 +75,7 @@ def train(
         )
 
     mode = resolve_mode(
-        progress_flag if progress_flag != "auto" else None,
+        None if progress is Progress.auto else progress.value,
         os.environ,
         sys.stdout.isatty(),
         Console().is_jupyter,
