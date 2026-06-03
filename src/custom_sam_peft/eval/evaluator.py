@@ -146,10 +146,13 @@ class Evaluator:
             model.eval()
 
         try:
-            param_device = next(model.parameters()).device
+            _p = next(model.parameters())
+            param_device = _p.device
+            param_dtype = _p.dtype
         except (StopIteration, AttributeError):
             param_device = torch.device("cpu")
-        eval_runtime = Runtime(device=param_device, dtype=torch.float32)
+            param_dtype = torch.float32
+        eval_runtime = Runtime(device=param_device, dtype=param_dtype)
 
         # Replace the old state dict with the shared ladder. effective_K starts at
         # min(MULTIPLEX_CAP, n_classes); micro_batch_size at the resolved cfg.batch_size.
