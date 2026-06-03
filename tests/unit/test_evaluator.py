@@ -6,7 +6,7 @@ import json
 import math
 from pathlib import Path
 from typing import Any, ClassVar
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 import torch
@@ -215,7 +215,11 @@ class _DeviceRecordingStub(torch.nn.Module):
 def test_evaluate_moves_image_to_model_device(tiny_text_dataset) -> None:
     """Evaluator must call `.to(device)` on dataset images before forward."""
     stub = _DeviceRecordingStub(param_device="meta")
-    cfg = EvalConfig(mode="lite", lite_max_images=2, iou_thresholds=[0.5], batch_size=1)
+    # Full mode: the exact path keeps the meta-param model's IoU off-device (CPU
+    # RLE), so this isolates the image-placement contract. (The lite proxy
+    # computes IoU on-device, which a meta device cannot execute — a separate
+    # path with its own device-aware tests.)
+    cfg = EvalConfig(mode="full", iou_thresholds=[0.5], batch_size=1)
     Evaluator(cfg).evaluate(stub, tiny_text_dataset)
     assert stub.received_image_devices, "model.forward was never called"
     assert all(d.type == "meta" for d in stub.received_image_devices), (
@@ -469,6 +473,160 @@ def test_row_outputs_skips_non_tensor_values() -> None:
 # Regression: eval inside a training progress session must not mutate the
 # shared inner-task total (bug #153).
 # ---------------------------------------------------------------------------
+
+
+# ---------------------------------------------------------------------------
+# Lite dense-IoU proxy path (#269)
+# ---------------------------------------------------------------------------
+
+
+def test_lite_uses_proxy_not_coco_map(stub_model, tiny_text_dataset, monkeypatch):
+    """Lite mode produces report.overall['mAP'] via the dense-IoU proxy and
+    NEVER calls compute_coco_map (the exact RLE+COCOeval path)."""
+
+    def _boom(*args, **kwargs):
+        raise AssertionError("compute_coco_map must not run in lite-proxy mode")
+
+    monkeypatch.setattr("custom_sam_peft.eval.evaluator.compute_coco_map", _boom)
+    cfg = EvalConfig(mode="lite", lite_max_images=2, iou_thresholds=[0.5], batch_size=1)
+    report = Evaluator(cfg).evaluate(stub_model, tiny_text_dataset)
+    assert isinstance(report, MetricsReport)
+    assert "mAP" in report.overall
+    assert report.per_class == {}
+    assert report.n_images == 2
+
+
+def test_lite_escape_hatch_routes_through_exact(stub_model, tiny_text_dataset, monkeypatch):
+    """CSP_LITE_EXACT_MAP=1 forces lite mode through the exact COCOeval path."""
+    called: list[bool] = []
+    real = __import__(
+        "custom_sam_peft.eval.metrics", fromlist=["compute_coco_map"]
+    ).compute_coco_map
+
+    def _spy(*args, **kwargs):
+        called.append(True)
+        return real(*args, **kwargs)
+
+    monkeypatch.setenv("CSP_LITE_EXACT_MAP", "1")
+    monkeypatch.setattr("custom_sam_peft.eval.evaluator.compute_coco_map", _spy)
+    cfg = EvalConfig(mode="lite", lite_max_images=2, iou_thresholds=[0.5], batch_size=1)
+    report = Evaluator(cfg).evaluate(stub_model, tiny_text_dataset)
+    assert called, "escape hatch must route lite through compute_coco_map"
+    assert isinstance(report, MetricsReport)
+
+
+def test_lite_escape_hatch_disabled_values_use_proxy(stub_model, tiny_text_dataset, monkeypatch):
+    """Disabled truthiness values for CSP_LITE_EXACT_MAP keep lite on the proxy."""
+
+    def _boom(*args, **kwargs):
+        raise AssertionError("compute_coco_map must not run when hatch is disabled")
+
+    monkeypatch.setattr("custom_sam_peft.eval.evaluator.compute_coco_map", _boom)
+    cfg = EvalConfig(mode="lite", lite_max_images=1, iou_thresholds=[0.5], batch_size=1)
+    for val in ("", "0", "false", "False"):
+        monkeypatch.setenv("CSP_LITE_EXACT_MAP", val)
+        report = Evaluator(cfg).evaluate(stub_model, tiny_text_dataset)
+        assert "mAP" in report.overall
+
+
+def test_lite_return_per_example_iou_routes_exact(stub_model, tiny_text_dataset, monkeypatch):
+    """return_per_example_iou=True in lite mode transparently routes through the
+    EXACT path (per-example IoU is an exact-path artifact) — it does NOT raise and
+    does NOT use the proxy. This is the close-out / standalone caller's path."""
+    # The exact path runs compute_coco_map; the proxy path never does.
+    from custom_sam_peft.eval import evaluator as evaluator_mod
+
+    called = {"coco": False}
+    real = evaluator_mod.compute_coco_map
+
+    def _spy(*args, **kwargs):
+        called["coco"] = True
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(evaluator_mod, "compute_coco_map", _spy)
+    cfg = EvalConfig(mode="lite", lite_max_images=1, iou_thresholds=[0.5], batch_size=1)
+    out = Evaluator(cfg).evaluate(stub_model, tiny_text_dataset, return_per_example_iou=True)
+    assert isinstance(out, tuple)  # (MetricsReport, list[float])
+    assert called["coco"], "lite + return_per_example_iou must use the exact COCO path"
+
+
+def test_full_return_per_example_iou_unchanged_under_hatch(stub_model, tiny_text_dataset):
+    """full mode + return_per_example_iou stays supported (hatch is lite-only)."""
+    cfg = EvalConfig(mode="full", iou_thresholds=[0.5], batch_size=1)
+    out = Evaluator(cfg).evaluate(stub_model, tiny_text_dataset, return_per_example_iou=True)
+    assert isinstance(out, tuple)
+
+
+def test_lite_proxy_finite_map_with_tiling(monkeypatch):
+    """A lite eval over an oversized (tiled) example yields a finite mAP, using
+    tile-local GT cropped to each window (mirrors test_eval_tiling_unit fixtures)."""
+    import numpy as np
+
+    from custom_sam_peft.data.base import Example, Instance, TextPrompts
+
+    def _boom(*args, **kwargs):
+        raise AssertionError("compute_coco_map must not run in lite-proxy mode")
+
+    monkeypatch.setattr("custom_sam_peft.eval.evaluator.compute_coco_map", _boom)
+
+    from custom_sam_peft.config.schema import NormalizeConfig
+    from custom_sam_peft.data.transforms import build_eval_transforms
+    from custom_sam_peft.models.sam3 import SAM3_IMAGE_SIZE
+
+    orig_h = orig_w = 2016
+    image = torch.zeros(3, orig_h, orig_w)
+    image_native = np.zeros((orig_h, orig_w, 3), dtype=np.uint8)
+    mask = torch.zeros(orig_h, orig_w, dtype=torch.bool)
+    mask[0:200, 0:200] = True  # GT lives in tile 0
+    example = Example(
+        image=image,
+        image_id="large_0",
+        prompts=TextPrompts(classes=["cat"]),
+        instances=[Instance(mask=mask, class_id=0, box=torch.tensor([0.0, 0.0, 200.0, 200.0]))],
+        image_native=image_native,
+    )
+
+    class _TilingDS:
+        class_names: ClassVar[list[str]] = ["cat"]
+
+        def __init__(self) -> None:
+            self.tile_transform = build_eval_transforms(
+                SAM3_IMAGE_SIZE,
+                model_name="facebook/sam3.1",
+                normalize=NormalizeConfig(),
+                downscale=False,
+            )
+
+        def __len__(self) -> int:
+            return 1
+
+        def __getitem__(self, i: int) -> Example:
+            return example
+
+    def _forward(images, prompts, support=None):
+        b = images.shape[0]
+        k_g = len(prompts[0].classes) if prompts else 1
+        rows = b * k_g
+        h, w = int(images.shape[-2]), int(images.shape[-1])
+        # query 0: strong positive over the top-left 200x200 block
+        masks = torch.full((rows, 2, h, w), -10.0)
+        masks[:, 0, 0:200, 0:200] = 10.0
+        return {
+            "pred_logits": torch.zeros(rows, 2, 1),
+            "pred_boxes": torch.zeros(rows, 2, 4),
+            "pred_masks": masks,
+            "presence_logit_dec": torch.zeros(rows, 1),
+        }
+
+    model = MagicMock(side_effect=_forward)
+    model.training = False
+    del model.parameters
+
+    cfg = EvalConfig(mode="lite", lite_max_images=1, iou_thresholds=[0.5, 0.75], batch_size=1)
+    report = Evaluator(cfg).evaluate(model, _TilingDS())
+    assert "mAP" in report.overall
+    assert math.isfinite(report.overall["mAP"])
+    assert model.call_count == 4  # 2016x2016 -> 4 tiles, 1 class group each
 
 
 def test_eval_inside_progress_session_does_not_clobber_inner_total(

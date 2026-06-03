@@ -42,6 +42,46 @@ def _upsample_mask_logits(masks_logits: Tensor, original_hw: tuple[int, int]) ->
     ).squeeze(1)
 
 
+def score_and_topk_filter(
+    outputs: dict[str, Tensor], max_dets: int | None
+) -> tuple[Tensor, Tensor | None]:
+    """Compute per-query scores and the top-``max_dets`` survivor filter.
+
+    Score = ``sigmoid(pred_logits) * sigmoid(presence_logit_dec)`` (fp32, on the
+    same device as the inputs). Raises ``RuntimeError`` if any score is non-finite.
+
+    When ``max_dets`` is given and there are more than ``max_dets`` queries, keep
+    only queries whose score is >= the ``max_dets``-th-highest score (a threshold,
+    NOT exactly ``max_dets`` — boundary ties are kept as a SUPERSET). Returns
+    ``(scores, keep_idx)`` where ``scores`` is the post-filter ``(M,)`` score
+    vector and ``keep_idx`` is the ``(M,)`` survivor index tensor, or ``None``
+    when no filter was applied (``max_dets is None`` or ``n <= max_dets``). When
+    ``keep_idx is None`` the returned ``scores`` covers ALL ``n`` queries.
+
+    Shared by both the exact RLE path (``queries_to_coco_results``) and the lite
+    dense-IoU proxy so the two can never drift on score formula or tie-break.
+    """
+    pred_logits = outputs["pred_logits"]
+    presence = outputs["presence_logit_dec"]
+
+    p_obj = torch.sigmoid(pred_logits.float()).squeeze(-1).squeeze(0)  # (N,)
+    p_presence = torch.sigmoid(presence.float()).reshape(())  # scalar
+    scores = p_obj * p_presence  # (N,)
+    if not torch.isfinite(scores).all():
+        raise RuntimeError(
+            "non-finite scores in postprocess; check model outputs "
+            "(pred_logits or presence_logit_dec contains NaN/Inf)"
+        )
+
+    n = scores.shape[0]
+    keep_idx: Tensor | None = None
+    if max_dets is not None and n > max_dets:
+        kth = torch.topk(scores, max_dets).values.min()  # the max_dets-th-highest score
+        keep_idx = (scores >= kth).nonzero(as_tuple=False).squeeze(-1)  # (M,), M >= max_dets
+        scores = scores[keep_idx]
+    return scores, keep_idx
+
+
 def queries_to_coco_results(
     outputs: dict[str, Tensor],
     image_id: int,
@@ -73,7 +113,6 @@ def queries_to_coco_results(
     pred_logits = outputs["pred_logits"]
     pred_boxes = outputs["pred_boxes"]
     pred_masks = outputs["pred_masks"]
-    presence = outputs["presence_logit_dec"]
 
     if pred_logits.shape[0] != 1:
         raise ValueError(f"postprocess expects batch=1; got {pred_logits.shape[0]}")
@@ -84,27 +123,14 @@ def queries_to_coco_results(
     if n == 0:
         return []
 
-    # --- scores ---
-    p_obj = torch.sigmoid(pred_logits.float()).squeeze(-1).squeeze(0)  # (N,)
-    p_presence = torch.sigmoid(presence.float()).reshape(())  # scalar
-    scores = p_obj * p_presence  # (N,)
-    if not torch.isfinite(scores).all():
-        raise RuntimeError(
-            "non-finite scores in postprocess; check model outputs "
-            "(pred_logits or presence_logit_dec contains NaN/Inf)"
-        )
-
-    # --- top-N filter (mAP-exact; spec §3.3) ---
-    # Rank by the SAME score COCOeval uses; keep all queries with score >= the
-    # max_dets-th-highest score (threshold, not exactly max_dets) so the survivor
-    # set is a SUPERSET of whatever 100 the scorer would keep under its own
-    # tie-break. Done BEFORE upsample/transfer/RLE so those costs only touch
-    # survivors.
-    keep_idx: Tensor | None = None
-    if max_dets is not None and n > max_dets:
-        kth = torch.topk(scores, max_dets).values.min()  # the max_dets-th-highest score
-        keep_idx = (scores >= kth).nonzero(as_tuple=False).squeeze(-1)  # (M,), M >= max_dets
-        scores = scores[keep_idx]
+    # --- scores + top-N filter (mAP-exact; spec §3.3) ---
+    # Shared with the lite dense-IoU proxy via score_and_topk_filter so the score
+    # formula and tie-break can never drift. The filter ranks by the SAME score
+    # COCOeval uses and keeps all queries with score >= the max_dets-th-highest
+    # score (threshold, not exactly max_dets) — a SUPERSET of whatever 100 the
+    # scorer would keep under its own tie-break. Done BEFORE upsample/transfer/RLE
+    # so those costs only touch survivors. The non-finite RuntimeError raises here.
+    scores, keep_idx = score_and_topk_filter(outputs, max_dets)
 
     m = scores.shape[0]  # survivor count (== n when no filter / n <= max_dets)
 
