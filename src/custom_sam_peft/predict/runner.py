@@ -417,6 +417,7 @@ def run_predict(opts: PredictOptions) -> PredictReport:
         _sem_cfg = SemanticLossConfig()
 
     all_predictions: list[dict[str, object]] = []
+    image_id_to_colorized: dict[int, Path] = {}
     id_to_path: dict[int, Path] = {}
     id_to_stem: dict[int, str] = {}
     originals: dict[int, tuple[int, int]] = {}
@@ -577,6 +578,7 @@ def run_predict(opts: PredictOptions) -> PredictReport:
                     class_names=prompts,
                 )
 
+                image_id_to_colorized[image_id] = Path(label_map_paths["colorized_path"])
                 chunk_buf.append(
                     {
                         "image_id": image_id,
@@ -644,11 +646,8 @@ def run_predict(opts: PredictOptions) -> PredictReport:
             for entry in all_predictions:
                 image_id_int = int(cast(int, entry["image_id"]))
                 img_path_or_none = id_to_path.get(image_id_int)
-                color_path_str = str(entry["label_map_path"]).replace(
-                    "_label_index.png", "_label_color.png"
-                )
-                color_path = Path(color_path_str)
-                if img_path_or_none is not None and color_path.exists():
+                color_path = image_id_to_colorized.get(image_id_int)
+                if img_path_or_none is not None and color_path is not None and color_path.exists():
                     write_semantic_visualization(img_path_or_none, color_path, opts.output)
     else:
         write_predictions(
