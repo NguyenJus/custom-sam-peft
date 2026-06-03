@@ -200,27 +200,36 @@ def build_eval_transforms(
     model_name: str,
     normalize: NormalizeConfig,
     channel_semantics: str = "rgb",
+    downscale: bool = True,
 ) -> A.Compose:
-    """Deterministic eval pipeline: longest-edge resize -> top-left pad -> normalize -> ToTensor."""
+    """Deterministic eval pipeline: longest-edge resize -> top-left pad -> normalize -> ToTensor.
+
+    When *downscale* is False the ``LongestMaxSize`` step is omitted so that
+    oversized rasters are NOT shrunk before padding — used by the eval/val
+    pipeline when per-tile native-res inference is desired (design C §5.4).
+    """
     import albumentations as A
     import cv2
     from albumentations.pytorch import ToTensorV2
 
     mean, std = resolve_normalization(model_name, normalize, channel_semantics=channel_semantics)
+    steps: list[object] = []
+    if downscale:
+        steps.append(A.LongestMaxSize(max_size=image_size, interpolation=cv2.INTER_LINEAR))
+    steps.append(
+        A.PadIfNeeded(
+            min_height=image_size,
+            min_width=image_size,
+            border_mode=cv2.BORDER_CONSTANT,
+            fill=0,
+            fill_mask=0,
+            position="top_left",
+        )
+    )
+    steps.append(A.Normalize(mean=mean, std=std, max_pixel_value=normalize.max_pixel_value))
+    steps.append(ToTensorV2())
     return A.Compose(
-        [
-            A.LongestMaxSize(max_size=image_size, interpolation=cv2.INTER_LINEAR),
-            A.PadIfNeeded(
-                min_height=image_size,
-                min_width=image_size,
-                border_mode=cv2.BORDER_CONSTANT,
-                fill=0,
-                fill_mask=0,
-                position="top_left",
-            ),
-            A.Normalize(mean=mean, std=std, max_pixel_value=normalize.max_pixel_value),
-            ToTensorV2(),
-        ],
+        steps,
         bbox_params=A.BboxParams(
             format="pascal_voc",
             label_fields=["class_labels", "instance_idx"],

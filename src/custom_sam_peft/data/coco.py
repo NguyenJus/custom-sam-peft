@@ -425,6 +425,7 @@ def build_coco(
             model_name=model_name,
             normalize=normalize,
             channel_semantics=channel_semantics,
+            downscale=(pipeline != "eval"),
         )
     return COCODataset(
         annotations=split["annotations"],
