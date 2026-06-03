@@ -40,6 +40,8 @@ _LOG = logging.getLogger(__name__)
 # Reset via _reset_auto_chunk_log() in tests.
 _AUTO_CHUNK_LOGGED: bool = False
 
+_INSTANCE_LOSS_KEYS: tuple[str, ...] = ("mask", "box", "obj", "presence", "total")
+
 
 class _MicrobatchExhausted(Exception):
     """Internal signal: the inner B-ladder hit micro_batch=1 and OOMed again.
@@ -186,9 +188,14 @@ class StepResult:
     images_processed: int
 
     @classmethod
-    def empty(cls, nan_streak: int = 0) -> StepResult:
+    def empty(
+        cls,
+        nan_streak: int = 0,
+        loss_keys: tuple[str, ...] | None = None,
+    ) -> StepResult:
+        keys = loss_keys if loss_keys is not None else _INSTANCE_LOSS_KEYS
         return cls(
-            losses={"mask": 0.0, "box": 0.0, "obj": 0.0, "presence": 0.0, "total": 0.0},
+            losses={k: 0.0 for k in keys},
             n_classes=0,
             grad_norm=None,
             skipped=True,
@@ -455,34 +462,28 @@ def train_step(
 
 @dataclass
 class _ScalarWindow:
+    loss_keys: tuple[str, ...] = field(default_factory=lambda: _INSTANCE_LOSS_KEYS)
     n: int = 0
     cumulative_skipped: int = 0
-    sums: dict[str, float] = field(
-        default_factory=lambda: {
-            "loss/total": 0.0,
-            "loss/mask": 0.0,
-            "loss/box": 0.0,
-            "loss/obj": 0.0,
-            "loss/presence": 0.0,
-            "throughput/img_s": 0.0,
-            "grad_norm": 0.0,
-        }
-    )
+    sums: dict[str, float] = field(default_factory=dict)
     grad_norm_n: int = 0
     last_lr: float = 0.0
     images_in_window: int = 0
     wall_t0: float = field(default_factory=time.perf_counter)
+
+    def __post_init__(self) -> None:
+        if not self.sums:
+            self.sums = {f"loss/{k}": 0.0 for k in self.loss_keys}
+            self.sums["throughput/img_s"] = 0.0
+            self.sums["grad_norm"] = 0.0
 
     def update(self, r: StepResult, lr: float) -> None:
         self.n += 1
         if r.skipped:
             self.cumulative_skipped += 1
             return
-        self.sums["loss/total"] += r.losses["total"]
-        self.sums["loss/mask"] += r.losses["mask"]
-        self.sums["loss/box"] += r.losses["box"]
-        self.sums["loss/obj"] += r.losses["obj"]
-        self.sums["loss/presence"] += r.losses["presence"]
+        for k in self.loss_keys:
+            self.sums[f"loss/{k}"] += r.losses[k]
         self.images_in_window += r.images_processed
         if r.grad_norm is not None:
             self.sums["grad_norm"] += r.grad_norm
@@ -492,19 +493,14 @@ class _ScalarWindow:
     def flush(self) -> dict[str, float]:
         n = max(self.n - 0, 1)
         elapsed = max(time.perf_counter() - self.wall_t0, 1e-9)
-        out = {
-            "loss/total": self.sums["loss/total"] / n,
-            "loss/mask": self.sums["loss/mask"] / n,
-            "loss/box": self.sums["loss/box"] / n,
-            "loss/obj": self.sums["loss/obj"] / n,
-            "loss/presence": self.sums["loss/presence"] / n,
-            "lr": self.last_lr,
-            "grad_norm": (self.sums["grad_norm"] / self.grad_norm_n if self.grad_norm_n else 0.0),
-            "throughput/img_s": self.images_in_window / elapsed,
-            "skipped_steps": float(self.cumulative_skipped),
-        }
+        out = {f"loss/{k}": self.sums[f"loss/{k}"] / n for k in self.loss_keys}
+        out["lr"] = self.last_lr
+        out["grad_norm"] = self.sums["grad_norm"] / self.grad_norm_n if self.grad_norm_n else 0.0
+        out["throughput/img_s"] = self.images_in_window / elapsed
+        out["skipped_steps"] = float(self.cumulative_skipped)
         cum_skipped = self.cumulative_skipped
-        self.__init__()  # type: ignore[misc]
+        keys = self.loss_keys
+        self.__init__(loss_keys=keys)  # type: ignore[misc]
         self.cumulative_skipped = cum_skipped
         return out
 
