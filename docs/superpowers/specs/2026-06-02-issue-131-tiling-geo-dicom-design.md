@@ -412,14 +412,19 @@ Read each `.dcm` via `pydicom` → pixel array + spatial tags. Preprocess, **in 
 2. **Correct signed / bits-stored decode.** Honor `PixelRepresentation` (signed vs unsigned),
    `BitsStored`, `BitsAllocated` so values decode correctly (pydicom handles this when the pixel
    array is accessed correctly; the planner verifies signed CT decodes negative HU).
-3. **MONOCHROME1 inversion.** When `PhotometricInterpretation == "MONOCHROME1"`, invert so that
-   higher stored value = brighter (MONOCHROME1 is inverted relative to MONOCHROME2). Standard,
-   citation-free.
-4. **VOI windowing — ONLY if the file carries a window.** If the file has `WindowCenter` /
-   `WindowWidth`, apply the **file's own** center/width (`apply_voi_lut`). **Do NOT invent a
-   window default** — if no window is present, skip VOI (no NEW hyperparameter is introduced).
-   An optional **per-dataset config override** lets the user specify a center/width explicitly
-   (§9). When the override is set it wins; otherwise the file's window is used; otherwise no VOI.
+3. **VOI windowing — ONLY if the file carries a window.** If the file has `WindowCenter` /
+   `WindowWidth`, apply the **file's own** center/width (`apply_voi_lut`) to the Modality-LUT
+   (HU-space) output. **Do NOT invent a window default** — if no window is present, skip VOI (no
+   NEW hyperparameter is introduced). An optional **per-dataset config override** lets the user
+   specify a center/width explicitly (§9). When the override is set it wins; otherwise the file's
+   window is used; otherwise no VOI.
+4. **MONOCHROME1 inversion.** When `PhotometricInterpretation == "MONOCHROME1"`, invert so that
+   higher stored value = brighter (MONOCHROME1 is inverted relative to MONOCHROME2). Per **DICOM
+   PS3.3 §C.11.2**, MONOCHROME1 inversion is a *display-time* (P-Value) step that applies **after**
+   VOI windowing — VOI operates on Modality-LUT (HU-space) values, never on inverted ones. (An
+   earlier draft of this spec placed inversion before VOI; that corrupts a MONOCHROME1 file carrying
+   a window — its window is applied to inverted, non-HU values — so the order was corrected here to
+   match the implementation, which cites PS3.3 §C.11.2 in-code.) Standard, citation-anchored.
 
 The decoded slice becomes the `(H, W, C)` pixel array fed to the model (typically `C == 1` for
 CT/MR — the `data.channels=1` grayscale path from #111 applies). `SpatialMeta(kind="dicom")` is
