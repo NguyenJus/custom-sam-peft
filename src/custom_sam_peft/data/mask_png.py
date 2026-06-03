@@ -47,6 +47,7 @@ class MaskPngDataset:
         transforms: Any,
         text_prompt: TextPromptConfig,
         channels: int,
+        resolved_image_ids: frozenset[str] | None = None,
     ) -> None:
         self._images_dir = Path(images_dir)
         self._labels_dir = Path(labels_dir)
@@ -73,6 +74,21 @@ class MaskPngDataset:
             raise FileNotFoundError(
                 f"mask_png: {len(missing)} images have no label; first few: {missing[:5]}"
             )
+
+        # Auto-split filtering: if the trainer injected _resolved_image_ids, restrict
+        # the dataset to images whose stem is in that set (mirrors COCODataset's
+        # image_ids filter). Stems not in the resolved set are silently skipped —
+        # this is intentional; the trainer is responsible for correctness of the split.
+        if resolved_image_ids is not None:
+            missing_ids = resolved_image_ids - {p.stem for p, _ in pairs}
+            if missing_ids:
+                first_few = sorted(missing_ids)[:10]
+                raise ValueError(
+                    f"MaskPngDataset: {len(missing_ids)} _resolved_image_ids not found "
+                    f"in images_dir (first few stems): {first_few}"
+                )
+            pairs = [(p, lp) for p, lp in pairs if p.stem in resolved_image_ids]
+
         self._pairs = pairs
 
         # Eager per-image class label sets for stratified subset sampling —
@@ -227,6 +243,11 @@ def build_mask_png(
             channel_semantics=channel_semantics,
         )
 
+    resolved_ids: frozenset[str] | None = None
+    raw_resolved = (cfg.get("_resolved_image_ids") or {}).get(pipeline)
+    if raw_resolved is not None:
+        resolved_ids = frozenset(str(s) for s in raw_resolved)
+
     return MaskPngDataset(
         images_dir=split["images"],
         labels_dir=split["annotations"],
@@ -236,4 +257,5 @@ def build_mask_png(
         transforms=transforms,
         text_prompt=text_prompt,
         channels=int(cfg.get("channels", 3)),
+        resolved_image_ids=resolved_ids,
     )

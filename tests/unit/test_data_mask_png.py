@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import json
+import sys
 
 import numpy as np
 import pytest
@@ -82,3 +83,84 @@ def test_missing_label_pair_raises(tmp_path):
     builder = lookup("dataset", "mask_png")
     with pytest.raises(FileNotFoundError, match="a"):
         builder(_cfg(img_dir, lbl_dir, cm), model_name="sam3.1", pipeline="eval")
+
+
+# ---------------------------------------------------------------------------
+# Production-registration regression test (Issue 1)
+# ---------------------------------------------------------------------------
+
+
+def test_production_registration_via_bootstrap(tmp_path):
+    """lookup("dataset","mask_png") resolves via bootstrap WITHOUT a direct mask_png import.
+
+    Evicts mask_png, its parent data package, and _bootstrap from sys.modules, then
+    re-imports _bootstrap to fire its module-level side-effects — same path as the
+    production trainer.  Asserts lookup resolves to the builder and that it returns
+    a working dataset.
+    """
+    from custom_sam_peft._registry import _REGISTRY, reset_registry
+
+    # Must evict the data package too so that 'from custom_sam_peft.data import mask_png'
+    # in _bootstrap actually re-executes rather than returning the cached submodule.
+    mods_to_evict = (
+        "custom_sam_peft.data",
+        "custom_sam_peft.data.mask_png",
+        "custom_sam_peft.data.coco",
+        "custom_sam_peft.data.hf",
+        "custom_sam_peft._bootstrap",
+    )
+
+    saved_mods = {m: sys.modules[m] for m in mods_to_evict if m in sys.modules}
+    saved_registry: dict[str, dict] = {k: dict(v) for k, v in _REGISTRY.items()}
+
+    # Capture package-level submodule attributes so sibling tests can still resolve them.
+    _pkg_attr_snapshot: list[tuple[object, str, object]] = []
+    for dotted in mods_to_evict:
+        parts = dotted.rsplit(".", 1)
+        if len(parts) == 2:
+            parent_name, attr = parts
+            parent = sys.modules.get(parent_name)
+            if parent is not None and hasattr(parent, attr):
+                _pkg_attr_snapshot.append((parent, attr, getattr(parent, attr)))
+
+    try:
+        reset_registry()
+        for m in mods_to_evict:
+            sys.modules.pop(m, None)
+
+        # Import _bootstrap (not mask_png directly) to simulate production wiring.
+        import custom_sam_peft._bootstrap  # noqa: F401
+
+        builder = lookup("dataset", "mask_png")
+        assert callable(builder), "bootstrap must register mask_png dataset builder"
+
+        # Smoke-check: builder actually constructs a working dataset.
+        img_dir, lbl_dir, cm = _make_tree(tmp_path)
+        ds = builder(_cfg(img_dir, lbl_dir, cm), model_name="sam3.1", pipeline="eval")
+        assert len(ds) == 2
+    finally:
+        for m in mods_to_evict:
+            sys.modules.pop(m, None)
+        sys.modules.update(saved_mods)
+        _REGISTRY.clear()
+        _REGISTRY.update(saved_registry)
+        for parent, attr, orig_val in _pkg_attr_snapshot:
+            setattr(parent, attr, orig_val)
+
+
+# ---------------------------------------------------------------------------
+# Auto-split (_resolved_image_ids) filtering test (Issue 2)
+# ---------------------------------------------------------------------------
+
+
+def test_resolved_image_ids_filters_to_subset(tmp_path):
+    """_resolved_image_ids restricts the dataset to the named image stems."""
+    img_dir, lbl_dir, cm = _make_tree(tmp_path)
+    builder = lookup("dataset", "mask_png")
+    cfg = _cfg(img_dir, lbl_dir, cm)
+    # Inject auto-split IDs for the eval pipeline — only stem "a".
+    cfg["_resolved_image_ids"] = {"eval": ["a"]}
+    ds = builder(cfg, model_name="sam3.1", pipeline="eval")
+    assert len(ds) == 1
+    ex = ds[0]
+    assert ex.image_id == "a"
