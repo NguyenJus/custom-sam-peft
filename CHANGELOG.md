@@ -11,6 +11,31 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 <!-- Add entries for the next milestone here. -->
 
+## [v0.10.0] — 2026-06-03
+
+### Added — v0.10.0 semantic segmentation, profiling harness, eval speedup
+
+- **semantic**: new semantic-segmentation task mode end-to-end — data, loss,
+  training, eval, and predict (label-map output plus visualization) (`#258`).
+- **profiling**: permanent env-gated profiling harness — `CSP_PROFILE=1` plus
+  `csp profile` bucket-times eval/train/predict and is a no-op when disabled
+  (`#255`).
+- **eval**: mAP-exact eval speedup — top-100 query pre-filter and batched RLE
+  encoding cut postprocess wall-time (`#257`).
+
+### Changed — v0.10.0
+
+- **cli**: flag-surface audit and consistency cleanup across commands (`#251`).
+
+### Fixed — v0.10.0
+
+- **config**: run `config.yaml` kept round-trippable so finalize/export can
+  reload it (`#248`).
+- **bundle**: `data.limit.val` applied when rebuilding the bundle val dataset
+  (`#245`).
+- **wizard**: `peft_sizing` step uses analytic `decide_preset`, not a live
+  probe (`#246`).
+
 ## [v0.9.0] — 2026-06-02
 
 ### Added — v0.9.0 provenance gate and config resync
