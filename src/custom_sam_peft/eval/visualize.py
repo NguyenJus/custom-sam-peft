@@ -294,10 +294,8 @@ def _merged_instance_to_render_entry(
     The RLE segmentation is at the full-canvas resolution (no resize needed).
     Used by the tiled viz path to render restitched predictions as overlays.
     """
-    import pycocotools.mask as _mask_utils
-
     mask_u8 = mi.mask.astype(np.uint8)
-    rle: dict[str, object] = _mask_utils.encode(np.asfortranarray(mask_u8))
+    rle: dict[str, object] = mask_utils.encode(np.asfortranarray(mask_u8))
     counts = rle["counts"]
     rle["counts"] = counts.decode("ascii") if isinstance(counts, bytes) else counts
 
@@ -359,9 +357,7 @@ def _tiled_pred_entries(
             )
             for e in entries:
                 seg = e["segmentation"]
-                import pycocotools.mask as _mask_utils
-
-                mask_u8 = _mask_utils.decode(seg)  # type: ignore[arg-type]
+                mask_u8 = mask_utils.decode(seg)  # type: ignore[arg-type]
                 mask_bool = mask_u8.astype(bool)
                 # Place the tile-local mask onto the full canvas.
                 canvas = np.zeros(canvas_hw, dtype=bool)

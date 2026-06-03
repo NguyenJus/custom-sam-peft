@@ -566,13 +566,15 @@ class Evaluator:
         id, so their RLEs are already full-image — return them as-is.
 
         Tiling path: predictions were stored under TILE-LOCAL ids with masks in
-        tile-local coordinates. Because eval accumulation tiles are NON-overlapping
-        (EVAL_OVERLAP=0.0), the tile masks are disjoint on the full canvas, so a
-        correct full-image predicted mask per entry is just that tile-local mask
-        placed back at its (win.y0, win.x0) offset on a (orig_h, orig_w) canvas
-        (no merge/dedup needed). The windows are recomputed deterministically from
-        the example dims — iter_windows is deterministic and matched the windows
-        used during accumulation — so a reverse map tile_id -> window is exact.
+        tile-local coordinates. Each tile-local prediction is placed onto its own
+        zero-initialised (orig_h, orig_w) canvas at the window's (win.y0, win.x0)
+        offset and emitted as a separate full-image RLE — one RLE per tile-level
+        prediction, not one merged RLE per image. IoU evaluation later takes the
+        union/max over these per-tile predictions, so correctness does NOT depend
+        on tiles being strictly disjoint (overlap=0.0 is typical but not required).
+        The windows are recomputed deterministically from the example dims —
+        iter_windows is deterministic and matched the windows used during
+        accumulation — so the tile_id -> window reverse map is exact.
         """
         if not tiling_engaged(orig_h, orig_w):
             int_id = _int_image_id(ex.image_id)
