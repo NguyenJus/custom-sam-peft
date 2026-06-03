@@ -592,27 +592,39 @@ class Evaluator:
         self._last_predictions = []
 
         cfg = self.cfg
-        n_total = len(dataset)
-        n = n_total if cfg.mode == "full" else min(cfg.lite_max_images, n_total)
-        examples = [dataset[i] for i in range(n)]
+        # eval.total wraps the whole forward+aggregate body so the serial
+        # dataset-load fraction (eval.dataset_load) and the unbucketed residual
+        # (per-chunk to_device, GT build) are visible against a real wall-time
+        # denominator — the gate measurement for #265. Strict no-op when
+        # CSP_PROFILE is unset.
+        with profiling.bucket("eval.total"):
+            n_total = len(dataset)
+            n = n_total if cfg.mode == "full" else min(cfg.lite_max_images, n_total)
+            # Serial single-threaded materialization of all examples before the
+            # GPU forward loop — the prefetch target of #265. Timed separately
+            # so its fraction of eval.total decides whether bounded prefetch
+            # workers are worth adding (Amdahl-capped ~1.1-1.4x upside).
+            with profiling.bucket("eval.dataset_load"):
+                examples = [dataset[i] for i in range(n)]
+            profiling.incr("eval.examples_loaded", by=n)
 
-        # Use tiling-aware GT builder: large images are decomposed into
-        # non-overlapping tiles (EVAL_OVERLAP=0.0); small images use the
-        # direct path unchanged (spec §5.4).
-        gt = _build_coco_gt_with_tiling(examples, dataset)
+            # Use tiling-aware GT builder: large images are decomposed into
+            # non-overlapping tiles (EVAL_OVERLAP=0.0); small images use the
+            # direct path unchanged (spec §5.4).
+            gt = _build_coco_gt_with_tiling(examples, dataset)
 
-        predictions = self._iter_predictions(model, examples, dataset)
-        report = self._aggregate_metrics(predictions, gt, dataset)
-        self._maybe_save_predictions(predictions, run_dir=None)
-        self._last_predictions = predictions
+            predictions = self._iter_predictions(model, examples, dataset)
+            report = self._aggregate_metrics(predictions, gt, dataset)
+            self._maybe_save_predictions(predictions, run_dir=None)
+            self._last_predictions = predictions
 
-        if not return_per_example_iou:
-            return report
-        # For per_example_iou, build a direct-path GT (full-image) for the
-        # IoU computation which works on full-image entries and is only used
-        # for visualization sample selection — not the metric itself.
-        gt_direct, _ = _build_coco_gt_from_examples(examples, dataset)
-        return report, self._compute_per_example_iou(examples, predictions, gt_direct)
+            if not return_per_example_iou:
+                return report
+            # For per_example_iou, build a direct-path GT (full-image) for the
+            # IoU computation which works on full-image entries and is only used
+            # for visualization sample selection — not the metric itself.
+            gt_direct, _ = _build_coco_gt_from_examples(examples, dataset)
+            return report, self._compute_per_example_iou(examples, predictions, gt_direct)
 
     def _full_image_pred_rles(
         self,

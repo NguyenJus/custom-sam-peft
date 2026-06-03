@@ -132,3 +132,47 @@ def test_profile_enables_profiler_and_dumps_snapshot(
     # Restore profiler to a clean disabled state for subsequent tests.
     profiling.disable()
     profiling.reset()
+
+
+def test_profile_table_uses_eval_total_as_wall_denominator(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """When eval.total is present it is the wall-time denominator (not another
+    addend): the table shows '% of wall' / 'TOTAL(wall)' and a residual row for
+    the unbucketed gap (total minus summed leaves).  Regression guard for the
+    #265 eval.dataset_load / eval.total buckets.
+    """
+    from custom_sam_peft import profiling
+    from custom_sam_peft.cli import profile_cmd
+
+    cfg_path = tmp_path / "config.yaml"
+    _write_config(cfg_path, tmp_path)
+
+    # eval.total (10.0) wraps the leaf spans (1+5+2 = 8.0) -> 2.0 residual.
+    fake_buckets = {
+        "eval.total": 10.0,
+        "eval.dataset_load": 1.0,
+        "eval.forward": 5.0,
+        "eval.rle_encode": 2.0,
+    }
+    fake_meta = {"n_images": 3, "eval.examples_loaded": 3}
+
+    def fake_run_eval(cfg: Any, **kwargs: Any) -> Any:
+        return None
+
+    monkeypatch.setattr(profile_cmd, "run_eval", fake_run_eval)
+    monkeypatch.setattr(profiling, "snapshot", lambda: (dict(fake_buckets), dict(fake_meta)))
+
+    result = runner.invoke(app, ["profile", "--config", str(cfg_path)])
+    assert result.exit_code == 0, result.output
+
+    out = result.output
+    # eval.total drives a wall-time denominator, not the sum-of-leaves fallback.
+    assert "TOTAL(wall)" in out
+    assert "TOTAL(timed)" not in out
+    assert "% of wall" in out
+    # Load is 1.0 / 10.0 = 10.0% of wall (not 1.0/8.0 of the leaves).
+    assert "eval.dataset_load" in out
+    assert "10.0%" in out
+    # Residual = 10.0 - 8.0 = 2.0 must be surfaced, not folded into a leaf.
+    assert "residual = total - leaves" in out
