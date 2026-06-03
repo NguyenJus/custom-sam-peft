@@ -28,6 +28,7 @@ from typing import Any, Literal, cast
 import numpy as np
 import torch
 
+from custom_sam_peft import profiling
 from custom_sam_peft.cli._progress import progress as P
 from custom_sam_peft.runtime._runtime import coerce_dtype_for_capability
 
@@ -487,8 +488,9 @@ def run_predict(opts: PredictOptions) -> PredictReport:
             group = prompts[j : j + K_g]
             prompts_g = [TextPrompts(classes=list(group)) for _ in metas]
             try:
-                with torch.no_grad():
+                with torch.no_grad(), profiling.bucket("predict.forward"):
                     outputs = model(img_batch, prompts_g, support=None)
+                profiling.incr("predict.forwards")
             except RuntimeError as oom_err:
                 # OOM may surface as a non-OutOfMemoryError RuntimeError on this
                 # card (see oom.is_cuda_oom); genuine errors re-propagate. (#208)
@@ -528,20 +530,20 @@ def run_predict(opts: PredictOptions) -> PredictReport:
                     ii, kk = divmod(r, K_g)
                     image_id, orig_h, orig_w = metas[ii]
                     class_idx_one_based = (j + kk) + 1
-                    entries = queries_to_coco_results(
-                        _row_outputs(outputs, r),
-                        image_id=image_id,
-                        category_id=class_idx_one_based,
-                        original_hw=(orig_h, orig_w),
-                        mask_threshold=0.0,
-                    )
+                    with profiling.bucket("predict.postprocess"):
+                        entries = queries_to_coco_results(
+                            _row_outputs(outputs, r),
+                            image_id=image_id,
+                            category_id=class_idx_one_based,
+                            original_hw=(orig_h, orig_w),
+                            mask_threshold=0.0,
+                        )
                     entries = [
                         e for e in entries if cast(float, e["score"]) >= opts.score_threshold
                     ]
                     entries.sort(key=lambda e: cast(float, e["score"]), reverse=True)
                     entries = entries[: opts.top_k]
                     chunk_buf.extend(entries)
-
             j += K_g  # advance by the ACTUAL group length
 
         if restart_chunk:
@@ -637,67 +639,75 @@ def run_predict(opts: PredictOptions) -> PredictReport:
         write_run_json,
     )
 
-    if is_semantic:
-        # Semantic: write predictions.json with label-map schema (already in all_predictions)
-        (opts.output / "predictions.json").write_text(json.dumps(all_predictions))
+    with profiling.bucket("predict.write"):
+        if is_semantic:
+            # Semantic: write predictions.json with label-map schema (already in all_predictions)
+            (opts.output / "predictions.json").write_text(json.dumps(all_predictions))
 
-        if opts.visualize:
-            from custom_sam_peft.predict.visualize import write_semantic_visualization
+            if opts.visualize:
+                from custom_sam_peft.predict.visualize import write_semantic_visualization
 
-            for entry in all_predictions:
-                image_id_int = int(cast(int, entry["image_id"]))
-                img_path_or_none = id_to_path.get(image_id_int)
-                color_path = image_id_to_colorized.get(image_id_int)
-                if img_path_or_none is not None and color_path is not None and color_path.exists():
-                    write_semantic_visualization(img_path_or_none, color_path, opts.output)
-    else:
-        write_predictions(
-            all_predictions,
-            opts.output,
-            save_masks=opts.save_masks,
-            originals=originals,
-            id_to_stem=id_to_stem if opts.save_masks == "png" else None,
-        )
+                for entry in all_predictions:
+                    image_id_int = int(cast(int, entry["image_id"]))
+                    img_path_or_none = id_to_path.get(image_id_int)
+                    color_path = image_id_to_colorized.get(image_id_int)
+                    if (
+                        img_path_or_none is not None
+                        and color_path is not None
+                        and color_path.exists()
+                    ):
+                        write_semantic_visualization(img_path_or_none, color_path, opts.output)
+        else:
+            write_predictions(
+                all_predictions,
+                opts.output,
+                save_masks=opts.save_masks,
+                originals=originals,
+                id_to_stem=id_to_stem if opts.save_masks == "png" else None,
+            )
 
-        if opts.visualize:
-            from custom_sam_peft.predict.visualize import write_visualization
+            if opts.visualize:
+                from custom_sam_peft.predict.visualize import write_visualization
 
-            # Group predictions by image_id
-            by_image: dict[int, list[dict[str, object]]] = {}
-            for entry in all_predictions:
-                iid = int(cast(int, entry["image_id"]))
-                by_image.setdefault(iid, []).append(entry)
+                # Group predictions by image_id
+                by_image: dict[int, list[dict[str, object]]] = {}
+                for entry in all_predictions:
+                    iid = int(cast(int, entry["image_id"]))
+                    by_image.setdefault(iid, []).append(entry)
 
-            for image_id, img_path in id_to_path.items():
-                img_entries = by_image.get(image_id, [])
-                write_visualization(img_path, img_entries, opts.output, prompts=prompts)
+                for image_id, img_path in id_to_path.items():
+                    img_entries = by_image.get(image_id, [])
+                    write_visualization(img_path, img_entries, opts.output, prompts=prompts)
 
-    # ---------------------------------------------------------------------------
-    # Step 11: write sidecars
-    # ---------------------------------------------------------------------------
-    write_image_id_map(id_to_path, opts.output)
+            # -----------------------------------------------------------------------
+            # Step 11: write sidecars
+            # -----------------------------------------------------------------------
+            write_image_id_map(id_to_path, opts.output)
 
-    run_meta: dict[str, Any] = {
-        "model": rcfg.model_name,
-        "checkpoint": str(opts.checkpoint) if opts.checkpoint is not None else None,
-        "adapter_kind": adapter_kind_str if opts.checkpoint is not None else None,
-        "merge_adapter": opts.merge_adapter,
-        "channels": rcfg.channels,
-        "channel_semantics": rcfg.channel_semantics,
-        "prompts": prompts,
-        "score_threshold": opts.score_threshold,
-        "top_k": opts.top_k,
-        "mask_threshold": 0.0,
-        "device": rcfg.device,
-        "dtype": rcfg.dtype_str,
-        "image_size": rcfg.image_size,
-        "batch_size": opts.batch_size,
-        "seed": opts.seed,
-        "n_images": n_successful,
-        "n_predictions": len(all_predictions),
-        "elapsed_sec": elapsed_sec,
-    }
-    write_run_json(run_meta, opts.output)
+            run_meta: dict[str, Any] = {
+                "model": rcfg.model_name,
+                "checkpoint": str(opts.checkpoint) if opts.checkpoint is not None else None,
+                "adapter_kind": adapter_kind_str if opts.checkpoint is not None else None,
+                "merge_adapter": opts.merge_adapter,
+                "channels": rcfg.channels,
+                "channel_semantics": rcfg.channel_semantics,
+                "prompts": prompts,
+                "score_threshold": opts.score_threshold,
+                "top_k": opts.top_k,
+                "mask_threshold": 0.0,
+                "device": rcfg.device,
+                "dtype": rcfg.dtype_str,
+                "image_size": rcfg.image_size,
+                "batch_size": opts.batch_size,
+                "seed": opts.seed,
+                "n_images": n_successful,
+                "n_predictions": len(all_predictions),
+                "elapsed_sec": elapsed_sec,
+            }
+            write_run_json(run_meta, opts.output)
+
+    if profiling.is_enabled() and opts.output is not None:
+        profiling.dump(opts.output / "profile_snapshot.json")
 
     # ---------------------------------------------------------------------------
     # Step 12: return PredictReport

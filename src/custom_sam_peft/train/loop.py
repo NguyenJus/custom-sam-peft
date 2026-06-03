@@ -20,7 +20,7 @@ import psutil
 import torch
 from torch import Tensor
 
-from custom_sam_peft import paths
+from custom_sam_peft import paths, profiling
 from custom_sam_peft.cli._progress import progress as P
 from custom_sam_peft.config.schema import TrainConfig
 from custom_sam_peft.data.base import Instance, SemanticTarget, TextPrompts
@@ -163,7 +163,9 @@ def _train_step_with_oom_ladder(
                 # Caller divides by grad_accum_steps separately; we divide by
                 # n_micro here so the gradient magnitude matches the pre-ladder
                 # path. Outer loop must NOT divide again.
-                (loss / n_micro).backward()
+                with profiling.bucket("train.backward"):
+                    (loss / n_micro).backward()
+                profiling.incr("train.microbatches")
                 last_loss = loss.detach()
             return last_loss if last_loss is not None else torch.tensor(0.0)
         except RuntimeError as oom_err:
@@ -359,13 +361,15 @@ def train_step(
                             ]
                             micro_imgs = images[micro_indices]
                             with _autocast_ctx(cfg, _pm):
-                                micro_out = _model(
-                                    micro_imgs,
-                                    micro_prompts,
-                                )
-                                micro_grp_losses = total_loss(
-                                    micro_out, micro_targets, cfg.train.loss
-                                )
+                                with profiling.bucket("train.forward"):
+                                    micro_out = _model(
+                                        micro_imgs,
+                                        micro_prompts,
+                                    )
+                                with profiling.bucket("train.loss"):
+                                    micro_grp_losses = total_loss(
+                                        micro_out, micro_targets, cfg.train.loss
+                                    )
                             _losses_out.clear()
                             _losses_out.append(micro_grp_losses)
                             # Divide only by G and grad_accum — NOT by n_micro.
@@ -385,8 +389,10 @@ def train_step(
                             is_finite = bool(torch.isfinite(group_scaled_val))
                     else:
                         with _autocast_ctx(cfg, _peft_method):
-                            out = model(images, prompts_g)
-                            group_losses = total_loss(out, targets_g, cfg.train.loss)
+                            with profiling.bucket("train.forward"):
+                                out = model(images, prompts_g)
+                            with profiling.bucket("train.loss"):
+                                group_losses = total_loss(out, targets_g, cfg.train.loss)
                         group_scaled = group_losses["total"] / (G * cfg.train.grad_accum_steps)
                         is_finite = bool(torch.isfinite(group_scaled))
                 except ValueError as exc:
@@ -454,7 +460,8 @@ def train_step(
                 cfg.train.max_grad_norm,
             )
         )
-        optimizer.step()
+        with profiling.bucket("train.optim_step"):
+            optimizer.step()
         step_per_train_step(
             scheduler,
             global_step=global_step,
