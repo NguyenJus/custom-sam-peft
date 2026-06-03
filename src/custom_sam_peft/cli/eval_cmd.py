@@ -12,7 +12,7 @@ from rich import print as rprint
 from rich.console import Console
 
 from custom_sam_peft.cli._logging import configure_logging
-from custom_sam_peft.cli._options import Progress, ProgressOpt, VerboseOpt
+from custom_sam_peft.cli._options import DryRunOpt, Progress, ProgressOpt, VerboseOpt
 from custom_sam_peft.cli._progress import ProgressKind, progress_session, resolve_mode
 from custom_sam_peft.config.loader import load_config
 from custom_sam_peft.eval.runner import run_eval
@@ -47,6 +47,7 @@ def evaluate(
         "--export",
         help="After evaluation, export a run bundle.",
     ),
+    dry_run: DryRunOpt = False,
     verbose: VerboseOpt = False,
     progress: ProgressOpt = Progress.auto,
     interactive: bool = typer.Option(
@@ -70,6 +71,13 @@ def evaluate(
         raise typer.BadParameter(f"--split must be val|test; got {split!r}", param_hint="--split")
     cfg = load_config(config)
     split_lit = cast(Literal["val", "test"], split)
+
+    if dry_run:
+        rprint(
+            f"[cyan]dry-run[/cyan] config={config} run.name={cfg.run.name} "
+            f"output_dir={cfg.run.output_dir}"
+        )
+        return
 
     mode = resolve_mode(
         None if progress is Progress.auto else progress.value,

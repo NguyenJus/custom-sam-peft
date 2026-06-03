@@ -23,6 +23,7 @@ from rich.console import Console
 from custom_sam_peft.cli._host_ram import format_host_ram_message
 from custom_sam_peft.cli._logging import configure_logging
 from custom_sam_peft.cli._options import (
+    DryRunOpt,
     NameOpt,
     OutputDirOpt,
     OverrideOpt,
@@ -328,6 +329,7 @@ def run(
     override: OverrideOpt = [],  # noqa: B006 — Typer creates a new list per invocation
     name: NameOpt = None,
     output_dir: OutputDirOpt = None,
+    dry_run: DryRunOpt = False,
     verbose: VerboseOpt = False,
     progress: ProgressOpt = Progress.auto,
     visualize: bool = typer.Option(
@@ -368,6 +370,14 @@ def run(
         cfg = cfg.model_copy(
             update={"train": cfg.train.model_copy(update={"time_limit": time_limit})}
         )
+
+    if dry_run:
+        rprint(
+            f"[cyan]dry-run[/cyan] config={config} run.name={cfg.run.name} "
+            f"output_dir={cfg.run.output_dir}"
+        )
+        return
+
     mode = resolve_mode(
         None if progress is Progress.auto else progress.value,
         os.environ,
