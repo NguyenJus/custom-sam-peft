@@ -17,6 +17,8 @@ import typer
 from rich import print as rprint
 
 from custom_sam_peft.cli._config_rewrite import _rewrite_sizing_block
+from custom_sam_peft.cli._logging import configure_logging
+from custom_sam_peft.cli._options import VerboseOpt
 from custom_sam_peft.config.loader import load_config
 from custom_sam_peft.config.schema import ClassImbalance, Intensity, Preset
 from custom_sam_peft.presets import decide_preset
@@ -239,6 +241,7 @@ def init(
     yes: bool = typer.Option(
         False,
         "--yes",
+        "-y",
         help=(
             "Skip the interactive prompt; assume yes. Implies "
             "--download-weights when --no-download-weights is not passed."
@@ -253,8 +256,10 @@ def init(
             "--intensity/--class-imbalance (collected interactively)."
         ),
     ),
+    verbose: VerboseOpt = False,
 ) -> None:
     """Write a starter config, then optionally download weights."""
+    configure_logging(verbose)
     if interactive:
         import torch
 
