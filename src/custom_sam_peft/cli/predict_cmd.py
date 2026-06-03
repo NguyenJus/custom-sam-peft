@@ -13,6 +13,7 @@ from rich import print as rprint
 from rich.console import Console
 
 from custom_sam_peft.cli._logging import configure_logging
+from custom_sam_peft.cli._options import Progress, ProgressOpt, VerboseOpt
 from custom_sam_peft.cli._progress import ProgressKind, progress_session, resolve_mode
 from custom_sam_peft.predict.runner import PredictOptions, PredictReport, run_predict
 
@@ -115,13 +116,8 @@ def predict(
     dry_run: bool = typer.Option(
         False, "--dry-run", help="Preview resolved inputs; skip model load and inference."
     ),
-    verbose: bool = typer.Option(False, "-v", "--verbose", help="Enable DEBUG logging."),
-    progress_flag: str = typer.Option(
-        "auto",
-        "--progress",
-        help="Progress display mode: auto|on|off|plain.",
-        metavar="MODE",
-    ),
+    verbose: VerboseOpt = False,
+    progress: ProgressOpt = Progress.auto,
     interactive: bool = typer.Option(
         False,
         "--interactive",
@@ -157,7 +153,7 @@ def predict(
     )
 
     mode = resolve_mode(
-        progress_flag if progress_flag != "auto" else None,
+        None if progress is Progress.auto else progress.value,
         os.environ,
         sys.stdout.isatty(),
         Console().is_jupyter,
