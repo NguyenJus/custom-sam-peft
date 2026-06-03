@@ -116,3 +116,18 @@ def test_semantic_rejects_nondefault_eval_iou_thresholds():
                 eval={"iou_thresholds": [0.5, 0.75]},
             )
         )
+
+
+def test_semantic_rejects_nondefault_eval_mask_threshold():
+    with pytest.raises(ValidationError, match="mask_threshold"):
+        TrainConfig.model_validate(
+            _base_cfg(
+                task="semantic",
+                data={
+                    "format": "mask_png",
+                    "train": {"images": "img", "annotations": "labels"},
+                    "semantic": {"class_map": "cm.json"},
+                },
+                eval={"mask_threshold": 0.5},
+            )
+        )
