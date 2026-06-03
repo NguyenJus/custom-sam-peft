@@ -229,6 +229,7 @@ def build_mask_png(
             normalize=normalize,
             channel_semantics=channel_semantics,
             channels=int(cfg.get("channels", 3)),
+            mask_fill_value=ignore_index,
         )
     else:
         transforms = build_eval_transforms(
@@ -236,6 +237,7 @@ def build_mask_png(
             model_name=model_name,
             normalize=normalize,
             channel_semantics=channel_semantics,
+            mask_fill_value=ignore_index,
         )
 
     resolved_ids: frozenset[str] | None = None
