@@ -23,7 +23,9 @@ from rich.console import Console
 from custom_sam_peft.cli._host_ram import format_host_ram_message
 from custom_sam_peft.cli._logging import configure_logging
 from custom_sam_peft.cli._options import (
+    ConfigArg,
     DryRunOpt,
+    HiddenConfigOpt,
     NameOpt,
     OutputDirOpt,
     OverrideOpt,
@@ -298,7 +300,8 @@ def _finalize(
 
 
 def run(
-    config: Path = typer.Option(..., "--config", help="Path to config YAML."),
+    config_arg: ConfigArg = None,
+    config_opt: HiddenConfigOpt = None,
     resume: str | None = typer.Option(
         None,
         "--resume",
@@ -343,6 +346,10 @@ def run(
     Use this when you want the full pipeline in one command. The Colab
     notebook uses `run` for the canonical end-to-end flow.
     """
+    config = config_arg if config_arg is not None else config_opt
+    if config is None:
+        rprint("[red]error[/red] a config path is required (positional or --config).")
+        raise typer.Exit(code=1)
     configure_logging(verbose)
     if not config.is_file():
         rprint(

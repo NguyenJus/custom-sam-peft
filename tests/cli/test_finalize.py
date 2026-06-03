@@ -63,7 +63,7 @@ def test_finalize_requires_resume(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setattr(run_cmd, "load_config", lambda p, **kw: _SavedCfg())
     with pytest.raises(typer.Exit) as exc:
         run_cmd.run(
-            config=cfg_path,
+            config_arg=cfg_path,
             resume=None,
             time_limit=None,
             finalize=True,
@@ -81,7 +81,7 @@ def test_finalize_rejects_time_limit(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setattr(run_cmd, "load_config", lambda p, **kw: _SavedCfg())
     with pytest.raises(typer.Exit) as exc:
         run_cmd.run(
-            config=cfg_path,
+            config_arg=cfg_path,
             resume="__latest__",
             time_limit="1h",
             finalize=True,
@@ -109,7 +109,7 @@ def test_finalize_resolves_latest(tmp_path: Path, monkeypatch) -> None:
 
     with pytest.raises(typer.Exit) as exc:
         run_cmd.run(
-            config=cfg_path,
+            config_arg=cfg_path,
             resume="__latest__",
             time_limit=None,
             finalize=True,

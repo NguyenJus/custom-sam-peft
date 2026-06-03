@@ -13,7 +13,9 @@ from rich.console import Console
 from custom_sam_peft.cli._host_ram import format_host_ram_message
 from custom_sam_peft.cli._logging import configure_logging
 from custom_sam_peft.cli._options import (
+    ConfigArg,
     DryRunOpt,
+    HiddenConfigOpt,
     NameOpt,
     OutputDirOpt,
     OverrideOpt,
@@ -36,7 +38,8 @@ _LATEST_SENTINEL = "__latest__"
 
 
 def train(
-    config: Path = typer.Option(..., "--config", help="Path to training config YAML."),
+    config_arg: ConfigArg = None,
+    config_opt: HiddenConfigOpt = None,
     override: OverrideOpt = [],  # noqa: B006 — Typer creates a new list per invocation
     name: NameOpt = None,
     output_dir: OutputDirOpt = None,
@@ -73,6 +76,10 @@ def train(
     progress: ProgressOpt = Progress.auto,
 ) -> None:
     """Run a finetune. The order is fixed: train → eval → export. Flags only toggle inclusion."""
+    config = config_arg if config_arg is not None else config_opt
+    if config is None:
+        rprint("[red]error[/red] a config path is required (positional or --config).")
+        raise typer.Exit(code=1)
     configure_logging(verbose)
     merged = merge_cli_overrides(override, name=name, output_dir=output_dir)
     cfg = load_config(config, overrides=merged)
