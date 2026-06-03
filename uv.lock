@@ -796,6 +796,10 @@ dev = [
     { name = "tifffile" },
     { name = "types-pyyaml" },
 ]
+dicom = [
+    { name = "nibabel" },
+    { name = "pydicom" },
+]
 jupyter = [
     { name = "jupyterlab" },
 ]
@@ -823,6 +827,7 @@ requires-dist = [
     { name = "huggingface-hub", specifier = ">=0.30" },
     { name = "jupyterlab", marker = "extra == 'jupyter'", specifier = ">=4" },
     { name = "mypy", marker = "extra == 'dev'", specifier = ">=1.13" },
+    { name = "nibabel", marker = "extra == 'dicom'", specifier = ">=5.2" },
     { name = "numpy", specifier = ">=1.26" },
     { name = "opencv-python-headless", specifier = ">=4.10" },
     { name = "peft", specifier = ">=0.13" },
@@ -831,6 +836,7 @@ requires-dist = [
     { name = "psutil", specifier = ">=5.9" },
     { name = "pycocotools", specifier = ">=2.0" },
     { name = "pydantic", specifier = ">=2.7" },
+    { name = "pydicom", marker = "extra == 'dicom'", specifier = ">=2.4" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8" },
     { name = "pytest-cov", marker = "extra == 'dev'", specifier = ">=5" },
     { name = "pyyaml", specifier = ">=6.0" },
@@ -848,7 +854,7 @@ requires-dist = [
     { name = "types-pyyaml", marker = "extra == 'dev'", specifier = ">=6" },
     { name = "wandb", marker = "extra == 'wandb'", specifier = ">=0.18" },
 ]
-provides-extras = ["cu130", "dev", "jupyter", "qlora", "tensorboard", "wandb"]
+provides-extras = ["cu130", "dev", "dicom", "jupyter", "qlora", "tensorboard", "wandb"]
 
 [package.metadata.requires-dev]
 dev = [{ name = "ruff", specifier = ">=0.15.13" }]
@@ -2027,6 +2033,20 @@ wheels = [
 ]
 
 [[package]]
+name = "nibabel"
+version = "5.4.2"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "numpy" },
+    { name = "packaging" },
+    { name = "typing-extensions", marker = "python_full_version < '3.13'" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/a3/01/3d2cc510c616bc8e27be17a063070d9126f69407961594a9ae734ea51121/nibabel-5.4.2.tar.gz", hash = "sha256:d5f4b9076a13178ae7f7acf18c8dbd503ee1c4d5c0c23b85df7be87efcbb49da", size = 4663132, upload-time = "2026-03-11T13:31:52.42Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/3b/d7/601b6396b33536811668935faa790112266c70661be94555999be431f86f/nibabel-5.4.2-py3-none-any.whl", hash = "sha256:553482c5f1e1034fc312edf6fb7f32236c0056439845d1c29293b7e8c98d4854", size = 3300985, upload-time = "2026-03-11T13:31:50.028Z" },
+]
+
+[[package]]
 name = "nodeenv"
 version = "1.10.0"
 source = { registry = "https://pypi.org/simple" }
@@ -2811,6 +2831,15 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/64/d3/84c282a7eee1d3ac4c0377546ef5a1ea436ce26840d9ac3b7ed54a377507/pydantic_core-2.46.4-graalpy312-graalpy250_312_native-macosx_11_0_arm64.whl", hash = "sha256:3009f12e4e90b7f88b4f9adb1b0c4a3d58fe7820f3238c190047209d148026df", size = 1936024, upload-time = "2026-05-06T13:40:15.671Z" },
     { url = "https://files.pythonhosted.org/packages/d7/ca/eac61596cdeb4d7e174d3dc0bd8a6238f14f75f97a24e7b7db4c7e7340a0/pydantic_core-2.46.4-graalpy312-graalpy250_312_native-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", hash = "sha256:ad785e92e6dc634c21555edc8bd6b64957ab844541bcb96a1366c202951ae526", size = 1990696, upload-time = "2026-05-06T13:38:34.717Z" },
     { url = "https://files.pythonhosted.org/packages/fa/c3/7c8b240552251faf6b3a957db200fcfbbcec36763c050428b601e0c9b83b/pydantic_core-2.46.4-graalpy312-graalpy250_312_native-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:00c603d540afdd6b80eb39f078f33ebd46211f02f33e34a32d9f053bba711de0", size = 2147590, upload-time = "2026-05-06T13:39:29.883Z" },
+]
+
+[[package]]
+name = "pydicom"
+version = "3.0.2"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/7a/de/52aaf905f1f0ae7aba85996e2592ea2c1fe49157f3cfbcd1871965bdb51d/pydicom-3.0.2.tar.gz", hash = "sha256:5942bfc2d72c6fa4b3b5b62c527f54b7f2355f21d6f5d296df6bb30188df6a4f", size = 2886792, upload-time = "2026-03-19T21:46:20.935Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/46/e0/60466c6d712dad2cf807df315e39863e91609ffd1064ecb835994460bbda/pydicom-3.0.2-py3-none-any.whl", hash = "sha256:abf971a5440f84dbaf42c4b6758e30e62480902584f8b270b9a5d146e278a07b", size = 2376822, upload-time = "2026-03-19T21:46:19.042Z" },
 ]
 
 [[package]]
