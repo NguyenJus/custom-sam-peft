@@ -20,6 +20,7 @@ from custom_sam_peft.cli import (  # noqa: E402
     export_cmd,
     init_cmd,
     predict_cmd,
+    profile_cmd,
     run_cmd,
     train_cmd,
 )
@@ -87,6 +88,9 @@ app.command("calibrate", help="Probe peak VRAM and cache for tighter preset pack
 app.command(
     "run", help="Train + eval + (optional) export + bundle. Alias for train --eval --export."
 )(run_cmd.run)
+app.command("profile", help="Run a representative profiled eval and dump a JSON bucket breakdown.")(
+    profile_cmd.profile
+)
 
 # Module-level flag: set to True by main() when -v / --verbose appears in sys.argv
 # so that the CustomSamPeftError handler can decide whether to render or re-raise.

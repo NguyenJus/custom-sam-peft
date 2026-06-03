@@ -28,6 +28,7 @@ import torch
 from custom_sam_peft.data import (  # lgtm[py/unused-import]
     coco,  # noqa: F401
     hf,  # noqa: F401
+    mask_png,  # noqa: F401
 )
 from custom_sam_peft.peft_adapters import (  # lgtm[py/unused-import]
     lora,  # noqa: F401

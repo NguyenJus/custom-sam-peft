@@ -134,6 +134,62 @@ def render_overlay(
     return result
 
 
+def render_semantic_overlay(
+    image: Image.Image,
+    colorized_label_map_path: Path,
+    *,
+    alpha: float = 0.5,  # intentionally higher than render_overlay (0.4): semantic labels
+    # cover large contiguous regions and benefit from a more opaque blend
+    # to remain legible at a glance, whereas instance overlays are smaller
+    # and need more of the underlying image to be visible.
+) -> Image.Image:
+    """Alpha-blend a colorized label-map PNG over an RGB image.
+
+    Args:
+        image:                   The original PIL image (any mode; converted to RGB).
+        colorized_label_map_path: Path to the colorized label-map PNG written by
+                                  ``write_semantic_label_map``.
+        alpha:                   Blend weight for the overlay (0=image only, 1=label only).
+
+    Returns:
+        A new PIL RGB image with the label-map overlay applied.
+    """
+    base = image.convert("RGB")
+    overlay = Image.open(colorized_label_map_path).convert("RGB")
+    if overlay.size != base.size:
+        overlay = overlay.resize(base.size, Image.Resampling.NEAREST)
+    return Image.blend(base, overlay, alpha=alpha)
+
+
+def write_semantic_visualization(
+    image_path: Path,
+    colorized_label_map_path: Path,
+    output_dir: Path,
+) -> Path:
+    """Render and write a semantic overlay PNG.
+
+    Mirrors ``write_visualization`` so the runner can call both uniformly.
+    Writes to ``<output_dir>/visualizations/<stem>_semantic.png``.
+
+    Args:
+        image_path:               Absolute path to the source image file.
+        colorized_label_map_path: Path to the colorized label-map PNG.
+        output_dir:               The ``--output`` directory supplied by the caller.
+
+    Returns:
+        The :class:`~pathlib.Path` of the written PNG file.
+    """
+    vis_dir = output_dir / "visualizations"
+    vis_dir.mkdir(parents=True, exist_ok=True)
+
+    image = Image.open(image_path).convert("RGB")
+    rendered = render_semantic_overlay(image, colorized_label_map_path)
+
+    out_path = vis_dir / f"{image_path.stem}_semantic.png"
+    rendered.save(out_path)
+    return out_path
+
+
 def write_visualization(
     image_path: Path,
     entries: list[dict[str, object]],

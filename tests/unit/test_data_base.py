@@ -8,6 +8,7 @@ from custom_sam_peft.data.base import (
     Dataset,
     Example,
     Instance,
+    SemanticTarget,
     SupportPrompts,
     TextPrompts,
     is_dataset,
@@ -91,3 +92,39 @@ class _AlmostDataset:
 
 def test_dataset_protocol_rejects_class_missing_class_names() -> None:
     assert is_dataset(_AlmostDataset()) is False
+
+
+# ---------------------------------------------------------------------------
+# SemanticTarget + Example.semantic (Task A2)
+# ---------------------------------------------------------------------------
+
+
+def test_semantic_target_holds_labels_and_ignore_index() -> None:
+    labels = torch.zeros(4, 4, dtype=torch.int64)
+    tgt = SemanticTarget(labels=labels, ignore_index=255)
+    assert tgt.labels.dtype == torch.int64
+    assert tgt.ignore_index == 255
+
+
+def test_example_instances_now_defaulted_and_semantic_none() -> None:
+    # Instance construction unchanged: positional instances still valid.
+    ex = Example(
+        image=torch.zeros(3, 8, 8),
+        image_id="a",
+        prompts=TextPrompts(classes=["cat"]),
+        instances=[],
+    )
+    assert ex.semantic is None
+    assert ex.instances == []
+
+
+def test_example_semantic_path_leaves_instances_empty() -> None:
+    tgt = SemanticTarget(labels=torch.zeros(8, 8, dtype=torch.int64), ignore_index=255)
+    ex = Example(
+        image=torch.zeros(3, 8, 8),
+        image_id="b",
+        prompts=TextPrompts(classes=["road", "building"]),
+        semantic=tgt,
+    )
+    assert ex.instances == []
+    assert ex.semantic is tgt

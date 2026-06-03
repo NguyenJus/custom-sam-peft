@@ -12,6 +12,7 @@ import logging
 from pathlib import Path
 from typing import Any, Literal, cast, overload
 
+from custom_sam_peft import profiling
 from custom_sam_peft._registry import lookup
 from custom_sam_peft.config.schema import TrainConfig
 from custom_sam_peft.data.base import Dataset
@@ -19,6 +20,7 @@ from custom_sam_peft.data.val_source import resolve_val_source
 from custom_sam_peft.eval._artifacts import EvalArtifacts
 from custom_sam_peft.eval.evaluator import Evaluator
 from custom_sam_peft.eval.metrics import MetricsReport
+from custom_sam_peft.eval.semantic_evaluator import SemanticEvaluator
 from custom_sam_peft.models.sam3 import MULTIPLEX_CAP, load_sam31
 from custom_sam_peft.train.checkpoint import load_adapter
 
@@ -117,6 +119,9 @@ def run_eval(
 
     if val_dataset is None:
         cfg_dict = cfg.data.model_dump()
+        # Thread task into the data dict so format-specific builders (e.g. build_hf)
+        # can branch on it without coupling to TrainConfig directly.
+        cfg_dict["task"] = cfg.task
         if split == "test":
             cfg_dict["val"] = cfg_dict["test"]
         elif split == "val" and cfg.data.val_split is not None:
@@ -170,7 +175,7 @@ def run_eval(
 
     visualize_resolved = cfg.eval.visualize if visualize is None else visualize
 
-    evaluator = Evaluator(eval_cfg)
+    evaluator = SemanticEvaluator(eval_cfg) if cfg.task == "semantic" else Evaluator(eval_cfg)
     # Output dir: prefer explicit arg, then artifacts.run_dir, then checkpoint parent,
     # then cfg.run.output_dir (baseline path where checkpoint is None).
     if output_dir is not None:
@@ -202,6 +207,10 @@ def run_eval(
         except Exception:
             _LOG.warning("eval visualize pass failed; metrics are persisted.", exc_info=True)
 
+    def _maybe_dump_profile(output_path: Path | None) -> None:
+        if profiling.is_enabled() and output_path is not None:
+            profiling.dump(output_path / "profile_snapshot.json")
+
     if return_per_example_iou:
         # We need both the metrics report (and metrics.json on disk) AND the
         # per-example IoUs. `evaluate_and_save` only persists; call `evaluate`
@@ -209,41 +218,52 @@ def run_eval(
         out.mkdir(parents=True, exist_ok=True)
         report, per_example_iou = evaluator.evaluate(wrapper, dataset, return_per_example_iou=True)
 
-        (out / "metrics.json").write_text(
-            json.dumps(
-                {
-                    "overall": report.overall,
-                    "per_class": report.per_class,
-                    "n_images": report.n_images,
-                    "n_predictions": report.n_predictions,
-                },
-                indent=2,
+        payload: dict[str, object] = {
+            "overall": report.overall,
+            "per_class": report.per_class,
+            "n_images": report.n_images,
+            "n_predictions": report.n_predictions,
+        }
+        if cfg.task == "semantic":
+            payload = {"task": "semantic", **payload}
+        (out / "metrics.json").write_text(json.dumps(payload, indent=2))
+        if eval_cfg.save_predictions and eval_cfg.mode == "full" and cfg.task != "semantic":
+            # cfg.task != "semantic" guarantees evaluator is an Evaluator at runtime;
+            # cast is a static-only assertion (no runtime cost). isinstance is avoided
+            # because tests monkeypatch Evaluator to a lambda, which isinstance rejects.
+            (out / "predictions.json").write_text(
+                json.dumps(cast(Evaluator, evaluator)._last_predictions)
             )
-        )
-        if eval_cfg.save_predictions and eval_cfg.mode == "full":
-            (out / "predictions.json").write_text(json.dumps(evaluator._last_predictions))
         _run_viz(per_example_iou)
+        _maybe_dump_profile(out)
         return report, per_example_iou
 
     # Branch 2 (default): when visualize is on, promote to the IoU-shape so the viz
     # pass has its ranking; mirror evaluate_and_save's persistence. When off, keep
     # the original evaluate_and_save call unchanged (no behavior change).
     if not visualize_resolved:
-        return evaluator.evaluate_and_save(wrapper, dataset, out)
+        result = evaluator.evaluate_and_save(wrapper, dataset, out)
+        _maybe_dump_profile(out)
+        return result
 
     out.mkdir(parents=True, exist_ok=True)
     report, per_example_iou = evaluator.evaluate(wrapper, dataset, return_per_example_iou=True)
-    (out / "metrics.json").write_text(
-        json.dumps(
-            {
-                "overall": report.overall,
-                "per_class": report.per_class,
-                "n_images": report.n_images,
-                "n_predictions": report.n_predictions,
-            },
-            indent=2,
+    payload2: dict[str, object] = {
+        "overall": report.overall,
+        "per_class": report.per_class,
+        "n_images": report.n_images,
+        "n_predictions": report.n_predictions,
+    }
+    if cfg.task == "semantic":
+        payload2 = {"task": "semantic", **payload2}
+    (out / "metrics.json").write_text(json.dumps(payload2, indent=2))
+    if cfg.task != "semantic":
+        # cfg.task != "semantic" guarantees evaluator is an Evaluator at runtime;
+        # cast is a static-only assertion (no runtime cost). isinstance is avoided
+        # because tests monkeypatch Evaluator to a lambda, which isinstance rejects.
+        cast(Evaluator, evaluator)._maybe_save_predictions(
+            cast(Evaluator, evaluator)._last_predictions, run_dir=out
         )
-    )
-    evaluator._maybe_save_predictions(evaluator._last_predictions, run_dir=out)
     _run_viz(per_example_iou)
+    _maybe_dump_profile(out)
     return report

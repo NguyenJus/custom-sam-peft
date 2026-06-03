@@ -134,6 +134,26 @@ Row schema (every section uses these six columns):
 | `config/schema.py:TrainHyperparams.save_every` | `None` | `index-only` | — | — | `None`-sentinel: auto-resolves to one checkpoint/epoch. |
 | `config/schema.py:TrainHyperparams.eval_every` | `None` | `index-only` | — | — | `None`-sentinel: auto-resolves to one eval/epoch. |
 | `config/schema.py:TrainHyperparams.host_ram_floor_gb` | `2.0` | `# tbd:` | — | — | Heuristic host-RAM floor (GB) for the graceful-stop guard; tune empirically. No internal calibration run recorded. |
+| `config/schema.py:DataConfig.semantic` | `None` | `index-only` | — | — | `None`-sentinel: required only when task == "semantic". |
+| `config/schema.py:HFFieldMap.label_map` | `None` | `index-only` | — | — | `None`-sentinel: HF feature holding the (H,W) label image for semantic segmentation; unused for instance task. |
+| `config/schema.py:SemanticDataConfig.class_map` | `None` | `index-only` | — | — | `None`-sentinel: required for mask_png format; optional for hf format (class names derived from ClassLabel feature when absent). |
+| `config/schema.py:SemanticDataConfig.ignore_index` | `255` | `# cite: PASCAL VOC / Cityscapes void convention` | PASCAL VOC and Cityscapes both use pixel value 255 as the void/unlabeled class in their ground-truth PNGs. | Cityscapes `trainId` label convention: void=255; PASCAL VOC border/ignore region: 255. | De-facto standard for label-PNG datasets; field description cross-links the convention. |
+| `config/schema.py:SemanticDataConfig.label_suffix` | `"_labelIds.png"` | `# tbd: #113` | Cityscapes-style label filename suffix (`aachen_000000_000019_leftImg8bit.png` → `aachen_000000_000019_gtFine_labelIds.png`). No formal project measurement recorded. Tracking via #113. | — | Override per dataset (e.g. `".png"` for same-stem pairing); structural default. |
+| `config/schema.py:SemanticLossConfig.preset` | `"natural"` | `index-only` | — | — | Mirrors `LossConfig.preset` / `AugmentationsConfig.preset`; structural. |
+| `config/schema.py:SemanticLossConfig.class_imbalance` | `"balanced"` | `index-only` | — | — | Mirrors `LossConfig.class_imbalance`; structural. |
+| `config/schema.py:SemanticLossConfig.background_logit` | `0.0` | `# cite: degenerate-case` | — | — | sigmoid(0.0) = 0.5 is the logit decision boundary. Zero is the natural uninformative prior for background logit injection into the multi-class head. |
+| `config/schema.py:SemanticLossConfig.background_class_name` | `None` | `# tbd: #113` | — | — | `None`-sentinel: no explicit background class unless named. Feature not yet fully specified; tracking via #113 (see schema comment). |
+| `config/schema.py:SemanticLossConfig.query_reduce` | `"max"` | `# tbd: #113` | — | — | `"max"` takes the maximum logit across the G query-slots for each class; `"sum"` sums them. Design choice per §6.2; no ablation recorded. Tracking via #113. |
+| `config/schema.py:SemanticLossConfig.source` | `"marginalize"` | `index-only` | — | — | Selects whether logits come from the multi-class marginalize path (`"marginalize"`) or a dedicated semantic-seg head (`"semantic_seg"`). Default follows §3.3/OQ-1 design: reuse existing query decoder. |
+| `config/schema.py:SemanticLossOverrides.sem_family` | `None` | `index-only` | — | — | `None`-sentinel: inherit loss family from preset. |
+| `config/schema.py:SemanticLossOverrides.focal_gamma` | `None` | `index-only` | — | — | `None`-sentinel: inherit focal γ from preset. |
+| `config/schema.py:SemanticLossOverrides.focal_alpha` | `None` | `index-only` | — | — | `None`-sentinel: inherit focal α from preset. |
+| `config/schema.py:SemanticLossOverrides.tversky_alpha` | `None` | `index-only` | — | — | `None`-sentinel: inherit Tversky α from preset. |
+| `config/schema.py:SemanticLossOverrides.tversky_gamma` | `None` | `index-only` | — | — | `None`-sentinel: inherit Tversky γ from preset. |
+| `config/schema.py:SemanticLossOverrides.w_ce` | `None` | `index-only` | — | — | `None`-sentinel: inherit cross-entropy weight from preset. |
+| `config/schema.py:SemanticLossOverrides.w_region` | `None` | `index-only` | — | — | `None`-sentinel: inherit region-loss weight (Dice/Tversky/Boundary term) from preset. |
+| `config/schema.py:SemanticLossOverrides.boundary_weight` | `None` | `index-only` | — | — | `None`-sentinel: inherit boundary weight from preset. |
+| `config/schema.py:TrainConfig.task` | `"instance"` | `index-only` | — | — | Backward-compat default: omitting `task:` in a config preserves the pre-#113 instance path exactly. Set `task: semantic` to opt in. |
 
 ## data/aug_presets.py
 

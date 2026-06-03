@@ -17,6 +17,7 @@ import pycocotools.mask as mask_utils
 import torch
 from pycocotools.coco import COCO
 
+from custom_sam_peft import profiling
 from custom_sam_peft.cli._progress import progress as P
 from custom_sam_peft.config.schema import EvalConfig
 from custom_sam_peft.data.base import Dataset, Example, TextPrompts
@@ -307,7 +308,6 @@ class Evaluator:
                 while i < len(examples):
                     bs = ladder.micro_batch_size
                     image_chunk = list(examples[i : i + bs])
-
                     # Split chunk into direct-path and tiling-path examples.
                     # Tiled examples are processed immediately, one image at a time.
                     direct_chunk: list[Example] = []
@@ -361,10 +361,12 @@ class Evaluator:
                                     group = dataset.class_names[j : j + K_g]
                                     prompts_g = [TextPrompts(classes=list(group))]
                                     try:
-                                        outputs = cast(
-                                            "dict[str, torch.Tensor]",
-                                            model(tile_batch, prompts_g, support=None),
-                                        )
+                                        with profiling.bucket("eval.forward"):
+                                            outputs = cast(
+                                                "dict[str, torch.Tensor]",
+                                                model(tile_batch, prompts_g, support=None),
+                                            )
+                                        profiling.incr("eval.forwards")
                                     except RuntimeError as oom_exc:
                                         if not is_cuda_oom(oom_exc):
                                             raise
@@ -417,10 +419,26 @@ class Evaluator:
                             group = dataset.class_names[j : j + K_g]
                             prompts_g = [TextPrompts(classes=list(group)) for _ in direct_chunk]
                             try:
-                                outputs = cast(
-                                    "dict[str, torch.Tensor]",
-                                    model(images_t, prompts_g, support=None),
-                                )
+                                with profiling.bucket("eval.forward"):
+                                    outputs = cast(
+                                        "dict[str, torch.Tensor]",
+                                        model(images_t, prompts_g, support=None),
+                                    )
+                                profiling.incr("eval.forwards")
+                                if profiling.is_enabled():
+                                    # Report the forward OUTPUT dtype (bf16), not the
+                                    # input image dtype (always fp32) — capturing the
+                                    # input mislabels the compute dtype, the exact
+                                    # confusion #250 (d06cd96) corrected.
+                                    profiling.note(
+                                        eval_forward_dtype=str(
+                                            outputs["pred_masks"].dtype
+                                            if isinstance(outputs.get("pred_masks"), torch.Tensor)
+                                            else "unknown"
+                                        ),
+                                        n_classes=n_classes,
+                                        model_input_hw=tuple(images_t.shape[-2:]),
+                                    )
                             except RuntimeError as oom_exc:
                                 # OOM may surface as a non-OutOfMemoryError RuntimeError
                                 # on this card (see oom.is_cuda_oom). (#208)
@@ -487,12 +505,15 @@ class Evaluator:
         """Compute a MetricsReport from raw predictions and ground-truth COCO data."""
         cfg = self.cfg
 
-        report = compute_coco_map(
-            predictions=predictions,
-            ground_truth=gt,
-            iou_thresholds=cfg.iou_thresholds,
-            include_per_class=(cfg.mode == "full"),
-        )
+        if profiling.is_enabled():
+            profiling.note(n_images=len(gt.imgs))
+        with profiling.bucket("eval.coco_aggregate"):
+            report = compute_coco_map(
+                predictions=predictions,
+                ground_truth=gt,
+                iou_thresholds=cfg.iou_thresholds,
+                include_per_class=(cfg.mode == "full"),
+            )
 
         if cfg.mode == "full":
             skipped = sum(1 for name in dataset.class_names if name not in report.per_class)
@@ -715,6 +736,7 @@ class Evaluator:
         (output_dir / "metrics.json").write_text(
             json.dumps(
                 {
+                    "task": "instance",
                     "overall": report.overall,
                     "per_class": report.per_class,
                     "n_images": report.n_images,

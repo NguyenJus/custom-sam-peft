@@ -65,6 +65,9 @@ def _apply_limit(inner: Dataset, cfg: TrainConfig, pipeline: str) -> Dataset:
 def _build_dataset_from_dict(
     data_cfg_dict: dict[str, Any], cfg: TrainConfig, pipeline: str
 ) -> Dataset:
+    # Thread task into the data dict so format-specific builders (e.g. build_hf)
+    # can branch on it without coupling to TrainConfig directly.
+    data_cfg_dict = {**data_cfg_dict, "task": cfg.task}
     builder = lookup("dataset", cfg.data.format)
     inner = cast(Dataset, builder(data_cfg_dict, model_name=cfg.model.name, pipeline=pipeline))
     return _apply_limit(inner, cfg, pipeline)

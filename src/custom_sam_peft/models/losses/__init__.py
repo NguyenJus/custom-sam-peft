@@ -23,6 +23,14 @@ from custom_sam_peft.models.losses.presets import (
     dump_loss_bundle,
     resolve,
 )
+from custom_sam_peft.models.losses.semantic_compose import SemanticLoss, build_semantic_loss
+from custom_sam_peft.models.losses.semantic_presets import (
+    SEMANTIC_PRESET_TABLE,
+    dump_semantic_loss_bundle,
+)
+from custom_sam_peft.models.losses.semantic_presets import (
+    resolve as resolve_semantic,
+)
 
 
 def total_loss(outputs: dict[str, Any], targets: Any, cfg: Any) -> dict[str, Any]:
@@ -38,10 +46,15 @@ def total_loss(outputs: dict[str, Any], targets: Any, cfg: Any) -> dict[str, Any
 __all__ = [
     "LOCKED_OFF",
     "PRESET_TABLE",
+    "SEMANTIC_PRESET_TABLE",
     "LossBundle",
     "ResolvedLosses",
+    "SemanticLoss",
     "build_loss_bundle",
+    "build_semantic_loss",
     "dump_loss_bundle",
+    "dump_semantic_loss_bundle",
     "resolve",
+    "resolve_semantic",
     "total_loss",
 ]
