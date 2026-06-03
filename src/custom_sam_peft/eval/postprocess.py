@@ -42,14 +42,6 @@ def _upsample_mask_logits(masks_logits: Tensor, original_hw: tuple[int, int]) ->
     ).squeeze(1)
 
 
-def _logits_to_rle(mask_bin: np.ndarray[tuple[int, int], np.dtype[np.uint8]]) -> dict[str, object]:
-    """mask_bin: (H, W) bool/uint8. Returns pycocotools RLE dict with ascii counts."""
-    rle: dict[str, object] = mask_utils.encode(np.asfortranarray(mask_bin.astype(np.uint8)))
-    counts = rle["counts"]
-    rle["counts"] = counts.decode("ascii") if isinstance(counts, bytes) else counts
-    return rle
-
-
 def queries_to_coco_results(
     outputs: dict[str, Tensor],
     image_id: int,
@@ -147,14 +139,26 @@ def queries_to_coco_results(
         boxes_list = boxes_xywh.cpu().tolist()
         scores_list = scores.cpu().tolist()
     with _profile.bucket("rle_encode"):  # TEMP #250
+        # Batched RLE: encode all survivor masks in ONE pycocotools call.
+        # masks_bin is (M, H, W) bool; encode wants Fortran (H, W, M) uint8.
+        if m:
+            masks_fortran = np.asfortranarray(
+                np.ascontiguousarray(masks_bin).transpose(1, 2, 0).astype(np.uint8)
+            )
+            rles = mask_utils.encode(masks_fortran)  # list[M] of RLE dicts
+        else:
+            rles = []
         for i in range(m):
+            rle = rles[i]
+            counts = rle["counts"]
+            rle["counts"] = counts.decode("ascii") if isinstance(counts, bytes) else counts
             entries.append(
                 {
                     "image_id": int(image_id),
                     "category_id": int(category_id),
                     "bbox": [float(v) for v in boxes_list[i]],
                     "score": float(scores_list[i]),
-                    "segmentation": _logits_to_rle(masks_bin[i]),
+                    "segmentation": rle,
                 }
             )
     return entries

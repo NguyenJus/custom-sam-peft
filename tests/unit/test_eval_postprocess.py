@@ -263,3 +263,23 @@ def test_filter_none_is_no_filter():
     out = _outputs_with_scores(scores)
     entries = queries_to_coco_results(out, image_id=1, category_id=1, original_hw=(4, 4))
     assert len(entries) == 105  # unfiltered
+
+
+def test_batched_rle_decodes_identically():
+    # Distinct mask patterns per query; batched RLE must decode bit-identically.
+    # Use 6x6 logit space upsampled to 6x6 so growing squares [1x1..5x5] fit cleanly.
+    n = 5
+    masks = torch.full((1, n, 6, 6), -10.0)
+    for i in range(n):
+        masks[0, i, : i + 1, : i + 1] = 10.0  # growing top-left square
+    out = {
+        "pred_logits": torch.zeros(1, n, 1),
+        "pred_boxes": torch.full((1, n, 4), 0.5),
+        "pred_masks": masks,
+        "presence_logit_dec": torch.zeros(1, 1),
+    }
+    entries = queries_to_coco_results(out, image_id=1, category_id=1, original_hw=(6, 6))
+    assert len(entries) == n
+    for i, e in enumerate(entries):
+        decoded = mask_utils.decode(e["segmentation"])
+        assert decoded.sum() == (i + 1) * (i + 1)  # the growing square area
