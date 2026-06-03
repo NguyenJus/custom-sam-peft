@@ -14,6 +14,21 @@ from pycocotools.cocoeval import COCOeval
 _LOG = logging.getLogger(__name__)
 
 
+def coco_max_dets_cap() -> int:
+    """The max detections-per-(image, category) the COCO scorer keeps.
+
+    Derived from pycocotools' COCOeval params, NOT hardcoded, so the postprocess
+    top-N filter and the scorer cannot drift. compute_coco_map never overrides
+    maxDets, so it stays the pycocotools segm default [1, 10, 100]; the scorer
+    reads the LAST (max) maxDets slice (see precision[..., -1] below), i.e. it
+    keeps the top-100 detections by score per (image, category). Citation:
+    pycocotools COCOeval / Params default maxDets = [1, 10, 100].
+    """
+    from pycocotools.cocoeval import Params
+
+    return int(max(Params(iouType="segm").maxDets))
+
+
 @dataclass(frozen=True)
 class MetricsReport:
     """Result of an Evaluator.evaluate() call."""
