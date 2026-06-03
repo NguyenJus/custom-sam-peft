@@ -141,6 +141,38 @@ def write_image_id_map(id_to_path: dict[int, Path], output_dir: Path) -> None:
     (output_dir / "image_id_map.json").write_text(json.dumps(mapping))
 
 
+def write_geotiff_mask(
+    mask: np.ndarray[Any, np.dtype[np.uint8]],
+    meta: Any,
+    out_path: Path,
+) -> None:
+    """Write a same-extent GeoTIFF mask carrying the source CRS + affine (spec §7.1).
+
+    nodata pixels (meta.nodata_mask) are re-marked to 0 in the output.
+    """
+    import rasterio
+
+    arr = np.asarray(mask, np.uint8)
+    if meta.nodata_mask is not None:
+        arr = arr.copy()
+        arr[meta.nodata_mask] = 0
+    h, w = arr.shape
+    nodata_val: int | None = 0 if meta.nodata_mask is not None else None
+    with rasterio.open(
+        out_path,
+        "w",
+        driver="GTiff",
+        height=h,
+        width=w,
+        count=1,
+        dtype="uint8",
+        crs=meta.crs,
+        transform=meta.affine,
+        nodata=nodata_val,
+    ) as dst:
+        dst.write(arr, 1)
+
+
 def write_run_json(run_meta: dict[str, Any], output_dir: Path) -> None:
     """Write run.json with all fields from spec §7.3, adding version and git_sha."""
     output_dir = Path(output_dir)

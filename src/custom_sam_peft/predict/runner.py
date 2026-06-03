@@ -573,6 +573,7 @@ def run_predict(opts: PredictOptions) -> PredictReport:
     id_to_path: dict[int, Path] = {}
     id_to_stem: dict[int, str] = {}
     originals: dict[int, tuple[int, int]] = {}
+    id_to_spatial_meta: dict[int, Any] = {}  # image_id -> SpatialMeta | None (geo only)
     n_successful = 0
     t_start = time.perf_counter()
     # Tiling provenance counters (spec §5.2 run.json record)
@@ -610,9 +611,9 @@ def run_predict(opts: PredictOptions) -> PredictReport:
 
         for img_path in chunk_paths:
             try:
-                from custom_sam_peft.data.io import read_image as _read_image
+                from custom_sam_peft.data.io import read_image_with_meta as _read_image_with_meta
 
-                img_np = _read_image(img_path, rcfg.channels)
+                img_np, spatial_meta = _read_image_with_meta(img_path, rcfg.channels)
             except Exception as exc:
                 logger.warning("Skipping unreadable image %s: %s", img_path, exc)
                 continue
@@ -622,6 +623,8 @@ def run_predict(opts: PredictOptions) -> PredictReport:
             id_to_path[image_id] = img_path.resolve()
             id_to_stem[image_id] = img_path.stem
             originals[image_id] = (orig_h, orig_w)
+            if spatial_meta is not None and spatial_meta.kind == "geo":
+                id_to_spatial_meta[image_id] = spatial_meta
 
             if tiling_engaged(orig_h, orig_w):
                 # --- Tiling path (spec §5.2) ---
@@ -792,6 +795,8 @@ def run_predict(opts: PredictOptions) -> PredictReport:
     opts.output.mkdir(parents=True, exist_ok=True)
 
     from custom_sam_peft.predict.writers import (
+        decode_rle_to_uint8,
+        write_geotiff_mask,
         write_image_id_map,
         write_predictions,
         write_run_json,
@@ -804,6 +809,33 @@ def run_predict(opts: PredictOptions) -> PredictReport:
         originals=originals,
         id_to_stem=id_to_stem if opts.save_masks == "png" else None,
     )
+
+    # GeoTIFF masks — emitted alongside PNG/RLE for geo source images (spec §7.1).
+    # One GeoTIFF per prediction entry, parallel to the PNG naming convention.
+    if id_to_spatial_meta:
+        from PIL import Image as _PILImage
+
+        masks_dir = opts.output / "masks"
+        masks_dir.mkdir(parents=True, exist_ok=True)
+        inst_counter_geo: dict[tuple[int, int], int] = {}
+        for entry in all_predictions:
+            image_id = int(cast(int, entry["image_id"]))
+            geo_meta = id_to_spatial_meta.get(image_id)
+            if geo_meta is None:
+                continue
+            cat_id = int(cast(int, entry["category_id"]))
+            key = (image_id, cat_id)
+            inst_idx = inst_counter_geo.get(key, 0)
+            inst_counter_geo[key] = inst_idx + 1
+            stem = id_to_stem[image_id]
+            tif_file = masks_dir / f"{stem}_{cat_id}_{inst_idx}.tif"
+            mask_arr = decode_rle_to_uint8(entry["segmentation"])  # type: ignore[arg-type]
+            h, w = originals[image_id]
+            if mask_arr.shape != (h, w):
+                pil_mask = _PILImage.fromarray(mask_arr * 255)
+                pil_mask = pil_mask.resize((w, h), _PILImage.Resampling.NEAREST)
+                mask_arr = (np.array(pil_mask) > 127).astype(np.uint8)
+            write_geotiff_mask(mask_arr, geo_meta, tif_file)
 
     if opts.visualize:
         from custom_sam_peft.predict.visualize import write_visualization
