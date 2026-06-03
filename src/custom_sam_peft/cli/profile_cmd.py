@@ -112,7 +112,13 @@ def profile(
     # between eval.total and the summed leaves is the unbucketed residual
     # (per-chunk to_device, GT build).
     leaf_total = sum(s for b, s in buckets.items() if b != "eval.total")
-    total = buckets.get("eval.total") or leaf_total or 1.0
+    has_total = "eval.total" in buckets
+    # When eval.total is present it IS the wall-time denominator (% of wall);
+    # otherwise the denominator is the sum of the leaf buckets (% of timed,
+    # the pre-#265 behaviour).  Labels reflect which denominator is in use.
+    total = (buckets["eval.total"] if has_total else leaf_total) or 1.0
+    pct_label = "% of wall" if has_total else "% of timed"
+    total_label = "TOTAL(wall)" if has_total else "TOTAL(timed)"
 
     print(f"\n=== csp profile — {cfg.run.name} ===")  # noqa: T201
     print(f"metadata: {meta}")  # noqa: T201
@@ -123,14 +129,14 @@ def profile(
     extra = sorted(b for b in buckets if b not in _EVAL_BUCKET_ORDER)
     order = known + extra
 
-    print(f"\n{'bucket':<30}{'seconds':>12}{'% of total':>14}")  # noqa: T201
+    print(f"\n{'bucket':<30}{'seconds':>12}{pct_label:>14}")  # noqa: T201
     print("-" * 56)  # noqa: T201
     for name in order:
         s = buckets.get(name, 0.0)
         print(f"{name:<30}{s:>12.4f}{100 * s / total:>13.1f}%")  # noqa: T201
     print("-" * 56)  # noqa: T201
-    residual = total - leaf_total if "eval.total" in buckets else 0.0
+    residual = total - leaf_total if has_total else 0.0
     if residual > 0:
         pct = 100 * residual / total
         print(f"{'(residual = total - leaves)':<30}{residual:>12.4f}{pct:>13.1f}%")  # noqa: T201
-    print(f"{'TOTAL(wall)':<30}{total:>12.4f}{100.0:>13.1f}%")  # noqa: T201
+    print(f"{total_label:<30}{total:>12.4f}{100.0:>13.1f}%")  # noqa: T201
