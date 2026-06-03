@@ -20,7 +20,6 @@ from pycocotools.coco import COCO
 from custom_sam_peft.cli._progress import progress as P
 from custom_sam_peft.config.schema import EvalConfig
 from custom_sam_peft.data.base import Dataset, Example, TextPrompts
-from custom_sam_peft.eval import _profile  # TEMP #250 Phase 1 — removed in Phase 2
 from custom_sam_peft.eval.metrics import MetricsReport, coco_max_dets_cap, compute_coco_map
 from custom_sam_peft.eval.postprocess import queries_to_coco_results
 from custom_sam_peft.models.sam3 import MULTIPLEX_CAP
@@ -182,20 +181,9 @@ class Evaluator:
                         group = dataset.class_names[j : j + K_g]
                         prompts_g = [TextPrompts(classes=list(group)) for _ in image_chunk]
                         try:
-                            with _profile.bucket("forward"):  # TEMP #250
-                                outputs = cast(
-                                    "dict[str, torch.Tensor]",
-                                    model(images_t, prompts_g, support=None),
-                                )
-                            _profile.incr("forwards")  # TEMP #250
-                            _profile.note(  # TEMP #250 — eval-forward dtype + sizes
-                                eval_forward_dtype=str(
-                                    outputs["pred_masks"].dtype
-                                    if isinstance(outputs.get("pred_masks"), torch.Tensor)
-                                    else "unknown"
-                                ),
-                                n_classes=int(n_classes),
-                                model_input_hw=tuple(images_t.shape[-2:]),
+                            outputs = cast(
+                                "dict[str, torch.Tensor]",
+                                model(images_t, prompts_g, support=None),
                             )
                         except RuntimeError as oom_exc:
                             # OOM may surface as a non-OutOfMemoryError RuntimeError
@@ -262,14 +250,12 @@ class Evaluator:
         """Compute a MetricsReport from raw predictions and ground-truth COCO data."""
         cfg = self.cfg
 
-        _profile.note(n_images=len(gt.imgs))  # TEMP #250
-        with _profile.bucket("coco_aggregate"):  # TEMP #250
-            report = compute_coco_map(
-                predictions=predictions,
-                ground_truth=gt,
-                iou_thresholds=cfg.iou_thresholds,
-                include_per_class=(cfg.mode == "full"),
-            )
+        report = compute_coco_map(
+            predictions=predictions,
+            ground_truth=gt,
+            iou_thresholds=cfg.iou_thresholds,
+            include_per_class=(cfg.mode == "full"),
+        )
 
         if cfg.mode == "full":
             skipped = sum(1 for name in dataset.class_names if name not in report.per_class)
