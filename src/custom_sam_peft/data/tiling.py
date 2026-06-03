@@ -4,6 +4,7 @@ Operates on plain pixels; geo/DICOM SpatialMeta is threaded by callers (spec §6
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 
 import numpy as np
@@ -164,3 +165,36 @@ def merge_fragments(
         cat = fragments[members[0]].category_id
         out.append(MergedInstance(mask=mask, score=score, category_id=cat))
     return out
+
+
+def run_windows(
+    image: np.ndarray,
+    windows: list[Window],
+    fn: Callable[[np.ndarray, Window], list[Fragment]],
+) -> list[Fragment]:
+    """Apply `fn(crop, window)` to each window's crop and collect fragments,
+    re-placing each tile-local fragment mask onto the full-image canvas at the
+    window origin (spec §5.1). `fn` returns fragments whose masks are tile-local
+    (H_win, W_win); this offsets them to full-canvas coordinates."""
+    h, w = image.shape[0], image.shape[1]
+    collected: list[Fragment] = []
+    for win in windows:
+        crop = image[win.y0 : win.y0 + win.h, win.x0 : win.x0 + win.w]
+        for frag in fn(crop, win):
+            if frag.mask.shape[0] < win.h or frag.mask.shape[1] < win.w:
+                raise ValueError(
+                    f"run_windows: fn returned a {frag.mask.shape[:2]} mask smaller than its "
+                    f"window ({win.h}, {win.w}); fn must return a tile-local mask covering the "
+                    f"full window crop (spec §5.1)."
+                )
+            canvas = np.zeros((h, w), bool)
+            canvas[win.y0 : win.y0 + win.h, win.x0 : win.x0 + win.w] = frag.mask[: win.h, : win.w]
+            collected.append(
+                Fragment(
+                    mask=canvas,
+                    score=frag.score,
+                    category_id=frag.category_id,
+                    window_id=frag.window_id,
+                )
+            )
+    return collected
