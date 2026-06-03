@@ -81,20 +81,29 @@ def _read_tiff_rasterio(path: Path, channels: int) -> tuple[np.ndarray[Any, Any]
         )
 
 
-def read_image_with_meta(path: str | Path, channels: int) -> tuple[np.ndarray[Any, Any], Any]:
+def read_image_with_meta(
+    path: str | Path,
+    channels: int,
+    *,
+    dicom_voi_window: tuple[float, float] | None = None,
+) -> tuple[np.ndarray[Any, Any], Any]:
     """Read pixels + optional SpatialMeta (spec §6.2).
 
     Pixels-first; meta is None for plain images.
     ``read_image`` is a thin wrapper returning pixels only.
+
+    dicom_voi_window: optional (center, width) override for DICOM VOI windowing.
+    None (default) → use each file's own window or skip VOI. Non-DICOM paths
+    ignore this parameter.
     """
     path = Path(path)
     ext = path.suffix.lower()
     if ext in {".tif", ".tiff"}:
         return _read_tiff_rasterio(path, channels)
     if ext == ".dcm":
-        from custom_sam_peft.data.dicom_io import read_dcm_with_meta  # Phase 3 (not yet present)
+        from custom_sam_peft.data.dicom_io import read_dcm_with_meta
 
-        return read_dcm_with_meta(path, channels)
+        return read_dcm_with_meta(path, channels, voi_window=dicom_voi_window)
     return read_image(path, channels), None  # plain raster/npy: meta None
 
 

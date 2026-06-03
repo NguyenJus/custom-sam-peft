@@ -414,6 +414,15 @@ class DataConfig(_Strict):
     text_prompt: TextPromptConfig = Field(default_factory=TextPromptConfig)
     normalize: NormalizeConfig | None = None
     limit: LimitConfig = Field(default_factory=LimitConfig)
+    dicom_voi_window: tuple[float, float] | None = Field(
+        default=None,
+        description=(
+            "Optional explicit DICOM VOI (center, width) override applied to ALL "
+            "slices. None (default) uses each file's own WindowCenter/WindowWidth, "
+            "or no VOI if absent. An explicit user choice — no default hyperparameter "
+            "is shipped (spec §9)."
+        ),
+    )
     # --- advanced ---
     test: DataSplit | None = None
     hf: HFDatasetConfig | None = None
