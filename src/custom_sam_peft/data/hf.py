@@ -399,6 +399,11 @@ def build_hf(
                 "to the HF feature name holding the (H,W) per-pixel label image."
             )
 
+        # Resolve semantic sub-config once; used for transforms + class-name resolution.
+        sem = cfg.get("semantic") or {}
+        ignore_index: int = int(sem.get("ignore_index", 255))
+        class_map_path: str = str(sem.get("class_map") or "")
+
         if pipeline == "train":
             aug = AugmentationsConfig.model_validate(cfg.get("augmentations", {}))
             transforms = build_train_transforms(
@@ -408,7 +413,7 @@ def build_hf(
                 normalize=normalize,
                 channel_semantics=channel_semantics,
                 channels=channels,
-                mask_fill_value=int((cfg.get("semantic") or {}).get("ignore_index", 255)),
+                mask_fill_value=ignore_index,
             )
         else:
             transforms = build_eval_transforms(
@@ -416,13 +421,10 @@ def build_hf(
                 model_name=model_name,
                 normalize=normalize,
                 channel_semantics=channel_semantics,
-                mask_fill_value=int((cfg.get("semantic") or {}).get("ignore_index", 255)),
+                mask_fill_value=ignore_index,
             )
 
         # Resolve class_names + value_to_label from cfg["semantic"].class_map or HF ClassLabel.
-        sem = cfg.get("semantic") or {}
-        ignore_index: int = int(sem.get("ignore_index", 255))
-        class_map_path: str = str(sem.get("class_map") or "")
 
         hf_ds = hf_load_dataset(hf_cfg["name"], split=split)
 

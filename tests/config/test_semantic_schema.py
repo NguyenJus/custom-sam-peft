@@ -148,3 +148,34 @@ def test_semantic_rejects_nondefault_eval_mask_threshold():
                 eval={"mask_threshold": 0.5},
             )
         )
+
+
+def test_semantic_mask_png_requires_class_map():
+    with pytest.raises(ValidationError, match="class_map"):
+        TrainConfig.model_validate(
+            _base_cfg(
+                task="semantic",
+                data={
+                    "format": "mask_png",
+                    "train": {"images": "img", "annotations": "labels"},
+                    "semantic": {"ignore_index": 255},  # no class_map
+                },
+            )
+        )
+
+
+def test_semantic_hf_allows_missing_class_map():
+    # HF derives the vocabulary from the dataset's ClassLabel.names; class_map is optional.
+    cfg = TrainConfig.model_validate(
+        _base_cfg(
+            task="semantic",
+            data={
+                "format": "hf",
+                "hf": {"name": "scene_parse_150"},
+                "train": {"images": "img", "annotations": "labels"},
+                "semantic": {"ignore_index": 255},  # no class_map -> OK for hf
+            },
+        )
+    )
+    assert cfg.data.semantic is not None
+    assert cfg.data.semantic.class_map is None

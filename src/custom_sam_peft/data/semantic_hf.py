@@ -54,7 +54,7 @@ class SemanticHFDataset:
         self._ignore_index = ignore_index
         self._transforms = transforms
         self._channels = channels
-        self._warned_non_all_mode = False
+        self._image_class_labels_cache: list[frozenset[int]] | None = None
 
         # tbd: #113 -- direct-construction default assumes annotation already uses
         # {0=bg, 1..K=class}; the build_hf path always passes an explicit value_to_label.
@@ -89,7 +89,9 @@ class SemanticHFDataset:
 
     @property
     def image_class_labels(self) -> list[frozenset[int]]:
-        """Per-image dense class id sets for stratified subset sampling (lazy)."""
+        """Per-image dense class id sets for stratified subset sampling (lazy, memoized)."""
+        if self._image_class_labels_cache is not None:
+            return self._image_class_labels_cache
         result: list[frozenset[int]] = []
         for i in range(len(self._ds)):
             row = self._ds[i]
@@ -101,7 +103,8 @@ class SemanticHFDataset:
                 if gt != 0 and gt != self._ignore_index:
                     present.add(gt)
             result.append(frozenset(present))
-        return result
+        self._image_class_labels_cache = result
+        return self._image_class_labels_cache
 
     def __getitem__(self, i: int) -> Example:
         import torch

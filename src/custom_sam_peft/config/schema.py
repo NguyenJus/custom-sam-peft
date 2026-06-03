@@ -397,13 +397,16 @@ class SemanticDataConfig(_Strict):
     Lives under DataConfig.semantic. None for instance datasets.
     """
 
-    class_map: str = Field(
-        min_length=1,
+    class_map: str | None = Field(
+        default=None,
         description=(
             "Path to a JSON file mapping integer pixel value -> class name, e.g. "
             '{"0": "background", "1": "road", "2": "building"}. The set of NAMES '
             "(excluding any explicit background, see §4.5) is the prompted concept "
-            "vocabulary AND the dataset class_names, in ascending-pixel-value order."
+            "vocabulary AND the dataset class_names, in ascending-pixel-value order. "
+            "Required for data.format: mask_png (the only class-name source). "
+            "Optional for data.format: hf — when absent the class vocabulary is "
+            "derived from the HF dataset's label feature ClassLabel.names."
         ),
     )
     ignore_index: int = Field(
@@ -720,6 +723,11 @@ class TrainConfig(_Strict):
                 )
             if self.data.semantic is None:
                 raise ValueError("task: semantic requires data.semantic (class_map, ignore_index).")
+            if self.data.format == "mask_png" and self.data.semantic.class_map is None:
+                raise ValueError(
+                    "data.format: mask_png requires data.semantic.class_map "
+                    "(a JSON pixel-value -> class-name map)."
+                )
             if self.eval.iou_thresholds != EvalConfig().iou_thresholds:
                 raise ValueError(
                     "eval.iou_thresholds is inert under task: semantic (mIoU has no "

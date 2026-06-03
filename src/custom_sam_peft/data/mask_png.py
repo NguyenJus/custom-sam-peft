@@ -212,7 +212,13 @@ def build_mask_png(
         split = cfg[split_key]
 
     sem = cfg.get("semantic") or {}
-    class_map: str = str(sem.get("class_map", ""))
+    class_map_raw: str | None = sem.get("class_map") or None
+    if class_map_raw is None:
+        raise ValueError(
+            "build_mask_png: data.semantic.class_map is required for mask_png format "
+            "(a JSON pixel-value -> class-name map)."
+        )
+    class_map: str = class_map_raw
     ignore_index: int = int(sem.get("ignore_index", 255))
     label_suffix: str = str(sem.get("label_suffix", "_labelIds.png"))
 
