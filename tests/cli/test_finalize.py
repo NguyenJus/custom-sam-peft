@@ -43,7 +43,7 @@ def test_finalize_calls_close_out_no_training(tmp_path: Path, monkeypatch) -> No
     monkeypatch.setattr(run_cmd, "run_training", lambda *a, **k: called.__setitem__("train", 1))
     monkeypatch.setattr(run_cmd, "load_sam31", lambda *a, **k: object())
     monkeypatch.setattr(run_cmd, "load_adapter", lambda *a, **k: None)
-    monkeypatch.setattr(run_cmd, "load_config", lambda p: _SavedCfg())
+    monkeypatch.setattr(run_cmd, "load_config", lambda p, **kw: _SavedCfg())
     monkeypatch.setattr(run_cmd, "write_bundle", lambda *a, **k: None)
     monkeypatch.setattr(run_cmd, "_load_preset_or_fallback", lambda c: object())
 
@@ -60,15 +60,16 @@ def test_finalize_calls_close_out_no_training(tmp_path: Path, monkeypatch) -> No
 def test_finalize_requires_resume(tmp_path: Path, monkeypatch) -> None:
     cfg_path = tmp_path / "c.yaml"
     cfg_path.write_text("run:\n  name: x\n")
-    monkeypatch.setattr(run_cmd, "load_config", lambda p: _SavedCfg())
+    monkeypatch.setattr(run_cmd, "load_config", lambda p, **kw: _SavedCfg())
     with pytest.raises(typer.Exit) as exc:
         run_cmd.run(
-            config=cfg_path,
+            config_arg=cfg_path,
             resume=None,
             time_limit=None,
             finalize=True,
+            override=[],
             verbose=False,
-            progress_flag="off",
+            progress=run_cmd.Progress.off,
             visualize=False,
         )
     assert exc.value.exit_code == 1
@@ -77,15 +78,16 @@ def test_finalize_requires_resume(tmp_path: Path, monkeypatch) -> None:
 def test_finalize_rejects_time_limit(tmp_path: Path, monkeypatch) -> None:
     cfg_path = tmp_path / "c.yaml"
     cfg_path.write_text("run:\n  name: x\n")
-    monkeypatch.setattr(run_cmd, "load_config", lambda p: _SavedCfg())
+    monkeypatch.setattr(run_cmd, "load_config", lambda p, **kw: _SavedCfg())
     with pytest.raises(typer.Exit) as exc:
         run_cmd.run(
-            config=cfg_path,
+            config_arg=cfg_path,
             resume="__latest__",
             time_limit="1h",
             finalize=True,
+            override=[],
             verbose=False,
-            progress_flag="off",
+            progress=run_cmd.Progress.off,
             visualize=False,
         )
     assert exc.value.exit_code == 1
@@ -103,16 +105,17 @@ def test_finalize_resolves_latest(tmp_path: Path, monkeypatch) -> None:
         return 0
 
     monkeypatch.setattr(run_cmd, "_finalize", fake_finalize)
-    monkeypatch.setattr(run_cmd, "load_config", lambda p: _SavedCfg())
+    monkeypatch.setattr(run_cmd, "load_config", lambda p, **kw: _SavedCfg())
 
     with pytest.raises(typer.Exit) as exc:
         run_cmd.run(
-            config=cfg_path,
+            config_arg=cfg_path,
             resume="__latest__",
             time_limit=None,
             finalize=True,
+            override=[],
             verbose=False,
-            progress_flag="off",
+            progress=run_cmd.Progress.off,
             visualize=False,
         )
     assert exc.value.exit_code == 0

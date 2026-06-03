@@ -10,6 +10,8 @@ import typer
 from rich.console import Console
 from rich.table import Table
 
+from custom_sam_peft.cli._logging import configure_logging
+from custom_sam_peft.cli._options import VerboseOpt
 from custom_sam_peft.config.loader import ConfigError, load_config
 from custom_sam_peft.config.schema import TrainConfig
 from custom_sam_peft.data.aug_presets import (
@@ -208,8 +210,10 @@ def doctor(
             "resolved augmentations and normalization derived from the config."
         ),
     ),
+    verbose: VerboseOpt = False,
 ) -> None:
     """Report environment + dependency status."""
+    configure_logging(verbose)
     report = run_doctor(weights_path=weights_path, config_path=config_path)
     # run_doctor already swallows ConfigError / ValidationError into report.issues;
     # we mirror that here so a bad --config still exits 0 with the rendered report.

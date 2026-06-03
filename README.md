@@ -56,15 +56,15 @@ uv run csp init --interactive
 uv run csp init --template coco-text-qlora --output config.yaml
 
 # Train, then eval and export in one shot (recommended)
-uv run csp run --config config.yaml
+uv run csp run config.yaml
 
 # Or run steps individually:
-uv run csp train --config config.yaml          # train only
-uv run csp train --config config.yaml --eval   # train + eval
-uv run csp train --config config.yaml --eval --export  # same as `run`
+uv run csp train config.yaml          # train only
+uv run csp train config.yaml --eval   # train + eval
+uv run csp train config.yaml --eval --export  # same as `run`
 ```
 
-`run --config cfg.yaml` is shorthand for `train --config cfg.yaml --eval --export`.
+`run config.yaml` is shorthand for `train config.yaml --eval --export`.
 
 ## Advanced
 
@@ -85,19 +85,19 @@ See [cloud/docker/README.md](cloud/docker/README.md) for the full CLI and Jupyte
 
 | Command | Status |
 | --- | --- |
-| `csp run --config CONFIG [--resume PATH] [-v]` | Functional — shorthand for `train --eval --export` |
-| `csp train --config CONFIG [--eval] [--export] [--override key=val]... [--resume PATH] [-v]` | Functional |
-| `csp eval --config CONFIG --checkpoint PATH [--split val\|test] [--export] [--output PATH] [--interactive]` | Functional (LoRA + QLoRA adapters) |
+| `csp run CONFIG [--resume PATH] [-v]` | Functional — shorthand for `train --eval --export` |
+| `csp train CONFIG [--eval] [--export] [--override key=val]... [--name NAME] [--output-dir DIR] [--resume PATH] [--dry-run] [-v]` | Functional |
+| `csp eval --checkpoint PATH [--config CONFIG] [--split val\|test] [--export] [--output PATH] [--dry-run] [--interactive]` | Functional (LoRA + QLoRA adapters) |
 | `csp predict --images DIR --prompts "a,b,c" [--checkpoint PATH] [--output PATH] [--visualize] [--interactive]` | Functional |
-| `csp export --checkpoint PATH [--merge] [--output PATH] [--config PATH]` | Functional |
-| `csp init [--interactive] [--template NAME] [--preset NAME] [--output PATH] [--force]` | Functional |
+| `csp export --checkpoint PATH --output DIR [--merge] [--config PATH]` | Functional |
+| `csp init [--interactive] [--template NAME] [--preset NAME] [--output PATH] [--force] [-y]` | Functional |
 | `csp calibrate --config CONFIG [--output PATH] [--force]` | Functional |
 | `csp doctor [--config PATH] [--weights-path PATH] [--json]` | Functional |
 
 Most commands accept more flags than shown — run `csp <command> --help`
 for the full list.
 
-`run --config CONFIG` is equivalent to `train --config CONFIG --eval --export`; use the individual flags when you want only some steps.
+`run CONFIG` is equivalent to `train CONFIG --eval --export`; use the individual flags when you want only some steps.
 
 `init --interactive` launches the setup wizard (auto-detected data paths, VRAM-calibrated
 presets, guided knobs); `eval` and `predict` accept `--interactive` for guided one-off runs.
