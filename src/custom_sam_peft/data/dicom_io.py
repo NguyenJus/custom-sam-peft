@@ -4,7 +4,12 @@ lazy-imported so base install/import never requires them."""
 from __future__ import annotations
 
 import types
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+import numpy as np
+
+if TYPE_CHECKING:
+    from os import PathLike
 
 _MISSING = "DICOM support requires the optional extra: pip install custom-sam-peft[dicom]"
 
@@ -116,3 +121,111 @@ def read_dcm_with_meta(
         sop_uid=sop_uid,
     )
     return pixels, meta
+
+
+def _slice_normal(orientation: Any) -> np.ndarray:
+    """Slice-normal unit vector = cross product of the two ImageOrientationPatient
+    direction-cosine triplets (row dir cross column dir)."""
+    iop = np.asarray(orientation, dtype=float).reshape(2, 3)
+    row_dir, col_dir = iop[0], iop[1]
+    return np.cross(row_dir, col_dir)
+
+
+def group_series(paths: list[str | PathLike[str]]) -> dict[str, list[Any]]:
+    """Bucket `.dcm` files by SeriesInstanceUID and order each bucket geometrically.
+
+    Each bucket is sorted by the projection of ``ImagePositionPatient`` onto the
+    slice-normal (cross product of the two ``ImageOrientationPatient`` direction
+    cosines) — the standard geometric slice ordering (nibabel DICOM-orientation
+    convention, https://nipy.org/nibabel/dicom/dicom_orientation.html). Returns
+    ``{series_uid: [ordered pydicom datasets]}``.
+    """
+    pydicom = _require_pydicom()
+
+    buckets: dict[str, list[Any]] = {}
+    for path in paths:
+        ds = pydicom.dcmread(path)
+        uid = str(getattr(ds, "SeriesInstanceUID", ""))
+        buckets.setdefault(uid, []).append(ds)
+
+    ordered: dict[str, list[Any]] = {}
+    for uid, datasets in buckets.items():
+        # Sort by projection of ImagePositionPatient onto the slice normal. Datasets
+        # missing geometry fall back to projection 0.0 (degenerate, but never crashes
+        # grouping itself — series_affine raises the §11.4 error for multi-slice).
+        def _proj(ds: Any) -> float:
+            pos = getattr(ds, "ImagePositionPatient", None)
+            iop = getattr(ds, "ImageOrientationPatient", None)
+            if pos is None or iop is None:
+                return 0.0
+            return float(np.dot(np.asarray(pos, dtype=float), _slice_normal(iop)))
+
+        ordered[uid] = sorted(datasets, key=_proj)
+    return ordered
+
+
+def series_affine(ordered_datasets: list[Any]) -> np.ndarray:
+    """Build the 4x4 voxel->world affine for an ordered DICOM series (spec §8.2).
+
+    Follows nibabel's documented DICOM->world convention
+    (https://nipy.org/nibabel/dicom/dicom_orientation.html): DICOM patient
+    coordinates are LPS+ (x->Left, y->Posterior, z->Superior) while NIfTI/nibabel
+    world space is RAS+, so the L and P axes are negated (flip the sign of the
+    first two rows of the rotation/translation) to convert LPS->RAS.
+
+    Construction (nibabel "Defining the affine"): columns of the 3x3 are the
+    direction cosines scaled by spacing -
+      - col 0 = row-direction cosine * column-spacing (PixelSpacing[1], between cols),
+      - col 1 = column-direction cosine * row-spacing (PixelSpacing[0], between rows),
+      - col 2 = slice-normal * inter-slice spacing (distance between consecutive
+        ImagePositionPatient along the normal),
+    and the translation is the first slice's ImagePositionPatient - all in LPS,
+    then negated on the L/P axes for RAS+.
+
+    Raises ValueError (spec §11.4) when a multi-slice series lacks the geometry tags
+    required to stack into a volume. A single slice without geometry degrades to a
+    2D mask upstream (the runner handles that) and never reaches this function.
+    """
+    if not ordered_datasets:
+        raise ValueError("series_affine requires at least one slice")
+
+    first = ordered_datasets[0]
+    iop = getattr(first, "ImageOrientationPatient", None)
+    ipp = getattr(first, "ImagePositionPatient", None)
+    spacing = getattr(first, "PixelSpacing", None)
+    if iop is None or ipp is None or spacing is None:
+        raise ValueError(
+            "DICOM series is missing required geometry tags "
+            "(ImageOrientationPatient / ImagePositionPatient / PixelSpacing); "
+            "cannot stack into a NIfTI volume. A single slice without geometry "
+            "degrades to a 2D mask."
+        )
+
+    iop_arr = np.asarray(iop, dtype=float).reshape(2, 3)
+    row_dir, col_dir = iop_arr[0], iop_arr[1]
+    normal = np.cross(row_dir, col_dir)
+    row_spacing, col_spacing = float(spacing[0]), float(spacing[1])
+    pos0 = np.asarray(ipp, dtype=float)
+
+    # Inter-slice spacing: signed distance between the first two slices along the
+    # normal. Single-slice series default to row-spacing (no z extent to measure).
+    if len(ordered_datasets) >= 2:
+        ipp_next = getattr(ordered_datasets[1], "ImagePositionPatient", None)
+        if ipp_next is None:
+            raise ValueError(
+                "DICOM series slice is missing ImagePositionPatient; cannot derive "
+                "inter-slice spacing for a multi-slice NIfTI volume."
+            )
+        slice_spacing = float(np.dot(np.asarray(ipp_next, dtype=float) - pos0, normal))
+    else:
+        slice_spacing = row_spacing
+
+    affine = np.eye(4, dtype=float)
+    affine[:3, 0] = row_dir * col_spacing
+    affine[:3, 1] = col_dir * row_spacing
+    affine[:3, 2] = normal * slice_spacing
+    affine[:3, 3] = pos0
+    # LPS (DICOM) → RAS+ (nibabel/NIfTI): negate the L and P (x, y) axes.
+    affine[0, :] *= -1.0
+    affine[1, :] *= -1.0
+    return affine

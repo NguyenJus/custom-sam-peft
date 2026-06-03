@@ -216,6 +216,124 @@ def write_geotiff_masks(
         write_geotiff_mask(mask_arr, geo_meta, tif_file)
 
 
+def write_nifti_volume(
+    masks: list[np.ndarray[Any, np.dtype[np.uint8]]],
+    affine: np.ndarray[Any, np.dtype[Any]],
+    out_path: Path,
+) -> None:
+    """Stack 2D (H, W) uint8 masks into a (H, W, n_slices) NIfTI volume (spec §7.3).
+
+    Masks must already be in geometric (sorted) slice order. nibabel is lazy-imported
+    so the base module import never requires it.
+    """
+    import nibabel as nib
+
+    vol = np.stack([np.asarray(m, np.uint8) for m in masks], axis=2)
+    img = nib.Nifti1Image(vol, np.asarray(affine, dtype=float))
+    nib.save(img, str(out_path))
+
+
+def write_nifti_volumes(
+    all_predictions: list[dict[str, Any]],
+    id_to_spatial_meta: dict[int, SpatialMeta],
+    id_to_path: dict[int, Path],
+    originals: dict[int, tuple[int, int]],
+    output_dir: Path,
+) -> None:
+    """Emit one NIfTI volume per DICOM series for dicom-source images (spec §7.3, §11.5).
+
+    Each image_id in ``id_to_spatial_meta`` whose meta ``kind == "dicom"`` and carries a
+    ``series_uid`` is grouped with its siblings; the per-slice predicted masks are stacked
+    in geometric order and written as ``<series_uid>.nii.gz`` under ``output_dir/volumes``.
+    One input dir can therefore yield several volumes (spec §11.5).
+
+    Per slice, the union of all predicted instance masks for that image is taken as the
+    slice mask (the volume is a single-channel foreground stack). A series whose slices
+    lack geometry tags (single-slice / missing-geometry, spec §11.4) is skipped — its 2D
+    mask path (PNG/RLE) is unaffected. No-ops when ``id_to_spatial_meta`` is empty.
+    """
+    if not id_to_spatial_meta:
+        return
+
+    from PIL import Image as _PILImage
+
+    from custom_sam_peft.data.dicom_io import group_series, series_affine
+
+    # Per-image union of predicted instance masks, resized to the source dims.
+    masks_by_image: dict[int, np.ndarray[Any, np.dtype[np.uint8]]] = {}
+    for entry in all_predictions:
+        image_id = int(entry["image_id"])
+        meta = id_to_spatial_meta.get(image_id)
+        if meta is None or getattr(meta, "kind", None) != "dicom":
+            continue
+        mask_arr = decode_rle_to_uint8(entry["segmentation"])
+        h, w = originals[image_id]
+        if mask_arr.shape != (h, w):
+            pil_mask = _PILImage.fromarray(mask_arr * 255)
+            pil_mask = pil_mask.resize((w, h), _PILImage.Resampling.NEAREST)
+            mask_arr = (np.array(pil_mask) > 127).astype(np.uint8)
+        prev = masks_by_image.get(image_id)
+        masks_by_image[image_id] = mask_arr if prev is None else (prev | mask_arr)
+
+    # Bucket dicom image_ids by series_uid; carry each image's source .dcm path.
+    series_to_images: dict[str, list[int]] = {}
+    for image_id, meta in id_to_spatial_meta.items():
+        if getattr(meta, "kind", None) != "dicom":
+            continue
+        uid = getattr(meta, "series_uid", None)
+        if uid is None:
+            continue  # single slice w/o series geometry → 2D mask only (spec §11.4)
+        series_to_images.setdefault(str(uid), []).append(image_id)
+
+    if not series_to_images:
+        return
+
+    volumes_dir = Path(output_dir) / "volumes"
+    volumes_dir.mkdir(parents=True, exist_ok=True)
+
+    for uid, image_ids in series_to_images.items():
+        # Re-read + order the series datasets from their source .dcm paths.
+        paths = [id_to_path[iid] for iid in image_ids if iid in id_to_path]
+        groups = group_series(paths)
+        ordered = groups.get(uid)
+        if not ordered:
+            continue
+        try:
+            affine = series_affine(ordered)
+        except ValueError:
+            # Missing geometry for a (multi-slice) series — skip NIfTI; 2D masks stand.
+            continue
+
+        # Map each ordered dataset back to its image_id via SOPInstanceUID, falling
+        # back to the source path stem, to pull the matching predicted slice mask.
+        path_by_id = {iid: id_to_path[iid] for iid in image_ids if iid in id_to_path}
+        ordered_image_ids = _order_image_ids(ordered, path_by_id)
+
+        h, w = originals[ordered_image_ids[0]]
+        slices = [masks_by_image.get(iid, np.zeros((h, w), np.uint8)) for iid in ordered_image_ids]
+        write_nifti_volume(slices, affine, volumes_dir / f"{uid}.nii.gz")
+
+
+def _order_image_ids(
+    ordered_datasets: list[Any],
+    path_by_id: dict[int, Path],
+) -> list[int]:
+    """Map geometrically-ordered datasets back to image_ids via source .dcm path."""
+    stem_to_id = {Path(p).resolve(): iid for iid, p in path_by_id.items()}
+    result: list[int] = []
+    used: set[int] = set()
+    for ds in ordered_datasets:
+        fname = getattr(ds, "filename", None)
+        iid = stem_to_id.get(Path(fname).resolve()) if fname is not None else None
+        if iid is None:
+            # Fall back to first unused id (datasets without a backing filename).
+            iid = next((i for i in path_by_id if i not in used), None)
+        if iid is not None:
+            result.append(iid)
+            used.add(iid)
+    return result
+
+
 def write_run_json(run_meta: dict[str, Any], output_dir: Path) -> None:
     """Write run.json with all fields from spec §7.3, adding version and git_sha."""
     output_dir = Path(output_dir)

@@ -573,7 +573,8 @@ def run_predict(opts: PredictOptions) -> PredictReport:
     id_to_path: dict[int, Path] = {}
     id_to_stem: dict[int, str] = {}
     originals: dict[int, tuple[int, int]] = {}
-    id_to_spatial_meta: dict[int, Any] = {}  # image_id -> SpatialMeta | None (geo only)
+    id_to_spatial_meta: dict[int, Any] = {}  # image_id -> SpatialMeta (geo)
+    id_to_dicom_meta: dict[int, Any] = {}  # image_id -> SpatialMeta (dicom, spec §7.3)
     n_successful = 0
     t_start = time.perf_counter()
     # Tiling provenance counters (spec §5.2 run.json record)
@@ -625,6 +626,8 @@ def run_predict(opts: PredictOptions) -> PredictReport:
             originals[image_id] = (orig_h, orig_w)
             if spatial_meta is not None and spatial_meta.kind == "geo":
                 id_to_spatial_meta[image_id] = spatial_meta
+            elif spatial_meta is not None and spatial_meta.kind == "dicom":
+                id_to_dicom_meta[image_id] = spatial_meta
 
             if tiling_engaged(orig_h, orig_w):
                 # --- Tiling path (spec §5.2) ---
@@ -797,6 +800,7 @@ def run_predict(opts: PredictOptions) -> PredictReport:
     from custom_sam_peft.predict.writers import (
         write_geotiff_masks,
         write_image_id_map,
+        write_nifti_volumes,
         write_predictions,
         write_run_json,
     )
@@ -812,6 +816,11 @@ def run_predict(opts: PredictOptions) -> PredictReport:
     # GeoTIFF masks — emitted alongside PNG/RLE for geo source images (spec §7.1).
     # One GeoTIFF per prediction entry, parallel to the PNG naming convention.
     write_geotiff_masks(all_predictions, id_to_spatial_meta, id_to_stem, originals, opts.output)
+
+    # NIfTI volumes — emitted alongside PNG/RLE for DICOM source images (spec §7.3, §11.5).
+    # DICOM slices are grouped per series and stacked into one .nii.gz per series; one
+    # input dir can therefore yield several volumes. Non-DICOM paths are unaffected.
+    write_nifti_volumes(all_predictions, id_to_dicom_meta, id_to_path, originals, opts.output)
 
     if opts.visualize:
         from custom_sam_peft.predict.visualize import write_visualization
