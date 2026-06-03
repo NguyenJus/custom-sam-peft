@@ -45,11 +45,14 @@ def test_npy_channel_mismatch_errors(tmp_path):
 
 
 def test_tiff_multiband(tmp_path):
-    import tifffile
+    import rasterio  # rasterio replaced tifffile as the TIFF reader (spec §6)
 
     arr = (np.random.rand(6, 8, 7)).astype(np.float32)  # H,W,C=7
     p = tmp_path / "mb.tif"
-    tifffile.imwrite(p, np.transpose(arr, (2, 0, 1)))  # tifffile writes C,H,W as pages
+    # Write a 7-band TIFF using rasterio's band-based format
+    with rasterio.open(p, "w", driver="GTiff", height=6, width=8, count=7, dtype=arr.dtype) as dst:
+        for b in range(7):
+            dst.write(arr[:, :, b], b + 1)
     out = read_image(p, 7)
     assert out.shape == (6, 8, 7)
 

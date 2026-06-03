@@ -18,7 +18,10 @@ dependencies = [
   "numpy>=1.26",
   "rich>=13",
   "pillow>=10",
-  "tifffile>=2024.1",
+  # rasterio replaces tifffile as the base TIFF reader (spec §6.3/§10): adds CRS +
+  # affine + nodata. Floor 1.3: first series with reliably bundled manylinux GDAL
+  # wheels (no system GDAL required).
+  "rasterio>=1.3",
   "albumentations>=1.4",
   "opencv-python-headless>=4.10",
   "scipy>=1.10",
@@ -41,6 +44,9 @@ dev = [
   "pytest-cov>=5",
   "pre-commit>=4",
   "types-PyYAML>=6",
+  # tifffile is no longer a runtime dep (rasterio replaced it), but tests still use
+  # it to write plain (non-geo) TIFF fixtures for the SpatialMeta-is-None path.
+  "tifffile>=2024.1",
 ]
 
 [project.scripts]
