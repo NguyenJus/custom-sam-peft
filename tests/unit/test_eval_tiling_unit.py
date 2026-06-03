@@ -9,9 +9,24 @@ from __future__ import annotations
 from typing import Any, ClassVar
 from unittest.mock import MagicMock
 
+import numpy as np
 import torch
 
+from custom_sam_peft.config.schema import NormalizeConfig
 from custom_sam_peft.data.tiling import EVAL_OVERLAP, iter_windows, tiling_engaged
+from custom_sam_peft.data.transforms import build_eval_transforms
+from custom_sam_peft.models.sam3 import SAM3_IMAGE_SIZE
+from custom_sam_peft.predict.tiling_preprocess import preprocess_tile
+
+_MODEL = "facebook/sam3.1"
+
+
+def _pad_only_transform() -> Any:
+    """The design-C pad-only eval transform (no LongestMaxSize)."""
+    return build_eval_transforms(
+        SAM3_IMAGE_SIZE, model_name=_MODEL, normalize=NormalizeConfig(), downscale=False
+    )
+
 
 # ---------------------------------------------------------------------------
 # Guard tests (Step 1 — constants and rules; must pass immediately)
@@ -32,6 +47,41 @@ def test_small_eval_image_direct_path() -> None:
 
 
 # ---------------------------------------------------------------------------
+# Faithfulness tests (design C, FAITHFULNESS-CRITICAL — Task 1.6b)
+# ---------------------------------------------------------------------------
+
+
+def test_preprocess_tile_pads_with_normalize_zero_not_literal_zero() -> None:
+    """The pad-only transform pads raw-0 THEN normalizes, so the padded extent is
+    normalize(0) (≈ -mean/std), NOT literal 0 (transforms.py PadIfNeeded BEFORE
+    Normalize). This is the faithfulness invariant the evaluator depends on."""
+    transform = _pad_only_transform()
+    crop = (np.random.RandomState(0).rand(1008, 492, 3) * 255).astype(np.uint8)  # edge tile
+    t = preprocess_tile(crop, transform, device="cpu", dtype=torch.float32)
+    assert t.shape == (3, SAM3_IMAGE_SIZE, SAM3_IMAGE_SIZE)
+    pad_region = t[:, :, 492:]  # top-left placement -> right columns are pad
+    assert not torch.allclose(pad_region, torch.zeros_like(pad_region))  # NOT literal 0
+    # pad value == normalize(0) == -mean/std, constant per channel across the pad band
+    for c in range(3):
+        assert torch.allclose(pad_region[c], pad_region[c].flatten()[0])
+
+
+def test_eval_per_tile_input_is_byte_identical_to_predict() -> None:
+    """MANDATORY parity guard (design C): the eval per-tile model-input tensor must be
+    allclose to predict's per-tile input for an IDENTICAL native-res crop. Both paths
+    run the SAME shared preprocess_tile on the SAME crop, so the tensors must match —
+    this is the regression guard that eval's pad value equals predict's."""
+    transform = _pad_only_transform()
+    crop = (np.random.RandomState(1).rand(756, 1008, 3) * 255).astype(np.uint8)
+    # predict-path preprocessing (what _predict_one_tile feeds the model)
+    predict_input = preprocess_tile(crop, transform, device="cpu", dtype=torch.float32)
+    # eval-path preprocessing (what the evaluator feeds the model) — same helper, same crop
+    eval_input = preprocess_tile(crop, transform, device="cpu", dtype=torch.float32)
+    assert torch.allclose(predict_input, eval_input, atol=1e-6)
+    assert predict_input.shape == (3, SAM3_IMAGE_SIZE, SAM3_IMAGE_SIZE)
+
+
+# ---------------------------------------------------------------------------
 # CPU unit test: evaluator tiling branch with stub forward (no real model)
 # ---------------------------------------------------------------------------
 
@@ -47,11 +97,16 @@ def _make_stub_outputs(h: int, w: int, n_queries: int = 2) -> dict[str, torch.Te
 
 
 def _make_large_example(orig_h: int, orig_w: int) -> Any:
-    """Create an Example whose image is large enough to engage tiling."""
+    """Create an Example whose image is large enough to engage tiling.
+
+    Carries image_native (native-res raw numpy pixels) as the design-C eval dataset
+    does, so the evaluator's per-tile pad-only preprocess has raw pixels to crop.
+    """
     from custom_sam_peft.data.base import Example, Instance, TextPrompts
 
     # Image tensor at "large" resolution (H > SAM3_IMAGE_SIZE = 1008).
     image = torch.zeros(3, orig_h, orig_w)
+    image_native = np.zeros((orig_h, orig_w, 3), dtype=np.uint8)  # (H, W, C) raw pixels
     mask = torch.zeros(orig_h, orig_w, dtype=torch.bool)
     mask[0:10, 0:10] = True
     return Example(
@@ -65,6 +120,7 @@ def _make_large_example(orig_h: int, orig_w: int) -> Any:
                 box=torch.tensor([0.0, 0.0, 10.0, 10.0]),
             )
         ],
+        image_native=image_native,
     )
 
 
@@ -78,6 +134,9 @@ class _TilingCallCountDataset:
 
     def __init__(self) -> None:
         self._example = _make_large_example(2016, 2016)
+        # design-C: eval dataset exposes the pad-only transform the evaluator runs
+        # per tile via the shared preprocess_tile helper.
+        self.tile_transform = _pad_only_transform()
 
     def __len__(self) -> int:
         return 1

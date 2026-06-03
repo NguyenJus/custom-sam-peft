@@ -264,6 +264,10 @@ class Evaluator:
         """
         cfg = self.cfg
 
+        # Lazy import: predict/__init__ -> runner -> evaluator would otherwise create
+        # a cycle at module load. tiling_preprocess itself imports only numpy/torch.
+        from custom_sam_peft.predict.tiling_preprocess import preprocess_tile
+
         was_training = bool(getattr(model, "training", False))
         if hasattr(model, "eval"):
             model.eval()
@@ -281,6 +285,15 @@ class Evaluator:
             micro_batch_size=int(cfg.batch_size),
             effective_K=min(MULTIPLEX_CAP, n_classes) if n_classes else 1,
         )
+
+        # Pad-only transform for the tiling branch (design C, spec §5.4): each
+        # native-res tile crop is padded raw-0 THEN normalized via the SHARED
+        # preprocess_tile helper, byte-identical to predict. The dataset already
+        # built this transform (downscale=False for the eval pipeline) from the same
+        # model/normalize/channel-semantics config predict uses — reuse it to avoid
+        # both an unreachable rebuild (the evaluator holds only an EvalConfig) and
+        # any drift from predict's preprocessing.
+        pad_only_transform = getattr(dataset, "tile_transform", None)
 
         predictions: list[dict[str, object]] = []
         img_idx_global = 0
@@ -305,18 +318,39 @@ class Evaluator:
                                 tile=SAM3_IMAGE_SIZE,
                                 overlap=EVAL_OVERLAP,
                             )
+                            if ex.image_native is None:
+                                raise ValueError(
+                                    "eval tiling path requires Example.image_native "
+                                    "(native-res raw pixels) for the per-tile pad-only "
+                                    f"preprocess, but it is None for image_id={ex.image_id!r}. "
+                                    "This is a dataset wiring bug: the eval/val dataset "
+                                    "must populate image_native for oversized examples "
+                                    "(design C, spec §5.4)."
+                                )
+                            if pad_only_transform is None:
+                                raise ValueError(
+                                    "eval tiling path requires the dataset's pad-only "
+                                    "tile_transform, but it is absent for image_id="
+                                    f"{ex.image_id!r}. The eval/val dataset must expose "
+                                    "tile_transform (build_eval_transforms(..., "
+                                    "downscale=False)) for design-C per-tile preprocess."
+                                )
                             for t_idx, win in enumerate(windows):
                                 tile_int_id = _tile_image_id(ex.image_id, t_idx)
                                 tile_hw = (win.h, win.w)
-                                # Crop image tensor: (C, H, W) -> (C, win.h, win.w)
-                                tile_t = ex.image[
-                                    :,
+                                # Crop the NATIVE-RES raw pixels for this window and run
+                                # the SHARED pad-only preprocess (pad raw-0 -> normalize),
+                                # byte-identical to predict's _predict_one_tile.
+                                crop_np = ex.image_native[
                                     win.y0 : win.y0 + win.h,
                                     win.x0 : win.x0 + win.w,
                                 ]
-                                tile_batch = to_device(
-                                    tile_t.unsqueeze(0), eval_runtime
-                                )  # (1, C, win.h, win.w)
+                                tile_batch = preprocess_tile(
+                                    crop_np,
+                                    pad_only_transform,
+                                    device=eval_runtime.device,
+                                    dtype=eval_runtime.dtype,
+                                ).unsqueeze(0)  # (1, C, 1008, 1008), already on device
                                 j = 0
                                 while j < n_classes:
                                     K_g = min(ladder.effective_K, n_classes - j)

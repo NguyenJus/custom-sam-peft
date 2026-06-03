@@ -321,6 +321,7 @@ class COCODataset:
         out_bboxes: list[Any],
         out_masks: list[Any],
         out_classes: list[int],
+        image_native: np.ndarray[Any, Any] | None = None,
     ) -> Example:
         """Assemble `Instance` objects and return the final `Example`."""
         import torch
@@ -364,6 +365,7 @@ class COCODataset:
             image_id=str(image_id),
             prompts=TextPrompts(classes=prompts_list),
             instances=instances,
+            image_native=image_native,
         )
 
     def __getitem__(self, i: int) -> Example:
@@ -373,7 +375,32 @@ class COCODataset:
         image_tensor, out_bboxes, out_masks, out_classes = self._apply_transforms(
             np_img, bboxes_xyxy, masks, class_labels
         )
-        return self._pack_example(raw, image_tensor, out_bboxes, out_masks, out_classes)
+        # Hand the native-res RAW numpy pixels to the evaluator ONLY for oversized
+        # eval/val examples it tiles per-window (design C). With expand_tiles=False the
+        # window is the whole image, so np_img IS the full native-res image (no extra
+        # read). Train and direct/small paths leave image_native None.
+        image_native: np.ndarray[Any, Any] | None = None
+        if not self._expand_tiles:
+            _h, _w = np_img.shape[0], np_img.shape[1]
+            if tiling_engaged(_h, _w):
+                image_native = np_img
+        return self._pack_example(
+            raw, image_tensor, out_bboxes, out_masks, out_classes, image_native=image_native
+        )
+
+    @property
+    def tile_transform(self) -> Any:
+        """The pad-only eval transform the evaluator runs per native-res tile crop.
+
+        For the eval/val pipeline this is built with ``downscale=False`` (no
+        ``LongestMaxSize``), so it is exactly predict's per-tile preprocessing on a
+        ≤1008 crop (design C, spec §5.4). The evaluator consumes this via the shared
+        ``preprocess_tile`` helper so the per-tile model input is byte-identical to
+        predict's. Exposed because the evaluator only holds an ``EvalConfig`` and
+        cannot rebuild the transform from model/normalize/channel-semantics config —
+        reusing the dataset's already-built transform also eliminates drift risk.
+        """
+        return self._transforms
 
     @property
     def class_names(self) -> list[str]:

@@ -339,12 +339,14 @@ def _predict_one_tile(
     from custom_sam_peft.eval.evaluator import _row_outputs
     from custom_sam_peft.eval.postprocess import queries_to_coco_results
     from custom_sam_peft.oom import OomDecision, is_cuda_oom
+    from custom_sam_peft.predict.tiling_preprocess import preprocess_tile
 
     tile_h, tile_w = crop_np.shape[0], crop_np.shape[1]
     tile_hw = (tile_h, tile_w)
 
-    transformed = transforms(image=crop_np, bboxes=[], class_labels=[], instance_idx=[])
-    img_tensor = transformed["image"].unsqueeze(0).to(device, dtype=dtype)  # (1, C, H, W)
+    # Shared per-tile preprocessing (design C): pad raw-0 -> normalize, byte-identical
+    # to the eval tiled path. (1, C, H, W) — model input.
+    img_tensor = preprocess_tile(crop_np, transforms, device=device, dtype=dtype).unsqueeze(0)
 
     fragments: list[Fragment] = []
     j = 0
