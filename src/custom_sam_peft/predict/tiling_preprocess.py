@@ -13,6 +13,8 @@ from typing import Any
 import numpy as np
 import torch
 
+from custom_sam_peft.runtime import Runtime, to_device
+
 
 def preprocess_tile(
     crop_np: np.ndarray[Any, Any],
@@ -31,6 +33,11 @@ def preprocess_tile(
     raw numpy crop in both paths guarantees byte-identical per-tile inputs.
 
     Returns the ``(C, image_size, image_size)`` tensor on *device* with *dtype*.
+
+    The device move routes through ``runtime.to_device`` (the single sanctioned
+    device-move seam, §3 static guard); the dtype cast is a separate pure-dtype
+    cast. Result is identical to a combined device-and-dtype move.
     """
     out = transform(image=crop_np, bboxes=[], class_labels=[], instance_idx=[])
-    return out["image"].to(device, dtype=dtype)
+    moved = to_device(out["image"], Runtime(device=device, dtype=dtype))
+    return moved.to(dtype)
