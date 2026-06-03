@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import sys
 from pathlib import Path
+from typing import Literal, cast
 
 import typer
 from rich import print as rprint
@@ -80,7 +81,7 @@ def evaluate(
                 param_hint="--config",
             )
     cfg = load_config(config)
-    split_lit = split.value
+    split_lit = cast(Literal["val", "test"], split)
 
     if dry_run:
         rprint(
