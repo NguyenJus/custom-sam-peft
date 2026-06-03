@@ -13,6 +13,8 @@ import torch
 import torch.nn.functional as F
 from torch import Tensor
 
+from custom_sam_peft.eval import _profile  # TEMP #250 Phase 1 — removed in Phase 2
+
 
 def _denorm_cxcywh_to_xywh(boxes_norm: Tensor, original_hw: tuple[int, int]) -> Tensor:
     """boxes_norm: (N, 4) normalized cxcywh in [0, 1]. Returns (N, 4) absolute xywh, clamped."""
@@ -101,26 +103,31 @@ def queries_to_coco_results(
     boxes_xywh = _denorm_cxcywh_to_xywh(boxes_norm, original_hw)  # (N, 4)
 
     # --- masks ---
+    _profile.note(N=int(n), mask_logit_hw=tuple(pred_masks.shape[-2:]))  # TEMP #250
     masks_logits = pred_masks.float().squeeze(0)  # (N, H_m, W_m)
     if not torch.isfinite(masks_logits).all():
         raise RuntimeError(
             "non-finite mask logits in postprocess; check model outputs "
             "(pred_masks contains NaN/Inf)"
         )
-    masks_up = _upsample_mask_logits(masks_logits, original_hw)  # (N, H, W)
-    masks_bin = (masks_up > mask_threshold).cpu().numpy()  # (N, H, W) bool
+    with _profile.bucket("mask_upsample"):  # TEMP #250
+        masks_up = _upsample_mask_logits(masks_logits, original_hw)  # (N, H, W)
+    with _profile.bucket("transfer_binarize"):  # TEMP #250
+        masks_bin = (masks_up > mask_threshold).cpu().numpy()  # (N, H, W) bool
 
     entries: list[dict[str, object]] = []
-    boxes_list = boxes_xywh.cpu().tolist()
-    scores_list = scores.cpu().tolist()
-    for i in range(n):
-        entries.append(
-            {
-                "image_id": int(image_id),
-                "category_id": int(category_id),
-                "bbox": [float(v) for v in boxes_list[i]],
-                "score": float(scores_list[i]),
-                "segmentation": _logits_to_rle(masks_bin[i]),
-            }
-        )
+    with _profile.bucket("transfer_binarize"):  # TEMP #250 (box/score device->host)
+        boxes_list = boxes_xywh.cpu().tolist()
+        scores_list = scores.cpu().tolist()
+    with _profile.bucket("rle_encode"):  # TEMP #250
+        for i in range(n):
+            entries.append(
+                {
+                    "image_id": int(image_id),
+                    "category_id": int(category_id),
+                    "bbox": [float(v) for v in boxes_list[i]],
+                    "score": float(scores_list[i]),
+                    "segmentation": _logits_to_rle(masks_bin[i]),
+                }
+            )
     return entries
