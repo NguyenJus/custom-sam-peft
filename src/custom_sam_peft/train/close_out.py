@@ -14,7 +14,6 @@ from __future__ import annotations
 
 import json
 import logging
-from dataclasses import asdict
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -104,7 +103,6 @@ def close_out(
         metrics["note"] = "no validation set provided"
     if ladder_events is not None:
         metrics["ladder_events"] = {
-            "cuts": [asdict(c) for c in ladder_events.cuts],
             "stop_reason": ladder_events.stop_reason,
         }
     (run_dir / "metrics.json").write_text(json.dumps(metrics, indent=2))

@@ -190,6 +190,7 @@ def load_full_state(
     optimizer: torch.optim.Optimizer,
     scheduler: Any,
     cfg: TrainConfig,
+    load_scheduler_state: bool = True,
 ) -> ResumeState:
     state_file = state_dir / _TRAINING_STATE_FILENAME
     if not state_file.exists():
@@ -228,7 +229,15 @@ def load_full_state(
         )
     load_adapter(wrapper, adapter_dir)
     optimizer.load_state_dict(state["optimizer"])
-    scheduler.load_state_dict(state["scheduler"])
+    if load_scheduler_state:
+        scheduler.load_state_dict(state["scheduler"])
+    else:
+        _LOG.warning(
+            "load_full_state: skipping LR scheduler state restore because the "
+            "persisted scheduler kind (%r) is no longer supported; the LR "
+            "schedule continues from the configured poly schedule instead.",
+            state.get("scheduler_kind"),
+        )
 
     rng = state["rng"]
     random.setstate(rng["python"])

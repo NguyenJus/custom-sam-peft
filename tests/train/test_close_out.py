@@ -11,7 +11,7 @@ from custom_sam_peft.eval._artifacts import EvalArtifacts
 from custom_sam_peft.peft_adapters.lora import apply_lora
 from custom_sam_peft.train.checkpoint import save_adapter
 from custom_sam_peft.train.close_out import close_out
-from custom_sam_peft.train.ladder import LadderEvents, LrCut
+from custom_sam_peft.train.ladder import LadderEvents
 from tests.fixtures.tiny_sam3_lora_stub import make_stub_wrapper
 from tests.integration.test_trainer_evaluator_seam import _make_cfg, _TinyDataset
 
@@ -36,7 +36,7 @@ def test_close_out_restores_best_and_writes_adapter(tmp_path: Path) -> None:
         json.dumps({"metric": "mAP", "value": 0.8, "global_step": 7})
     )
 
-    events = LadderEvents(cuts=(LrCut(6, 1e-4, 1e-5, 0.5),), stop_reason="early_stop: 10 ...")
+    events = LadderEvents(stop_reason="early_stop: 10 ...")
     art = close_out(
         run_dir,
         wrapper,

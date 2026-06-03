@@ -20,7 +20,7 @@ def test_normal_completion_closes_out_on_best(tmp_path: Path) -> None:
     cfg = cfg.model_copy(
         update={
             "train": cfg.train.model_copy(
-                update={"lr_schedule": "plateau", "eval_every": 1, "epochs": 1}
+                update={"lr_schedule": "poly", "eval_every": 1, "epochs": 1}
             )
         }
     )
@@ -45,10 +45,15 @@ def test_early_stop_stops_before_epochs_and_closes_out(tmp_path: Path, monkeypat
         update={
             "train": cfg.train.model_copy(
                 update={
-                    "lr_schedule": "plateau",
+                    "lr_schedule": "poly",
                     "eval_every": 1,
                     "epochs": 50,
-                    "early_stop": cfg.train.early_stop.model_copy(update={"stop_patience": 2}),
+                    # warmup_floor_steps=0 → adaptive-baseline-only grace: the
+                    # first strictly-positive mAP wakes the run, then the flat
+                    # mAP plateau accrues the no-improvement counter (#264).
+                    "early_stop": cfg.train.early_stop.model_copy(
+                        update={"stop_patience": 2, "warmup_floor_steps": 0}
+                    ),
                 }
             )
         }

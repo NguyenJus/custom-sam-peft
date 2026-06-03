@@ -341,7 +341,6 @@ def module_assign_names(file_path: Path) -> set[str]:
 # assertion that fails if any surviving doc row still contains a 3-level path.
 _REKEY_PREFIXES: dict[str, str] = {
     "TrainHyperparams.early_stop.": "EarlyStopConfig.",
-    "TrainHyperparams.lr_decay_on_plateau.": "LrDecayOnPlateauConfig.",
 }
 
 

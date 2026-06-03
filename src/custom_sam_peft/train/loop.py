@@ -93,7 +93,7 @@ class _HostRamLow(Exception):
 
 
 class _EarlyStop(Exception):
-    """Internal signal: the plateau ladder requested an early stop. Graceful —
+    """Internal signal: the early-stop ladder requested a stop. Graceful —
     proceeds to close-out (NOT a pause). Carries the stop point + reason. Never
     propagates past Trainer.fit(). Spec §4.2."""
 
@@ -236,7 +236,6 @@ def train_step(
     peft_method: PEFTMethod | None = None,
     runtime: Runtime | None = None,
     oom_state: OomState | None = None,
-    effective_schedule: str | None = None,
 ) -> StepResult:
     if cfg.task == "semantic":
         return _train_step_semantic(
@@ -251,7 +250,6 @@ def train_step(
             peft_method=peft_method,
             runtime=runtime,
             oom_state=oom_state,
-            effective_schedule=effective_schedule,
         )
     _peft_method: PEFTMethod = (
         peft_method if peft_method is not None else make_peft_method(cfg.peft.method)
@@ -462,20 +460,9 @@ def train_step(
         )
         with profiling.bucket("train.optim_step"):
             optimizer.step()
-        step_per_train_step(
-            scheduler,
-            global_step=global_step,
-            base_lr=cfg.train.learning_rate,
-            warmup_steps=cfg.train.warmup_steps,
-            # Use the post-fallback effective schedule (not the requested one from
-            # cfg.train.lr_schedule).  When plateau falls back to cosine (no val set),
-            # cfg.train.lr_schedule is still "plateau" but the built scheduler is a
-            # LambdaLR; passing "plateau" here would take the plateau no-op branch and
-            # the cosine decay would silently never fire.  effective_schedule carries
-            # the resolved value from fit() via run_epoch -> train_step.  Default falls
-            # back to cfg.train.lr_schedule so callers that omit the param are unchanged.
-            mode=effective_schedule if effective_schedule is not None else cfg.train.lr_schedule,
-        )
+        # Every schedule is a per-step LambdaLR (warmup lives inside lr_lambda),
+        # so the scheduler is stepped once per optimizer step regardless of mode.
+        step_per_train_step(scheduler)
         optimizer.zero_grad(set_to_none=True)
 
     return StepResult(
@@ -500,7 +487,6 @@ def _train_step_semantic(
     peft_method: PEFTMethod | None = None,
     runtime: Runtime | None = None,
     oom_state: OomState | None = None,
-    effective_schedule: str | None = None,
 ) -> StepResult:
     """Semantic task step: assemble-then-loss (Spec §10.1).
 
@@ -603,13 +589,9 @@ def _train_step_semantic(
             )
         )
         optimizer.step()
-        step_per_train_step(
-            scheduler,
-            global_step=global_step,
-            base_lr=cfg.train.learning_rate,
-            warmup_steps=cfg.train.warmup_steps,
-            mode=effective_schedule if effective_schedule is not None else cfg.train.lr_schedule,
-        )
+        # Every schedule is a per-step LambdaLR (warmup lives inside lr_lambda),
+        # so the scheduler is stepped once per optimizer step regardless of mode.
+        step_per_train_step(scheduler)
         optimizer.zero_grad(set_to_none=True)
 
     return StepResult(
@@ -690,7 +672,6 @@ def run_epoch(
     oom_state: OomState | None = None,
     deadline: float | None = None,
     should_stop_early: Callable[[], _EarlyStop | None] | None = None,
-    effective_schedule: str | None = None,
     flush_extra: Callable[[], dict[str, Any]] | None = None,
     host_ram_floor_bytes: int | None = None,
 ) -> tuple[int, int]:
@@ -756,7 +737,6 @@ def run_epoch(
             peft_method=_peft_method,
             runtime=runtime,
             oom_state=oom_state,
-            effective_schedule=effective_schedule,
         )
         nan_streak = result.nan_streak
         global_step += 1
