@@ -68,7 +68,7 @@ def test_finalize_requires_resume(tmp_path: Path, monkeypatch) -> None:
             time_limit=None,
             finalize=True,
             verbose=False,
-            progress_flag="off",
+            progress=run_cmd.Progress.off,
             visualize=False,
         )
     assert exc.value.exit_code == 1
@@ -85,7 +85,7 @@ def test_finalize_rejects_time_limit(tmp_path: Path, monkeypatch) -> None:
             time_limit="1h",
             finalize=True,
             verbose=False,
-            progress_flag="off",
+            progress=run_cmd.Progress.off,
             visualize=False,
         )
     assert exc.value.exit_code == 1
@@ -112,7 +112,7 @@ def test_finalize_resolves_latest(tmp_path: Path, monkeypatch) -> None:
             time_limit=None,
             finalize=True,
             verbose=False,
-            progress_flag="off",
+            progress=run_cmd.Progress.off,
             visualize=False,
         )
     assert exc.value.exit_code == 0

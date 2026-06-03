@@ -22,6 +22,7 @@ from rich.console import Console
 
 from custom_sam_peft.cli._host_ram import format_host_ram_message
 from custom_sam_peft.cli._logging import configure_logging
+from custom_sam_peft.cli._options import Progress, ProgressOpt, VerboseOpt
 from custom_sam_peft.cli._progress import ProgressKind, ProgressMode, progress_session, resolve_mode
 from custom_sam_peft.cli._time_limit import format_time_limit_message
 from custom_sam_peft.cli.init_cmd import run_init
@@ -316,13 +317,8 @@ def run(
             "metrics/bundle. Runs NO training. Requires --resume; rejects --time-limit."
         ),
     ),
-    verbose: bool = typer.Option(False, "-v", "--verbose", help="Enable DEBUG logging."),
-    progress_flag: str = typer.Option(
-        "auto",
-        "--progress",
-        help="Progress display mode: auto|on|off|plain.",
-        metavar="MODE",
-    ),
+    verbose: VerboseOpt = False,
+    progress: ProgressOpt = Progress.auto,
     visualize: bool = typer.Option(
         True,
         "--visualize/--no-visualize",
@@ -361,7 +357,7 @@ def run(
             update={"train": cfg.train.model_copy(update={"time_limit": time_limit})}
         )
     mode = resolve_mode(
-        progress_flag if progress_flag != "auto" else None,
+        None if progress is Progress.auto else progress.value,
         os.environ,
         sys.stdout.isatty(),
         Console().is_jupyter,
