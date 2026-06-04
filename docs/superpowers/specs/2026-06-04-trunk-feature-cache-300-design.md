@@ -10,15 +10,18 @@ forward entirely. The lever is wall-clock for compute-constrained runs; net
 saving per replayed step is approximately `(trunk_fwd_time - H2D_copy_time)`,
 summed over `(epochs - 1)` epochs.
 
-This feature DEPENDS on an adapter-free trunk scope (a parallel effort). Today
-every `LoraScope` attaches LoRA to the trunk
-(`SCOPE_TARGETS` / `SCOPE_MHA_MODULES` at
+This feature REQUIRES an adapter-free trunk scope, which has landed:
+[#304](https://github.com/justin/custom-sam-peft/pull/304) added `decoder_concept`
+as the new default scope. `decoder_concept` is `vision_decoder_concept` MINUS the
+ViT-trunk pattern, so the trunk carries no LoRA and all its base params keep
+`requires_grad=False` (`SCOPE_TARGETS` / `SCOPE_MHA_MODULES` at
 `src/custom_sam_peft/peft_adapters/lora.py:39-86`;
-`LoraScope = Literal["vision","vision_decoder","vision_decoder_concept","all"]`
+`LoraScope = Literal["vision","vision_decoder","vision_decoder_concept","decoder_concept","all"]`
 at `src/custom_sam_peft/config/schema.py:106`, default
-`scope = "vision_decoder_concept"` at `schema.py:583`), so no current scope
-yields a fully-frozen trunk. This spec ASSUMES the adapter-free scope lands and
-hard-guards to a no-op/error whenever the trunk is trainable.
+`scope = "decoder_concept"` at `schema.py:583`). The fully-frozen-trunk
+precondition is therefore the project default. Guard 1 (Section 2) remains the
+hard backstop: if any future scope or override leaves the trunk trainable, the
+cache hard-errors rather than miscaching.
 
 This spec is SPIKE-FIRST: production wiring is conditional on a feasibility
 spike on the real SAM3.1 model (see Spike-first plan). Cache RESIDENCE
@@ -61,10 +64,10 @@ failure must name the offending condition AND the config key to change.
 
 1. **Trunk frozen.** Zero `requires_grad` params under the trunk AND no LoRA
    module attached to it. This is also the no-op backstop: if the trunk is
-   trainable, error rather than silently miscache. (Trunk-attached LoRA today
-   comes from `SCOPE_TARGETS` / `SCOPE_MHA_MODULES`,
-   `lora.py:39-86`; this guard is what makes the assume-lands dependency on the
-   adapter-free scope safe.)
+   trainable, error rather than silently miscache. The default `decoder_concept`
+   scope satisfies this (no trunk-attached LoRA); legacy scopes still attach
+   trunk LoRA via `SCOPE_TARGETS` / `SCOPE_MHA_MODULES` (`lora.py:39-86`), and
+   this guard rejects them.
 2. **RGB input.** `channel_adapter is None`, i.e. `channel_semantics == "rgb"`.
    `_build_channel_adapter` (`src/custom_sam_peft/models/sam3.py:243-270`)
    returns `None` for RGB and otherwise a fully-trainable
@@ -172,17 +175,17 @@ spike (Part A), NOT in CI.
 
 ## 7. Out of scope
 
-- The adapter-free trunk scope itself (parallel effort). This spec assumes it
-  lands and hard-guards to a no-op/error when the trunk is trainable.
+- The adapter-free trunk scope itself (already landed as `decoder_concept` in
+  #304). Guard 1 hard-errors when a trunk-trainable scope is used.
 - Feature-space augmentation.
 - A multi-run persistent disk cache, unless the spike picks disk residence.
 - QLoRA / bnb interactions.
 
 ## Open questions resolved
 
-- **(a) Scope dependency:** handled by the parallel adapter-free-trunk effort.
-  This spec assumes it lands and hard-guards (Guard 1) to a no-op/error when the
-  trunk is trainable, so it is safe to merge ahead of or behind that effort.
+- **(a) Scope dependency:** satisfied — the adapter-free `decoder_concept` scope
+  landed in #304 and is the new default. Guard 1 remains the hard backstop for
+  any trunk-trainable scope/override.
 - **(b) Augmentation:** hard-require aug-off via a fail-fast build-time guard
   (Guard 3) asserted against the built train transform — not a silent
   best-effort.
