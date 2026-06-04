@@ -181,7 +181,7 @@ def test_K_4_multiplex_calls_model_once(monkeypatch: pytest.MonkeyPatch) -> None
     call_prompts: list[list[Any]] = []
     real_forward = wrapper.forward
 
-    def spy(images: torch.Tensor, prompts: list[Any], support: Any = None) -> Any:
+    def spy(images: torch.Tensor, prompts: list[Any], support: Any = None, **kwargs: Any) -> Any:
         call_prompts.append(list(prompts))
         return real_forward(images, prompts, support=support)
 
@@ -217,7 +217,9 @@ def test_train_step_one_total_loss_per_group(monkeypatch: pytest.MonkeyPatch) ->
     prompts_seen: list[list[Any]] = []
     real_forward = wrapper.forward
 
-    def spy_forward(images: torch.Tensor, prompts: list[Any], support: Any = None) -> Any:
+    def spy_forward(
+        images: torch.Tensor, prompts: list[Any], support: Any = None, **kwargs: Any
+    ) -> Any:
         forward_call_count[0] += 1
         prompts_seen.append(list(prompts))
         return real_forward(images, prompts, support=support)
@@ -252,7 +254,7 @@ def test_two_groups_two_model_calls(monkeypatch: pytest.MonkeyPatch) -> None:
     call_class_lists: list[list[str]] = []
     real_forward = wrapper.forward
 
-    def spy(images: torch.Tensor, prompts: list[Any], support: Any = None) -> Any:
+    def spy(images: torch.Tensor, prompts: list[Any], support: Any = None, **kwargs: Any) -> Any:
         call_class_lists.append(list(prompts[0].classes))
         return real_forward(images, prompts, support=support)
 
@@ -294,6 +296,7 @@ def _make_oom_wrapper_spy(
         images: torch.Tensor,
         prompts: list[Any],
         support: Any = None,
+        **kwargs: Any,
     ) -> Any:
         if not prompts:
             return real_forward(images, prompts, support=support)
@@ -443,7 +446,9 @@ def test_oom_effective_k_sticky_across_steps(
     real_forward = wrapper.forward
     call_count = [0]
 
-    def spy_sticky(images: torch.Tensor, prompts: list[Any], support: Any = None) -> Any:
+    def spy_sticky(
+        images: torch.Tensor, prompts: list[Any], support: Any = None, **kwargs: Any
+    ) -> Any:
         k = len(prompts[0].classes) if (prompts and isinstance(prompts[0], TextPrompts)) else 0
         call_count[0] += 1
         if k > 2:
@@ -547,7 +552,9 @@ def test_oom_final_hard_fail_only_when_b_and_k_both_one(
 
     wrapper = _make_wrapper()
 
-    def always_oom(images: torch.Tensor, prompts: list[Any], support: Any = None) -> Any:
+    def always_oom(
+        images: torch.Tensor, prompts: list[Any], support: Any = None, **kwargs: Any
+    ) -> Any:
         raise torch.cuda.OutOfMemoryError("synthetic OOM — always")
 
     monkeypatch.setattr(wrapper, "forward", always_oom)
@@ -589,7 +596,9 @@ def test_nan_group_skip_path_untouched(
     wrapper = _make_wrapper()
 
     # The forward always raises ValueError (simulates Hungarian non-finite cost).
-    def value_error_forward(images: torch.Tensor, prompts: list[Any], support: Any = None) -> Any:
+    def value_error_forward(
+        images: torch.Tensor, prompts: list[Any], support: Any = None, **kwargs: Any
+    ) -> Any:
         raise ValueError("synthetic non-finite cost matrix")
 
     monkeypatch.setattr(wrapper, "forward", value_error_forward)

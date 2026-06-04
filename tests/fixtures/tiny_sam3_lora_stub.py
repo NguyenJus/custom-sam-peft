@@ -110,7 +110,8 @@ class _StubAdapter(nn.Module):
         super().__init__()
         self.model = base
 
-    def forward(self, images: Any = None, prompts: Any = None) -> Any:
+    def forward(self, images: Any = None, prompts: Any = None, **kwargs: Any) -> Any:
+        # **kwargs absorbs sample_uids= from Sam3Wrapper.forward (trunk cache path).
         return self.model(images, prompts)  # type: ignore[return-value]
 
 

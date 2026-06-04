@@ -262,6 +262,10 @@ def train_step(
     images: Tensor = to_device(batch["images"], runtime)
     prompts = batch["prompts"]
     targets: list[list[Instance]] = batch["instances"]
+    # sample_uids: provided by collate_batch for the trunk feature cache (spec §3).
+    # Falls back to None when the batch pre-dates the cache path (e.g. eval batches
+    # or legacy tests that don't include the key).
+    sample_uids: list[str] | None = batch.get("sample_uids")
     B = images.shape[0]
 
     classes_in_batch = sorted({c for p in prompts for c in p.classes})
@@ -350,6 +354,7 @@ def train_step(
                             _grad_accum: int = cfg.train.grad_accum_steps,
                             _losses_out: list[dict[str, Tensor]] = _last_group_losses,
                             _pm: PEFTMethod = _peft_method,
+                            _sample_uids: list[str] | None = sample_uids,
                         ) -> Tensor:
                             # Slice prompts and flat target rows for this microbatch.
                             micro_prompts = [_prompts_g[i] for i in micro_indices]
@@ -358,11 +363,19 @@ def train_step(
                                 _targets_g[i * _K_g + j] for i in micro_indices for j in range(_K_g)
                             ]
                             micro_imgs = images[micro_indices]
+                            # Slice sample_uids by micro_indices for the trunk cache
+                            # (spec §3 Integration: "sliced by micro_indices").
+                            micro_uids: list[str] | None = (
+                                [_sample_uids[i] for i in micro_indices]
+                                if _sample_uids is not None
+                                else None
+                            )
                             with _autocast_ctx(cfg, _pm):
                                 with profiling.bucket("train.forward"):
                                     micro_out = _model(
                                         micro_imgs,
                                         micro_prompts,
+                                        sample_uids=micro_uids,
                                     )
                                 with profiling.bucket("train.loss"):
                                     micro_grp_losses = total_loss(
@@ -388,7 +401,7 @@ def train_step(
                     else:
                         with _autocast_ctx(cfg, _peft_method):
                             with profiling.bucket("train.forward"):
-                                out = model(images, prompts_g)
+                                out = model(images, prompts_g, sample_uids=sample_uids)
                             with profiling.bucket("train.loss"):
                                 group_losses = total_loss(out, targets_g, cfg.train.loss)
                         group_scaled = group_losses["total"] / (G * cfg.train.grad_accum_steps)
@@ -508,6 +521,8 @@ def _train_step_semantic(
     images: Tensor = to_device(batch["images"], runtime)
     prompts = batch["prompts"]
     semantic_targets: list[SemanticTarget] = batch["semantic"]
+    # sample_uids: provided by collate_batch for the trunk feature cache (spec §3).
+    sample_uids_sem: list[str] | None = batch.get("sample_uids")
     B = images.shape[0]
 
     classes_in_batch = sorted({c for p in prompts for c in p.classes})
@@ -534,7 +549,7 @@ def _train_step_semantic(
             for group in groups:
                 prompts_g = [TextPrompts(classes=list(group)) for _ in range(B)]
                 with _autocast_ctx(cfg, _peft_method):
-                    out = model(images, prompts_g)
+                    out = model(images, prompts_g, sample_uids=sample_uids_sem)
                     slice_g = marginalize_group(
                         out,
                         B,
@@ -724,7 +739,34 @@ def run_epoch(
     )
     _loss_keys = _SEMANTIC_LOSS_KEYS if cfg.task == "semantic" else _INSTANCE_LOSS_KEYS
     window = _ScalarWindow(loss_keys=_loss_keys)
-    for batch in loader:
+
+    # Depth-1 prefetch wiring (spec §3.5 'Replay path + 1-step prefetch').
+    # When a trunk cache is attached, we peek 1 step ahead into the (shuffled)
+    # loader order and schedule a background read for the NEXT step's blobs
+    # BEFORE the CURRENT step's compute, hiding ~18 ms disk I/O behind ~91 ms
+    # of forward/backward compute.
+    # When no cache is attached (trunk_cache is None), behaviour is identical
+    # to a plain `for batch in loader:` — no overhead.
+    _trunk_cache = model.trunk_cache  # None when cache not attached or stub model
+    _loader_iter = iter(loader)
+    _sentinel = object()
+    _next_batch: Any = next(_loader_iter, _sentinel)
+
+    while _next_batch is not _sentinel:
+        batch = _next_batch
+        # Pre-fetch the next loader batch so we can schedule a cache prefetch
+        # before we start the current step's compute.
+        _next_batch = next(_loader_iter, _sentinel)
+
+        # Issue depth-1 prefetch for the NEXT step's sample_uids.  The
+        # background thread starts reading the blobs while train_step runs
+        # on the current batch.  Spec §3.5: "background reader thread hiding
+        # the read behind prior-step compute".
+        if _trunk_cache is not None and _next_batch is not _sentinel:
+            _next_uids: list[str] | None = _next_batch.get("sample_uids")
+            if _next_uids is not None:
+                _trunk_cache.prefetch(_next_uids)
+
         result = train_step(
             model,
             batch,

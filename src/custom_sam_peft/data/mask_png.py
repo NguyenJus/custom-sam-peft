@@ -176,6 +176,9 @@ class MaskPngDataset:
             image_id=img_path.stem,
             prompts=prompts,
             semantic=semantic,
+            # cite: spec §3 — stable per-sample uid; mask_png has no tiling so
+            # the filename stem (image_id) is sufficient and unique.
+            sample_uid=img_path.stem,
         )
 
     @property

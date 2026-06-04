@@ -328,7 +328,11 @@ class COCODataset:
 
         from custom_sam_peft.data.base import Instance, TextPrompts
 
-        image_id, _rec, _anns, _win = raw
+        image_id, _rec, _anns, window = raw
+        # cite: spec §3 Key — stable per-sample uid; tiling expands one image into
+        # (image_id, window) samples with distinct trunk inputs; Window.__str__ gives
+        # "Window(y0=...,x0=...,h=...,w=...)" which is unique per tile.
+        sample_uid = f"{image_id}:{window}"
 
         instances: list[Instance] = []
         for box, mask_np, cls in zip(out_bboxes, out_masks, out_classes, strict=True):
@@ -366,6 +370,7 @@ class COCODataset:
             prompts=TextPrompts(classes=prompts_list),
             instances=instances,
             image_native=image_native,
+            sample_uid=sample_uid,
         )
 
     def __getitem__(self, i: int) -> Example:

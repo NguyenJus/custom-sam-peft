@@ -41,6 +41,8 @@ def _make_cfg(tmp_path: Path, train_limit=None, val_limit=None, strategy="random
     # MagicMock auto-attrs don't trip the auto-split path.
     cfg.data.val = MagicMock()
     cfg.data.split = None
+    # Disable trunk cache so _setup_trunk_cache is not triggered by this mock cfg.
+    cfg.train.cache_trunk_features = False
     return cfg
 
 

@@ -13,8 +13,12 @@ def collate_batch(examples: list[Example]) -> dict[str, Any]:
     """Stack images, keep ragged prompts/instances as Python lists.
 
     Returns a dict with keys: "images" (B,3,H,W), "image_ids" (list[str]),
-    "prompts" (list[Prompts]), "instances" (list[list[Instance]]),
+    "sample_uids" (list[str]), "prompts" (list[Prompts]),
+    "instances" (list[list[Instance]]),
     "semantic" (list[SemanticTarget | None], [None]*B under instance task).
+
+    "sample_uids" carries the per-sample stable uid for the trunk feature cache
+    (spec §3 Key).  Defaults to "" for examples produced by non-cache paths.
 
     Raises:
         ValueError: empty input or mismatched image shapes across the batch.
@@ -30,6 +34,8 @@ def collate_batch(examples: list[Example]) -> dict[str, Any]:
     return {
         "images": images,
         "image_ids": [ex.image_id for ex in examples],
+        # cite: spec §3 — thread sample_uid alongside image_ids on the collate path
+        "sample_uids": [ex.sample_uid for ex in examples],
         "prompts": [ex.prompts for ex in examples],
         "instances": [list(ex.instances) for ex in examples],
         "semantic": [ex.semantic for ex in examples],  # [None]*B under instance

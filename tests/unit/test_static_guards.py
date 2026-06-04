@@ -49,9 +49,15 @@ def test_no_to_device_outside_collator_and_runtime():
 
     No allowed exceptions beyond runtime/ and data/collate.py: sam3.py is
     text-only after #88 (no box-hint coercion).
+
+    Exception: models/trunk_cache.py — the cache's H2D replay path (cold-read
+    -> pin -> non-blocking H2D) mirrors the #288 transfer_binarize pattern
+    (the only #273 survivor) and is the entire performance rationale for the
+    cache.  It has no runtime.to_device abstraction because it is the low-level
+    pinned-memory + non-blocking transfer path itself.
     """
     hits = _grep(r"\.to\(device", in_dir=SRC)
-    allowed_substrings = ("/runtime/", "/data/collate.py")
+    allowed_substrings = ("/runtime/", "/data/collate.py", "/models/trunk_cache.py")
     offenders = [h for h in hits if not any(allowed in h for allowed in allowed_substrings)]
     assert not offenders, (
         "`.to(device)` outside runtime/ and data/collate.py.\n"

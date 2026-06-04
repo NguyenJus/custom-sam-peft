@@ -160,6 +160,9 @@ class SemanticHFDataset:
             image_id=str(i),
             prompts=prompts,
             semantic=semantic,
+            # cite: spec §3 — stable per-sample uid; SemanticHF has no tiling so
+            # the row index (image_id) is sufficient and unique.
+            sample_uid=str(i),
         )
 
 

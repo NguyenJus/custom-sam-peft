@@ -48,6 +48,22 @@ from custom_sam_peft.train.visualize import render_mask_panel
 _LOG = logging.getLogger(__name__)
 
 
+def _teardown_trunk_cache(model: Sam3Wrapper) -> None:
+    """Call TrunkFeatureCache.teardown() if one is attached to the model's adapter.
+
+    Invoked from Trainer.fit()'s finally block on ALL exit paths (normal, early
+    stop, time/RAM limit, exception) so an aborted run never leaks ~193 GiB.
+    Spec §3.5 cleanup.
+    """
+    try:
+        adapter = getattr(model, "model", None)
+        cache = getattr(adapter, "_trunk_cache", None)
+        if cache is not None and hasattr(cache, "teardown"):
+            cache.teardown()
+    except Exception:
+        _LOG.warning("trunk cache teardown failed; cache dir may remain on disk.", exc_info=True)
+
+
 def _resolve_optimizer_name(cfg: TrainConfig, peft_method: PEFTMethod | None = None) -> Optimizer:
     requested = cfg.train.optimizer
     if requested != "auto":
@@ -860,6 +876,10 @@ class Trainer:
             # profile_snapshot.json in the run dir. No-op when disabled.
             if profiling.is_enabled():
                 profiling.dump(run_dir / "profile_snapshot.json")
+            # Trunk feature cache teardown (spec §3.5 cleanup): delete the cache
+            # dir on ALL exit paths (normal, early stop, time/RAM limit, exception)
+            # so an aborted run does not leak ~193 GiB of on-disk state.
+            _teardown_trunk_cache(self.model)
 
         if stop is not None:
             return self._time_limited_artifacts(run_dir, stop, budget_seconds, oom_state)
