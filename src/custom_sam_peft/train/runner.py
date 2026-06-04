@@ -98,12 +98,17 @@ def run_training(
     _log_split_source(vs)
 
     data_cfg_dict = cfg.data.model_dump()
-    if vs.mode == "auto_split":
-        assert vs.train_ids is not None and vs.val_ids is not None  # noqa: S101
-        data_cfg_dict["_resolved_image_ids"] = {
-            "train": list(vs.train_ids),
-            "eval": list(vs.val_ids),
-        }
+    if vs.train_ids is not None:
+        # Inject resolved ids whenever the split carved a train pool — both
+        # auto_split (val+test) and test-only (mode="none", no val bucket).
+        # Without this guard, test-only runs build train_ds from the full pool,
+        # leaking held-out test images into training (spec §9 invariant: "test is
+        # held out from training entirely").
+        resolved: dict[str, list[str]] = {"train": list(vs.train_ids)}
+        if vs.mode == "auto_split":
+            assert vs.val_ids is not None  # noqa: S101
+            resolved["eval"] = list(vs.val_ids)
+        data_cfg_dict["_resolved_image_ids"] = resolved
 
     train_ds = _build_dataset_from_dict(data_cfg_dict, cfg, "train")
     val_ds: Dataset | None = (

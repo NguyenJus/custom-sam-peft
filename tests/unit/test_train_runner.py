@@ -390,3 +390,102 @@ def test_run_training_local_backend_writes_metrics_jsonl(
     assert rows, "expected at least one logged scalar row"
     assert all("step" in r and "wall_time" in r for r in rows)
     assert not (result.run_dir / "panels").exists(), "metrics-only: no panels dir"
+
+
+def test_run_training_test_only_split_excludes_test_ids_from_train_ds(
+    tmp_path: Path, tiny_coco_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """§9 invariant: test-only split (mode='none', train_ids populated) must NOT
+    include held-out test_ids in the training dataset.
+
+    Regression test for the leak where vs.train_ids was only injected when
+    vs.mode == 'auto_split', leaving test-only mode ('none') without the carve-out
+    guard, causing run_training to build train_ds from the FULL pool.
+    """
+    from custom_sam_peft.config.schema import (
+        DataConfig,
+        DataSplit,
+        PEFTConfig,
+        RunConfig,
+        SplitConfig,
+        TrackingConfig,
+        TrainConfig,
+        TrainHyperparams,
+    )
+    from custom_sam_peft.data.split_source import load_split_source
+    from tests.fixtures.tiny_sam3_lora_stub import FIXTURE_SCOPE_PATTERNS, make_stub_wrapper
+
+    cfg = TrainConfig(
+        run=RunConfig(name="test-only-carve", output_dir=str(tmp_path), seed=42),
+        data=DataConfig(
+            format="coco",
+            train=DataSplit(
+                annotations=str(tiny_coco_dir / "annotations.json"),
+                images=str(tiny_coco_dir / "images"),
+            ),
+            val=None,
+            split=SplitConfig(test=0.3, seed=42),
+        ),
+        peft=PEFTConfig(
+            method="lora", scope="vision", target_modules=FIXTURE_SCOPE_PATTERNS["vision"]
+        ),
+        train=TrainHyperparams(
+            epochs=1,
+            batch_size=1,
+            grad_accum_steps=1,
+            save_every=2,
+            log_every=1,
+            warmup_steps=0,
+            num_workers=0,
+        ),
+        tracking=TrackingConfig(backend="none"),
+    )
+
+    # Capture the data_cfg_dict passed to each _build_dataset_from_dict call.
+    seen_dicts: list[dict] = []
+    original_build = __import__(
+        "custom_sam_peft.train.runner", fromlist=["_build_dataset_from_dict"]
+    )._build_dataset_from_dict
+
+    def capturing_build(data_cfg_dict, cfg_, pipeline):
+        seen_dicts.append((pipeline, dict(data_cfg_dict)))
+        return original_build(data_cfg_dict, cfg_, pipeline)
+
+    monkeypatch.setattr(
+        "custom_sam_peft.train.runner._build_dataset_from_dict", capturing_build
+    )
+    monkeypatch.setattr(
+        "custom_sam_peft.train.runner.load_sam31",
+        lambda _m, **_kw: make_stub_wrapper(dim=8, working=True),
+    )
+
+    result = run_training(cfg)
+
+    # Verify split_source.json recorded test_ids correctly.
+    vs = load_split_source(result.run_dir)
+    assert vs is not None
+    assert vs.mode == "none", "test-only split must resolve mode='none'"
+    assert vs.test_ids is not None and len(vs.test_ids) > 0, "test_ids must be populated"
+    assert vs.train_ids is not None, "train_ids must be populated (carve-out)"
+
+    # The train build call must have _resolved_image_ids injected.
+    train_calls = [(p, d) for p, d in seen_dicts if p == "train"]
+    assert train_calls, "expected a train dataset build call"
+    _, train_dict = train_calls[0]
+    assert "_resolved_image_ids" in train_dict, (
+        "test-only split must inject _resolved_image_ids into train build; "
+        "without it the full pool (including test images) is used"
+    )
+    injected_train_ids = set(train_dict["_resolved_image_ids"]["train"])
+
+    # The injected train ids must not include any test_ids (the leak check).
+    leaked = injected_train_ids & set(vs.test_ids)
+    assert not leaked, (
+        f"test ids leaked into training dataset: {leaked}. "
+        "This violates the spec invariant: test is held out from training entirely."
+    )
+
+    # No eval key in _resolved_image_ids (test-only has no val).
+    assert "eval" not in train_dict["_resolved_image_ids"], (
+        "test-only split must not inject an eval key (no val bucket)"
+    )
