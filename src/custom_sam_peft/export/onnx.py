@@ -202,6 +202,53 @@ def _merge_and_cast(
     adapter = wrapper.model
     merged = cast(nn.Module, adapter.model)
 
+    # --- RoPE complex-op swap (spec §Hook points in _merge_and_cast, issue #279) ---
+    # All four steps run BEFORE the fp16/fp32 cast so freqs_cis is still complex64
+    # and both equivalence guards compare on fp32 buffers.
+
+    # Step 1: VE-RoPE detection — raises VeRopeUnsupportedError if any module uses
+    # use_ve_rope=True (no real-valued equivalent; spec §Error handling).
+    # The scan is folded into _patch_encoder_rope_for_export (single pass over modules,
+    # checked and raised before any mutation; per spec §Implementation note).
+
+    # Step 2: Whole-encoder pre-patch reference capture.
+    # Deterministic synthetic image: raw floats, SAM3_IMAGE_SIZE, cfg.data.channels,
+    # batch _TRACE_B (reuses _run_parity_check input conventions; spec §Whole-encoder guard).
+    _rope_gen = torch.Generator(device=next(merged.parameters()).device).manual_seed(0)
+    _rope_img = torch.rand(
+        _TRACE_B,
+        cfg.data.channels,
+        SAM3_IMAGE_SIZE,
+        SAM3_IMAGE_SIZE,
+        generator=_rope_gen,
+        device=next(merged.parameters()).device,
+    )
+    with torch.no_grad():
+        encoder_ref_pre_patch = _torch_encoder_feats(wrapper, _rope_img)
+
+    # Step 3: Perform the swap + per-module equivalence guards.
+    _n_rope_patched = _patch_encoder_rope_for_export(merged)
+
+    # Step 4: Whole-encoder post-patch guard (belt-and-suspenders).
+    # Compares against the pre-patch reference at the fp32 _PARITY_TOL band.
+    # This guard always runs pre-cast on fp32 buffers regardless of --fp16 flag
+    # (spec §Whole-encoder guard).
+    with torch.no_grad():
+        encoder_out_post_patch = _torch_encoder_feats(wrapper, _rope_img)
+    _rope_atol, _rope_rtol = _PARITY_TOL["fp32"]  # fp32 band; spec §Whole-encoder guard
+    for _key in sorted(encoder_ref_pre_patch):
+        _ref_t = encoder_ref_pre_patch[_key]
+        _out_t = encoder_out_post_patch[_key]
+        if not torch.allclose(_out_t, _ref_t, atol=_rope_atol, rtol=_rope_rtol):
+            _max_delta = float((_out_t - _ref_t).abs().max())
+            raise RopeEquivalenceError(
+                f"Whole-encoder RoPE equivalence guard FAILED on key {_key!r}. "
+                f"max|Δ|={_max_delta:.6g} exceeds fp32 band "
+                f"(atol={_rope_atol}, rtol={_rope_rtol}). "
+                "Aborting export."
+            )
+    # --- end RoPE swap ---
+
     if fp16:
         merged.half()
         export_dtype = torch.float16
@@ -240,6 +287,144 @@ def _resolve_class_names(cfg: TrainConfig) -> list[str]:
 
 class ExportParityError(RuntimeError):
     """torch-vs-ORT parity failed; the ONNX bundle was NOT promoted."""
+
+
+class VeRopeUnsupportedError(RuntimeError):
+    """A vitdet Attention module uses VisionRotaryEmbeddingVE (use_ve_rope=True).
+
+    This variant has no real-valued equivalent and cannot be lowered to ONNX.
+    It is a separate, harder blocker than the standard complex-RoPE path.
+    The SAM 3.1 default is use_ve_rope=False (encoder uses standard RoPE).
+    We refuse to silently leave an untraceable op rather than skip it.
+    Export is aborted before any trace or cast.
+    """
+
+
+class RopeEquivalenceError(RuntimeError):
+    """The original-vs-real RoPE equivalence guard failed.
+
+    Raised by either the per-module guard (atol/rtol 1e-5; spec §Per-module guard)
+    or the whole-encoder guard (fp32 _PARITY_TOL band; spec §Whole-encoder guard).
+    Export is aborted before any trace or cast.
+    """
+
+
+def _patch_encoder_rope_for_export(merged: nn.Module) -> int:
+    """Swap every encoder Attention module from complex RoPE to the real-valued path.
+
+    Walks ``merged.modules()`` and patches every ``sam3.model.vitdet.Attention``
+    instance that uses complex RoPE (``use_rope=True, use_rope_real=False,
+    use_ve_rope=False``) by:
+
+    1. Snapshotting the current ``freqs_cis`` (complex64) for the per-module guard.
+    2. Setting ``use_rope_real=True``.
+    3. Calling ``module._setup_rope_freqs()`` — sam3's own code re-registers
+       ``freqs_cis`` and additionally registers ``freqs_cis_real`` / ``freqs_cis_imag``
+       (cosθ / sinθ buffers).  No learned weights are touched.
+    4. Running a per-module equivalence guard at tight tolerance (atol/rtol 1e-5;
+       spec §Per-module guard — spike showed bit-exact at fp32).
+
+    Raises ``VeRopeUnsupportedError`` (before any mutation) if any Attention module
+    uses ``use_ve_rope=True`` — that variant has no real-valued equivalent.
+
+    Raises ``RopeEquivalenceError`` if the per-module guard fails.
+
+    The leftover complex ``freqs_cis`` buffer is left in place (inert after the swap;
+    survives ``.half()``; ``_apply_rope`` asserts non-None so it must NOT be None).
+
+    Returns the number of modules patched.  No count>0 assertion — the TinySam3Stub
+    and any decoder-only model legitimately yield 0.
+    """
+    # Lazy import: keeps sam3 out of module-level scope (consistent with the
+    # existing lazy-import pattern in this file, e.g. merge_lora imported inside
+    # _merge_and_cast).
+    from sam3.model.vitdet import Attention
+    from sam3.sam.rope import apply_rotary_enc, apply_rotary_enc_real
+
+    # --- First pass: fail loud on VE-RoPE before any mutation ---
+    for module in merged.modules():
+        if isinstance(module, Attention) and module.use_rope and module.use_ve_rope:
+            raise VeRopeUnsupportedError(
+                f"Module {module!r} uses VisionRotaryEmbeddingVE (use_ve_rope=True). "
+                "This variant has no real-valued equivalent and cannot be lowered to "
+                "ONNX. It is a separate, harder blocker than the standard complex-RoPE "
+                "path. The SAM 3.1 default is use_ve_rope=False (encoder uses standard "
+                "RoPE). Aborting export."
+            )
+
+    n = 0
+    for module in merged.modules():
+        if not isinstance(module, Attention):
+            continue
+        if not (module.use_rope and not module.use_rope_real and not module.use_ve_rope):
+            continue
+
+        # Step 1: snapshot the complex freqs_cis BEFORE any mutation.
+        # Used by the per-module guard to compare original-vs-real paths.
+        freqs_cis_snapshot = module.freqs_cis.detach().clone()  # complex64
+
+        # Step 2 + 3: flip the flag and regenerate the RoPE table via sam3's own code.
+        # _setup_rope_freqs re-registers freqs_cis AND registers freqs_cis_real /
+        # freqs_cis_imag (vitdet.py:549-552).  No learned weights are touched.
+        module.use_rope_real = True
+        module._setup_rope_freqs()
+
+        # Step 4: per-module equivalence guard.
+        # Build deterministic q, k in the module's head shape (B, H, L, head_dim).
+        # Spec §Per-module guard: use (B=1, H=num_heads, L=input_size[0]*input_size[1],
+        # head_dim=head_dim); deterministic generator.
+        if module.input_size is None:
+            raise RuntimeError(
+                f"Attention module {module!r} has use_rope=True but input_size is None; "
+                "cannot build the per-module RoPE equivalence guard."
+            )
+        L = module.input_size[0] * module.input_size[1]
+        # Build q/k on the module's device so the elementwise multiply in
+        # apply_rotary_enc / apply_rotary_enc_real never sees a CPU/CUDA mismatch.
+        # freqs_cis_real was just regenerated by _setup_rope_freqs(), so its
+        # .device is authoritative (mirrors the whole-encoder guard's convention
+        # of using next(merged.parameters()).device).
+        rope_device = module.freqs_cis_real.device
+        gen = torch.Generator(device=rope_device).manual_seed(0)
+        q = torch.randn(1, module.num_heads, L, module.head_dim, generator=gen, device=rope_device)
+        k = torch.randn(1, module.num_heads, L, module.head_dim, generator=gen, device=rope_device)
+
+        # Reference: original complex path using the pre-patch snapshot.
+        # Signature: apply_rotary_enc(xq, xk, freqs_cis, repeat_freqs_k=False).
+        with torch.no_grad():
+            q_ref, k_ref = apply_rotary_enc(q, k, freqs_cis=freqs_cis_snapshot)
+
+        # Candidate: the real path via the freshly regenerated buffers.
+        # Signature: apply_rotary_enc_real(xq, xk, freqs_cis_real, freqs_cis_imag).
+        with torch.no_grad():
+            q_real, k_real = apply_rotary_enc_real(
+                q,
+                k,
+                freqs_cis_real=module.freqs_cis_real,
+                freqs_cis_imag=module.freqs_cis_imag,
+            )
+
+        # Tight tolerance: spike showed bit-exact at fp32; 1e-5 is generous
+        # (spec §Spike findings, §Per-module guard).
+        _ROPE_GUARD_ATOL = 1e-5  # spec §Per-module guard
+        _ROPE_GUARD_RTOL = 1e-5  # spec §Per-module guard
+        q_ok = torch.allclose(q_real, q_ref, atol=_ROPE_GUARD_ATOL, rtol=_ROPE_GUARD_RTOL)
+        k_ok = torch.allclose(k_real, k_ref, atol=_ROPE_GUARD_ATOL, rtol=_ROPE_GUARD_RTOL)
+        if not q_ok or not k_ok:
+            max_delta_q = float((q_real - q_ref).abs().max())
+            max_delta_k = float((k_real - k_ref).abs().max())
+            raise RopeEquivalenceError(
+                f"Per-module RoPE equivalence guard FAILED for {module!r}. "
+                f"max|Δq|={max_delta_q:.6g}, max|Δk|={max_delta_k:.6g} "
+                f"(atol={_ROPE_GUARD_ATOL}, rtol={_ROPE_GUARD_RTOL}). "
+                "The regenerated real-valued RoPE table does not match the original "
+                "complex path at the documented tolerance. Aborting export."
+            )
+
+        n += 1
+
+    logger.info("_patch_encoder_rope_for_export: patched %d Attention module(s)", n)
+    return n
 
 
 def _run_parity_check(
