@@ -22,6 +22,7 @@ import hashlib
 import json
 import logging
 import random
+import shutil
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, cast
@@ -111,6 +112,33 @@ def _hash_cfg(cfg: TrainConfig) -> str:
     return hashlib.sha256(canonical.encode()).hexdigest()
 
 
+def _step_num(p: Path) -> int:
+    """Return the integer step index from a step_<N> directory name, or -1 on parse failure."""
+    try:
+        return int(p.name.split("_", 1)[1])
+    except (IndexError, ValueError):
+        return -1
+
+
+def _prune_old_checkpoints(checkpoints_dir: Path, keep: int) -> None:
+    """Remove older step_<N> directories, retaining only the newest *keep* entries.
+
+    Only directories whose names parse positively as ``step_<int>`` are touched;
+    unrecognised names (e.g. "best", "step_abc") are silently skipped.
+    rmtree failures are caught and logged as warnings — housekeeping must never
+    abort a training run.
+    """
+    step_dirs = [d for d in checkpoints_dir.iterdir() if d.is_dir() and _step_num(d) >= 0]
+    # Sort descending by step index; keep the newest *keep* entries.
+    step_dirs.sort(key=_step_num, reverse=True)
+    to_remove = step_dirs[keep:]
+    for stale in to_remove:
+        try:
+            shutil.rmtree(stale)
+        except Exception as exc:
+            _LOG.warning("checkpoint retention: failed to remove %s: %s", stale, exc)
+
+
 def save_adapter(wrapper: Sam3Wrapper, path: Path) -> None:
     """LoRA vs QLoRA dispatch by Linear4bit-presence."""
     if wrapper.peft_model is None:
@@ -189,6 +217,10 @@ def save_full_state(
         "scheduler_kind": scheduler_kind,
     }
     torch.save(payload, state_dir / _TRAINING_STATE_FILENAME)
+
+    keep = cfg.train.keep_last_checkpoints
+    if keep is not None:
+        _prune_old_checkpoints(state_dir.parent, keep)
 
 
 def load_full_state(
@@ -307,12 +339,6 @@ def find_latest_checkpoint(cfg: TrainConfig) -> Path:
             continue
 
         # Pick the step dir with the largest integer suffix.
-        def _step_num(p: Path) -> int:
-            try:
-                return int(p.name.split("_", 1)[1])
-            except (IndexError, ValueError):
-                return -1
-
         best = max(step_dirs, key=_step_num)
         return best
 

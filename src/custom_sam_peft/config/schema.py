@@ -706,6 +706,16 @@ class TrainHyperparams(_Strict):
             "so one checkpoint per epoch."
         ),
     )
+    keep_last_checkpoints: PositiveInt | None = Field(
+        default=2,
+        description=(
+            "Retain only the newest N step_<N> checkpoints; older ones are pruned "
+            "after each successful checkpoint write. None disables pruning (keep all). "
+            "best/ is tracked separately under run_dir/best and is never pruned."
+        ),
+    )
+    # cite: keep-last-N retention; N=2 keeps one fallback checkpoint against a crash
+    #       mid-write on this HDD-saturation-prone box (#316).
     log_every: PositiveInt = 50
     # --- advanced ---
     max_grad_norm: PositiveFloat = 1.0
