@@ -350,7 +350,9 @@ def test_tiled_per_example_iou_is_nonzero_for_overlapping_pred() -> None:
     model = _make_topleft_hit_model(hit=10)
 
     cfg = EvalConfig(mode="full", iou_thresholds=[0.5], batch_size=1)
-    _report, per_example_iou, _gt_counts = Evaluator(cfg).evaluate(model, dataset, return_per_example_iou=True)
+    _report, per_example_iou, _gt_counts = Evaluator(cfg).evaluate(
+        model, dataset, return_per_example_iou=True
+    )
 
     # Length contract (#245): exactly one value per example.
     assert len(per_example_iou) == len(dataset) == 1

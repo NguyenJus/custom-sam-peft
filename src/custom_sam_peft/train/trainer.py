@@ -375,7 +375,10 @@ class Trainer:
             # driver so the eval forward can allocate a contiguous block (#176).
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
-            report = Evaluator(lite_cfg).evaluate(self.model, self.val_ds)
+            from custom_sam_peft.data.io import cached_image_reads
+
+            with cached_image_reads(maxsize=lite_cfg.lite_max_images):
+                report = Evaluator(lite_cfg).evaluate(self.model, self.val_ds)
             self.tracker.log_scalars(step, report.overall)
             self._maybe_save_best(report, step, run_dir)
             mAP = report.overall.get(self._best_metric_key)
