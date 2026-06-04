@@ -41,7 +41,8 @@ In-flight runs are re-launched (see §9, resume).
   vocabulary, **shared across all three buckets** (guaranteed by the splitter
   enumerating from `data.train`).
 - `csp eval --split test` resolves test ids from either explicit `data.test` or
-  `data.split.test`.
+  the **stored** `split_source.json` in the run dir (recompute only as a fallback
+  when no stored split is found).
 
 ### 1.2 Non-goals (deferred)
 
@@ -428,6 +429,10 @@ Generalizes the existing 5-case dispatch (val_source.py lines ~41-105):
    - `val_ids = result.val_ids` (empty tuple when val omitted).
    - `test_ids = result.test_ids if cfg.data.split.test else None`.
    - `*_fraction_requested` from the config; counts/missing from the result.
+   This branch fires both at train time (`run_dir` = the new run dir, no json yet →
+   compute + save) and at eval time (`run_dir` = the derived run dir → the
+   resume/load-if-present check at step 1 returns the saved ids, so eval reuses the
+   exact training partition; see §7.2).
 3. `cfg.data.val is not None` → `mode="explicit"`, ids `None`,
    `test_ids = None` (explicit test is read from `cfg.data.test` directly by the
    eval runner, not threaded through the record).
@@ -491,17 +496,41 @@ Every entry below was enumerated from a `val_split`/`val_source` grep across
 | `src/custom_sam_peft/train/runner.py` | Update imports (`split_source` symbols). `resolve_split_source` → `save_split_source` → `_log_split_source`. Thread `test_ids` is *not* injected into training datasets (test held out); only `{"train", "eval"}` resolved ids are injected as today (lines ~96-103). |
 | `src/custom_sam_peft/train/trainer.py` | Read `split_source.json` (was `val_source.json`) for tracker hparams (lines ~663-672). Rename the injected `cfg_dict["val_source"]` key to `cfg_dict["split_source"]`; add `test_fraction_requested` / `n_test` to the injected dict. |
 | `src/custom_sam_peft/cli/run_cmd.py` | Update imports + `load_split_source` calls (lines ~55, 95, 129, 215, 240). `_build_val_dataset(cfg, vs)` unchanged in behavior (val side only). The `vs.mode != "none"` val gates are unchanged. |
-| `src/custom_sam_peft/eval/runner.py` | `--split test` consumer (lines ~117-126): accept `data.split.test` as a source (§8 below). `--split val` guard already references `cfg.data.val_split` (line ~112) → rename to `cfg.data.split` and check it carved a val bucket. The auto-split val branch (lines ~127-130) uses `resolve_split_source`. |
+| `src/custom_sam_peft/eval/runner.py` | Derive `resolved_run_dir` from the checkpoint in the standalone branch (was `None`; mirror runner.py:94's `parent.parent`) so both split branches **load** the stored `split_source.json` (§7.2). `--split test` consumer (lines ~117-126): accept `data.split.test` as a source. `--split val` guard references `cfg.data.val_split` (line ~112) → rename to `cfg.data.split` and check it carved a val bucket. Both auto-split branches call `resolve_split_source(cfg, run_dir=resolved_run_dir)`. |
 | `src/custom_sam_peft/diagnostics.py` | `DataReport` (lines ~43-55, ~241-263): the `val_split_fraction`/`val_split_seed` fields read from `cfg.data.split` instead of `cfg.data.val_split`; add a test-fraction field. Rename references. |
 
-### 7.2 Eval consumption detail (`eval/runner.py`, §8 of brainstorm)
+### 7.2 Eval consumption detail (`eval/runner.py`)
 
 Test is held out from training and **never** auto-evaluated. It is scored only via
 `csp eval --split test`, which resolves test ids from **either** explicit
-`data.test` **or** `data.split.test`, mirroring the dual-source pattern
-`--split val` already uses (runner.py lines ~125-131):
+`data.test` **or** the **stored** `split_source.json`, mirroring the dual-source
+pattern `--split val` uses (runner.py lines ~125-131).
+
+**Load the stored split; do not recompute (the fix this revision adds).** The
+training run already persisted the exact partition to `<run_dir>/split_source.json`
+(train/val/**test** ids) before `Trainer.fit`. `resolve_split_source(cfg,
+run_dir=X)` already has load-if-present semantics (returns the saved record
+verbatim when `X/split_source.json` exists). The only reason eval recomputed today
+is that the val branch passed `run_dir=None`. We thread the real run dir in so the
+held-out ids are **authoritative**, not re-derived.
+
+**Deriving the run dir at eval time.** `run_eval` already resolves a run dir from
+the `EvalArtifacts` seam (`artifacts.run_dir`, the `csp run` path). For the
+standalone `csp eval --checkpoint <ckpt>` path it is `None` today; derive it from
+the checkpoint exactly as the **resume** logic does (runner.py:94 uses
+`resume_from.parent.parent`, since checkpoints live at
+`<run_dir>/checkpoints/step_N/`):
 
 ```python
+# run_eval header (was: resolved_run_dir = None in the standalone branch)
+if artifacts is not None:
+    resolved_checkpoint = artifacts.checkpoint_path
+    resolved_run_dir = artifacts.run_dir
+else:
+    resolved_checkpoint = checkpoint  # may be None → baseline
+    # Mirror the resume derivation: <run_dir>/checkpoints/step_N/ → run_dir.
+    resolved_run_dir = checkpoint.parent.parent if checkpoint is not None else None
+
 # guard (was: line ~117) — accept either source
 if split == "test" and cfg.data.test is None and (
     cfg.data.split is None or cfg.data.split.test is None
@@ -510,23 +539,30 @@ if split == "test" and cfg.data.test is None and (
         "--split test requires data.test or data.split.test in config; got neither."
     )
 
-# dataset build (was: lines ~125-130)
+# dataset build (was: lines ~125-130) — load-first via resolved_run_dir
 if split == "test" and cfg.data.test is not None:
-    cfg_dict["val"] = cfg_dict["test"]            # explicit test → existing path
+    cfg_dict["val"] = cfg_dict["test"]              # explicit test → existing path
 elif split == "test" and cfg.data.split is not None and cfg.data.split.test is not None:
-    vs = resolve_split_source(cfg, run_dir=None)  # recompute (no run_dir in this path)
+    vs = resolve_split_source(cfg, run_dir=resolved_run_dir)  # loads stored ids if present
     assert vs.test_ids is not None  # noqa: S101 — split.test invariant
     cfg_dict["_resolved_image_ids"] = {"eval": list(vs.test_ids)}
 elif split == "val" and cfg.data.split is not None:
-    vs = resolve_split_source(cfg, run_dir=None)
+    vs = resolve_split_source(cfg, run_dir=resolved_run_dir)  # also load-first now
     assert vs.val_ids is not None  # noqa: S101
     cfg_dict["_resolved_image_ids"] = {"eval": list(vs.val_ids)}
 ```
 
-**Reproducibility note** (carried from predecessor §7.4): standalone `csp eval
---split {val,test}` against a split-mode config recomputes the split from scratch
-and reproduces the in-training partition iff the underlying annotations file is
-unchanged. The split is `(items, val_fraction, test_fraction, seed)`-deterministic.
+**Bonus correctness fix (val).** Passing `resolved_run_dir` (not `None`) on the
+`--split val` branch means standalone val eval also now reuses the stored partition
+instead of recomputing — closing the same latent drift bug for val.
+
+**Recompute fallback.** `resolve_split_source` falls back to recomputing from
+`cfg.data.split` only when no `split_source.json` is found — i.e. baseline
+(`checkpoint=None`, no run dir) eval, or a config never trained under this run dir.
+That recompute remains `(items, val_fraction, test_fraction, seed)`-deterministic
+and reproduces the partition iff the annotations file is unchanged; but for any
+real trained checkpoint the stored ids win, so the held-out test set is exact and
+immune to post-training annotation edits.
 
 ### 7.3 Example configs + emitters (migration — §8)
 
@@ -649,6 +685,13 @@ CPU-only; no GPU tests added (honors the GPU-test policy).
    cfg_dict["test"]` path still taken (regression).
 4. `--split val` with `data.split` carving a val bucket → builder receives the
    val ids.
+5. **Load-not-recompute:** checkpoint under a run dir containing a hand-written
+   `split_source.json` whose `test_ids` differ from what `cfg.data.split` would
+   recompute → eval uses the **stored** ids (monkeypatch `stratified_split` to
+   raise → asserts it is never called when the json is present). Same assertion for
+   the val branch.
+6. **Recompute fallback:** baseline eval (`checkpoint=None`, no run dir) with
+   `data.split.test` → recomputes (no json) and still resolves `test_ids`.
 
 ### 10.5 Migration of example configs — `tests/unit/test_cli_init.py`, `tests/unit/cli/test_setup_wizard.py`, `tests/unit/cli/test_interactive.py`
 
@@ -669,8 +712,10 @@ CPU-only; no GPU tests added (honors the GPU-test policy).
   `stratified_split` to raise on resume → must not be called).
 - `tests/integration/test_train_end_to_end.py` + `test_cli_run.py`: split-mode
   run finishes; `split_source.json` exists; test bucket is NOT auto-evaluated
-  (assert eval/bundle ran on val only); a follow-up `csp eval --split test`
-  resolves from `split_source.json`/recompute and scores the held-out test.
+  (assert eval/bundle ran on val only); a follow-up `csp eval --split test` (run dir
+  derived from the checkpoint) **loads** the stored `test_ids` and scores exactly the
+  held-out test — assert the scored id set equals the persisted `test_ids` (not a
+  recompute).
 
 ### 10.7 Coverage gate
 
@@ -686,7 +731,7 @@ extended resolver are mostly straight-line with full unit coverage (§10.1, §10
 | --- | --- |
 | HF `split_test` carving | `data.split` incompatible with HF explicit split knobs; HF test auto-split deferred. |
 | k>3 / arbitrary named subsets | The splitter is now k-subset-capable internally, but only `{train, val, test}` is exposed. |
-| `csp eval --run-dir` exact-run test reproduction | Standalone eval recomputes; loading a specific run's `split_source.json` is a future ergonomics enhancement (carried from predecessor). |
+| `csp eval --run-dir <dir>` explicit run-dir override | Eval derives the run dir from the checkpoint (§7.2); an explicit `--run-dir` flag to point at an arbitrary stored split (e.g. eval a checkpoint copied elsewhere) is a future ergonomics add. The load-from-stored-split behavior itself ships here. |
 | Per-image stability under dataset edits | Same rationale as predecessor — run-dir record is the reproducibility hook. |
 | `data.source` anchor field | Considered and rejected (§4). |
 
