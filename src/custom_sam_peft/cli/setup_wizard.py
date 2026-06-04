@@ -354,14 +354,34 @@ def _ask_peft_sizing(ctx: Ctx) -> dict[str, Any]:
 def _calibrate_or_analytic(ctx: Ctx) -> dict[str, Any] | None:
     """Analytic sizing via decide_preset; no live GPU probe.
 
+    Pins the chosen method/r/alpha (from ctx.answers or PEFTConfig template
+    defaults) so that hardware autosizes only b/k (spec §6.2). Passes best-effort
+    num_classes from the dataset config to cap K at the vocabulary size (spec §5).
+
     The real opt-in probe is _invoke_calibrate inside generate_config.
     """
+    from custom_sam_peft.data._num_classes import infer_num_classes
     from custom_sam_peft.presets import decide_preset
 
     k_cap = ctx.answers.get("train", {}).get("multiplex", {}).get("classes_per_forward")
+    # Pin method/r/alpha from ctx.answers (if already collected) or PEFTConfig defaults.
+    # cite: PEFTConfig.method=lora, r=16 (defaults-provenance.md:84), alpha=32 (:85).
+    peft_answers = ctx.answers.get("peft", {})
+    chosen_method = peft_answers.get("method", "lora")
+    chosen_r = int(peft_answers.get("r", 16))
+    chosen_alpha = int(peft_answers.get("alpha", 32))
+    # Best-effort num_classes from the dataset config collected so far (§5).
+    data_cfg = ctx.answers.get("data")
+    num_classes = infer_num_classes(data_cfg) if isinstance(data_cfg, dict) else None
 
     try:
-        decision = decide_preset(k=k_cap)
+        decision = decide_preset(
+            k=k_cap,
+            method=chosen_method,
+            r=chosen_r,
+            alpha=chosen_alpha,
+            num_classes=num_classes,
+        )
     except (RuntimeError, ValueError) as exc:
         typer.echo(f"could not auto-size: {exc}; falling back to manual")
         return None
