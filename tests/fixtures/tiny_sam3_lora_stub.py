@@ -147,6 +147,13 @@ FIXTURE_SCOPE_PATTERNS: dict[str, list[str]] = {
         r"transformer_decoder\.layers\.\d+\.cross_attn\.out_proj$",
     ],
     "all": [r".*"],
+    # decoder_concept: vision_decoder_concept minus the trunk pattern.
+    # Only the decoder cross_attn.out_proj (a genuine nn.Linear on _DecoderAttn) is
+    # targeted generically; self_attn/ca_text out_proj are adapted via
+    # FIXTURE_SCOPE_MHA_MODULES (double-targeting must be avoided).
+    "decoder_concept": [
+        r"transformer_decoder\.layers\.\d+\.cross_attn\.out_proj$",
+    ],
 }
 
 # Parallel to the production SCOPE_MHA_MODULES, but with the fixture's truncated
@@ -154,6 +161,12 @@ FIXTURE_SCOPE_PATTERNS: dict[str, list[str]] = {
 # nn.MultiheadAttention modules makes peft adapt their in_proj_weight + out_proj.
 FIXTURE_SCOPE_MHA_MODULES: dict[str, list[str]] = {
     "vision_decoder_concept": [
+        r"transformer_decoder\.layers\.\d+\.ca_text$",
+        r"transformer_decoder\.layers\.\d+\.self_attn$",
+    ],
+    # decoder_concept: identical to vision_decoder_concept — trunk carries no MHA
+    # targets regardless, so the MHA surface is unchanged between the two scopes.
+    "decoder_concept": [
         r"transformer_decoder\.layers\.\d+\.ca_text$",
         r"transformer_decoder\.layers\.\d+\.self_attn$",
     ],

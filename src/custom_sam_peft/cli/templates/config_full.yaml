@@ -43,7 +43,7 @@ peft:
   alpha: 32
   dropout: 0.05
   # --- advanced ---
-  # scope: vision_decoder
+  # scope: decoder_concept  # vision | vision_decoder | vision_decoder_concept | decoder_concept (NEW DEFAULT, freezes ViT trunk) | all
   # target_modules: null
   # bias: none
 $qlora_block

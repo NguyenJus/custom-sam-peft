@@ -190,7 +190,7 @@ def _apply_config_rewrite(config: Path, *, decision: PresetDecision) -> None:
         )
 
 
-def _derive_split(method: str, r: int, batch: int) -> tuple[int, int]:
+def _derive_split(method: str, r: int, batch: int, scope: str) -> tuple[int, int]:
     """Stage 1: two cheap probes (K=1, K=4) -> (A_fixed, A_per_class).
 
     Raises _GpuTooSmall iff the K=1 probe OOMs. A K=4-probe OOM degrades to the
@@ -203,6 +203,10 @@ def _derive_split(method: str, r: int, batch: int) -> tuple[int, int]:
     subtract STATIC only -> portable flash-baseline seeds. A_fixed clamps to >=0; a
     clamped-to-zero A_fixed is the EXPECTED dev-GPU outcome (encoder activation <
     model-weight conservatism margin), not an error.
+
+    ``scope``: LoraScope value (string) from the run PEFTConfig. Used for the
+    per-scope adapter sizing in the static overhead term so the inverted overhead
+    matches the predictor's STATIC for the probed configuration (spec §3).
     """
     try:
         peak_k1 = _run_probe(method="qlora", r=4, k_eff=1, batch=1)
@@ -217,7 +221,12 @@ def _derive_split(method: str, r: int, batch: int) -> tuple[int, int]:
     # materialized attention, the SAME quantity the predictor adds for this card.
     cc = torch.cuda.get_device_capability(0)
     flash = _flash_attention_available(cc)
-    static = _model_bytes("qlora") + _adapter_bytes(4) + _optimizer_bytes(4) + WORKSPACE_BYTES
+    static = (
+        _model_bytes("qlora")
+        + _adapter_bytes(4, scope)
+        + _optimizer_bytes(4, scope)
+        + WORKSPACE_BYTES
+    )
     overhead = static + (0 if flash else _attention_bytes_per_example(SAM3_IMAGE_SIZE))
     try:
         peak_k4 = _run_probe(method="qlora", r=4, k_eff=4, batch=1)
@@ -438,6 +447,7 @@ def run_calibration(*, config: Path, output: Path, force: bool) -> PresetDecisio
     cfg = load_config(config)
     method = cfg.peft.method
     r = cfg.peft.r
+    scope = cfg.peft.scope
     # cfg_r / cfg_alpha: immutable pre-climb snapshots of the configured values, used
     # by the co-scale guard below (the working `r` is reassigned by _confirm_and_climb).
     cfg_r = cfg.peft.r
@@ -457,12 +467,12 @@ def run_calibration(*, config: Path, output: Path, force: bool) -> PresetDecisio
         typer.echo("cache fresh — exiting")
         decision = _decision_from_cache(output, k_cap)
         if decision is None:
-            decision = decide_preset(k=k_cap, cache_path=output)
+            decision = decide_preset(k=k_cap, cache_path=output, scope=scope)
         _apply_config_rewrite(config, decision=decision)
         return decision
 
     try:
-        a_fixed, a_per_class = _derive_split(method, r, batch)
+        a_fixed, a_per_class = _derive_split(method, r, batch, scope)
     except FileNotFoundError as exc:
         raise _CheckpointMissing(str(exc)) from exc
 
@@ -471,7 +481,7 @@ def run_calibration(*, config: Path, output: Path, force: bool) -> PresetDecisio
     _write_cache_v3(
         output, gpu_name=gpu_name, total=total, a_fixed=a_fixed, a_per_class=a_per_class, peak=0
     )
-    aim = decide_preset(k=k_cap, cache_path=output)
+    aim = decide_preset(k=k_cap, cache_path=output, scope=scope)
     budget = aim.budget_bytes  # decide_preset already computed total - headroom
 
     # Stage 3 — confirm + climb/shrink down the full sacrifice order (bounded).
