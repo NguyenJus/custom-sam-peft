@@ -866,7 +866,7 @@ class Trainer:
             _LOG.warning(
                 "host-RAM floor reached at step %d (epoch %d): %.2f GB available (floor: %.2f GB). "
                 "Checkpoint saved to %s. "
-                "To resume: reduce data.num_workers and/or batch_size, or raise "
+                "To resume: reduce train.num_workers and/or train.batch_size, or raise "
                 "train.host_ram_floor_gb, then resume from the checkpoint.",
                 ram_stop.step,
                 ram_stop.epoch,

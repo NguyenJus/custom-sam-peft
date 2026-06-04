@@ -39,7 +39,10 @@ def format_host_ram_message(stop: HostRamStop, *, subcommand: str, config_path: 
     lines.append("")
     resume = f"custom-sam-peft {subcommand} --config {config_path} --resume __latest__"
     lines.append(f"   • Resume:            {resume}")
-    lines.append("   • Lower memory:      edit config (e.g. num_workers, batch_size), then resume.")
+    lines.append(
+        "   • Lower memory:      edit config "
+        "(e.g. train.num_workers, train.batch_size), then resume."
+    )
     if stop.best_dir is not None and stop.best_map is not None:
         lines.append(f"   • Use best as-is:    {_rel(stop.best_dir)}/adapter/")
     return "\n".join(lines)
