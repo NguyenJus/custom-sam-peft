@@ -439,8 +439,16 @@ class _Sam3ImageAdapter(nn.Module):
                     # .contiguous() ensures a fresh stride layout matching what a
                     # real forward_image would produce — avoids stride-0 aliasing
                     # if any downstream consumer does an in-place op (minor fix).
+                    # .to(device): _cached_pos_enc is held on CPU (see miss path) to
+                    # keep VRAM free, but the cached backbone_fpn entries come back
+                    # from get_batch already on `device`; forward_grounding indexes
+                    # vision_pos_enc with the (on-device) img_ids, so the re-attached
+                    # pos_enc MUST land on the same device or the index op raises a
+                    # cross-device error (caught only on a real GPU — CPU stubs put
+                    # everything on cpu). cite: spec §1 vision_pos_enc handling.
                     backbone_out["vision_pos_enc"] = [
-                        p.expand(b, *p.shape[1:]).contiguous() for p in self._cached_pos_enc
+                        p.expand(b, *p.shape[1:]).contiguous().to(device)
+                        for p in self._cached_pos_enc
                     ]
                 else:
                     # Fallback: recompute pos_enc (should not happen after epoch 0).
