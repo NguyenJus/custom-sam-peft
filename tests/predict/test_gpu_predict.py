@@ -28,7 +28,7 @@ from custom_sam_peft.config.loader import load_config
 from custom_sam_peft.models.sam3 import SAM3_IMAGE_SIZE
 from custom_sam_peft.predict.runner import PredictOptions, run_predict
 from custom_sam_peft.train.runner import run_training
-from tests.gpu.conftest import _RecordingTracker
+from tests.gpu.conftest import _bnb_available, _RecordingTracker
 
 pytestmark = [
     pytest.mark.requires_compatible_gpu,
@@ -200,6 +200,8 @@ def test_predict_lora_adapter_cuda(
 
 
 @pytest.mark.gpu_t4
+@pytest.mark.requires_bnb
+@pytest.mark.skipif(not _bnb_available(), reason="bitsandbytes not installed")
 def test_predict_qlora_no_merge_cuda(
     tmp_path: Path,
     tiny_coco_dir: Path,
