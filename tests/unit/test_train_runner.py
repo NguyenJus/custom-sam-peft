@@ -451,9 +451,7 @@ def test_run_training_test_only_split_excludes_test_ids_from_train_ds(
         seen_dicts.append((pipeline, dict(data_cfg_dict)))
         return original_build(data_cfg_dict, cfg_, pipeline)
 
-    monkeypatch.setattr(
-        "custom_sam_peft.train.runner._build_dataset_from_dict", capturing_build
-    )
+    monkeypatch.setattr("custom_sam_peft.train.runner._build_dataset_from_dict", capturing_build)
     monkeypatch.setattr(
         "custom_sam_peft.train.runner.load_sam31",
         lambda _m, **_kw: make_stub_wrapper(dim=8, working=True),

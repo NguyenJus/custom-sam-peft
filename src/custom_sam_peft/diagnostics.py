@@ -51,8 +51,8 @@ class DataReport:
 
     val_mode: Literal["explicit", "auto_split", "none"]
     val_path: str | None
-    val_split_fraction: float | None
-    val_split_seed: int | None
+    split_val_fraction: float | None
+    split_seed: int | None
     test_split_fraction: float | None
 
 
@@ -247,24 +247,24 @@ def run_doctor(
                 data = DataReport(
                     val_mode=val_mode,
                     val_path=None,
-                    val_split_fraction=cfg.data.split.val,
-                    val_split_seed=seed,
+                    split_val_fraction=cfg.data.split.val,
+                    split_seed=seed,
                     test_split_fraction=cfg.data.split.test,
                 )
             elif cfg.data.val is not None:
                 data = DataReport(
                     val_mode="explicit",
                     val_path=cfg.data.val.annotations,
-                    val_split_fraction=None,
-                    val_split_seed=None,
+                    split_val_fraction=None,
+                    split_seed=None,
                     test_split_fraction=None,
                 )
             else:
                 data = DataReport(
                     val_mode="none",
                     val_path=None,
-                    val_split_fraction=None,
-                    val_split_seed=None,
+                    split_val_fraction=None,
+                    split_seed=None,
                     test_split_fraction=None,
                 )
         dataset_resolution = _build_dataset_for_doctor(config_path, issues)

@@ -111,7 +111,8 @@ def run_eval(
     _hf_val = (
         cfg.data.format == "hf" and cfg.data.hf is not None and cfg.data.hf.split_val is not None
     )
-    if split == "val" and cfg.data.val is None and cfg.data.split is None and not _hf_val:
+    _split_carves_val = cfg.data.split is not None and cfg.data.split.val is not None
+    if split == "val" and cfg.data.val is None and not _split_carves_val and not _hf_val:
         raise ValueError(
             "--split val requires data.val, data.split, or data.hf.split_val in config; got none."
         )
@@ -135,7 +136,7 @@ def run_eval(
             vs = resolve_split_source(cfg, run_dir=resolved_run_dir)  # loads stored ids if present
             assert vs.test_ids is not None  # noqa: S101 — split.test invariant
             cfg_dict["_resolved_image_ids"] = {"eval": list(vs.test_ids)}
-        elif split == "val" and cfg.data.split is not None:
+        elif split == "val" and _split_carves_val:
             vs = resolve_split_source(cfg, run_dir=resolved_run_dir)  # also load-first now
             assert vs.val_ids is not None  # noqa: S101
             cfg_dict["_resolved_image_ids"] = {"eval": list(vs.val_ids)}

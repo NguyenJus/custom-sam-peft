@@ -355,7 +355,7 @@ def test_split_sum_gte_one_rejected() -> None:
     """§10.2 case 4: val + test >= 1.0 rejects with the joint guard."""
     d = _no_val_dict()
     d["data"]["split"] = {"val": 0.6, "test": 0.5}  # type: ignore[index]
-    with pytest.raises(ValidationError, match="must be < 1.0"):
+    with pytest.raises(ValidationError, match=r"must be < 1\.0"):
         TrainConfig.model_validate(d)
 
 

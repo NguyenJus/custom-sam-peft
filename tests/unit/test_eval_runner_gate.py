@@ -34,8 +34,7 @@ def _gate_only(cfg: TrainConfig, split: str) -> None:
     )
     if split == "val" and cfg.data.val is None and cfg.data.split is None and not _hf_val:
         raise ValueError(
-            "--split val requires data.val, data.split, or data.hf.split_val in config; "
-            "got none."
+            "--split val requires data.val, data.split, or data.hf.split_val in config; got none."
         )
 
 

@@ -20,7 +20,7 @@ def _make_paused_run(tmp_path: Path) -> Path:
         json.dumps({"metric": "mAP", "value": 0.8, "global_step": 5})
     )
     (run_dir / "config.yaml").write_text("run:\n  name: paused\n")
-    (run_dir / "val_source.json").write_text('{"mode": "none"}')
+    (run_dir / "split_source.json").write_text('{"mode": "none"}')
     return run_dir / "checkpoints" / "step_5"
 
 

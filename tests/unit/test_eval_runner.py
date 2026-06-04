@@ -269,6 +269,28 @@ def test_run_eval_rejects_val_split_when_data_val_and_split_none(
         run_eval(cfg, checkpoint=tmp_path, split="val")
 
 
+def test_run_eval_rejects_val_split_when_split_is_test_only(
+    tmp_path: Path,
+) -> None:
+    """§7.1 guard: --split val with a test-only config (data.split={test:0.2}, no val)
+    must raise ValueError — not silently evaluate an empty val set.
+
+    Spec §3.4: test-only resolves to mode='none' (no val bucket carved).
+    resolve_split_source returns val_ids=() (empty tuple). The guard must check
+    that data.split actually carved a val bucket (split.val is not None), not
+    just that data.split exists.
+    """
+    cfg = _make_cfg(format_="coco", peft_method="lora")
+    cfg.data.val = None  # type: ignore[attr-defined]
+    cfg.data.test = None  # no explicit test; split.test provides it
+    split_mock = MagicMock()
+    split_mock.val = None  # test-only: no val carved
+    split_mock.test = 0.2
+    cfg.data.split = split_mock  # type: ignore[attr-defined]
+    with pytest.raises(ValueError, match=r"--split val requires data\.val"):
+        run_eval(cfg, checkpoint=tmp_path, split="val")
+
+
 def test_run_eval_split_test_with_data_split_test_threads_image_ids(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
