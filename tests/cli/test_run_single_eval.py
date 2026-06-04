@@ -54,8 +54,8 @@ def test_orchestrate_does_not_call_run_eval(
     run_dir = tmp_path / "run"
     run_dir.mkdir(parents=True, exist_ok=True)
 
-    # Write val_source.json with mode=none so no model rebuild happens.
-    (run_dir / "val_source.json").write_text(json.dumps({"mode": "none"}))
+    # Write split_source.json with mode=none so no model rebuild happens.
+    (run_dir / "split_source.json").write_text(json.dumps({"mode": "none"}))
 
     # Build the EvalArtifacts that run_training returns.
     artifacts = _build_artifacts(run_dir)

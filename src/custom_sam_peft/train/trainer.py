@@ -653,22 +653,24 @@ class Trainer:
         cfg_dict = cfg.model_dump(mode="json")
         # config.yaml must round-trip back through TrainConfig (finalize/resume
         # reload it via load_config), so write the faithful dump BEFORE attaching
-        # any provenance. val_source is run provenance — its on-disk record is
-        # val_source.json; attach it only to the tracker's hparam copy.
+        # any provenance. split_source is run provenance — its on-disk record is
+        # split_source.json; attach it only to the tracker's hparam copy.
         # Skip when config.yaml already exists (resume into an existing run
         # dir per Change 1) so the original run's config is preserved.
         config_path = run_dir / "config.yaml"
         if not config_path.exists():
             config_path.write_text(yaml.safe_dump(cfg_dict))
-        vs_path = run_dir / "val_source.json"
+        vs_path = run_dir / "split_source.json"
         if vs_path.exists():
             saved = json.loads(vs_path.read_text())
-            cfg_dict["val_source"] = {
+            cfg_dict["split_source"] = {
                 "mode": saved["mode"],
-                "fraction_requested": saved.get("fraction_requested"),
+                "val_fraction_requested": saved.get("val_fraction_requested"),
+                "test_fraction_requested": saved.get("test_fraction_requested"),
                 "realized_fraction": saved.get("realized_fraction"),
                 "n_train": saved.get("n_train"),
                 "n_val": saved.get("n_val"),
+                "n_test": saved.get("n_test"),
             }
         self.tracker.start_run(run_dir, cfg_dict, resume_from)
 

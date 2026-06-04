@@ -1,10 +1,10 @@
-# Demonstrates no-val mode: data.val is omitted, data.val_split is omitted.
+# Demonstrates no-val mode: data.val is omitted, data.split is omitted.
 # Training proceeds without validation; eval_every is a no-op; no image panels;
 # no end-of-run eval; bundle writes summary.md only (no samples/).
 #
 # To switch back to explicit val, add a data.val block.
-# To auto-split a fraction of train, add a data.val_split block.
-# See: docs/superpowers/specs/2026-05-22-data-no-val-auto-split-design.md §3.3.
+# To auto-split a fraction of train, add a data.split block (e.g. split: {val: 0.1}).
+# See: docs/superpowers/specs/2026-06-04-train-val-test-split-design.md §3.4.
 
 run:
   name: coco-text-no-val

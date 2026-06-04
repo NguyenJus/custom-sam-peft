@@ -52,7 +52,7 @@ from custom_sam_peft.train.runner import _build_dataset_from_dict, run_training
 _LATEST_SENTINEL = "__latest__"
 
 if TYPE_CHECKING:
-    from custom_sam_peft.data.val_source import ValSource
+    from custom_sam_peft.data.split_source import SplitSource
 
 _LOG = logging.getLogger(__name__)
 
@@ -72,7 +72,7 @@ def _load_preset_or_fallback(cfg: TrainConfig) -> PresetDecision:
     return _fallback_preset(cfg)
 
 
-def _build_val_dataset(cfg: TrainConfig, vs: ValSource) -> Dataset:
+def _build_val_dataset(cfg: TrainConfig, vs: SplitSource) -> Dataset:
     """Build the val dataset using the same image ids and limit the trainer used.
 
     Routes through _build_dataset_from_dict so that _apply_limit(inner, cfg,
@@ -92,7 +92,7 @@ def _build_val_dataset(cfg: TrainConfig, vs: ValSource) -> Dataset:
 def _orchestrate(
     cfg: TrainConfig, resume: Path | None, mode: ProgressMode, *, config_path: Path
 ) -> int:
-    from custom_sam_peft.data.val_source import load_val_source
+    from custom_sam_peft.data.split_source import load_split_source
 
     start_ts = datetime.now(UTC)
 
@@ -126,9 +126,9 @@ def _orchestrate(
     adapter_path = train_result.checkpoint_path  # run_dir/adapter (best weights)
 
     # Decide val mode from the saved record — same source of truth the trainer used.
-    vs = load_val_source(run_dir)
+    vs = load_split_source(run_dir)
     if vs is None:
-        raise RuntimeError(f"runner did not save val_source.json in {run_dir}")
+        raise RuntimeError(f"runner did not save split_source.json in {run_dir}")
 
     # close_out (inside fit()) already ran the single eval + export-merge on the
     # best weights; reuse its results — no second eval, no second merge.
@@ -212,7 +212,7 @@ def _finalize(
     config_path: Path,
 ) -> int:
     """Productionize a paused run: rebuild + close_out, NO training (spec §11)."""
-    from custom_sam_peft.data.val_source import load_val_source
+    from custom_sam_peft.data.split_source import load_split_source
 
     start_ts = datetime.now(UTC)
     run_dir = resume.parent.parent  # checkpoints/step_N -> run_dir
@@ -237,7 +237,7 @@ def _finalize(
     load_adapter(wrapper, adapter)
 
     # Rebuild val dataset from the saved record.
-    vs = load_val_source(run_dir)
+    vs = load_split_source(run_dir)
     val_ds: Dataset | None = (
         _build_val_dataset(saved_cfg, vs) if (vs is not None and vs.mode != "none") else None
     )

@@ -13,8 +13,8 @@ from __future__ import annotations
 from unittest.mock import MagicMock, patch
 
 from custom_sam_peft.cli.run_cmd import _build_val_dataset
+from custom_sam_peft.data.split_source import SplitSource
 from custom_sam_peft.data.subset import SubsetDataset
-from custom_sam_peft.data.val_source import ValSource
 from custom_sam_peft.train.runner import _build_dataset_from_dict
 
 
@@ -37,30 +37,36 @@ def _make_cfg(val_limit: int | None) -> MagicMock:
     return cfg
 
 
-def _explicit_val_source() -> ValSource:
-    return ValSource(
+def _explicit_split_source() -> SplitSource:
+    return SplitSource(
         mode="explicit",
         train_ids=None,
         val_ids=None,
+        test_ids=None,
         realized_fraction=None,
         per_class_counts=None,
         missing_in_val=None,
-        fraction_requested=None,
+        missing_in_test=None,
+        val_fraction_requested=None,
+        test_fraction_requested=None,
         seed_used=None,
     )
 
 
-def _auto_split_val_source(n_val: int) -> ValSource:
+def _auto_split_source(n_val: int) -> SplitSource:
     val_ids = tuple(f"img_{i}" for i in range(n_val))
     train_ids = tuple(f"trn_{i}" for i in range(100))
-    return ValSource(
+    return SplitSource(
         mode="auto_split",
         train_ids=train_ids,
         val_ids=val_ids,
-        realized_fraction=n_val / (len(train_ids) + n_val),
-        per_class_counts={0: (80, n_val)},
+        test_ids=None,
+        realized_fraction=(n_val / (len(train_ids) + n_val), 0.0),
+        per_class_counts={0: (80, n_val, 0)},
         missing_in_val=(),
-        fraction_requested=0.2,
+        missing_in_test=None,
+        val_fraction_requested=0.2,
+        test_fraction_requested=None,
         seed_used=42,
     )
 
@@ -91,7 +97,7 @@ def test_build_val_dataset_explicit_mode_respects_limit() -> None:
     full_val_size = 355
     val_limit = 10
     cfg = _make_cfg(val_limit=val_limit)
-    vs = _explicit_val_source()
+    vs = _explicit_split_source()
     inner = _make_stub_inner(full_val_size)
 
     # Patch the lookup used by runner._build_dataset_from_dict (runner imports lookup).
@@ -111,7 +117,7 @@ def test_build_val_dataset_auto_split_mode_respects_limit() -> None:
     full_val_size = 50
     val_limit = 8
     cfg = _make_cfg(val_limit=val_limit)
-    vs = _auto_split_val_source(n_val=full_val_size)
+    vs = _auto_split_source(n_val=full_val_size)
     inner = _make_stub_inner(full_val_size)
 
     with patch("custom_sam_peft.train.runner.lookup", return_value=_make_stub_builder(inner)):
@@ -128,7 +134,7 @@ def test_build_val_dataset_no_limit_returns_full_dataset() -> None:
     """When limit.val is None, the full dataset is returned unchanged."""
     full_val_size = 355
     cfg = _make_cfg(val_limit=None)
-    vs = _explicit_val_source()
+    vs = _explicit_split_source()
     inner = _make_stub_inner(full_val_size)
 
     with patch("custom_sam_peft.train.runner.lookup", return_value=_make_stub_builder(inner)):
@@ -146,7 +152,7 @@ def test_build_val_dataset_index_alignment_matches_trainer_eval_path() -> None:
     full_val_size = 30
     val_limit = 7
     cfg = _make_cfg(val_limit=val_limit)
-    vs = _explicit_val_source()
+    vs = _explicit_split_source()
     inner = _make_stub_inner(full_val_size)
 
     data_cfg_dict = cfg.data.model_dump()

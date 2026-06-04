@@ -48,24 +48,27 @@ def test_train_runner_passes_data_channels(tmp_path: Path, monkeypatch: pytest.M
     monkeypatch.setattr(R, "load_sam31", fake_load_sam31)
 
     # Patch away everything that runs before load_sam31 to avoid heavy I/O.
-    from custom_sam_peft.data.val_source import ValSource
+    from custom_sam_peft.data.split_source import SplitSource
 
     monkeypatch.setattr(
         R,
-        "resolve_val_source",
-        lambda _cfg, run_dir=None: ValSource(
+        "resolve_split_source",
+        lambda _cfg, run_dir=None: SplitSource(
             mode="explicit",
             train_ids=None,
             val_ids=None,
+            test_ids=None,
             realized_fraction=None,
             per_class_counts=None,
             missing_in_val=None,
-            fraction_requested=None,
+            missing_in_test=None,
+            val_fraction_requested=None,
+            test_fraction_requested=None,
             seed_used=None,
         ),
     )
-    monkeypatch.setattr(R, "save_val_source", lambda _vs, _run_dir: None)
-    monkeypatch.setattr(R, "_log_val_source", lambda _vs: None)
+    monkeypatch.setattr(R, "save_split_source", lambda _vs, _run_dir: None)
+    monkeypatch.setattr(R, "_log_split_source", lambda _vs: None)
 
     def fake_lookup(kind: str, name: str) -> object:
         # dataset builder — returns a zero-length mock dataset

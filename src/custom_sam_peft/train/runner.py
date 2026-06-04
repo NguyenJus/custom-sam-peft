@@ -11,12 +11,12 @@ from typing import Any, cast
 from custom_sam_peft._registry import lookup
 from custom_sam_peft.config.schema import TrainConfig
 from custom_sam_peft.data.base import Dataset
-from custom_sam_peft.data.subset import SubsetDataset, resolve_subset_indices
-from custom_sam_peft.data.val_source import (
-    _log_val_source,
-    resolve_val_source,
-    save_val_source,
+from custom_sam_peft.data.split_source import (
+    _log_split_source,
+    resolve_split_source,
+    save_split_source,
 )
+from custom_sam_peft.data.subset import SubsetDataset, resolve_subset_indices
 from custom_sam_peft.eval._artifacts import EvalArtifacts
 from custom_sam_peft.models.sam3 import load_sam31
 from custom_sam_peft.tracking import build_tracker
@@ -89,21 +89,26 @@ def run_training(
     """
     # On resume, continue in the run dir that owns the checkpoint
     # (checkpoints live at <run_dir>/checkpoints/step_N/), so resumed
-    # artifacts (config.yaml, best/, metrics, val_source.json) stay in the
+    # artifacts (config.yaml, best/, metrics, split_source.json) stay in the
     # original folder. Fresh runs mint a new timestamped dir.
     resume_run_dir = resume_from.parent.parent if resume_from is not None else None
     run_dir = resume_run_dir if resume_run_dir is not None else make_run_dir(cfg)
-    vs = resolve_val_source(cfg, run_dir=resume_run_dir)
-    save_val_source(vs, run_dir)
-    _log_val_source(vs)
+    vs = resolve_split_source(cfg, run_dir=resume_run_dir)
+    save_split_source(vs, run_dir)
+    _log_split_source(vs)
 
     data_cfg_dict = cfg.data.model_dump()
-    if vs.mode == "auto_split":
-        assert vs.train_ids is not None and vs.val_ids is not None  # noqa: S101
-        data_cfg_dict["_resolved_image_ids"] = {
-            "train": list(vs.train_ids),
-            "eval": list(vs.val_ids),
-        }
+    if vs.train_ids is not None:
+        # Inject resolved ids whenever the split carved a train pool — both
+        # auto_split (val+test) and test-only (mode="none", no val bucket).
+        # Without this guard, test-only runs build train_ds from the full pool,
+        # leaking held-out test images into training (spec §9 invariant: "test is
+        # held out from training entirely").
+        resolved: dict[str, list[str]] = {"train": list(vs.train_ids)}
+        if vs.mode == "auto_split":
+            assert vs.val_ids is not None  # noqa: S101
+            resolved["eval"] = list(vs.val_ids)
+        data_cfg_dict["_resolved_image_ids"] = resolved
 
     train_ds = _build_dataset_from_dict(data_cfg_dict, cfg, "train")
     val_ds: Dataset | None = (

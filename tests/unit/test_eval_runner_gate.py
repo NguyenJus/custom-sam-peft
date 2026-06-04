@@ -32,10 +32,9 @@ def _gate_only(cfg: TrainConfig, split: str) -> None:
     _hf_val = (
         cfg.data.format == "hf" and cfg.data.hf is not None and cfg.data.hf.split_val is not None
     )
-    if split == "val" and cfg.data.val is None and cfg.data.val_split is None and not _hf_val:
+    if split == "val" and cfg.data.val is None and cfg.data.split is None and not _hf_val:
         raise ValueError(
-            "--split val requires data.val, data.val_split, or data.hf.split_val in config; "
-            "got none."
+            "--split val requires data.val, data.split, or data.hf.split_val in config; got none."
         )
 
 
@@ -44,5 +43,5 @@ def test_gate_accepts_hf_split_val() -> None:
 
 
 def test_gate_rejects_hf_without_split_val() -> None:
-    with pytest.raises(ValueError, match=r"data\.hf\.split_val"):
+    with pytest.raises(ValueError, match=r"data\.val"):
         _gate_only(_hf_cfg(None), "val")

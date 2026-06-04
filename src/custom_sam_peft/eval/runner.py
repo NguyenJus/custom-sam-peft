@@ -16,7 +16,7 @@ from custom_sam_peft import profiling
 from custom_sam_peft._registry import lookup
 from custom_sam_peft.config.schema import TrainConfig
 from custom_sam_peft.data.base import Dataset
-from custom_sam_peft.data.val_source import resolve_val_source
+from custom_sam_peft.data.split_source import resolve_split_source
 from custom_sam_peft.eval._artifacts import EvalArtifacts
 from custom_sam_peft.eval.evaluator import Evaluator
 from custom_sam_peft.eval.metrics import MetricsReport
@@ -99,34 +99,46 @@ def run_eval(
         ValueError: split == 'test' and cfg.data.test is None.
     """
     # Resolve checkpoint and run_dir from artifacts when provided.
+    # Mirror the resume derivation: <run_dir>/checkpoints/step_N/ → run_dir.
     resolved_checkpoint: Path | None
+    resolved_run_dir: Path | None
     if artifacts is not None:
         resolved_checkpoint = artifacts.checkpoint_path
         resolved_run_dir = artifacts.run_dir
     else:
         resolved_checkpoint = checkpoint  # may be None → baseline
-        resolved_run_dir = None
+        resolved_run_dir = checkpoint.parent.parent if checkpoint is not None else None
     _hf_val = (
         cfg.data.format == "hf" and cfg.data.hf is not None and cfg.data.hf.split_val is not None
     )
-    if split == "val" and cfg.data.val is None and cfg.data.val_split is None and not _hf_val:
+    _split_carves_val = cfg.data.split is not None and cfg.data.split.val is not None
+    if split == "val" and cfg.data.val is None and not _split_carves_val and not _hf_val:
         raise ValueError(
-            "--split val requires data.val, data.val_split, or data.hf.split_val in config; "
-            "got none."
+            "--split val requires data.val, data.split, or data.hf.split_val in config; got none."
         )
-    if split == "test" and cfg.data.test is None:
-        raise ValueError("--split test requires data.test in config; got None for data.test")
+    if (
+        split == "test"
+        and cfg.data.test is None
+        and (cfg.data.split is None or cfg.data.split.test is None)
+    ):
+        raise ValueError(
+            "--split test requires data.test or data.split.test in config; got neither."
+        )
 
     if val_dataset is None:
         cfg_dict = cfg.data.model_dump()
         # Thread task into the data dict so format-specific builders (e.g. build_hf)
         # can branch on it without coupling to TrainConfig directly.
         cfg_dict["task"] = cfg.task
-        if split == "test":
-            cfg_dict["val"] = cfg_dict["test"]
-        elif split == "val" and cfg.data.val_split is not None:
-            vs = resolve_val_source(cfg, run_dir=None)
-            assert vs.val_ids is not None  # noqa: S101 — auto_split mode invariant
+        if split == "test" and cfg.data.test is not None:
+            cfg_dict["val"] = cfg_dict["test"]  # explicit test → existing path
+        elif split == "test" and cfg.data.split is not None and cfg.data.split.test is not None:
+            vs = resolve_split_source(cfg, run_dir=resolved_run_dir)  # loads stored ids if present
+            assert vs.test_ids is not None  # noqa: S101 — split.test invariant
+            cfg_dict["_resolved_image_ids"] = {"eval": list(vs.test_ids)}
+        elif split == "val" and _split_carves_val:
+            vs = resolve_split_source(cfg, run_dir=resolved_run_dir)  # also load-first now
+            assert vs.val_ids is not None  # noqa: S101
             cfg_dict["_resolved_image_ids"] = {"eval": list(vs.val_ids)}
         builder = lookup("dataset", cfg.data.format)
         dataset = cast(Dataset, builder(cfg_dict, model_name=cfg.model.name, pipeline="eval"))

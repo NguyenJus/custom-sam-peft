@@ -23,7 +23,7 @@ def _make_semantic_cfg(format_: str = "coco") -> MagicMock:
         "test": None,
     }
     cfg.data.val = MagicMock()
-    cfg.data.val_split = None
+    cfg.data.split = None
     cfg.data.test = None
     cfg.model.name = "facebook/sam3.1"
     cfg.peft.method = "lora"

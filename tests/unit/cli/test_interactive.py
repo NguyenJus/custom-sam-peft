@@ -30,8 +30,8 @@ def test_ask_choice_reasks_on_invalid(monkeypatch: pytest.MonkeyPatch) -> None:
 
 def test_deep_merge_nested() -> None:
     dst = {"data": {"format": "coco"}}
-    itv._deep_merge(dst, {"data": {"val_split": {"fraction": 0.1}}})
-    assert dst == {"data": {"format": "coco", "val_split": {"fraction": 0.1}}}
+    itv._deep_merge(dst, {"data": {"split": {"val": 0.1}}})
+    assert dst == {"data": {"format": "coco", "split": {"val": 0.1}}}
 
 
 def test_shared_steps_return_fragments(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -260,6 +260,25 @@ def test_validate_config_with_eval_split(tmp_path: Path) -> None:
     no_val = _write(base.replace("      VAL_BLOCK\n", ""))
     assert itv.validate_config_with_eval_split(str(no_val)) is not None
     assert itv.validate_config_with_eval_split(str(tmp_path / "nope.yaml")) is not None
+
+
+# ---------------------------------------------------------------------------
+# §10.5 — emitter migration: auto-split prompt and emitted config format
+# ---------------------------------------------------------------------------
+
+
+def test_ask_validation_auto_split_yields_split_key(monkeypatch: pytest.MonkeyPatch) -> None:
+    """_ask_validation auto-split branch must yield {"data": {"split": {"val": …}}},
+    not the old {"data": {"val_split": …}} shape.
+    Spec: docs/superpowers/specs/2026-06-04-train-val-test-split-design.md §10.5.
+    """
+    monkeypatch.setattr(itv, "ask_choice", lambda *a, **k: "auto-split")
+    monkeypatch.setattr(itv, "ask_text", lambda *a, **k: "0.2")
+    ctx = itv.Ctx(answers={"data": {"format": "coco"}}, cuda_available=False)
+    frag = itv._ask_validation(ctx)
+    # Must use the new data.split.val shape, not data.val_split.fraction
+    assert frag == {"data": {"split": {"val": 0.2}}}
+    assert "val_split" not in frag.get("data", {})
 
 
 def test_peek_adapter_lora(tmp_path: Path) -> None:

@@ -792,8 +792,8 @@ def test_cocodataset_image_ids_sorted_order_preserved(tiny_coco_dir: Path) -> No
 def test_image_level_leak_invariant_on_tiny_coco(tiny_coco_dir: Path) -> None:
     """Spec §9.4.5: stratified_split on tiny_coco items yields disjoint train/val ids."""
     from custom_sam_peft.config.schema import DataConfig, DataSplit
+    from custom_sam_peft.data.split_source import _enumerate_coco_items
     from custom_sam_peft.data.splitter import stratified_split
-    from custom_sam_peft.data.val_source import _enumerate_coco_items
 
     data_cfg = DataConfig(
         format="coco",
@@ -805,7 +805,7 @@ def test_image_level_leak_invariant_on_tiny_coco(tiny_coco_dir: Path) -> None:
     items = _enumerate_coco_items(data_cfg)
     if len(items) < 2:
         pytest.skip("tiny_coco has < 2 keep-after-crowd-filter images; cannot test split")
-    res = stratified_split(items, fraction=0.5, seed=0)
+    res = stratified_split(items, val_fraction=0.5, test_fraction=0.0, seed=0)
     assert set(res.train_ids).isdisjoint(set(res.val_ids))
 
 

@@ -46,13 +46,14 @@ class DataReport:
 
     Populated only when `run_doctor(config_path=...)` is called.
 
-    Spec: docs/superpowers/specs/2026-05-22-data-no-val-auto-split-design.md §7.7.
+    Spec: docs/superpowers/specs/2026-06-04-train-val-test-split-design.md §7.1.
     """
 
     val_mode: Literal["explicit", "auto_split", "none"]
     val_path: str | None
-    val_split_fraction: float | None
-    val_split_seed: int | None
+    split_val_fraction: float | None
+    split_seed: int | None
+    test_split_fraction: float | None
 
 
 @dataclass(frozen=True)
@@ -238,29 +239,33 @@ def run_doctor(
         except Exception:
             cfg = None
         if cfg is not None:
-            if cfg.data.val_split is not None:
-                seed = (
-                    cfg.data.val_split.seed if cfg.data.val_split.seed is not None else cfg.run.seed
+            if cfg.data.split is not None:
+                seed = cfg.data.split.seed if cfg.data.split.seed is not None else cfg.run.seed
+                val_mode: Literal["explicit", "auto_split", "none"] = (
+                    "auto_split" if cfg.data.split.val is not None else "none"
                 )
                 data = DataReport(
-                    val_mode="auto_split",
+                    val_mode=val_mode,
                     val_path=None,
-                    val_split_fraction=cfg.data.val_split.fraction,
-                    val_split_seed=seed,
+                    split_val_fraction=cfg.data.split.val,
+                    split_seed=seed,
+                    test_split_fraction=cfg.data.split.test,
                 )
             elif cfg.data.val is not None:
                 data = DataReport(
                     val_mode="explicit",
                     val_path=cfg.data.val.annotations,
-                    val_split_fraction=None,
-                    val_split_seed=None,
+                    split_val_fraction=None,
+                    split_seed=None,
+                    test_split_fraction=None,
                 )
             else:
                 data = DataReport(
                     val_mode="none",
                     val_path=None,
-                    val_split_fraction=None,
-                    val_split_seed=None,
+                    split_val_fraction=None,
+                    split_seed=None,
+                    test_split_fraction=None,
                 )
         dataset_resolution = _build_dataset_for_doctor(config_path, issues)
 

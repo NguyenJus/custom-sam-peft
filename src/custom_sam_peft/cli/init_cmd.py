@@ -84,11 +84,11 @@ def _flag_driven_blocks(peft_method: str) -> dict[str, str]:
         "  val:\n"
         "    annotations: data/val.json\n"
         "    images: data/val/\n"
-        "  # Auto-split alternative (carve data.train into train+val):\n"
-        "  # val_split:\n"
-        "  #   fraction: 0.1\n"
+        "  # Auto-split alternative (carve data.train into train+val+test):\n"
+        "  # split:\n"
+        "  #   val: 0.1\n"
         "  #   seed: null\n"
-        "  # No-val alternative: omit both val: and val_split:."
+        "  # No-val alternative: omit both val: and split:."
     )
     qlora_block = (
         "  qlora:\n    quant_type: nf4\n    compute_dtype: bfloat16"

@@ -57,7 +57,7 @@ def _cfg(tmp_path: Path, tiny_coco_dir: Path) -> TrainConfig:
                 images=str(tiny_coco_dir / "images"),
             ),
             val=None,
-            val_split=None,
+            split=None,
         ),
         peft=PEFTConfig(
             method="lora", scope="vision", target_modules=FIXTURE_SCOPE_PATTERNS["vision"]
@@ -84,22 +84,26 @@ def test_fit_with_val_ds_none_completes_and_writes_no_val_metrics(
     ds_train = _ds_train(tiny_coco_dir)
     wrapper = make_stub_wrapper(dim=8, working=True)
     apply_lora(wrapper, cfg.peft)
-    # Pre-save a val_source.json so the trainer's tracker hparams reader sees it.
+    # Pre-save a split_source.json so the trainer's tracker hparams reader sees it.
     run_dir = tmp_path / f"{cfg.run.name}-test"
     run_dir.mkdir(parents=True)
-    (run_dir / "val_source.json").write_text(
+    (run_dir / "split_source.json").write_text(
         json.dumps(
             {
                 "mode": "none",
-                "fraction_requested": None,
+                "val_fraction_requested": None,
+                "test_fraction_requested": None,
                 "seed_used": None,
                 "realized_fraction": None,
                 "n_train": None,
                 "n_val": None,
+                "n_test": None,
                 "per_class_counts": None,
                 "missing_in_val": None,
+                "missing_in_test": None,
                 "train_ids": None,
                 "val_ids": None,
+                "test_ids": None,
             }
         )
     )
@@ -121,7 +125,7 @@ def test_fit_with_val_ds_none_does_not_invoke_evaluator(
     apply_lora(wrapper, cfg.peft)
     run_dir = tmp_path / f"{cfg.run.name}-test2"
     run_dir.mkdir(parents=True)
-    (run_dir / "val_source.json").write_text(json.dumps({"mode": "none"}))
+    (run_dir / "split_source.json").write_text(json.dumps({"mode": "none"}))
 
     mock_evaluator = MagicMock()
     with patch("custom_sam_peft.train.trainer.Evaluator", return_value=mock_evaluator):
@@ -138,7 +142,7 @@ def test_fit_with_val_ds_none_does_not_log_image_panel(tmp_path: Path, tiny_coco
     apply_lora(wrapper, cfg.peft)
     run_dir = tmp_path / f"{cfg.run.name}-test3"
     run_dir.mkdir(parents=True)
-    (run_dir / "val_source.json").write_text(json.dumps({"mode": "none"}))
+    (run_dir / "split_source.json").write_text(json.dumps({"mode": "none"}))
 
     tracker = build_tracker(cfg)
     tracker.log_images = MagicMock()  # type: ignore[method-assign]
@@ -163,20 +167,24 @@ def test_config_yaml_round_trips_through_load_config(tmp_path: Path, tiny_coco_d
     apply_lora(wrapper, cfg.peft)
     run_dir = tmp_path / f"{cfg.run.name}-roundtrip"
     run_dir.mkdir(parents=True)
-    # Place a val_source.json so the trainer's provenance-injection branch fires.
-    (run_dir / "val_source.json").write_text(
+    # Place a split_source.json so the trainer's provenance-injection branch fires.
+    (run_dir / "split_source.json").write_text(
         json.dumps(
             {
                 "mode": "none",
-                "fraction_requested": None,
+                "val_fraction_requested": None,
+                "test_fraction_requested": None,
                 "seed_used": None,
                 "realized_fraction": None,
                 "n_train": None,
                 "n_val": None,
+                "n_test": None,
                 "per_class_counts": None,
                 "missing_in_val": None,
+                "missing_in_test": None,
                 "train_ids": None,
                 "val_ids": None,
+                "test_ids": None,
             }
         )
     )
@@ -189,10 +197,92 @@ def test_config_yaml_round_trips_through_load_config(tmp_path: Path, tiny_coco_d
     import yaml as _yaml
 
     written = _yaml.safe_load(config_path.read_text())
-    assert "val_source" not in written, (
-        "config.yaml must not contain val_source — it breaks TrainConfig round-trip"
+    assert "split_source" not in written, (
+        "config.yaml must not contain split_source — it breaks TrainConfig round-trip"
     )
 
     # Must not raise — this is the exact call path used by --finalize/--resume.
     reloaded = load_config(config_path)
     assert isinstance(reloaded, type(cfg))
+
+
+def test_fit_test_only_split_mode_produces_no_val_metrics(
+    tmp_path: Path, tiny_coco_dir: Path
+) -> None:
+    """§10.6: test-only split (mode='none') still produces the no-val metrics note.
+
+    Validates that the rename of split_source.json (was val_source.json) in
+    assertions is wired correctly and that mode='none' with test_ids populates
+    trainer hparams.
+    """
+    from custom_sam_peft.config.schema import (
+        DataConfig,
+        DataSplit,
+        PEFTConfig,
+        RunConfig,
+        SplitConfig,
+        TrackingConfig,
+        TrainConfig,
+        TrainHyperparams,
+    )
+
+    cfg = TrainConfig(
+        run=RunConfig(name="test-only", output_dir=str(tmp_path), seed=0),
+        data=DataConfig(
+            format="coco",
+            train=DataSplit(
+                annotations=str(tiny_coco_dir / "annotations.json"),
+                images=str(tiny_coco_dir / "images"),
+            ),
+            val=None,
+            split=SplitConfig(test=0.3),
+        ),
+        peft=PEFTConfig(
+            method="lora", scope="vision", target_modules=FIXTURE_SCOPE_PATTERNS["vision"]
+        ),
+        train=TrainHyperparams(
+            epochs=1,
+            batch_size=1,
+            grad_accum_steps=1,
+            save_every=2,
+            eval_every=1,
+            log_every=1,
+            warmup_steps=0,
+            num_workers=0,
+        ),
+        tracking=TrackingConfig(backend="none"),
+    )
+    ds_train = _ds_train(tiny_coco_dir)
+    wrapper = make_stub_wrapper(dim=8, working=True)
+    apply_lora(wrapper, cfg.peft)
+    run_dir = tmp_path / f"{cfg.run.name}-test-only"
+    run_dir.mkdir(parents=True)
+    # Pre-save a split_source.json with mode='none' + test_ids populated.
+    (run_dir / "split_source.json").write_text(
+        json.dumps(
+            {
+                "mode": "none",
+                "val_fraction_requested": None,
+                "test_fraction_requested": 0.3,
+                "seed_used": 0,
+                "realized_fraction": [0.0, 0.3],
+                "n_train": 7,
+                "n_val": 0,
+                "n_test": 3,
+                "per_class_counts": None,
+                "missing_in_val": None,
+                "missing_in_test": [],
+                "train_ids": None,
+                "val_ids": [],
+                "test_ids": ["1", "2", "3"],
+            }
+        )
+    )
+    trainer = Trainer(wrapper, ds_train, None, build_tracker(cfg), cfg)
+    result = trainer.fit(run_dir=run_dir)
+    # mode='none' → no val → final_metrics is None, metrics.json has the note
+    assert result.final_metrics is None
+    payload = json.loads((result.run_dir / "metrics.json").read_text())
+    assert payload.get("note") == "no validation set provided"
+    # The split_source.json must be present (not accidentally deleted)
+    assert (run_dir / "split_source.json").is_file()

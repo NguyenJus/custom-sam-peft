@@ -260,7 +260,7 @@ def test_data_config_test_accepts_data_split(minimal_data_config_dict: dict) -> 
 
 
 # ---------------------------------------------------------------------------
-# spec/data-no-val-auto-split (#71): optional val + val_split + validators
+# spec/data-no-val-auto-split (#71): optional val + split + validators
 # ---------------------------------------------------------------------------
 
 
@@ -270,7 +270,7 @@ def test_val_null_validates() -> None:
     d["data"]["val"] = None  # type: ignore[index]
     cfg = TrainConfig.model_validate(d)
     assert cfg.data.val is None
-    assert cfg.data.val_split is None
+    assert cfg.data.split is None
 
 
 def test_val_omitted_validates() -> None:
@@ -279,82 +279,138 @@ def test_val_omitted_validates() -> None:
     del d["data"]["val"]  # type: ignore[index]
     cfg = TrainConfig.model_validate(d)
     assert cfg.data.val is None
-    assert cfg.data.val_split is None
+    assert cfg.data.split is None
 
 
-def test_val_and_val_split_mutually_exclusive() -> None:
+def test_neither_val_nor_split_validates() -> None:
+    """Neither set → resolves to no-val mode (WARN at resolve, not validation)."""
     d = _minimal_dict()
+    d["data"]["val"] = None  # type: ignore[index]
+    # split is not present in _minimal_dict.
+    cfg = TrainConfig.model_validate(d)
+    assert cfg.data.val is None
+    assert cfg.data.split is None
+
+
+def test_hf_split_val_set_without_split_validates() -> None:
+    """HF + named split_val (no val/split) is the explicit opt-in."""
+    d = _minimal_dict()
+    d["data"]["format"] = "hf"  # type: ignore[index]
+    d["data"]["hf"] = {"name": "tiny/dataset", "split_val": "myval"}  # type: ignore[index]
+    d["data"]["val"] = None  # type: ignore[index]
+    cfg = TrainConfig.model_validate(d)
+    assert cfg.data.split is None
+    assert cfg.data.hf is not None
+    assert cfg.data.hf.split_val == "myval"
+
+
+# ---------------------------------------------------------------------------
+# spec/train-val-test-split (2026-06-04) §10.2: SplitConfig schema cases
+# ---------------------------------------------------------------------------
+
+
+def _no_val_dict() -> dict:
+    """_minimal_dict() with val removed (so split can be used)."""
+    d = _minimal_dict()
+    del d["data"]["val"]
+    return d
+
+
+# Case 1: val_split set → ValidationError (unknown key — hard rename)
+def test_val_split_key_rejected_as_unknown() -> None:
+    """§10.2 case 1: data.val_split is no longer a valid key (_Strict forbids it)."""
+    d = _no_val_dict()
     d["data"]["val_split"] = {"fraction": 0.1}  # type: ignore[index]
-    # val is still present from _minimal_dict.
+    with pytest.raises(ValidationError) as exc_info:
+        TrainConfig.model_validate(d)
+    errors = exc_info.value.errors()
+    assert any(e["type"] == "extra_forbidden" for e in errors), (
+        f"expected extra_forbidden; got {errors}"
+    )
+
+
+# Case 2: split: {val: 0.1, test: 0.1} validates
+def test_split_val_and_test_validates() -> None:
+    """§10.2 case 2: split with both val and test fractions validates."""
+    d = _no_val_dict()
+    d["data"]["split"] = {"val": 0.1, "test": 0.1}  # type: ignore[index]
+    cfg = TrainConfig.model_validate(d)
+    assert cfg.data.split is not None
+    assert cfg.data.split.val == 0.1
+    assert cfg.data.split.test == 0.1
+    assert cfg.data.split.seed is None
+
+
+# Case 3: split: {} (both omitted) → ValidationError (_check_fractions)
+def test_split_both_omitted_rejected() -> None:
+    """§10.2 case 3: split with neither val nor test raises _check_fractions."""
+    d = _no_val_dict()
+    d["data"]["split"] = {}  # type: ignore[index]
+    with pytest.raises(ValidationError, match="at least one of val / test"):
+        TrainConfig.model_validate(d)
+
+
+# Case 4: split.val=0.6, split.test=0.5 (sum >= 1.0) → ValidationError
+def test_split_sum_gte_one_rejected() -> None:
+    """§10.2 case 4: val + test >= 1.0 rejects with the joint guard."""
+    d = _no_val_dict()
+    d["data"]["split"] = {"val": 0.6, "test": 0.5}  # type: ignore[index]
+    with pytest.raises(ValidationError, match=r"must be < 1\.0"):
+        TrainConfig.model_validate(d)
+
+
+# Case 5: split.val=0 / 1.0 / negative → ValidationError (exclusive bounds)
+def test_split_val_out_of_bounds_rejected() -> None:
+    """§10.2 case 5: val=0, val=1.0, val<0 all rejected (exclusive (0,1) bounds)."""
+    d = _no_val_dict()
+    for bad_val in (0.0, 1.0, -0.1):
+        d["data"]["split"] = {"val": bad_val}  # type: ignore[index]
+        with pytest.raises(ValidationError, match="must be in"):
+            TrainConfig.model_validate(d)
+
+
+# Case 6: split.val=0.6 alone validates (le=0.5 cap dropped)
+def test_split_val_above_half_validates() -> None:
+    """§10.2 case 6: val=0.6 alone is now legal (old le=0.5 cap is dropped)."""
+    d = _no_val_dict()
+    d["data"]["split"] = {"val": 0.6}  # type: ignore[index]
+    cfg = TrainConfig.model_validate(d)
+    assert cfg.data.split is not None
+    assert cfg.data.split.val == 0.6
+
+
+# Case 7: split + data.val → ValidationError (_check_split_modes)
+def test_split_and_explicit_val_mutually_exclusive() -> None:
+    """§10.2 case 7: data.split + data.val raises _check_split_modes."""
+    d = _minimal_dict()  # has data.val set
+    d["data"]["split"] = {"val": 0.1}  # type: ignore[index]
     with pytest.raises(ValidationError, match="mutually exclusive"):
         TrainConfig.model_validate(d)
 
 
-def test_val_split_fraction_above_half_rejected() -> None:
-    d = _minimal_dict()
-    d["data"]["val"] = None  # type: ignore[index]
-    d["data"]["val_split"] = {"fraction": 0.6}  # type: ignore[index]
-    with pytest.raises(ValidationError):
+# Case 8: split + data.test → ValidationError (_check_split_modes)
+def test_split_and_explicit_test_mutually_exclusive() -> None:
+    """§10.2 case 8: data.split + data.test raises _check_split_modes."""
+    d = _no_val_dict()
+    d["data"]["split"] = {"test": 0.1}  # type: ignore[index]
+    d["data"]["test"] = {"annotations": "test.json", "images": "test/"}  # type: ignore[index]
+    with pytest.raises(ValidationError, match="mutually exclusive"):
         TrainConfig.model_validate(d)
 
 
-def test_val_split_fraction_zero_or_negative_rejected() -> None:
-    d = _minimal_dict()
-    d["data"]["val"] = None  # type: ignore[index]
-    d["data"]["val_split"] = {"fraction": 0.0}  # type: ignore[index]
-    with pytest.raises(ValidationError):
-        TrainConfig.model_validate(d)
-    d["data"]["val_split"] = {"fraction": -0.1}  # type: ignore[index]
-    with pytest.raises(ValidationError):
-        TrainConfig.model_validate(d)
-
-
-def test_hf_split_val_custom_with_val_split_rejected() -> None:
-    d = _minimal_dict()
+# Case 9: format=hf, split set, hf.split_val="custom" → ValidationError
+def test_hf_split_val_custom_with_split_rejected() -> None:
+    """§10.2 case 9: HF + data.split + hf.split_val raises _check_hf_split_compat."""
+    d = _no_val_dict()
     d["data"]["format"] = "hf"  # type: ignore[index]
     d["data"]["hf"] = {  # type: ignore[index]
         "name": "tiny/dataset",
         "split_train": "train",
         "split_val": "custom_val",
     }
-    d["data"]["val"] = None  # type: ignore[index]
-    d["data"]["val_split"] = {"fraction": 0.1}  # type: ignore[index]
+    d["data"]["split"] = {"val": 0.1}  # type: ignore[index]
     with pytest.raises(ValidationError, match="split_val cannot be customized"):
         TrainConfig.model_validate(d)
-
-
-def test_hf_split_val_default_with_val_split_validates() -> None:
-    d = _minimal_dict()
-    d["data"]["format"] = "hf"  # type: ignore[index]
-    d["data"]["hf"] = {"name": "tiny/dataset"}  # default split_val=None
-    d["data"]["val"] = None  # type: ignore[index]
-    d["data"]["val_split"] = {"fraction": 0.1, "seed": 7}  # type: ignore[index]
-    cfg = TrainConfig.model_validate(d)
-    assert cfg.data.val_split is not None
-    assert cfg.data.val_split.fraction == 0.1
-    assert cfg.data.val_split.seed == 7
-
-
-def test_hf_split_val_set_without_val_split_validates() -> None:
-    """spec §12.3: HF + named split_val (no val/val_split) is the explicit opt-in."""
-    d = _minimal_dict()
-    d["data"]["format"] = "hf"  # type: ignore[index]
-    d["data"]["hf"] = {"name": "tiny/dataset", "split_val": "myval"}  # type: ignore[index]
-    d["data"]["val"] = None  # type: ignore[index]
-    cfg = TrainConfig.model_validate(d)
-    assert cfg.data.val_split is None
-    assert cfg.data.hf is not None
-    assert cfg.data.hf.split_val == "myval"
-
-
-def test_neither_val_nor_val_split_validates() -> None:
-    """Spec §3.3: neither set → resolves to no-val mode (WARN at resolve, not validation)."""
-    d = _minimal_dict()
-    d["data"]["val"] = None  # type: ignore[index]
-    # val_split is not present in _minimal_dict.
-    cfg = TrainConfig.model_validate(d)
-    assert cfg.data.val is None
-    assert cfg.data.val_split is None
 
 
 # ---------------------------------------------------------------------------
