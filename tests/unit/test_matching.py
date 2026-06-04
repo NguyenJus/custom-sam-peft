@@ -2,10 +2,26 @@
 
 from __future__ import annotations
 
+import pytest
 import torch
 
+import custom_sam_peft.profiling as prof
 from custom_sam_peft.data.base import Instance
 from custom_sam_peft.models.matching import CanonicalOutputs, HungarianMatcher
+
+# ---------------------------------------------------------------------------
+# Fixture: clean profiler state around each test in this module.
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture(autouse=True)
+def _clean_profiler():  # type: ignore[return]
+    """Reset + disable before and after every test."""
+    prof.reset()
+    prof.disable()
+    yield
+    prof.reset()
+    prof.disable()
 
 
 def _make_outputs(q: int = 4, mask_size: int = 16) -> CanonicalOutputs:
@@ -114,3 +130,34 @@ def test_matcher_batched() -> None:
     assert len(indices) == 2
     assert indices[0][0].numel() == 1
     assert indices[1][0].numel() == 2
+
+
+# ---------------------------------------------------------------------------
+# Profiling bucket — train.matcher (issue #273 §3b)
+# ---------------------------------------------------------------------------
+
+
+class TestTrainMatcherBucket:
+    def test_bucket_present_after_matcher_call(self) -> None:
+        """HungarianMatcher.__call__ must record train.matcher in the snapshot."""
+        prof.enable()
+        prof.reset()
+
+        matcher = HungarianMatcher(lambda_l1=5.0, lambda_giou=2.0, lambda_mask=5.0)
+        outputs = _make_outputs(q=4)
+        targets = [[_instance([0.5, 0.5, 0.1, 0.1]), _instance([0.2, 0.2, 0.1, 0.1])]]
+        matcher(outputs, targets)
+
+        buckets, _meta = prof.snapshot()
+        assert "train.matcher" in buckets, f"train.matcher not found; buckets = {list(buckets)}"
+
+    def test_bucket_absent_when_profiler_disabled(self) -> None:
+        """HungarianMatcher.__call__ must be strictly no-op when profiler is off."""
+        # profiler is disabled by autouse fixture
+        matcher = HungarianMatcher(lambda_l1=5.0, lambda_giou=2.0, lambda_mask=5.0)
+        outputs = _make_outputs(q=4)
+        targets = [[_instance([0.5, 0.5, 0.1, 0.1])]]
+        matcher(outputs, targets)
+
+        buckets, _ = prof.snapshot()
+        assert "train.matcher" not in buckets
