@@ -61,9 +61,22 @@ SCOPE_TARGETS: dict[str, list[str]] = {
     # alternatives (peft's lora.MultiheadAttention adapts those out_proj internally when
     # the MHA module is targeted via SCOPE_MHA_MODULES; double-targeting must be avoided).
     # cross_attn is a RoPEAttention (genuine nn.Linear out_proj), so it stays generic.
-    # New default scope (schema.py). See spec #230 §4.2, §5.1.
+    # See spec #230 §4.2, §5.1.
     "vision_decoder_concept": [
         r"backbone\.vision_backbone\.trunk\.blocks\.\d+\.attn\.(qkv|proj)$",
+        r"transformer\.decoder\.layers\.\d+\.cross_attn\.out_proj$",
+        r"transformer\.decoder\.layers\.\d+\.linear[12]$",
+    ],
+    # vision_decoder_concept MINUS the ViT trunk pattern — trunk stays frozen
+    # (no LoRA adapters, all trunk base params keep requires_grad=False; autograd
+    # skips the trunk subgraph automatically). New default scope (schema.py).
+    # QLoRA note: cross_attn.out_proj is a genuine nn.Linear on a RoPEAttention
+    # (not an nn.MultiheadAttention wrapper), so it stays targetable in both modes.
+    # linear1/linear2 are bare nn.Linear FFN modules and quantize under QLoRA.
+    # self_attn/ca_text MHA modules are adapted via SCOPE_MHA_MODULES exactly as
+    # in vision_decoder_concept. QLoRA behavior is therefore identical to
+    # vision_decoder_concept minus the trunk.
+    "decoder_concept": [
         r"transformer\.decoder\.layers\.\d+\.cross_attn\.out_proj$",
         r"transformer\.decoder\.layers\.\d+\.linear[12]$",
     ],
@@ -80,6 +93,12 @@ SCOPE_TARGETS: dict[str, list[str]] = {
 # single-point-of-contact for SAM 3.1 surface naming alongside SCOPE_TARGETS.
 SCOPE_MHA_MODULES: dict[str, list[str]] = {
     "vision_decoder_concept": [
+        r"transformer\.decoder\.layers\.\d+\.ca_text$",
+        r"transformer\.decoder\.layers\.\d+\.self_attn$",
+    ],
+    # decoder_concept: identical to vision_decoder_concept — trunk carries no MHA
+    # targets regardless, so the MHA surface is unchanged between the two scopes.
+    "decoder_concept": [
         r"transformer\.decoder\.layers\.\d+\.ca_text$",
         r"transformer\.decoder\.layers\.\d+\.self_attn$",
     ],

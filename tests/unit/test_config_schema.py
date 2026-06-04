@@ -168,7 +168,7 @@ def test_all_public_submodels_are_importable() -> None:
 def test_peft_defaults_include_scope_and_bias() -> None:
     d = _minimal_dict()
     cfg = TrainConfig.model_validate(d)
-    assert cfg.peft.scope == "vision_decoder_concept"  # default flipped in #230
+    assert cfg.peft.scope == "decoder_concept"  # trunk-frozen default (#301)
     assert cfg.peft.bias == "none"
     assert cfg.peft.target_modules is None
 

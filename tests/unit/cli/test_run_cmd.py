@@ -59,8 +59,9 @@ def test_fallback_preset_passes_k_cap(monkeypatch: pytest.MonkeyPatch, tmp_path:
     """_fallback_preset passes cfg.train.multiplex.classes_per_forward as the k kwarg."""
     captured: dict[str, object] = {}
 
-    def _fake_decide_preset(k=None, cache_path=None):  # type: ignore[no-untyped-def]
+    def _fake_decide_preset(k=None, cache_path=None, scope=None):  # type: ignore[no-untyped-def]
         captured["k"] = k
+        captured["scope"] = scope
         raise RuntimeError("stop after capture")
 
     monkeypatch.setattr(run_cmd, "decide_preset", _fake_decide_preset)
@@ -86,3 +87,5 @@ export: {{merge: false}}
     with contextlib.suppress(RuntimeError):
         run_cmd._fallback_preset(cfg)
     assert captured["k"] == 4
+    # _fallback_preset threads the config's peft.scope (lora default = decoder_concept).
+    assert captured["scope"] == "decoder_concept"

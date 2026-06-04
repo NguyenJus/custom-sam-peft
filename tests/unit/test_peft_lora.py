@@ -9,15 +9,20 @@ import pytest
 import torch
 from torch import nn
 
-from custom_sam_peft.config.schema import PEFTConfig
+from custom_sam_peft.config.schema import LoraScope, PEFTConfig
 from custom_sam_peft.peft_adapters.lora import (
+    SCOPE_MHA_MODULES,
     SCOPE_TARGETS,
     apply_lora,
     load_lora,
     merge_lora,
     save_lora,
 )
-from tests.fixtures.tiny_sam3_lora_stub import FIXTURE_SCOPE_PATTERNS, make_stub_wrapper
+from tests.fixtures.tiny_sam3_lora_stub import (
+    FIXTURE_SCOPE_MHA_MODULES,
+    FIXTURE_SCOPE_PATTERNS,
+    make_stub_wrapper,
+)
 
 
 def _trainable(m: nn.Module) -> int:
@@ -174,7 +179,13 @@ def test_apply_lora_sets_peft_model_handle() -> None:
 
 def test_scope_targets_keys_match_lora_scope_literal() -> None:
     # Cheap guard: SCOPE_TARGETS must cover every literal value of LoraScope.
-    assert set(SCOPE_TARGETS) == {"vision", "vision_decoder", "vision_decoder_concept", "all"}
+    assert set(SCOPE_TARGETS) == {
+        "vision",
+        "vision_decoder",
+        "vision_decoder_concept",
+        "decoder_concept",
+        "all",
+    }
 
 
 def test_save_load_lora_roundtrip(tmp_path: Path) -> None:
@@ -421,8 +432,14 @@ def test_scope_targets_match_real_sam3_module_naming() -> None:
     # Vision-trunk MLP is intentionally NOT adapted under vision_decoder.
     assert all(".mlp." not in n for n in vision_decoder)
 
-    # SCOPE_TARGETS still exposes only the three documented scopes.
-    assert set(SCOPE_TARGETS) == {"vision", "vision_decoder", "vision_decoder_concept", "all"}
+    # SCOPE_TARGETS exposes all five documented scopes.
+    assert set(SCOPE_TARGETS) == {
+        "vision",
+        "vision_decoder",
+        "vision_decoder_concept",
+        "decoder_concept",
+        "all",
+    }
 
 
 def test_vision_decoder_scope_matches_decoder_ffn_linears() -> None:
@@ -490,3 +507,174 @@ def test_vision_decoder_scope_matches_decoder_ffn_linears() -> None:
     matched_qlora = _resolve_targets(root_q, cfg, linear_types=(FakeLinear4bit,))
     assert "transformer.decoder.layers.0.linear1" in matched_qlora, matched_qlora
     assert "transformer.decoder.layers.0.linear2" in matched_qlora, matched_qlora
+
+
+# ---------------------------------------------------------------------------
+# decoder_concept scope — behavioral tests (§4 spec)
+# ---------------------------------------------------------------------------
+
+
+def test_peft_config_default_scope_is_decoder_concept() -> None:
+    """PEFTConfig().scope == 'decoder_concept' (new default, spec §2)."""
+    cfg = PEFTConfig(method="lora")
+    assert cfg.scope == "decoder_concept", (
+        f"expected default scope 'decoder_concept', got {cfg.scope!r}"
+    )
+
+
+def test_apply_lora_decoder_concept_attaches_to_cross_attn_out_proj() -> None:
+    """LoRA attaches to decoder cross_attn.out_proj under decoder_concept."""
+    w = make_stub_wrapper()
+    apply_lora(
+        w,
+        PEFTConfig(
+            method="lora",
+            scope="decoder_concept",
+            target_modules=FIXTURE_SCOPE_PATTERNS["decoder_concept"],
+        ),
+    )
+    lora_names = _lora_param_names(w.model.model)
+    assert lora_names, "expected LoRA params under decoder_concept scope"
+    assert any("cross_attn" in n for n in lora_names), (
+        f"no cross_attn LoRA param found; got: {lora_names}"
+    )
+
+
+def test_apply_lora_decoder_concept_trunk_frozen() -> None:
+    """Trunk is frozen under decoder_concept: no LoRA param contains 'vision_trunk'."""
+    w = make_stub_wrapper()
+    apply_lora(
+        w,
+        PEFTConfig(
+            method="lora",
+            scope="decoder_concept",
+            target_modules=FIXTURE_SCOPE_PATTERNS["decoder_concept"],
+        ),
+    )
+    lora_names = _lora_param_names(w.model.model)
+    trunk_lora = [n for n in lora_names if "vision_trunk" in n]
+    assert not trunk_lora, (
+        f"trunk.blocks LoRA params found under decoder_concept (trunk must be frozen): {trunk_lora}"
+    )
+
+
+def test_apply_lora_decoder_concept_mha_adapted() -> None:
+    """MHA modules (self_attn, ca_text) are adapted under decoder_concept via
+    FIXTURE_SCOPE_MHA_MODULES — LoRA params exist for those paths."""
+    from custom_sam_peft.peft_adapters.lora import _resolve_mha_modules
+
+    w = make_stub_wrapper()
+    # Manually resolve MHA modules as apply_lora would (using fixture patterns).
+    # Sam3Wrapper.model is _StubAdapter; _StubAdapter.model is TinySam3LoraStub.
+    base = w.model.model
+    mha_cfg = PEFTConfig(method="lora", scope="decoder_concept")
+    # Patch SCOPE_MHA_MODULES temporarily to inject fixture patterns.
+    original_mha = SCOPE_MHA_MODULES.get("decoder_concept")
+    SCOPE_MHA_MODULES["decoder_concept"] = FIXTURE_SCOPE_MHA_MODULES["decoder_concept"]
+    try:
+        mha_names = _resolve_mha_modules(base, mha_cfg)
+    finally:
+        if original_mha is None:
+            SCOPE_MHA_MODULES.pop("decoder_concept", None)
+        else:
+            SCOPE_MHA_MODULES["decoder_concept"] = original_mha
+
+    assert mha_names, "expected MHA module names resolved for decoder_concept"
+    assert any("ca_text" in n for n in mha_names), f"ca_text not in MHA matches: {mha_names}"
+    assert any("self_attn" in n for n in mha_names), f"self_attn not in MHA matches: {mha_names}"
+    # Trunk must not appear in MHA matches.
+    trunk_mha = [n for n in mha_names if "vision_trunk" in n or "trunk.blocks" in n]
+    assert not trunk_mha, f"trunk MHA modules found in decoder_concept MHA matches: {trunk_mha}"
+
+
+def test_apply_lora_decoder_concept_no_trunk_in_generic_targets() -> None:
+    """_resolve_targets for decoder_concept must match zero trunk modules.
+
+    Uses the real production SCOPE_TARGETS (not the fixture overrides) against a
+    stub whose module names mirror real SAM 3.1 naming, verifying the trunk regex
+    absence is not accidentally reintroduced.
+    """
+    from custom_sam_peft.peft_adapters.lora import SCOPE_TARGETS, _resolve_targets
+
+    class _TrunkPlusDecoderStub(nn.Module):
+        def __init__(self) -> None:
+            super().__init__()
+            # Real SAM 3.1 trunk naming.
+            self.backbone = nn.Module()
+            self.backbone.vision_backbone = nn.Module()  # type: ignore[assignment]
+            self.backbone.vision_backbone.trunk = nn.Module()  # type: ignore[assignment]
+            block = nn.Module()
+            block.attn = nn.Module()  # type: ignore[assignment]
+            block.attn.qkv = nn.Linear(8, 24)  # type: ignore[assignment]
+            block.attn.proj = nn.Linear(8, 8)  # type: ignore[assignment]
+            self.backbone.vision_backbone.trunk.blocks = nn.ModuleList([block])  # type: ignore[assignment]
+            # Real SAM 3.1 decoder naming.
+            self.transformer = nn.Module()
+            self.transformer.decoder = nn.Module()  # type: ignore[assignment]
+            layer = nn.Module()
+            layer.cross_attn = nn.Module()  # type: ignore[assignment]
+            layer.cross_attn.out_proj = nn.Linear(8, 8)  # type: ignore[assignment]
+            layer.linear1 = nn.Linear(8, 16)  # type: ignore[assignment]
+            layer.linear2 = nn.Linear(16, 8)  # type: ignore[assignment]
+            self.transformer.decoder.layers = nn.ModuleList([layer])  # type: ignore[assignment]
+
+    stub = _TrunkPlusDecoderStub()
+    cfg = PEFTConfig(method="lora", scope="decoder_concept")
+    matched = _resolve_targets(stub, cfg)
+
+    # Trunk must not appear in any matched name.
+    trunk_matches = [n for n in matched if "trunk.blocks" in n]
+    assert not trunk_matches, (
+        f"decoder_concept matched trunk modules (trunk must be frozen): {trunk_matches}"
+    )
+    # Decoder targets must be present.
+    assert any("cross_attn.out_proj" in n for n in matched), (
+        f"cross_attn.out_proj not matched under decoder_concept: {matched}"
+    )
+    assert any("linear1" in n or "linear2" in n for n in matched), (
+        f"FFN linears not matched under decoder_concept: {matched}"
+    )
+
+    # Sanity: patterns used are exactly decoder_concept's (no trunk pattern).
+    patterns = SCOPE_TARGETS["decoder_concept"]
+    assert not any(r"trunk" in p for p in patterns), (
+        f"trunk regex found in SCOPE_TARGETS['decoder_concept']: {patterns}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# ADAPTER_DIM_SUM_BY_SCOPE coverage + smoke (§4 spec)
+# ---------------------------------------------------------------------------
+
+
+def test_adapter_dim_sum_by_scope_covers_all_lora_scopes() -> None:
+    """ADAPTER_DIM_SUM_BY_SCOPE has an entry for every LoraScope literal value.
+
+    Guards against a future scope addition silently missing a sizing entry.
+    """
+    import typing
+
+    from custom_sam_peft.presets import ADAPTER_DIM_SUM_BY_SCOPE
+
+    all_scopes = set(typing.get_args(LoraScope))
+    missing = all_scopes - set(ADAPTER_DIM_SUM_BY_SCOPE)
+    assert not missing, (
+        f"ADAPTER_DIM_SUM_BY_SCOPE is missing entries for LoraScope values: {missing}. "
+        "Add a placeholder (with # tbd: tag) or a derived value for each."
+    )
+
+
+def test_adapter_bytes_matches_dim_sum_formula() -> None:
+    """_adapter_bytes(r, scope) == ADAPTER_DIM_SUM_BY_SCOPE[scope] * r * 2 (bf16, 2 B/param)."""
+    from custom_sam_peft.presets import ADAPTER_DIM_SUM_BY_SCOPE, _adapter_bytes
+
+    # Use decoder_concept — a known entry in the mapping.
+    scope = "decoder_concept"
+    dim_sum = ADAPTER_DIM_SUM_BY_SCOPE[scope]
+    r = 8
+    expected = dim_sum * r * 2
+    actual = _adapter_bytes(r, scope)
+    assert actual == expected, (
+        f"_adapter_bytes({r!r}, {scope!r}) == {actual}, expected {expected} "
+        f"(ADAPTER_DIM_SUM_BY_SCOPE[{scope!r}]={dim_sum} * r={r} * 2)"
+    )
