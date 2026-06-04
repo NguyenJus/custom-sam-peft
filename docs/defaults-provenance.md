@@ -132,6 +132,7 @@ Row schema (every section uses these six columns):
 | `config/schema.py:DataConfig.hf` | `None` | `index-only` | — | — | `None`-sentinel: required only when format == "hf". |
 | `config/schema.py:PEFTConfig.target_modules` | `None` | `index-only` | — | — | `None`-sentinel: uses SCOPE_TARGETS[scope] when None. |
 | `config/schema.py:TrainHyperparams.save_every` | `None` | `index-only` | — | — | `None`-sentinel: auto-resolves to one checkpoint/epoch. |
+| `config/schema.py:TrainHyperparams.keep_last_checkpoints` | `2` | `# cite:` | — | — | Keep-last-N checkpoint retention. N=2 retains one fallback `step_<N>` against a crash mid-write on this HDD-saturation-prone box (#316); `None` disables pruning. |
 | `config/schema.py:TrainHyperparams.eval_every` | `None` | `index-only` | — | — | `None`-sentinel: auto-resolves to one eval/epoch. |
 | `config/schema.py:TrainHyperparams.host_ram_floor_gb` | `2.0` | `# tbd:` | — | — | Heuristic host-RAM floor (GB) for the graceful-stop guard; tune empirically. No internal calibration run recorded. |
 | `config/schema.py:DataConfig.semantic` | `None` | `index-only` | — | — | `None`-sentinel: required only when task == "semantic". |
