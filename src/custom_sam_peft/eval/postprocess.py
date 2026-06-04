@@ -7,6 +7,8 @@ scoring machinery.
 
 from __future__ import annotations
 
+from typing import Any
+
 import numpy as np
 import pycocotools.mask as mask_utils
 import torch
@@ -14,6 +16,57 @@ import torch.nn.functional as F
 from torch import Tensor
 
 from custom_sam_peft import profiling
+
+
+# Module-level pinned-buffer pool. Eval is single-threaded (pycocotools holds the
+# GIL; CPU-parallelism is a documented dead end, see #253), so no lock is needed.
+class _PinnedHostBuffer:
+    """Reusable, grow-only pinned host buffer for D2H mask transfer."""
+
+    def __init__(self) -> None:
+        self._buf: Tensor | None = None
+        self._device: torch.device | None = None
+
+    def view_for(self, numel: int, device: torch.device) -> Tensor:
+        """Return a contiguous 1-D pinned bool slice of length ``numel``,
+        pinned for ``device``. Grows (and re-pins) only when required."""
+        if self._buf is None or self._buf.numel() < numel or self._device != device:
+            self._buf = torch.empty(numel, dtype=torch.bool, pin_memory=True)
+            self._device = device
+        return self._buf[:numel]
+
+
+_PINNED_HOST = _PinnedHostBuffer()
+
+
+_BoolArray = np.ndarray[Any, np.dtype[np.bool_]]
+
+
+def _binarize_to_host(masks_up: Tensor, mask_threshold: float) -> _BoolArray:
+    """Threshold ``masks_up`` to bool and copy to host.
+
+    Bit-identical to ``(masks_up > mask_threshold).cpu().numpy()``. On CUDA, uses a
+    reused pinned host buffer with a ``non_blocking=True`` copy + explicit
+    synchronize; on CPU, falls back to the plain ``.numpy()`` path (no pinned
+    machinery), keeping stub/CPU eval and tests working unchanged.
+
+    WARNING: the CUDA path returns a numpy VIEW into the reused pinned buffer. The
+    caller MUST consume it before the next ``_binarize_to_host`` call. See spec
+    invariant 2 (the immediately-following RLE block copies it via
+    ``np.ascontiguousarray(...).astype(np.uint8)``).
+    """
+    gpu_bool = masks_up > mask_threshold  # bool, contiguous, on input's device
+
+    if gpu_bool.device.type != "cuda":
+        # CPU fallback: bit-identical to the old .cpu().numpy() path.
+        return gpu_bool.numpy()  # ndarray[bool_] at runtime
+
+    numel = gpu_bool.numel()
+    flat = _PINNED_HOST.view_for(numel, gpu_bool.device)
+    view = flat.view(gpu_bool.shape)  # (M, H, W) bool, pinned host
+    view.copy_(gpu_bool, non_blocking=True)
+    torch.cuda.synchronize()  # required before the host reads the numpy
+    return view.numpy()  # zero-copy view of the pinned buffer
 
 
 def _denorm_cxcywh_to_xywh(boxes_norm: Tensor, original_hw: tuple[int, int]) -> Tensor:
@@ -162,7 +215,7 @@ def queries_to_coco_results(
     with profiling.bucket("eval.mask_upsample"):
         masks_up = _upsample_mask_logits(masks_logits, original_hw)  # (M, H, W)
     with profiling.bucket("eval.transfer_binarize"):
-        masks_bin = (masks_up > mask_threshold).cpu().numpy()  # (M, H, W) bool
+        masks_bin = _binarize_to_host(masks_up, mask_threshold)  # (M, H, W) bool
 
     entries: list[dict[str, object]] = []
     with profiling.bucket("eval.box_transfer"):
