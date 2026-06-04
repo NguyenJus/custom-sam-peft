@@ -11,12 +11,12 @@ from typing import Any, cast
 from custom_sam_peft._registry import lookup
 from custom_sam_peft.config.schema import TrainConfig
 from custom_sam_peft.data.base import Dataset
-from custom_sam_peft.data.subset import SubsetDataset, resolve_subset_indices
 from custom_sam_peft.data.split_source import (
     _log_split_source,
     resolve_split_source,
     save_split_source,
 )
+from custom_sam_peft.data.subset import SubsetDataset, resolve_subset_indices
 from custom_sam_peft.eval._artifacts import EvalArtifacts
 from custom_sam_peft.models.sam3 import load_sam31
 from custom_sam_peft.tracking import build_tracker
