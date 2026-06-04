@@ -9,6 +9,7 @@ import torch
 
 from custom_sam_peft.eval.metrics import coco_max_dets_cap
 from custom_sam_peft.eval.postprocess import (
+    _binarize_to_host,
     queries_to_coco_results,
     score_and_topk_filter,
 )
@@ -30,6 +31,15 @@ def _outputs(
         "pred_masks": masks if masks is not None else torch.full((1, n, h, w), -10.0),
         "presence_logit_dec": torch.full((1, 1), presence),
     }
+
+
+def test_binarize_to_host_cpu_fallback_matches_baseline():
+    masks_up = torch.randn(3, 8, 8)
+    thr = 0.0
+    got = _binarize_to_host(masks_up, thr)
+    expected = (masks_up > thr).numpy()
+    assert got.dtype == np.bool_
+    assert np.array_equal(got, expected)
 
 
 def test_coco_max_dets_cap_is_pycocotools_default_100():
