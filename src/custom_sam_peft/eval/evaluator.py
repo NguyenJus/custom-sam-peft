@@ -886,7 +886,7 @@ class Evaluator:
         dataset: Dataset,
         *,
         return_per_example_iou: Literal[True],
-    ) -> tuple[MetricsReport, list[float]]:
+    ) -> tuple[MetricsReport, list[float], list[int] | None]:
         pass
 
     def evaluate(
@@ -895,7 +895,7 @@ class Evaluator:
         dataset: Dataset,
         *,
         return_per_example_iou: bool = False,
-    ) -> MetricsReport | tuple[MetricsReport, list[float]]:
+    ) -> MetricsReport | tuple[MetricsReport, list[float], list[int] | None]:
         """Run the model over the dataset and return a MetricsReport.
 
         Pure compute — no disk I/O. Restores the model's training/eval state
@@ -988,7 +988,9 @@ class Evaluator:
             # IoU computation which works on full-image entries and is only used
             # for visualization sample selection — not the metric itself.
             gt_direct, _ = _build_coco_gt_from_examples(examples, dataset)
-            return report, self._compute_per_example_iou(examples, predictions, gt_direct)
+            gt_counts = [len(ex.instances) for ex in examples]
+            per_example_iou = self._compute_per_example_iou(examples, predictions, gt_direct)
+            return report, per_example_iou, gt_counts
 
     def _full_image_pred_rles(
         self,

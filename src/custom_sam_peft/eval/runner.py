@@ -199,7 +199,10 @@ def run_eval(
     else:
         out = Path(cfg.run.output_dir) if cfg.run.output_dir else Path.cwd()
 
-    def _run_viz(per_example_iou: list[float]) -> None:
+    def _run_viz(
+        per_example_iou: list[float],
+        gt_counts: list[int] | None = None,
+    ) -> None:
         if not visualize_resolved:
             return
         try:
@@ -215,6 +218,7 @@ def run_eval(
                 model_name=cfg.model.name,
                 normalize=cfg.data.normalize,
                 channel_semantics=cfg.data.channel_semantics,
+                gt_counts=gt_counts,
             )
         except Exception:
             _LOG.warning("eval visualize pass failed; metrics are persisted.", exc_info=True)
@@ -228,7 +232,9 @@ def run_eval(
         # per-example IoUs. `evaluate_and_save` only persists; call `evaluate`
         # for the data we need and then mirror the persistence the CLI path does.
         out.mkdir(parents=True, exist_ok=True)
-        report, per_example_iou = evaluator.evaluate(wrapper, dataset, return_per_example_iou=True)
+        report, per_example_iou, gt_counts = evaluator.evaluate(
+            wrapper, dataset, return_per_example_iou=True
+        )
 
         payload: dict[str, object] = {
             "overall": report.overall,
@@ -246,7 +252,7 @@ def run_eval(
             (out / "predictions.json").write_text(
                 json.dumps(cast(Evaluator, evaluator)._last_predictions)
             )
-        _run_viz(per_example_iou)
+        _run_viz(per_example_iou, gt_counts=gt_counts)
         _maybe_dump_profile(out)
         return report, per_example_iou
 
@@ -259,7 +265,9 @@ def run_eval(
         return result
 
     out.mkdir(parents=True, exist_ok=True)
-    report, per_example_iou = evaluator.evaluate(wrapper, dataset, return_per_example_iou=True)
+    report, per_example_iou, gt_counts = evaluator.evaluate(
+        wrapper, dataset, return_per_example_iou=True
+    )
     payload2: dict[str, object] = {
         "overall": report.overall,
         "per_class": report.per_class,
@@ -276,6 +284,6 @@ def run_eval(
         cast(Evaluator, evaluator)._maybe_save_predictions(
             cast(Evaluator, evaluator)._last_predictions, run_dir=out
         )
-    _run_viz(per_example_iou)
+    _run_viz(per_example_iou, gt_counts=gt_counts)
     _maybe_dump_profile(out)
     return report

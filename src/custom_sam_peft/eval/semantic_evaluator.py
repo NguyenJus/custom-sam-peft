@@ -258,7 +258,7 @@ class SemanticEvaluator:
         dataset: Dataset,
         *,
         return_per_example_iou: Literal[True],
-    ) -> tuple[MetricsReport, list[float]]: ...
+    ) -> tuple[MetricsReport, list[float], list[int] | None]: ...
 
     def evaluate(
         self,
@@ -266,7 +266,7 @@ class SemanticEvaluator:
         dataset: Dataset,
         *,
         return_per_example_iou: bool = False,
-    ) -> MetricsReport | tuple[MetricsReport, list[float]]:
+    ) -> MetricsReport | tuple[MetricsReport, list[float], list[int] | None]:
         """Run the model over the dataset and return a MetricsReport.
 
         Pure compute — no disk I/O. Restores the model's training/eval state.
@@ -295,7 +295,7 @@ class SemanticEvaluator:
 
         if not return_per_example_iou:
             return report
-        return report, per_example_ious
+        return report, per_example_ious, None
 
     def evaluate_and_save(self, model: Any, dataset: Dataset, output_dir: Path) -> MetricsReport:
         """Call ``evaluate``, write ``metrics.json``, return the report.

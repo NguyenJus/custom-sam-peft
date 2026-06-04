@@ -67,7 +67,7 @@ def test_early_stop_stops_before_epochs_and_closes_out(tmp_path: Path, monkeypat
 
     def fake_eval(self, model, dataset, **k):
         if k.get("return_per_example_iou"):
-            return flat, [0.1]
+            return flat, [0.1], None
         return flat
 
     monkeypatch.setattr(ev.Evaluator, "evaluate", fake_eval)

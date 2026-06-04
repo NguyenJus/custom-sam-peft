@@ -71,6 +71,7 @@ def close_out(
     # 4. Single full eval on the restored weights (return_per_example_iou=True).
     report: Any = None
     per_example_iou: list[float] | None = None
+    gt_counts: list[int] | None = None
     if evaluator_val_ds is not None:
         full_eval_cfg = cfg.eval
         if full_eval_cfg.batch_size == "auto":
@@ -80,7 +81,7 @@ def close_out(
             if oom_state is not None and bs > oom_state.micro_batch_size:
                 bs = oom_state.micro_batch_size
             full_eval_cfg = full_eval_cfg.model_copy(update={"batch_size": bs})
-        report, per_example_iou = Evaluator(full_eval_cfg).evaluate(
+        report, per_example_iou, gt_counts = Evaluator(full_eval_cfg).evaluate(
             model, evaluator_val_ds, return_per_example_iou=True
         )
 
@@ -122,6 +123,7 @@ def close_out(
                 model_name=cfg.model.name,
                 normalize=cfg.data.normalize,
                 channel_semantics=cfg.data.channel_semantics,
+                gt_counts=gt_counts,
             )
         except Exception:
             _LOG.warning("close_out visualize pass failed; metrics are persisted.", exc_info=True)

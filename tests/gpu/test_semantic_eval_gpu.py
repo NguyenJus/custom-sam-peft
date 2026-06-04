@@ -113,7 +113,8 @@ def test_semantic_evaluate_real_model(tmp_path: Path) -> None:
     model.eval()
 
     evaluator = SemanticEvaluator(EvalConfig())
-    report, per_example = evaluator.evaluate(model, ds, return_per_example_iou=True)
+    report, per_example, gt_counts = evaluator.evaluate(model, ds, return_per_example_iou=True)
+    assert gt_counts is None  # SemanticEvaluator has no instance concept
 
     assert isinstance(report, MetricsReport)
     assert "mIoU" in report.overall and "pixel_acc" in report.overall
