@@ -1,0 +1,40 @@
+{
+  "buckets": {
+    "spike.trunk_fwd": 0.9133167710001544,
+    "spike.h2d_copy": 0.015222320000020773,
+    "spike.wrapper_fwd": 1.6442037480003364,
+    "spike.disk_read": 0.17847007799946368,
+    "spike.disk_pin_h2d": 0.03444437400003153
+  },
+  "meta": {
+    "spike_trunk_fwd_mean_s": 0.09137232880000283,
+    "spike_trunk_fwd_median_s": 0.0905721370000947,
+    "spike_h2d_copy_mean_s": 0.0015317881999862947,
+    "spike_h2d_copy_median_s": 0.0015293144999759534,
+    "spike_wrapper_fwd_mean_s": 0.1644460151000203,
+    "spike_wrapper_fwd_median_s": 0.13966716449999694,
+    "spike_net_win_mean_s": 0.08984054060001653,
+    "spike_fpn_bytes_per_image": 55738368,
+    "spike_sam2_fpn_bytes_per_image": 0,
+    "spike_total_bytes_no_sam2": 55738368,
+    "spike_total_bytes_with_sam2": 55738368,
+    "spike_batch_size": 1,
+    "spike_dtype": "bfloat16",
+    "spike_iters": 10,
+    "spike_warmup": 3,
+    "spike_disk_fstype": "ext4",
+    "spike_disk_backing_device": "/dev/sdd",
+    "spike_disk_rotational_flag": 1,
+    "spike_disk_on_disk_bytes": 55740385,
+    "spike_disk_write_mean_s": 0.08802943079997476,
+    "spike_disk_read_mean_s": 0.017860308799959056,
+    "spike_disk_read_median_s": 0.016894750999995267,
+    "spike_disk_pin_h2d_mean_s": 0.0034545056999832013,
+    "spike_disk_replay_mean_s": 0.02131481449994226,
+    "spike_disk_replay_median_s": 0.020243781500198565,
+    "spike_disk_net_win_mean_s": 0.07005751430006057,
+    "spike_disk_read_throughput_bps": 3120908245.445778,
+    "spike_disk_breakeven_throughput_bps": 610035726.702396,
+    "spike_disk_throughput_guard_pass": true
+  }
+}
