@@ -26,6 +26,8 @@ def _make_cfg(tmp_path: Path) -> MagicMock:
     cfg.tracking.wandb.entity = None
     cfg.data.limit.train = None
     cfg.data.limit.val = None
+    # Disable trunk cache so _setup_trunk_cache is not triggered by this mock cfg.
+    cfg.train.cache_trunk_features = False
     return cfg
 
 

@@ -89,7 +89,7 @@ def test_legacy_k1_each_model_call_has_one_class(
     call_class_lists: list[list[str]] = []
     real_forward = wrapper.forward
 
-    def spy(images: torch.Tensor, prompts: list[Any], support: Any = None) -> Any:
+    def spy(images: torch.Tensor, prompts: list[Any], support: Any = None, **kwargs: Any) -> Any:
         call_class_lists.append(list(prompts[0].classes))
         return real_forward(images, prompts, support=support)
 
@@ -139,7 +139,7 @@ def test_legacy_k1_nan_in_one_group_not_skip(monkeypatch: pytest.MonkeyPatch) ->
     wrapper = _make_wrapper()
     call_count = [0]
 
-    def spy(images: torch.Tensor, prompts: list[Any], support: Any = None) -> Any:
+    def spy(images: torch.Tensor, prompts: list[Any], support: Any = None, **kwargs: Any) -> Any:
         call_count[0] += 1
         out = TinySam3Stub(num_queries=4, mask_size=8).forward(images, prompts)
         # First call (class A) returns NaN.

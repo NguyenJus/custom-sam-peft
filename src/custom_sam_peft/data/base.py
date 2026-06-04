@@ -75,6 +75,10 @@ class Example:
     # preprocess_tile helper, byte-identical to predict — which the post-Normalize
     # `image` tensor cannot reproduce. None everywhere else (train, direct/small).
     image_native: np.ndarray[Any, Any] | None = None
+    # Stable per-sample uid for the trunk feature cache (spec §3 Key).  Default ""
+    # so non-cache paths and legacy producers remain valid without changes.
+    # cite: spec §3 — "introduce a sample_uid on the Example / collate path"
+    sample_uid: str = ""
 
 
 @runtime_checkable

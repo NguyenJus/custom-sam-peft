@@ -17,8 +17,16 @@ Measures three quantities needed before any cache wiring lands:
   3. Break-even table — total cache size vs the 16 GB host-RAM budget and vs
      disk-I/O headroom, for a range of dataset sizes.
 
-This script is a MEASUREMENT TOOL ONLY.  It does NOT modify training, does NOT
-write a cache, and runs forward passes only (no backward, no optimizer).
+  4. Disk-backed replay path (Step 2d) — serialize one image's features to the
+     SSD, EVICT the page cache (posix_fadvise DONTNEED, no root), cold-read it
+     back, then pin + non-blocking H2D.  Compares the full replay tail to the
+     trunk forward and emits a throughput-based auto-guard verdict.  Also
+     reports the backing device + kernel rotational flag (advisory only — it is
+     UNRELIABLE under WSL2/VHDX, which labels SSDs rotational=1).
+
+This script is a MEASUREMENT TOOL ONLY.  It does NOT modify training and runs
+forward passes only (no backward, no optimizer).  Step 2d writes throwaway temp
+blobs under --disk-tmp and deletes them; it never writes a persistent cache.
 
 Residence choice (RAM / disk / hybrid) is left to the human reading the output.
 
@@ -58,6 +66,8 @@ Notes
 from __future__ import annotations
 
 import argparse
+import contextlib
+import os
 import statistics
 import sys
 import time
@@ -111,7 +121,10 @@ def bytes_per_image_fp16(
 _GB = 1024**3
 _MB = 1024**2
 _HOST_RAM_BUDGET_GB = 16.0
-_DISK_WARN_THRESHOLD_GB = 50.0  # HDD saturation crash risk starts here
+# Large-cache sanity threshold.  On the old HDD this marked the disk-I/O
+# saturation crash zone; with WSL now on SSD it is just a "this is a big cache,
+# confirm free disk space + sustained throughput" flag (see Step 2d auto-guard).
+_DISK_WARN_THRESHOLD_GB = 50.0
 
 
 def breakeven_table(
@@ -125,8 +138,9 @@ def breakeven_table(
     """Return a formatted break-even table as a string.
 
     Computes total cache size for each dataset size (both WITH and WITHOUT the
-    sam2_backbone_out path), checks against the 16 GB host-RAM budget, and
-    flags disk headroom against the known HDD-saturation crash risk.
+    sam2_backbone_out path), checks against the 16 GB host-RAM budget, and flags
+    caches large enough to warrant a free-disk / sustained-throughput check
+    (the Step 2d auto-guard is the authoritative disk gate).
 
     Parameters
     ----------
@@ -139,19 +153,19 @@ def breakeven_table(
     host_ram_budget_gb:
         Host-RAM budget in GiB (default 16).
     disk_warn_threshold_gb:
-        Disk-size threshold in GiB above which a HDD-saturation warning is
-        emitted (default 50).
+        Cache-size threshold in GiB above which a large-cache WARN is emitted
+        (default 50) — prompts a free-disk + throughput sanity check.
     """
     lines: list[str] = []
     lines.append("\n=== Break-even table: cache size vs 16 GB host-RAM budget ===\n")
     lines.append(f"  Per-image bytes (no sam2) : {bytes_without_sam2 / _MB:>8.2f} MiB")
     lines.append(f"  Per-image bytes (w/ sam2) : {bytes_with_sam2 / _MB:>8.2f} MiB")
     lines.append(f"  Host-RAM budget           : {host_ram_budget_gb:.0f} GiB")
-    lines.append(f"  HDD-saturation warn level : {disk_warn_threshold_gb:.0f} GiB\n")
+    lines.append(f"  Large-cache warn level    : {disk_warn_threshold_gb:.0f} GiB\n")
 
     header = (
         f"  {'N images':>10}  {'GB no-sam2':>12}  {'RAM fit?':>9}"
-        f"  {'GB w/-sam2':>12}  {'RAM fit?':>9}  Disk risk"
+        f"  {'GB w/-sam2':>12}  {'RAM fit?':>9}  Disk note"
     )
     lines.append(header)
     lines.append("  " + "-" * (len(header) - 2))
@@ -165,7 +179,7 @@ def breakeven_table(
 
         disk_flag = ""
         if gb_no >= disk_warn_threshold_gb or gb_wi >= disk_warn_threshold_gb:
-            disk_flag = "WARN: HDD-saturation crash risk on this box"
+            disk_flag = "WARN: large cache — confirm free disk + sustained throughput"
 
         lines.append(
             f"  {n:>10}  {gb_no:>12.3f}  {fits_no:>9}  {gb_wi:>12.3f}  {fits_wi:>9}  {disk_flag}"
@@ -173,13 +187,13 @@ def breakeven_table(
 
     lines.append("")
     lines.append(
-        "  NOTE: disk residence is EXPLICITLY weighed against HDD-saturation crash"
-        " risk — sessions\n"
-        "  on this box crash from disk-I/O saturation, not RAM/VRAM OOM."
-        " Prefer RAM-cap if it fits,\n"
-        "  hybrid if only no-sam2 fits, disk only if the dataset is too large"
-        " for RAM AND disk I/O is\n"
-        "  confirmed non-saturating on a representative run."
+        "  NOTE: RAM-fit is the residence preference when the cache fits the host-RAM"
+        " budget.\n"
+        "  Above it, SSD-backed disk residence is viable when the Step 2d throughput"
+        " auto-guard\n"
+        "  PASSES (measured read throughput >= break-even) AND free disk covers the"
+        " cache size.\n"
+        "  The kernel rotational flag is NOT a gate — it is unreliable under WSL2/VHDX."
     )
     return "\n".join(lines)
 
@@ -363,6 +377,122 @@ def _h2d_copy_one(
     torch.cuda.synchronize()
 
 
+def _fstype_for_path(path: Path) -> str:
+    """Best-effort filesystem type for the mount containing ``path`` (Linux /proc/mounts).
+
+    Used to refuse a FALSE disk measurement: if the spike's tmp dir resolves onto
+    a tmpfs/ramfs mount, "disk" reads are really RAM and the numbers are bogus.
+    """
+    try:
+        target = str(path.resolve())
+        best_mp = ""
+        best_fs = "unknown"
+        with open("/proc/mounts", encoding="utf-8") as fh:
+            for line in fh:
+                parts = line.split()
+                if len(parts) < 3:
+                    continue
+                mp, fstype = parts[1], parts[2]
+                if (target == mp or target.startswith(mp.rstrip("/") + "/")) and len(mp) >= len(
+                    best_mp
+                ):
+                    best_mp, best_fs = mp, fstype
+        return best_fs
+    except OSError:
+        return "unknown"
+
+
+def _backing_device_info(path: Path) -> tuple[str, int | None]:
+    """Resolve the block device backing ``path`` and its kernel ``rotational`` flag.
+
+    Returns ``(source, rotational)`` where ``source`` is the device from /proc/mounts
+    (e.g. ``/dev/sdd``) and ``rotational`` is 1 (HDD), 0 (non-rotational), or None
+    when it cannot be resolved (e.g. tmpfs, overlay, network mounts).
+
+    WARNING: under WSL2 / VHDX the rotational flag is UNRELIABLE — an SSD-backed
+    virtual disk reports rotational=1.  Treat this as advisory only; the measured
+    throughput probe is authoritative.  Never gate caching on this flag alone.
+    """
+    try:
+        target = str(path.resolve())
+        best_mp = ""
+        source = "unknown"
+        with open("/proc/mounts", encoding="utf-8") as fh:
+            for line in fh:
+                parts = line.split()
+                if len(parts) < 3:
+                    continue
+                src, mp = parts[0], parts[1]
+                if (target == mp or target.startswith(mp.rstrip("/") + "/")) and len(mp) >= len(
+                    best_mp
+                ):
+                    best_mp, source = mp, src
+        # Map /dev/<name>[partition] -> base block device under /sys/block.
+        name = os.path.basename(source)
+        rotational: int | None = None
+        candidate = name
+        while candidate and not Path(f"/sys/block/{candidate}").exists():
+            # strip a trailing partition suffix: sdd3 -> sdd, nvme0n1p2 -> nvme0n1
+            candidate = candidate[:-1]
+        rot_path = Path(f"/sys/block/{candidate}/queue/rotational") if candidate else None
+        if rot_path is not None and rot_path.exists():
+            rotational = int(rot_path.read_text().strip())
+        return source, rotational
+    except (OSError, ValueError):
+        return "unknown", None
+
+
+def _evict_page_cache(path: Path) -> None:
+    """Drop ``path``'s pages from the OS page cache so the next read hits real disk.
+
+    Uses posix_fadvise(DONTNEED) — no root required (unlike /proc/sys/vm/drop_caches).
+    fsync first so dirty pages are written before the eviction hint.
+    """
+    fd = os.open(str(path), os.O_RDONLY)
+    try:
+        os.fsync(fd)
+        os.posix_fadvise(fd, 0, 0, os.POSIX_FADV_DONTNEED)
+    finally:
+        os.close(fd)
+
+
+def _entry_tensors(pinned_entry: dict) -> list:
+    """Flatten a cached image entry to the ordered list of tensors it stores."""
+    tensors = list(pinned_entry["backbone_fpn"])
+    sam2 = pinned_entry.get("sam2_backbone_out")
+    if sam2 is not None:
+        tensors = tensors + list(sam2["backbone_fpn"])
+    return tensors
+
+
+def _disk_write_entry(pinned_entry: dict, path: Path) -> int:
+    """Serialize one cached image entry to ``path`` (torch.save) and fsync. Returns bytes."""
+    import torch
+
+    tensors = [t.contiguous() for t in _entry_tensors(pinned_entry)]
+    with open(path, "wb") as fh:
+        torch.save(tensors, fh)
+        fh.flush()
+        os.fsync(fh.fileno())
+    return os.path.getsize(path)
+
+
+def _disk_read_only(path: Path) -> list:
+    """Load a cache entry from ``path`` into CPU tensors (times disk read + deserialize)."""
+    import torch
+
+    return torch.load(path, map_location="cpu", weights_only=True)
+
+
+def _pin_h2d(tensors: list, device) -> None:
+    """Stage CPU tensors into pinned memory and non-blocking H2D — the warm-replay tail."""
+    import torch
+
+    for t in tensors:
+        t.pin_memory().to(device, non_blocking=True)
+    torch.cuda.synchronize()
+
+
 def _fmt_bytes(n: int) -> str:
     if n >= _GB:
         return f"{n / _GB:.3f} GiB"
@@ -438,6 +568,21 @@ def main(argv: list[str] | None = None) -> int:
         default=None,
         metavar="PATH",
         help="Optional: dump a CSP_PROFILE JSON snapshot to this path.",
+    )
+    parser.add_argument(
+        "--disk-tmp",
+        type=Path,
+        default=None,
+        metavar="DIR",
+        help=(
+            "Directory ON THE SSD for the disk-backed replay measurement (Step 2d). "
+            "Default: ./.spike_disk_cache_tmp under the cwd. Must NOT be on tmpfs."
+        ),
+    )
+    parser.add_argument(
+        "--skip-disk",
+        action="store_true",
+        help="Skip the disk-backed replay measurement (Step 2d); RAM-only net-win as before.",
     )
     parser.add_argument(
         "--breakeven",
@@ -673,6 +818,137 @@ def main(argv: list[str] | None = None) -> int:
     print(f"  trunk_fwd / wrapper_fwd (median): {trunk_fraction_median:.1%}")  # noqa: T201
 
     # ------------------------------------------------------------------
+    # Step 2d: Disk-backed replay path (SSD).  The original spike OMITTED this
+    # because disk was excluded by the HDD-saturation crash rule.  With WSL now
+    # on SSD, disk residence is on the table, so measure the REAL replay tail:
+    # serialize fp16 features -> evict page cache -> cold read -> pin + H2D.
+    # ------------------------------------------------------------------
+    disk_results: dict | None = None
+    if not args.skip_disk:
+        disk_tmp = (args.disk_tmp or (Path.cwd() / ".spike_disk_cache_tmp")).resolve()
+        disk_tmp.mkdir(parents=True, exist_ok=True)
+        fstype = _fstype_for_path(disk_tmp)
+        print(  # noqa: T201
+            f"\n[spike] === Step 2d: disk-backed replay (tmp={disk_tmp}, fs={fstype}) ==="
+        )
+        if fstype in {"tmpfs", "ramfs"}:
+            print(  # noqa: T201
+                f"  WARNING: {disk_tmp} is on {fstype} (RAM-backed) — disk timings would be "
+                "FAKE.\n  Pass --disk-tmp <path on the SSD> to measure real disk I/O."
+            )
+
+        # Build the pinned cache entry from a fresh forward (real feature shapes).
+        with torch.no_grad():
+            disk_src_out = backbone.forward_image(images)
+        disk_pinned = _pin_copy_tensors(disk_src_out, batch_size=B)[0]
+
+        paths = [disk_tmp / f"blob_{i}.pt" for i in range(args.iters)]
+        warm_path = disk_tmp / "warm.pt"
+
+        # Warmup: prime torch.save/load code paths and the fs.
+        _disk_write_entry(disk_pinned, warm_path)
+        _evict_page_cache(warm_path)
+        _pin_h2d(_disk_read_only(warm_path), device)
+
+        # Timed writes (epoch-0 cache-build cost).
+        write_times: list[float] = []
+        entry_bytes = 0
+        for p in paths:
+            t0 = time.perf_counter()
+            entry_bytes = _disk_write_entry(disk_pinned, p)
+            write_times.append(time.perf_counter() - t0)
+
+        # Evict every file so each read below is genuinely cold.
+        for p in paths:
+            _evict_page_cache(p)
+
+        # Timed cold reads + pin + H2D (the warm-epoch replay path).
+        read_times: list[float] = []
+        diskh2d_times: list[float] = []
+        for p in paths:
+            _evict_page_cache(p)  # re-evict immediately before this read
+            torch.cuda.synchronize()
+            t0 = time.perf_counter()
+            with prof.bucket("spike.disk_read"):
+                loaded = _disk_read_only(p)
+            read_times.append(time.perf_counter() - t0)
+            t1 = time.perf_counter()
+            with prof.bucket("spike.disk_pin_h2d"):
+                _pin_h2d(loaded, device)
+            diskh2d_times.append(time.perf_counter() - t1)
+            del loaded
+
+        for p in (*paths, warm_path):
+            with contextlib.suppress(OSError):
+                p.unlink()
+
+        write_mean = statistics.mean(write_times)
+        read_mean = statistics.mean(read_times)
+        read_median = statistics.median(read_times)
+        diskh2d_mean = statistics.mean(diskh2d_times)
+        replay_pairs = [r + h for r, h in zip(read_times, diskh2d_times, strict=True)]
+        replay_mean = statistics.mean(replay_pairs)
+        replay_median = statistics.median(replay_pairs)
+
+        # Device assessment for the Part-B auto-guard.  The break-even read
+        # throughput is feature_bytes / trunk_fwd_budget: below it, a cold read
+        # costs more than recomputing the trunk, so the cache is a NET LOSS.
+        source, rotational = _backing_device_info(disk_tmp)
+        read_throughput = entry_bytes / read_mean if read_mean > 0 else float("inf")
+        breakeven_throughput = entry_bytes / trunk_mean if trunk_mean > 0 else float("inf")
+        guard_pass = read_throughput >= breakeven_throughput
+
+        disk_results = {
+            "fstype": fstype,
+            "backing_device": source,
+            "rotational_flag": rotational,
+            "entry_bytes": entry_bytes,
+            "write_mean_s": write_mean,
+            "read_mean_s": read_mean,
+            "read_median_s": read_median,
+            "pin_h2d_mean_s": diskh2d_mean,
+            "replay_mean_s": replay_mean,
+            "replay_median_s": replay_median,
+            "read_throughput_bps": read_throughput,
+            "breakeven_throughput_bps": breakeven_throughput,
+            "throughput_guard_pass": guard_pass,
+        }
+
+        print(f"  on-disk size / image      : {_fmt_bytes(entry_bytes)} (torch.save container)")  # noqa: T201
+        print(f"  disk write mean (cold)    : {_fmt_ms(write_mean)}  (epoch-0 build, one-time)")  # noqa: T201
+        print(f"  disk read mean (cold)     : {_fmt_ms(read_mean)}")  # noqa: T201
+        print(f"  disk read median (cold)   : {_fmt_ms(read_median)}")  # noqa: T201
+        print(f"  pin+H2D mean              : {_fmt_ms(diskh2d_mean)}")  # noqa: T201
+        print(  # noqa: T201
+            f"  full replay (read+pin+H2D): {_fmt_ms(replay_mean)} mean"
+            f" / {_fmt_ms(replay_median)} median"
+        )
+
+        # --- Part-B auto-guard prototype: throughput probe, NOT device label ---
+        rot_str = (
+            "unresolved"
+            if rotational is None
+            else f"{rotational} ({'HDD' if rotational else 'non-rotational'})"
+        )
+        print(f"\n  backing device            : {source}  rotational={rot_str}")  # noqa: T201
+        if rotational == 1:
+            print(  # noqa: T201
+                "    (advisory only — UNRELIABLE under WSL2/VHDX, which labels SSDs"
+                " rotational=1;\n     the throughput probe below is authoritative)"
+            )
+        print(  # noqa: T201
+            f"  measured read throughput  : {read_throughput / _GB:.2f} GB/s"
+        )
+        print(  # noqa: T201
+            f"  break-even threshold      : {breakeven_throughput / _GB:.2f} GB/s"
+            "  (= feature_bytes / trunk_fwd; below this the cache is a net loss)"
+        )
+        guard_verdict = (
+            "PASS — disk fast enough to cache" if guard_pass else "FAIL — recompute instead"
+        )
+        print(f"  AUTO-GUARD (throughput)   : {guard_verdict}")  # noqa: T201
+
+    # ------------------------------------------------------------------
     # Net win summary.
     # ------------------------------------------------------------------
     net_win_mean = trunk_mean - h2d_mean
@@ -681,9 +957,29 @@ def main(argv: list[str] | None = None) -> int:
     go_nogo_median = "GO" if net_win_median > 0 else "NO-GO"
 
     print("\n[spike] === Net-win estimate (per replayed step) ===")  # noqa: T201
-    print("  net_win = trunk_fwd - h2d_copy")  # noqa: T201
-    print(f"  mean  : {_fmt_ms(net_win_mean)}  -> {go_nogo_mean}")  # noqa: T201
-    print(f"  median: {_fmt_ms(net_win_median)}  -> {go_nogo_median}")  # noqa: T201
+    print("  RAM residence: net_win = trunk_fwd - h2d_copy")  # noqa: T201
+    print(f"    mean  : {_fmt_ms(net_win_mean)}  -> {go_nogo_mean}")  # noqa: T201
+    print(f"    median: {_fmt_ms(net_win_median)}  -> {go_nogo_median}")  # noqa: T201
+
+    if disk_results is not None:
+        disk_net_mean = trunk_mean - disk_results["replay_mean_s"]
+        disk_net_median = trunk_median - disk_results["replay_median_s"]
+        disk_go_mean = "GO" if disk_net_mean > 0 else "NO-GO"
+        disk_go_median = "GO" if disk_net_median > 0 else "NO-GO"
+        # With 1-step prefetch the cold read overlaps the PRIOR step's compute,
+        # so the only un-hidden cost is whatever the replay exceeds trunk_fwd by.
+        prefetch_eff = max(0.0, disk_results["replay_mean_s"] - trunk_mean)
+        prefetch_net = trunk_mean - prefetch_eff
+        print("\n  SSD residence: net_win = trunk_fwd - (disk_read + pin + H2D)")  # noqa: T201
+        print(f"    cold, no prefetch : {_fmt_ms(disk_net_mean)}  -> {disk_go_mean}")  # noqa: T201
+        print(  # noqa: T201
+            f"    cold, median      : {_fmt_ms(disk_net_median)}  -> {disk_go_median}"
+        )
+        print(  # noqa: T201
+            f"    with 1-step prefetch: ~{_fmt_ms(prefetch_net)}"
+            "  (disk read hidden behind prior-step compute)"
+        )
+
     print(  # noqa: T201
         "\n  NOTE: this is the per-step saving ON REPLAYED STEPS (epochs 1+).\n"
         "  Total saving = net_win_per_step * steps_per_epoch * (epochs - 1)."
@@ -720,6 +1016,24 @@ def main(argv: list[str] | None = None) -> int:
         spike_iters=args.iters,
         spike_warmup=args.warmup,
     )
+
+    if disk_results is not None:
+        prof.note(
+            spike_disk_fstype=disk_results["fstype"],
+            spike_disk_backing_device=disk_results["backing_device"],
+            spike_disk_rotational_flag=disk_results["rotational_flag"],
+            spike_disk_on_disk_bytes=disk_results["entry_bytes"],
+            spike_disk_write_mean_s=disk_results["write_mean_s"],
+            spike_disk_read_mean_s=disk_results["read_mean_s"],
+            spike_disk_read_median_s=disk_results["read_median_s"],
+            spike_disk_pin_h2d_mean_s=disk_results["pin_h2d_mean_s"],
+            spike_disk_replay_mean_s=disk_results["replay_mean_s"],
+            spike_disk_replay_median_s=disk_results["replay_median_s"],
+            spike_disk_net_win_mean_s=trunk_mean - disk_results["replay_mean_s"],
+            spike_disk_read_throughput_bps=disk_results["read_throughput_bps"],
+            spike_disk_breakeven_throughput_bps=disk_results["breakeven_throughput_bps"],
+            spike_disk_throughput_guard_pass=disk_results["throughput_guard_pass"],
+        )
 
     if args.snapshot_out is not None:
         out_path = prof.dump(args.snapshot_out)

@@ -766,6 +766,44 @@ class TrainHyperparams(_Strict):
     )
     multiplex: MultiplexConfig = Field(default_factory=MultiplexConfig)
 
+    # --- trunk feature cache (§3.5 / spec §2) ---
+    cache_trunk_features: bool = Field(
+        default=False,
+        description=(
+            "Enable the single-run on-disk trunk-feature replay cache. "
+            "Wall-clock optimisation: compute trunk features once on epoch 0, "
+            "replay on epochs 1+, skipping forward_image entirely. "
+            "Off by default — turn on only after validating correctness guards pass "
+            "(trunk frozen, RGB input, aug-off). "
+            "cite: spec §2 — wall-clock opt-in, off until validated."
+        ),
+    )
+    cache_allow_slow_disk: bool = Field(
+        default=False,
+        description=(
+            "Override the build-time throughput auto-guard. When False (default) the "
+            "cache refuses to activate if the measured cold-read throughput of the "
+            "cache volume falls below the derived break-even "
+            "(feature_bytes / trunk_fwd_ms). Set True only when you have verified "
+            "the disk is fast enough and want to suppress the guard. "
+            "cite: spec §3.5(c) — override the throughput auto-guard."
+        ),
+    )
+    cache_free_disk_fraction: float = Field(
+        default=0.70,
+        gt=0.0,
+        le=1.0,
+        description=(
+            "Maximum fraction of free disk on the cache volume that the projected "
+            "cache size (n_samples x per_image_bytes) may occupy. Refuse to activate "
+            "the cache when the projected size exceeds this fraction of free disk. "
+            "Default 0.70 leaves ≥30%% headroom for checkpoints, logs, DataLoader "
+            "spill, and OS while admitting the 193 GiB DFC working set on a 918 GB "
+            "SSD (193/918 ≈ 21%% ≪ 70%%). "
+            "cite: spec §3.5(b) — refuse if projected size > this fraction of free disk."
+        ),
+    )
+
 
 class EvalConfig(_Strict):
     # --- advanced --- (all eval fields are optional overrides; section defaults are usable as-is)

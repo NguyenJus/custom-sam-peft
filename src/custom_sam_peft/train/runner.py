@@ -125,9 +125,116 @@ def run_training(
     )
     peft_factory = lookup("peft", cfg.peft.method)
     peft_factory(wrapper, cfg.peft)
+
+    # Trunk feature cache setup (spec §3 Integration / §3.5 activation guard).
+    # Fires AFTER load_sam31 + peft_factory so the guards see the final frozen state.
+    if cfg.train.cache_trunk_features:
+        _setup_trunk_cache(cfg, wrapper, train_ds, run_dir)
+
     tracker = build_tracker(cfg)
     trainer = Trainer(wrapper, train_ds, val_ds, tracker, cfg)
     return trainer.fit(run_dir=run_dir, resume_from=resume_from)
+
+
+def _setup_trunk_cache(
+    cfg: TrainConfig,
+    wrapper: Any,
+    train_ds: Dataset,
+    run_dir: Path,
+) -> None:
+    """Fire §2 correctness guards and build+attach TrunkFeatureCache.
+
+    Called from run_training when cfg.train.cache_trunk_features is True.
+    Raises ValueError on any guard failure (fail-fast, build-time).
+
+    Spec: §2 (three correctness guards), §3 Integration, §3.5 activation guard.
+    """
+    import torch
+
+    from custom_sam_peft.models.trunk_cache import (
+        TrunkFeatureCache,
+        assert_aug_off,
+        assert_rgb_input,
+        assert_trunk_frozen,
+        trunk_fingerprint,
+    )
+
+    # Peel the wrapper: Sam3Wrapper.model is _Sam3ImageAdapter.
+    adapter = getattr(wrapper, "model", None)
+
+    # Guard 1: trunk frozen (spec §2 guard 1) — checked on the full wrapper
+    # so the walker can find backbone.vision_backbone through the adapter.
+    assert_trunk_frozen(wrapper)
+
+    # Guard 2: RGB input (spec §2 guard 2)
+    channel_adapter = getattr(adapter, "channel_adapter", None)
+    assert_rgb_input(channel_adapter)
+
+    # Guard 3: aug off (spec §2 guard 3) — inspect the built train transform.
+    # Use getattr to reach _transforms without coupling to a specific Dataset type.
+    # SubsetDataset wraps an inner dataset; walk one level if needed.
+    train_transform = getattr(train_ds, "_transforms", None)
+    if train_transform is None:
+        inner_ds = getattr(train_ds, "_inner", None)
+        if inner_ds is not None:
+            train_transform = getattr(inner_ds, "_transforms", None)
+    if train_transform is not None:
+        assert_aug_off(train_transform)
+    else:
+        # Spec §2 guard 3: fail-fast on ANY uncertainty about augmentation.
+        # We cannot confirm aug-off for a non-standard dataset whose transform
+        # is not accessible via _transforms — refuse rather than silently skip.
+        # (Standard CocoDataset / SubsetDataset always expose _transforms.)
+        raise ValueError(
+            f"cache_trunk_features: could not locate _transforms on train dataset "
+            f"{type(train_ds).__name__}; cannot verify the aug-off precondition "
+            f"(spec §2 guard 3). Disable caching (cache_trunk_features = false) or "
+            "expose a _transforms attribute on the dataset."
+        )
+
+    # Build fingerprint: identifies the exact trunk config so a stale cache
+    # from a different run/scope cannot be replayed.
+    fp = trunk_fingerprint(
+        checkpoint_id=cfg.model.name or "unknown",
+        scope=cfg.peft.scope,
+        dtype=cfg.model.dtype,
+        image_size=1008,  # SAM3_IMAGE_SIZE — always fixed for SAM 3.1
+    )
+
+    # Derive model_dtype for the cache's H2D cast.
+    _dtype_map = {
+        "bfloat16": torch.bfloat16,
+        "float16": torch.float16,
+        "float32": torch.float32,
+    }
+    model_dtype = _dtype_map.get(cfg.model.dtype, torch.float32)
+
+    cache_dir = run_dir / ".trunk_cache"
+    cache = TrunkFeatureCache(
+        cache_dir=cache_dir,
+        fingerprint=fp,
+        model_dtype=model_dtype,
+        n_samples=len(train_ds),
+        free_disk_fraction=cfg.train.cache_free_disk_fraction,
+        allow_slow_disk=cfg.train.cache_allow_slow_disk,
+    )
+
+    # Attach the cache to the adapter.
+    if adapter is not None and hasattr(adapter, "attach_trunk_cache"):
+        adapter.attach_trunk_cache(cache)
+    else:
+        _LOG.warning(
+            "cache_trunk_features: adapter %s has no attach_trunk_cache method; "
+            "cache will not be used.",
+            type(adapter).__name__,
+        )
+
+    _LOG.info(
+        "TrunkFeatureCache attached: cache_dir=%s n_samples=%d fingerprint=%s...",
+        cache_dir,
+        len(train_ds),
+        fp[:12],
+    )
 
 
 def _write_subset_manifest(

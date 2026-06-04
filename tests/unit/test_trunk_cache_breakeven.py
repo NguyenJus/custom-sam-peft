@@ -194,3 +194,58 @@ class TestBreakevenMainCli:
         assert ret == 0
         captured = capsys.readouterr()
         assert "NO " in captured.out
+
+
+# ---------------------------------------------------------------------------
+# Disk + device helpers (Step 2d). CPU-only — no CUDA, no real model.
+# The serialize round-trip needs torch (not CUDA); device probes need neither.
+# ---------------------------------------------------------------------------
+
+
+class TestDeviceProbes:
+    def test_fstype_for_path_returns_str(self, spike, tmp_path) -> None:
+        fs = spike._fstype_for_path(tmp_path)
+        assert isinstance(fs, str)
+        assert fs  # non-empty (a real fstype or "unknown")
+
+    def test_backing_device_info_returns_tuple(self, spike, tmp_path) -> None:
+        source, rotational = spike._backing_device_info(tmp_path)
+        assert isinstance(source, str)
+        assert rotational is None or rotational in (0, 1)
+
+    def test_evict_page_cache_no_error(self, spike, tmp_path) -> None:
+        p = tmp_path / "evict_me.bin"
+        p.write_bytes(b"\x00" * 4096)
+        # Must not raise on a real file (posix_fadvise DONTNEED).
+        spike._evict_page_cache(p)
+
+
+class TestDiskRoundtrip:
+    def test_entry_tensors_flattens_with_sam2(self, spike) -> None:
+        torch = pytest.importorskip("torch")
+        a, b, c = torch.zeros(1, 2), torch.zeros(1, 2), torch.zeros(1, 2)
+        entry = {"backbone_fpn": [a, b], "sam2_backbone_out": {"backbone_fpn": [c]}}
+        flat = spike._entry_tensors(entry)
+        assert len(flat) == 3
+
+    def test_entry_tensors_no_sam2(self, spike) -> None:
+        torch = pytest.importorskip("torch")
+        entry = {"backbone_fpn": [torch.zeros(1, 2)]}
+        assert len(spike._entry_tensors(entry)) == 1
+
+    def test_write_read_roundtrip_preserves_values(self, spike, tmp_path) -> None:
+        torch = pytest.importorskip("torch")
+        t0 = torch.arange(6, dtype=torch.float16).reshape(1, 2, 3)
+        t1 = torch.ones(1, 4, dtype=torch.float16)
+        entry = {"backbone_fpn": [t0, t1]}
+        path = tmp_path / "blob.pt"
+
+        n_bytes = spike._disk_write_entry(entry, path)
+        assert n_bytes == path.stat().st_size
+        assert n_bytes > 0
+
+        spike._evict_page_cache(path)
+        loaded = spike._disk_read_only(path)
+        assert len(loaded) == 2
+        assert torch.equal(loaded[0], t0)
+        assert torch.equal(loaded[1], t1)

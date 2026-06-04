@@ -340,6 +340,9 @@ class HFDataset:
             image_id=image_id,
             prompts=TextPrompts(classes=prompts_list),
             instances=instances,
+            # cite: spec §3 — stable per-sample uid; HF dataset has no tiling so
+            # image_id (row index) is sufficient and unique.
+            sample_uid=image_id,
         )
 
     def __getitem__(self, i: int) -> Example:

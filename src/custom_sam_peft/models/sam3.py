@@ -19,6 +19,8 @@ from typing import TYPE_CHECKING, Any, Literal, cast
 if TYPE_CHECKING:
     from peft import PeftModel
 
+    from custom_sam_peft.models.trunk_cache import TrunkFeatureCache
+
 import sam3
 import torch
 from sam3.model.data_misc import FindStage
@@ -155,14 +157,37 @@ class Sam3Wrapper(nn.Module):
         self.channel_semantics = channel_semantics
         self.peft_model: PeftModel | None = None
 
+    @property
+    def trunk_cache(self) -> TrunkFeatureCache | None:
+        """Expose the attached TrunkFeatureCache (if any) for prefetch wiring.
+
+        Returns the cache from the inner _Sam3ImageAdapter when one is attached,
+        or None when the inner model is a stub / cache-less adapter.
+        Accessed by run_epoch in loop.py to schedule depth-1 prefetch
+        (spec §3.5 'Replay path + 1-step prefetch').
+        """
+        adapter = self.model
+        cache = getattr(adapter, "_trunk_cache", None)
+        if cache is None:
+            return None
+        # Narrow structurally: TrunkFeatureCache has a prefetch() method.
+        if not callable(getattr(cache, "prefetch", None)):
+            return None
+        return cache  # type: ignore[no-any-return]
+
     def forward(
         self,
         images: Tensor,
         prompts: list[Prompts],
         support: SupportPrompts | None = None,
+        sample_uids: list[str] | None = None,
     ) -> dict[str, Any]:
         self._validate_inputs(images, prompts, support)
-        out: dict[str, Any] = self.model(images, prompts)
+        # sample_uids is forwarded to _Sam3ImageAdapter which activates the
+        # trunk feature cache path when a cache is attached (spec §3 Integration).
+        # Default None = non-cache path unchanged. Passed as keyword so stub
+        # adapters in tests (which accept only 2 positional args) are not broken.
+        out: dict[str, Any] = self.model(images, prompts, sample_uids=sample_uids)
         return out
 
     def _validate_inputs(
@@ -306,11 +331,27 @@ class _Sam3ImageAdapter(nn.Module):
             _first_param = next(model.parameters(), None)
             if _first_param is not None:
                 self.channel_adapter = self.channel_adapter.to(dtype=_first_param.dtype)
+        # Trunk feature cache (spec §3 Integration).  None until attach_trunk_cache()
+        # is called from runner.run_training after guards pass.
+        self._trunk_cache: TrunkFeatureCache | None = None
+        # Content-independent position encodings captured once on epoch-0 and
+        # re-used on replay.  shape matches the batch-unbound forward_image output.
+        self._cached_pos_enc: list[Any] | None = None  # list[Tensor] from vision_pos_enc
+
+    def attach_trunk_cache(self, cache: TrunkFeatureCache) -> None:
+        """Attach a TrunkFeatureCache instance to this adapter.
+
+        Called from runner.run_training after all correctness guards pass.
+        Sets self._trunk_cache; self._cached_pos_enc is populated lazily on the
+        first epoch-0 forward.
+        """
+        self._trunk_cache = cache
 
     def forward(
         self,
         images: Tensor,
         prompts: list[Prompts],
+        sample_uids: list[str] | None = None,
     ) -> dict[str, Tensor]:
         if not all(isinstance(p, TextPrompts) for p in prompts):
             raise ValueError("_Sam3ImageAdapter only supports TextPrompts in v0")
@@ -329,7 +370,120 @@ class _Sam3ImageAdapter(nn.Module):
             images = images.to(dtype=self.channel_adapter.weight.dtype)
             images = self.channel_adapter(images)  # (B, N, H, W) -> (B, 3, H, W)
 
-        backbone_out = self.model.backbone.forward_image(images)  # type: ignore[union-attr, operator]
+        # Trunk feature cache path (spec §3 Integration, §4 Batch policy).
+        # Active only when cache is attached and sample_uids are provided.
+        # Non-cache path is byte-for-byte unchanged.
+        if self._trunk_cache is not None and sample_uids is not None:
+            cache = self._trunk_cache
+            # Try prefetch result first (depth-1 lookahead), then cold read.
+            hit = cache._get_prefetched(sample_uids)
+            if hit is None:
+                hit = cache.get_batch(sample_uids)
+            if hit is not None:
+                # All-hit path (epochs 1+): assemble backbone_out from cache +
+                # re-attach vision_pos_enc (content-independent, cached once).
+                # Spec §4: "assemble backbone_out from hit + self._cached_pos_enc
+                # (tiled to B); SKIP forward_image entirely."
+                backbone_out: dict[str, Any] = {}
+                for i, entry in enumerate(hit):
+                    # Merge per-image entries into a batched backbone_out.
+                    # backbone_fpn: list[Tensor(1, C, H, W)] -> list[Tensor(B, C, H, W)]
+                    if i == 0:
+                        backbone_out["backbone_fpn"] = [t.clone() for t in entry["backbone_fpn"]]
+                        backbone_out["vision_features"] = backbone_out["backbone_fpn"][-1]
+                        if entry.get("sam2_backbone_out") is not None:
+                            s2 = entry["sam2_backbone_out"]
+                            backbone_out["sam2_backbone_out"] = {
+                                "backbone_fpn": [t.clone() for t in s2["backbone_fpn"]],
+                                "vision_features": s2["backbone_fpn"][-1],
+                                # sam2_backbone_out's vision_pos_enc is intentionally
+                                # set to None on replay: put_batch stores only
+                                # backbone_fpn for the sam2 sub-pyramid (not its
+                                # pos_enc), so s2.get('vision_pos_enc') is always
+                                # None here.  This is safe because sam2_backbone_out
+                                # is consumed only by the inst-interactivity / video
+                                # paths, which are disabled via
+                                # enable_inst_interactivity=False (see _construct_raw_model
+                                # in this file).  If a future config enables that path,
+                                # this None would surface — add a cached sam2 pos_enc
+                                # at that point (analogous to self._cached_pos_enc).
+                                # cite: spec §3 "Stored value"; §1 vision_pos_enc
+                                #   content-independence
+                                "vision_pos_enc": s2.get("vision_pos_enc"),
+                            }
+                        else:
+                            backbone_out["sam2_backbone_out"] = None
+                    else:
+                        for li, t in enumerate(entry["backbone_fpn"]):
+                            backbone_out["backbone_fpn"][li] = torch.cat(
+                                [backbone_out["backbone_fpn"][li], t], dim=0
+                            )
+                        backbone_out["vision_features"] = backbone_out["backbone_fpn"][-1]
+                        has_s2 = (
+                            entry.get("sam2_backbone_out") is not None
+                            and backbone_out["sam2_backbone_out"] is not None
+                        )
+                        if has_s2:
+                            s2 = entry["sam2_backbone_out"]
+                            s2_out = backbone_out["sam2_backbone_out"]
+                            for li, t in enumerate(s2["backbone_fpn"]):
+                                s2_out["backbone_fpn"][li] = torch.cat(
+                                    [s2_out["backbone_fpn"][li], t], dim=0
+                                )
+                            s2_out["vision_features"] = s2_out["backbone_fpn"][-1]
+                # Re-attach vision_pos_enc from the once-cached copy.
+                # vision_pos_enc is a list of Tensors (one per FPN level) from the
+                # real forward_image; it is content-independent so we tile to B.
+                if self._cached_pos_enc is not None:
+                    # Tile the cached (B=1, CPU) pos_enc to the current batch and
+                    # land it on the model device. The expand+contiguous+device-move
+                    # lives in the cache (TrunkFeatureCache.tile_pos_enc) because it
+                    # is part of the H2D replay path — the §9.2 static guard
+                    # allowlists trunk_cache.py for device moves, not sam3.py.
+                    # cite: spec §1 vision_pos_enc handling.
+                    backbone_out["vision_pos_enc"] = cache.tile_pos_enc(
+                        self._cached_pos_enc, b, device
+                    )
+                else:
+                    # Fallback: recompute pos_enc (should not happen after epoch 0).
+                    fresh = self.model.backbone.forward_image(images)  # type: ignore[union-attr, operator]
+                    backbone_out["vision_pos_enc"] = fresh["vision_pos_enc"]
+            else:
+                # Miss path (epoch 0 or corrupt blob): run forward_image on full batch,
+                # capture vision_pos_enc once, store entries to cache.
+                backbone_out = self.model.backbone.forward_image(images)  # type: ignore[union-attr, operator]
+                # Capture vision_pos_enc (content-independent) once per run.
+                # vision_pos_enc is a list[Tensor] where each Tensor has shape
+                # (B, ...). We store the B=1 slice (first image) for later tiling.
+                if self._cached_pos_enc is None:
+                    pos_enc = backbone_out["vision_pos_enc"]
+                    if isinstance(pos_enc, list):
+                        self._cached_pos_enc = [p[0:1].detach().cpu() for p in pos_enc]
+                    else:
+                        # Scalar/non-list fallback — store as-is
+                        self._cached_pos_enc = [pos_enc[0:1].detach().cpu()]
+                # Unbind batch dimension: one entry per image.
+                fpn = backbone_out["backbone_fpn"]
+                sam2_out = backbone_out.get("sam2_backbone_out")
+                store_entries: list[dict[str, Any]] = []
+                for i in range(b):
+                    store_entry: dict[str, Any] = {
+                        "backbone_fpn": [t[i : i + 1].detach() for t in fpn],
+                    }
+                    if sam2_out is not None:
+                        store_entry["sam2_backbone_out"] = {
+                            "backbone_fpn": [
+                                t[i : i + 1].detach() for t in sam2_out["backbone_fpn"]
+                            ],
+                        }
+                    else:
+                        store_entry["sam2_backbone_out"] = None
+                    store_entries.append(store_entry)
+                cache.put_batch(sample_uids, store_entries)
+        else:
+            # Non-cache path (default): run forward_image on the full batch.
+            backbone_out = self.model.backbone.forward_image(images)  # type: ignore[union-attr, operator]
+
         text_outputs = self.model.backbone.forward_text(  # type: ignore[union-attr, operator]
             classes, device=device
         )
