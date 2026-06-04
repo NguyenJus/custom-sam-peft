@@ -64,7 +64,7 @@ forward_only_factor: float = 0.25
 # === CALIBRATION CACHE =====================================================
 
 CACHE_FILENAME = ".custom_sam_peft_calibration.json"
-CACHE_SCHEMA_VERSION = 3  # v3: split activation (A_fixed/A_per_class); drops activation_bytes_per_example  # noqa: E501
+CACHE_SCHEMA_VERSION = 4  # v4: pinned r/alpha (r no longer searched); drops rank-maximization
 
 
 # === PresetDecision ========================================================
@@ -93,7 +93,9 @@ class PresetDecision:
     provenance: Literal["calibrated", "analytic"]
     cache_path: Path | None
     calibrated_at: str | None  # ISO 8601 string when provenance == "calibrated", None otherwise
-    alpha: int = 32  # cite: LoRA (Hu 2021) §4.1 (alpha = 2r); co-scaled by calibrate autosize
+    alpha: int = 32  # cite: PEFTConfig.alpha default (defaults-provenance.md:85); set explicitly
+    # by every constructor; default is a defensive fallback. Co-scaled alongside r
+    # on VRAM-driven rank reduction; never raised above the pinned config alpha.
 
     @property
     def config_patch(self) -> dict[str, dict[str, object]]:
@@ -334,29 +336,47 @@ def _headroom_bytes() -> int:
 # === Search space =========================================================
 
 
-def _candidates() -> list[tuple[str, int, int, int]]:
-    methods = ("lora", "qlora")
-    rs = (8, 16, 24, 32, 48, 64)
+def _candidates() -> list[tuple[int, int]]:
+    """Enumerate the (batch, k) search space. method/r are pinned inputs, not searched.
+
+    Spec §6.1: drop the r dimension; enumerate only (b, k). Tail-to-head =
+    sacrifice order (give up batch first, then K). Spec §3/§4.
+    """
     batches = tuple(range(1, 17))
     ks = (1, 2, 4, 8, 16)
-    return [(m, r, b, k) for m in methods for r in rs for b in batches for k in ks]
+    return [(b, k) for b in batches for k in ks]
 
 
-def _sort_key(c: tuple[str, int, int, int]) -> tuple[int, int, int, int]:
-    # Priority highest-first: LoRA over QLoRA -> highest r -> highest K -> highest
-    # batch. Tail-to-head = sacrifice order (give up batch, then K, then r, then
-    # LoRA->QLoRA). Matches the runtime ladder and design priority (protect
-    # accuracy levers method/r; spend throughput-only K and memory-only batch
-    # first). Spec §3.
-    method, r, batch, k = c
-    return (0 if method == "lora" else 1, -r, -k, -batch)
+def _sort_key(c: tuple[int, int]) -> tuple[int, int]:
+    """Sort (batch, k) candidates highest-first: largest K wins, then largest batch.
+
+    Tail-to-head = sacrifice order: give up batch first, then K. method/r are
+    pinned inputs and are not part of the sort key. Spec §3/§6.1.
+    """
+    batch, k = c
+    return (-k, -batch)
 
 
 # === Public entry point ====================================================
 
 
-def decide_preset(k: int | None = None, cache_path: Path | None = None) -> PresetDecision:
-    """Pick the largest configuration that fits within the VRAM budget.
+def decide_preset(
+    k: int | None = None,
+    cache_path: Path | None = None,
+    *,
+    method: Literal["lora", "qlora"] = "lora",  # cite: PEFTConfig.method default
+    r: int = 16,  # cite: PEFTConfig.r default (defaults-provenance.md:84)
+    alpha: int = 32,  # cite: PEFTConfig.alpha default (defaults-provenance.md:85)
+    num_classes: int | None = None,
+) -> PresetDecision:
+    """Pick the largest (b, k) configuration that fits within the VRAM budget.
+
+    ``method``, ``r``, and ``alpha`` are pinned accuracy choices — hardware never
+    raises them. Only ``b`` (batch) and ``k`` (classes_per_forward) are autosized.
+    ``r`` is reduced as a last resort with a co-scaled ``alpha`` and a user warning.
+
+    Sacrifice order (cheapest to most damaging):
+        b↓ → k↓ (b held at 1) → lora→qlora @ same r → r↓ (+WARNING, alpha co-scaled)
 
     Args:
       k: upper bound on the K (classes-per-forward) search. When None, uses
@@ -367,11 +387,21 @@ def decide_preset(k: int | None = None, cache_path: Path | None = None) -> Prese
          explicit path when the calibration cache was written to a non-default
          location (e.g. ``calibrate --output``), so provenance reflects the
          just-written probe rather than a stale/absent default cache.
+      method: pinned PEFT method; defaults to the PEFTConfig.method default "lora".
+      r: pinned LoRA rank; defaults to the PEFTConfig.r default 16
+         (defaults-provenance.md:84).
+      alpha: pinned LoRA alpha; defaults to the PEFTConfig.alpha default 32
+         (defaults-provenance.md:85). Co-scaled alongside r on VRAM-driven rank
+         reduction: alpha = max(1, round(alpha * r_new / r)).
+      num_classes: best-effort class count from the dataset vocabulary. When
+         provided, k_start = min(cfg K cap, MULTIPLEX_CAP, num_classes) — capping
+         K at the actual vocabulary never probes more K than needed. None falls
+         back to min(cfg K cap, MULTIPLEX_CAP).
 
     Raises:
       RuntimeError: CUDA unavailable, env-var malformed, or no candidate fits.
 
-    Spec: design §3 + §7.
+    Spec: design §4, §6.1, §7.
     """
     from custom_sam_peft.models.sam3 import MULTIPLEX_CAP, SAM3_IMAGE_SIZE
 
@@ -383,6 +413,10 @@ def decide_preset(k: int | None = None, cache_path: Path | None = None) -> Prese
         raise ValueError(f"k must be >= 1 when provided; got {k}")
     if not torch.cuda.is_available():
         raise RuntimeError(_CUDA_HINT)
+
+    # Snapshot cfg_r / cfg_alpha for co-scaling on r-reduction (§4.1 step 4).
+    cfg_r = r
+    cfg_alpha = alpha
 
     props = torch.cuda.get_device_properties(0)
     total = int(props.total_memory)
@@ -400,46 +434,134 @@ def decide_preset(k: int | None = None, cache_path: Path | None = None) -> Prese
     )
     calibrated_at: str | None = str(cache["calibrated_at"]) if cache is not None else None
 
-    feasible = []
-    for method, r, batch, k_cand in _candidates():
-        if k_cand > k_cap:
-            continue
+    # k_start: min of cfg K cap, MULTIPLEX_CAP, and dataset vocabulary (§4.1/§5).
+    # None num_classes → treat as unconstrained (fall through to min(k_cap, CAP)).
+    if num_classes is not None and num_classes >= 1:
+        k_start = min(k_cap, MULTIPLEX_CAP, num_classes)
+    else:
+        k_start = min(k_cap, MULTIPLEX_CAP)
+    # k_start must be in the K grid; clamp to the highest grid value <= k_start.
+    _K_GRID = (16, 8, 4, 2, 1)
+    k_start = max((v for v in _K_GRID if v <= k_start), default=1)
+
+    def _fits_bk(cur_method: str, cur_r: int, batch: int, k_cand: int) -> tuple[bool, int]:
+        """Return (fits, predicted_bytes)."""
         pb = _predicted_bytes(
-            method, r, batch, image_size, cache, k_eff=k_cand, flash_available=flash
+            cur_method, cur_r, batch, image_size, cache, k_eff=k_cand, flash_available=flash
         )
-        if pb <= budget:
-            feasible.append((method, r, batch, k_cand, pb))
+        return pb <= budget, pb
 
-    if not feasible:
-        budget_gib = budget / _GB
-        headroom_gib = headroom / _GB
-        min_needed = _predicted_bytes(
-            "qlora", 4, 1, image_size, cache, k_eff=1, flash_available=flash
+    def _search_bk(cur_method: str, cur_r: int, k_init: int) -> tuple[int, int, int] | None:
+        """Run §4.1 steps 1-2: largest b at k_init, then step k down with b=1.
+
+        Returns (batch, k, predicted_bytes) or None if infeasible even at b=1, k=1.
+        """
+        # Step 1: largest b in 16..1 that fits at k_init.
+        for b in range(16, 0, -1):
+            fits, pb = _fits_bk(cur_method, cur_r, b, k_init)
+            if fits:
+                return b, k_init, pb
+        # Step 2: b=1 fails at k_init; step k DOWN the grid, b HELD at 1.
+        for k_try in _K_GRID:
+            if k_try >= k_init:
+                continue  # only smaller values
+            fits, pb = _fits_bk(cur_method, cur_r, 1, k_try)
+            if fits:
+                return 1, k_try, pb
+        return None
+
+    # === §4.1 Ladder =========================================================
+    # Steps 1-2: pinned (method, r) at k_start.
+    result = _search_bk(method, r, k_start)
+    if result is not None:
+        batch, k_chosen, predicted = result
+        grad_accum = max(1, math.ceil(16 / batch))
+        return PresetDecision(
+            method=method,
+            r=r,
+            alpha=alpha,
+            batch_size=batch,
+            grad_accum_steps=grad_accum,
+            classes_per_forward=k_chosen,
+            dtype=decided_dtype,
+            headroom_bytes=headroom,
+            predicted_bytes=predicted,
+            budget_bytes=budget,
+            gpu_name=gpu_name,
+            provenance=provenance,
+            cache_path=cache_path,
+            calibrated_at=calibrated_at,
         )
-        raise RuntimeError(
-            f"pick_preset(): GPU has {budget_gib:.1f} GiB after {headroom_gib:.1f} GiB "
-            f"headroom — SAM 3.1 needs ≈{min_needed / _GB:.1f} GiB even at QLoRA r=4 "
-            f"batch=1 K=1. Use a larger GPU."
+
+    # Step 3: lora → qlora at the SAME r (NF4 base is far cheaper; preserves rank).
+    if method == "lora":
+        method = "qlora"
+        result = _search_bk(method, r, k_start)
+        if result is not None:
+            batch, k_chosen, predicted = result
+            grad_accum = max(1, math.ceil(16 / batch))
+            return PresetDecision(
+                method=method,
+                r=r,
+                alpha=alpha,
+                batch_size=batch,
+                grad_accum_steps=grad_accum,
+                classes_per_forward=k_chosen,
+                dtype=decided_dtype,
+                headroom_bytes=headroom,
+                predicted_bytes=predicted,
+                budget_bytes=budget,
+                gpu_name=gpu_name,
+                provenance=provenance,
+                cache_path=cache_path,
+                calibrated_at=calibrated_at,
+            )
+
+    # Step 4: still infeasible → reduce r DOWN the grid, co-scaling alpha, with warning.
+    _R_GRID = (48, 32, 24, 16, 8)  # descending; only values < the pinned r are tried
+    for r_next in _R_GRID:
+        if r_next >= r:
+            continue
+        r = r_next
+        alpha = max(1, round(cfg_alpha * r / cfg_r))
+        _LOG.warning(
+            "decide_preset(): GPU too small for pinned r=%d; reducing to r=%d "
+            "(alpha co-scaled to %d to preserve alpha:r ratio). "
+            "Accuracy may be affected. Spec §4.1 step 4.",
+            cfg_r,
+            r,
+            alpha,
         )
+        # Restart steps 1-2 (method is already "qlora" from step 3 if lora failed).
+        result = _search_bk(method, r, k_start)
+        if result is not None:
+            batch, k_chosen, predicted = result
+            grad_accum = max(1, math.ceil(16 / batch))
+            return PresetDecision(
+                method=method,
+                r=r,
+                alpha=alpha,
+                batch_size=batch,
+                grad_accum_steps=grad_accum,
+                classes_per_forward=k_chosen,
+                dtype=decided_dtype,
+                headroom_bytes=headroom,
+                predicted_bytes=predicted,
+                budget_bytes=budget,
+                gpu_name=gpu_name,
+                provenance=provenance,
+                cache_path=cache_path,
+                calibrated_at=calibrated_at,
+            )
 
-    feasible.sort(key=lambda t: _sort_key(t[:4]))
-    method, r, batch, k_chosen, predicted = feasible[0]
-    grad_accum = max(1, math.ceil(16 / batch))
-
-    return PresetDecision(
-        method=method,  # type: ignore[arg-type]
-        r=r,
-        batch_size=batch,
-        grad_accum_steps=grad_accum,
-        classes_per_forward=k_chosen,
-        dtype=decided_dtype,
-        headroom_bytes=headroom,
-        predicted_bytes=predicted,
-        budget_bytes=budget,
-        gpu_name=gpu_name,
-        provenance=provenance,
-        cache_path=cache_path,
-        calibrated_at=calibrated_at,
+    # Step 5: exhausted — preserve the existing message shape (presets.py:413-423).
+    budget_gib = budget / _GB
+    headroom_gib = headroom / _GB
+    min_needed = _predicted_bytes("qlora", 4, 1, image_size, cache, k_eff=1, flash_available=flash)
+    raise RuntimeError(
+        f"pick_preset(): GPU has {budget_gib:.1f} GiB after {headroom_gib:.1f} GiB "
+        f"headroom — SAM 3.1 needs ≈{min_needed / _GB:.1f} GiB even at QLoRA r=4 "
+        f"batch=1 K=1. Use a larger GPU."
     )
 
 
