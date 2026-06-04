@@ -20,6 +20,7 @@ from custom_sam_peft.cli._progress import (
     ProgressKind,
     ProgressMode,
     _NoOpHandle,
+    _ProgressHandle,
     _silence_third_party_progress,
     _state,
     progress,
@@ -189,7 +190,6 @@ def test_plain_line_snapshot(caplog: pytest.LogCaptureFixture) -> None:
         log_every=50,
     )
     handle._epoch = 2  # epoch 3 of 10 (0-indexed internally)
-    handle._cumulative_step_offset = 2 * 4530  # 9060 — two full epochs already accumulated
     handle._step = 1240
     handle._postfix = {"loss": 0.812, "it_s": 2.3}
     # eta = elapsed * (45300 - 10300) / 10300 = elapsed * 35000 / 10300
@@ -262,3 +262,163 @@ def test_sigint_handler() -> None:
     assert restored == prior_handler, (
         f"SIGINT handler not restored after session: {restored!r} != {prior_handler!r}"
     )
+
+
+# ---------------------------------------------------------------------------
+# Tests K-N: epoch-derived global model (new unit tests per spec)
+# ---------------------------------------------------------------------------
+
+
+def test_no_finished_latch_across_epoch_boundaries() -> None:
+    """Test K: rich task is not finished until the final epoch's last advance_inner.
+
+    Drives the handle across 2 epoch boundaries and asserts the rich task
+    never latches finished until the very last step. Directly exercises bug 2.
+    """
+    total_epochs = 3
+    batches_per_epoch = 4
+
+    with progress_session(
+        kind=ProgressKind.TRAIN,
+        total_epochs=total_epochs,
+        total_batches_per_epoch=batches_per_epoch,
+        mode=ProgressMode.ON,
+    ):
+        handle = _state.handle
+        assert isinstance(handle, _ProgressHandle)
+        task = handle._progress.tasks[handle._task_id]
+
+        for epoch in range(total_epochs):
+            handle.reset_inner(total=batches_per_epoch, epoch=epoch)
+            for step in range(batches_per_epoch):
+                handle.advance_inner()
+                is_final = epoch == total_epochs - 1 and step == batches_per_epoch - 1
+                if not is_final:
+                    assert not task.finished, (
+                        f"task should not be finished mid-run at epoch={epoch} step={step}"
+                    )
+            handle.advance_outer()
+
+        # After all epochs complete, completed == total → finished.
+        assert task.finished, "task should be finished after the final epoch's last step"
+
+
+def test_resume_baseline() -> None:
+    """Test K2: after set_start(E, ...) then reset_inner(total=B, epoch=E),
+    the rich task completed == E * B and total == total_epochs * B.
+    Directly exercises bug 3.
+    """
+    total_epochs = 10
+    batches_per_epoch = 100
+    start_epoch = 5
+
+    with progress_session(
+        kind=ProgressKind.TRAIN,
+        total_epochs=total_epochs,
+        total_batches_per_epoch=batches_per_epoch,
+        mode=ProgressMode.ON,
+    ):
+        handle = _state.handle
+        assert isinstance(handle, _ProgressHandle)
+
+        handle.set_start(start_epoch=start_epoch, start_step=start_epoch * batches_per_epoch)
+        handle.reset_inner(total=batches_per_epoch, epoch=start_epoch)
+
+        task = handle._progress.tasks[handle._task_id]
+        assert task.completed == start_epoch * batches_per_epoch, (
+            f"expected completed={start_epoch * batches_per_epoch}, got {task.completed}"
+        )
+        assert task.total == total_epochs * batches_per_epoch, (
+            f"expected total={total_epochs * batches_per_epoch}, got {task.total}"
+        )
+
+
+def test_no_overshoot() -> None:
+    """Test K3: completed is never > total at any point; equals total only at the very end."""
+    total_epochs = 2
+    batches_per_epoch = 5
+
+    with progress_session(
+        kind=ProgressKind.TRAIN,
+        total_epochs=total_epochs,
+        total_batches_per_epoch=batches_per_epoch,
+        mode=ProgressMode.ON,
+    ):
+        handle = _state.handle
+        assert isinstance(handle, _ProgressHandle)
+        task = handle._progress.tasks[handle._task_id]
+
+        grand_total = total_epochs * batches_per_epoch
+        step_count = 0
+
+        for epoch in range(total_epochs):
+            handle.reset_inner(total=batches_per_epoch, epoch=epoch)
+            for _ in range(batches_per_epoch):
+                handle.advance_inner()
+                step_count += 1
+                assert task.completed <= grand_total, (
+                    f"overshoot: completed={task.completed} > total={grand_total} "
+                    f"at step_count={step_count}"
+                )
+                is_final = step_count == grand_total
+                if is_final:
+                    assert task.completed == grand_total, (
+                        f"expected completed={grand_total} at final step, got {task.completed}"
+                    )
+                else:
+                    assert task.completed < grand_total, (
+                        f"expected completed < {grand_total} before final step, "
+                        f"got {task.completed}"
+                    )
+            handle.advance_outer()
+
+
+def test_description_composition() -> None:
+    """Test K4: description contains epoch label + postfix when total_epochs is set;
+    no epoch label when total_epochs is None.
+    """
+    total_epochs = 160
+    batches_per_epoch = 10
+
+    # With total_epochs: expect epoch label and postfix.
+    with progress_session(
+        kind=ProgressKind.TRAIN,
+        total_epochs=total_epochs,
+        total_batches_per_epoch=batches_per_epoch,
+        mode=ProgressMode.ON,
+    ):
+        handle = _state.handle
+        assert isinstance(handle, _ProgressHandle)
+
+        handle.reset_inner(total=batches_per_epoch, epoch=2)
+        handle.update_postfix(loss="0.5")
+
+        task = handle._progress.tasks[handle._task_id]
+        desc = task.description
+        assert "3/160" in desc, f"expected epoch label '3/160' in description, got: {desc!r}"
+        assert "loss=" in desc, f"expected 'loss=' in description, got: {desc!r}"
+
+    # Without total_epochs: no epoch label, just postfix.
+    with progress_session(
+        kind=ProgressKind.PREDICT,
+        total_batches_per_epoch=batches_per_epoch,
+        mode=ProgressMode.ON,
+        # total_epochs omitted → None
+    ):
+        handle = _state.handle
+        assert isinstance(handle, _ProgressHandle)
+
+        handle.reset_inner(total=batches_per_epoch)
+        handle.update_postfix(loss="0.3")
+
+        task = handle._progress.tasks[handle._task_id]
+        desc = task.description
+        assert "/" not in desc or "loss" in desc, (
+            f"epoch label should not appear when total_epochs is None, got: {desc!r}"
+        )
+        # More specifically: no digit/digit pattern from an epoch label
+        import re as _re
+
+        assert not _re.search(r"\d+/\d+", desc), (
+            f"no epoch fraction should appear when total_epochs=None, got: {desc!r}"
+        )

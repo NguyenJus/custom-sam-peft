@@ -93,7 +93,7 @@ class _NoOpHandle:
     def advance_inner(self, n: int = 1) -> None:
         pass
 
-    def reset_inner(self, total: int | None = None) -> None:
+    def reset_inner(self, total: int | None = None, epoch: int | None = None) -> None:
         pass
 
     def update_postfix(self, **kwargs: Any) -> None:
@@ -123,58 +123,84 @@ class _RichSubTaskHandle:
 
 
 class _ProgressHandle:
-    """Live progress handle backed by rich.Progress."""
+    """Live progress handle backed by rich.Progress (single epoch-derived global task)."""
 
     def __init__(
         self,
         rich_progress: Progress,
-        outer_task_id: TaskID | None,
-        inner_task_id: TaskID,
+        task_id: TaskID,
         kind: ProgressKind,
         total_batches_per_epoch: int,
+        total_epochs: int | None,
         log_every: int = 50,
     ) -> None:
         self._progress = rich_progress
-        self._outer = outer_task_id
-        self._inner = inner_task_id
+        self._task_id = task_id
         self._kind = kind
         self._total_batches = total_batches_per_epoch
+        self._total_epochs = total_epochs
         self._log_every = log_every
         self._step = 0
         self._epoch = 0
-        self._plain_postfix: dict[str, Any] = {}
+        self._postfix: dict[str, Any] = {}
 
     @property
     def console(self) -> Console:
         return self._progress.console
 
-    def advance_outer(self, n: int = 1) -> None:
-        if self._outer is not None:
-            self._progress.advance(self._outer, n)
-        self._epoch += n
+    def _render_description(self) -> str:
+        """Build the task description string."""
+        postfix_str = " ".join(f"{k}={v}" for k, v in self._postfix.items())
+        if self._total_epochs is not None:
+            # Clamp the displayed epoch so the trailing advance_outer at the very
+            # end of training never overshoots (e.g. "train 161/160").
+            epoch_num = min(self._epoch + 1, self._total_epochs)
+            label = f"{self._kind.value} {epoch_num}/{self._total_epochs}"
+        else:
+            # eval/predict/export: no epoch label, keep the "{kind} step" label.
+            label = f"{self._kind.value} step"
+        if postfix_str:
+            return f"{label} {postfix_str}"
+        return label
 
-    def reset_inner(self, total: int | None = None) -> None:
-        update_kwargs: dict[str, Any] = {"completed": 0}
+    def advance_outer(self, n: int = 1) -> None:
+        self._epoch += n
+        self._progress.update(self._task_id, description=self._render_description())
+
+    def reset_inner(self, total: int | None = None, epoch: int | None = None) -> None:
+        if epoch is not None:
+            self._epoch = epoch
         if total is not None:
-            update_kwargs["total"] = total
             self._total_batches = total
-        self._progress.update(self._inner, **update_kwargs)
         self._step = 0
 
+        # Compute global total and completed (epoch baseline).
+        if self._total_epochs is not None:
+            rich_total: int | None = self._total_epochs * self._total_batches
+            rich_completed = self._epoch * self._total_batches
+        else:
+            rich_total = self._total_batches if self._total_batches > 0 else None
+            rich_completed = 0
+
+        self._progress.update(
+            self._task_id,
+            total=rich_total,
+            completed=rich_completed,
+            description=self._render_description(),
+        )
+
     def advance_inner(self, n: int = 1) -> None:
-        self._progress.advance(self._inner, n)
         self._step += n
+        self._progress.advance(self._task_id, n)
 
     def update_postfix(self, **kwargs: Any) -> None:
-        self._plain_postfix.update(kwargs)
-        # Build description string for rich display.
-        desc = " ".join(f"{k}={v}" for k, v in kwargs.items())
-        self._progress.update(self._inner, description=desc)
+        self._postfix.update(kwargs)
+        self._progress.update(self._task_id, description=self._render_description())
 
     def set_start(self, start_epoch: int, start_step: int) -> None:
         self._epoch = start_epoch
-        if self._outer is not None:
-            self._progress.update(self._outer, completed=start_epoch)
+        _ = start_step  # unused; epoch boundary in reset_inner sets the bar position
+        self._progress.update(self._task_id, description=self._render_description())
 
     @contextmanager
     def push_subtask(self, label: str, total: int) -> Generator[_RichSubTaskHandle, None, None]:
@@ -239,7 +265,6 @@ class _PlainHandle:
         self._log_every = log_every
         self._step = 0
         self._epoch = 0
-        self._cumulative_step_offset = 0
         self._postfix: dict[str, Any] = {}
         self._logger = logging.getLogger("custom_sam_peft.progress")
         self._start_time = time.monotonic()
@@ -251,10 +276,11 @@ class _PlainHandle:
     def advance_outer(self, n: int = 1) -> None:
         self._epoch += n
 
-    def reset_inner(self, total: int | None = None) -> None:
+    def reset_inner(self, total: int | None = None, epoch: int | None = None) -> None:
         if total is not None:
             self._total_batches = total
-        self._cumulative_step_offset += self._step
+        if epoch is not None:
+            self._epoch = epoch
         self._step = 0
 
     def advance_inner(self, n: int = 1) -> None:
@@ -264,7 +290,7 @@ class _PlainHandle:
 
     def set_start(self, start_epoch: int, start_step: int) -> None:
         self._epoch = start_epoch
-        self._cumulative_step_offset = start_step
+        _ = start_step  # unused; epoch * total_batches now derives position
 
     def update_postfix(self, **kwargs: Any) -> None:
         self._postfix.update(kwargs)
@@ -281,7 +307,7 @@ class _PlainHandle:
     def _emit(self) -> None:
         """Emit one progress line in the spec §4 format (global step)."""
         if self._total_epochs is not None and self._total_batches > 0:
-            global_step = self._cumulative_step_offset + self._step
+            global_step = self._epoch * self._total_batches + self._step
             global_total = self._total_epochs * self._total_batches
             epoch_str = f"epoch={self._epoch + 1}/{self._total_epochs}"
             step_str = f"step={global_step}/{global_total}"
@@ -302,7 +328,7 @@ class _PlainHandle:
                 else self._total_batches
             )
             current = (
-                self._cumulative_step_offset + self._step
+                self._epoch * self._total_batches + self._step
                 if self._total_epochs is not None and self._total_batches > 0
                 else self._step
             )
@@ -365,8 +391,8 @@ class _ProgressProxy:
     def advance_inner(self, n: int = 1) -> None:
         _state.handle.advance_inner(n)
 
-    def reset_inner(self, total: int | None = None) -> None:
-        _state.handle.reset_inner(total)
+    def reset_inner(self, total: int | None = None, epoch: int | None = None) -> None:
+        _state.handle.reset_inner(total, epoch)
 
     def set_start(self, start_epoch: int, start_step: int) -> None:
         _state.handle.set_start(start_epoch, start_step)
@@ -433,22 +459,19 @@ def progress_session(
         )
         logging.captureWarnings(True)
 
-        outer_id: TaskID | None = None
-        if total_epochs is not None:
-            outer_id = rich_prog.add_task(
-                f"{kind.value} epoch",
-                total=total_epochs,
-            )
-        inner_id = rich_prog.add_task(
+        # Single task; total=None until the first reset_inner sets the real total.
+        # Initial label mirrors the no-epoch render form ("{kind} step"); for the
+        # train case it is overwritten on the first reset_inner / update_postfix.
+        task_id = rich_prog.add_task(
             f"{kind.value} step",
-            total=total_batches_per_epoch,
+            total=None,
         )
         handle = _ProgressHandle(
             rich_progress=rich_prog,
-            outer_task_id=outer_id,
-            inner_task_id=inner_id,
+            task_id=task_id,
             kind=kind,
             total_batches_per_epoch=total_batches_per_epoch,
+            total_epochs=total_epochs,
             log_every=log_every,
         )
     elif mode == ProgressMode.PLAIN:

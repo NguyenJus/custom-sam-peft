@@ -806,7 +806,7 @@ class Trainer:
                 for epoch in range(start_epoch, cfg.train.epochs):
                     _current_epoch[0] = epoch
                     total_batches = max(len(train_loader), 1)
-                    P.reset_inner(total=total_batches)
+                    P.reset_inner(total=total_batches, epoch=epoch)
                     global_step, nan_streak = self._train_epoch(
                         epoch,
                         train_loader,
