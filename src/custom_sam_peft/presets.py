@@ -184,12 +184,14 @@ def _model_bytes(method: str) -> int:
     return base + (Q_OVERHEAD if method == "qlora" else 0)
 
 
-def _adapter_bytes(r: int, scope: str) -> int:
+def _adapter_bytes(r: int, scope: str = "decoder_concept") -> int:
     # ADAPTER_DIM_SUM_BY_SCOPE[scope] * r * 2 bytes (bf16 adapter weights, 2 B/param).
+    # scope defaults to the schema's default LoraScope, matching decide_preset /
+    # decide_eval_batch_size; production callers thread the run's cfg.peft.scope.
     return ADAPTER_DIM_SUM_BY_SCOPE[scope] * r * 2
 
 
-def _optimizer_bytes(r: int, scope: str) -> int:
+def _optimizer_bytes(r: int, scope: str = "decoder_concept") -> int:
     # AdamW state on the bf16 adapter — fp32 m + fp32 v (two fp32 moments).
     # Adapter weights are 2 B/param; state is 8 B/param -> 4x adapter_bytes.
     return _adapter_bytes(r, scope) * 4
@@ -248,7 +250,7 @@ def _predicted_bytes(
     batch: int,
     image_size: int,
     cache: dict[str, Any] | None,
-    scope: str,
+    scope: str = "decoder_concept",
     mode: Literal["train", "eval"] = "train",
     k_eff: int = 1,
     flash_available: bool = True,

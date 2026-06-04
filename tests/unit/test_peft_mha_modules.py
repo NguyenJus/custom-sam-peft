@@ -157,7 +157,8 @@ def test_qlora_and_lora_resolve_same_mha_set() -> None:
 
 
 def test_peftconfig_default_scope_is_concept() -> None:
-    assert PEFTConfig(method="lora").scope == "vision_decoder_concept"
+    # Trunk-frozen default (#301): decoder_concept == vision_decoder_concept minus the trunk.
+    assert PEFTConfig(method="lora").scope == "decoder_concept"
 
 
 def test_lorascope_literal_includes_concept() -> None:
@@ -169,6 +170,7 @@ def test_lorascope_literal_includes_concept() -> None:
         "vision",
         "vision_decoder",
         "vision_decoder_concept",
+        "decoder_concept",
         "all",
     }
 
