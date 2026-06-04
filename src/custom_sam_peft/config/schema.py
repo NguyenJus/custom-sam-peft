@@ -18,6 +18,7 @@ from __future__ import annotations
 import os
 from typing import Literal
 
+import psutil
 from pydantic import (
     BaseModel,
     ConfigDict,
@@ -637,6 +638,21 @@ class EarlyStopConfig(_Strict):
     # 0 disables the backstop (adaptive-baseline-only grace).
 
 
+# cite: tbd — RAM tier is an empirical safety pick, not a published default. Each
+# persistent DataLoader worker holds prefetched batch tensors, so worker-side RAM
+# scales ~linearly with num_workers. On a 16GB-class box (WSL/firmware report
+# ~15.5-16.x GiB), 4 workers was observed brushing the 2.0 GB host_ram_floor_gb
+# guard; 3 keeps headroom. The 18 GiB cutoff sits above the 16GB tier and below the
+# next common tier (32 GiB), which keeps 4. Still capped by cpu_count.
+_NUM_WORKERS_RAM_TIER_GIB = 18.0
+
+
+def _default_num_workers() -> int:
+    total_gib = psutil.virtual_memory().total / 1024**3
+    base = 3 if total_gib <= _NUM_WORKERS_RAM_TIER_GIB else 4
+    return min(base, os.cpu_count() or 1)
+
+
 class TrainHyperparams(_Strict):
     epochs: PositiveInt
     batch_size: PositiveInt = 1
@@ -704,9 +720,14 @@ class TrainHyperparams(_Strict):
     semantic_loss: SemanticLossConfig = Field(default_factory=SemanticLossConfig)
     nan_abort_after: PositiveInt = 20
     num_workers: int = Field(
-        default_factory=lambda: min(4, os.cpu_count() or 1),
+        default_factory=_default_num_workers,
         ge=0,
-        description="DataLoader workers. 0 disables multiprocessing.",
+        description=(
+            "DataLoader workers. 0 disables multiprocessing. Default is RAM-tiered "
+            "and capped by cpu_count: 16GB-class boxes (<= 18 GiB total) get 3, "
+            "larger boxes get 4, to keep worker-side RAM clear of the host_ram_floor_gb "
+            "guard."
+        ),
     )
     multiplex: MultiplexConfig = Field(default_factory=MultiplexConfig)
 
