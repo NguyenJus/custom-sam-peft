@@ -272,10 +272,7 @@ class TestAssertAugOff:
 
     def test_only_allowed_transforms_pass(self) -> None:
         """Pipeline with only deterministic transforms: must not raise."""
-        try:
-            import albumentations as A
-        except ImportError:
-            pytest.skip("albumentations not available")
+        A = pytest.importorskip("albumentations")
 
         transform = self._compose(
             [
@@ -289,10 +286,7 @@ class TestAssertAugOff:
 
     def test_horizontal_flip_raises_naming_data_augmentations(self) -> None:
         """Spec §6: aug-on (HorizontalFlip) → names data.augmentations."""
-        try:
-            import albumentations as A
-        except ImportError:
-            pytest.skip("albumentations not available")
+        A = pytest.importorskip("albumentations")
 
         transform = self._compose(
             [
@@ -306,10 +300,7 @@ class TestAssertAugOff:
 
     def test_horizontal_flip_names_offending_class(self) -> None:
         """Error message must name the offending transform class."""
-        try:
-            import albumentations as A
-        except ImportError:
-            pytest.skip("albumentations not available")
+        A = pytest.importorskip("albumentations")
 
         transform = self._compose([A.HorizontalFlip(p=0.5)])
         with pytest.raises(ValueError, match="HorizontalFlip"):
@@ -317,10 +308,7 @@ class TestAssertAugOff:
 
     def test_brightness_contrast_raises(self) -> None:
         """Spec §6: photometric aug (RandomBrightnessContrast) → error."""
-        try:
-            import albumentations as A
-        except ImportError:
-            pytest.skip("albumentations not available")
+        A = pytest.importorskip("albumentations")
 
         transform = self._compose([A.RandomBrightnessContrast(p=0.5)])
         with pytest.raises(ValueError, match=r"data\.augmentations"):
@@ -335,10 +323,7 @@ class TestAssertAugOff:
 
     def test_shift_scale_rotate_raises(self) -> None:
         """Geometric aug (ShiftScaleRotate) → error."""
-        try:
-            import albumentations as A
-        except ImportError:
-            pytest.skip("albumentations not available")
+        A = pytest.importorskip("albumentations")
 
         transform = self._compose([A.ShiftScaleRotate(p=0.5)])
         with pytest.raises(ValueError, match=r"data\.augmentations"):
@@ -1031,13 +1016,6 @@ class TestCleanupOnTeardown:
                 super().__init__()
                 self._trunk_cache = cache
 
-        class _FakeWrapper(nn.Module):
-            def __init__(self) -> None:
-                super().__init__()
-                self.model = _FakeAdapter()
-                self.peft_model = None
-                self.mask_size = 8
-
         # _teardown_trunk_cache takes a Sam3Wrapper; use MagicMock to avoid
         # constructing the full wrapper while still satisfying the type hint.
         fake_wrapper = MagicMock(spec=Sam3Wrapper)
@@ -1355,3 +1333,29 @@ class TestAllOrNone:
         cache = _make_cache(tmp_path)
         result = cache.get_batch([])
         assert result == []
+
+
+class TestTilePosEnc:
+    """tile_pos_enc: content-independent pos_enc replay onto the batch/device."""
+
+    def test_tiles_b1_to_batch_on_device(self, tmp_path: Path) -> None:
+        """B=1 cached pos_enc expands to the requested batch on the target device."""
+        cache = _make_cache(tmp_path)
+        cached = [torch.randn(1, 3, 4, 4), torch.randn(1, 5, 2, 2)]
+        device = torch.device("cpu")
+
+        tiled = cache.tile_pos_enc(cached, batch_size=4, device=device)
+
+        assert len(tiled) == len(cached)
+        for orig, out in zip(cached, tiled, strict=True):
+            assert out.shape == (4, *orig.shape[1:])
+            assert out.device == device
+            assert out.is_contiguous()
+            # expand replicates the single source row across the batch dim.
+            for i in range(4):
+                assert torch.equal(out[i], orig[0])
+
+    def test_empty_pos_enc_list(self, tmp_path: Path) -> None:
+        """Empty pos_enc list → empty result (no levels to tile)."""
+        cache = _make_cache(tmp_path)
+        assert cache.tile_pos_enc([], batch_size=2, device=torch.device("cpu")) == []

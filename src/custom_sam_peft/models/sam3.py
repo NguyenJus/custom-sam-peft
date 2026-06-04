@@ -435,21 +435,15 @@ class _Sam3ImageAdapter(nn.Module):
                 # vision_pos_enc is a list of Tensors (one per FPN level) from the
                 # real forward_image; it is content-independent so we tile to B.
                 if self._cached_pos_enc is not None:
-                    # Tile the cached pos_enc from B=1 to the current batch size.
-                    # .contiguous() ensures a fresh stride layout matching what a
-                    # real forward_image would produce — avoids stride-0 aliasing
-                    # if any downstream consumer does an in-place op (minor fix).
-                    # .to(device): _cached_pos_enc is held on CPU (see miss path) to
-                    # keep VRAM free, but the cached backbone_fpn entries come back
-                    # from get_batch already on `device`; forward_grounding indexes
-                    # vision_pos_enc with the (on-device) img_ids, so the re-attached
-                    # pos_enc MUST land on the same device or the index op raises a
-                    # cross-device error (caught only on a real GPU — CPU stubs put
-                    # everything on cpu). cite: spec §1 vision_pos_enc handling.
-                    backbone_out["vision_pos_enc"] = [
-                        p.expand(b, *p.shape[1:]).contiguous().to(device)
-                        for p in self._cached_pos_enc
-                    ]
+                    # Tile the cached (B=1, CPU) pos_enc to the current batch and
+                    # land it on the model device. The expand+contiguous+device-move
+                    # lives in the cache (TrunkFeatureCache.tile_pos_enc) because it
+                    # is part of the H2D replay path — the §9.2 static guard
+                    # allowlists trunk_cache.py for device moves, not sam3.py.
+                    # cite: spec §1 vision_pos_enc handling.
+                    backbone_out["vision_pos_enc"] = cache.tile_pos_enc(
+                        self._cached_pos_enc, b, device
+                    )
                 else:
                     # Fallback: recompute pos_enc (should not happen after epoch 0).
                     fresh = self.model.backbone.forward_image(images)  # type: ignore[union-attr, operator]

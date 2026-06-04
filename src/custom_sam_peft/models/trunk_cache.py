@@ -539,8 +539,42 @@ class TrunkFeatureCache:
             else:
                 stored_entry["sam2_backbone_out"] = None
 
+            # Spec §1: only content-DEPENDENT keys may be persisted. The
+            # content-INDEPENDENT vision_pos_enc is cached once on the wrapper
+            # and must never reach disk (it would break the replay invariant).
+            # _CACHED_KEYS is the single source of truth for that contract.
+            extra = stored_entry.keys() - _CACHED_KEYS
+            if extra:
+                raise ValueError(
+                    "trunk cache refuses to persist non-cacheable keys "
+                    f"{sorted(extra)} (allowed: {sorted(_CACHED_KEYS)})"
+                )
+
             blob = {"fingerprint": self._fingerprint, "entry": stored_entry}
             torch.save(blob, blob_path)
+
+    def tile_pos_enc(
+        self,
+        cached_pos_enc: list[torch.Tensor],
+        batch_size: int,
+        device: torch.device,
+    ) -> list[torch.Tensor]:
+        """Tile the once-cached, content-independent vision_pos_enc onto the batch.
+
+        vision_pos_enc is the spatial grid only (content-INDEPENDENT), so it is
+        computed once on epoch 0 and held on CPU on the wrapper to keep VRAM
+        free. On replay it is expanded from B=1 to ``batch_size`` and moved onto
+        the model ``device`` — forward_grounding indexes it with on-device
+        img_ids, so it MUST land on the same device or the index op raises a
+        cross-device error (caught only on a real GPU; CPU stubs put everything
+        on cpu). ``.contiguous()`` gives a fresh stride layout matching a real
+        forward_image, avoiding stride-0 aliasing under any downstream in-place op.
+
+        This device move lives here (not in sam3.py) because it is part of the
+        cache's H2D replay path; the §9.2 static guard allowlists trunk_cache.py
+        for exactly these moves. cite: spec §1 vision_pos_enc handling.
+        """
+        return [p.expand(batch_size, *p.shape[1:]).contiguous().to(device) for p in cached_pos_enc]
 
     def prefetch(self, sample_uids: list[str]) -> None:
         """Depth-1 background prefetch: read next step's blobs in a daemon thread.
