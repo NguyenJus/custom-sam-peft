@@ -509,8 +509,6 @@ def test_e2e_split_with_test_fraction_and_eval_split_test(tmp_path: Path) -> Non
     import custom_sam_peft.eval.runner as _eval_runner
     import custom_sam_peft.train.runner as runner_mod
     from custom_sam_peft.config.schema import SplitConfig
-    from custom_sam_peft.data.split_source import load_split_source
-    from custom_sam_peft.eval.runner import run_eval
 
     coco_dir = _make_5image_coco_dir(tmp_path)
 
@@ -551,7 +549,7 @@ def test_e2e_split_with_test_fraction_and_eval_split_test(tmp_path: Path) -> Non
         runner_mod.load_sam31 = orig_load  # type: ignore[assignment]
 
     # 1. split_source.json exists with test_ids non-empty.
-    vs = load_split_source(result.run_dir)
+    vs = _ss_mod.load_split_source(result.run_dir)
     assert vs is not None
     assert vs.test_ids is not None, "test_ids key must be present in split_source.json"
     assert len(vs.test_ids) > 0, (
@@ -599,7 +597,7 @@ def test_e2e_split_with_test_fraction_and_eval_split_test(tmp_path: Path) -> Non
     _eval_runner.lookup = lambda kind, name: _capturing_builder  # type: ignore[assignment]
 
     try:
-        run_eval(
+        _eval_runner.run_eval(
             cfg,
             checkpoint=ckpt_dir,
             split="test",

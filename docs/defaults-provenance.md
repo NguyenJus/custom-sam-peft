@@ -72,7 +72,8 @@ Row schema (every section uses these six columns):
 | `config/schema.py:HFFieldMap.categories_feature` | `"categories"` | `index-only` | — | — | Conventional HF feature name; structural. |
 | `config/schema.py:HFFieldMap.bbox_format` | `"xyxy"` | `index-only` | — | — | Structural format literal; not trust-bearing. |
 | `config/schema.py:HFDatasetConfig.split_train` | `"train"` | `index-only` | — | — | Conventional HF split name; structural. |
-| `config/schema.py:ValSplitConfig.fraction` | `0.1` | `# tbd: #191` | — | — | 10% validation is a common convention but no internal calibration run has been recorded. Tracking via #191. |
+| `config/schema.py:SplitConfig.val` | `None` | `index-only` | — | — | `None`-sentinel: no val bucket carved unless set; user supplies the fraction. |
+| `config/schema.py:SplitConfig.test` | `None` | `index-only` | — | — | `None`-sentinel: no test bucket carved unless set; user supplies the fraction. |
 | `config/schema.py:LimitConfig.seed` | `42` | `# cite: degenerate-case` | — | — | Arbitrary fixed seed; same convention as RunConfig.seed. |
 | `config/schema.py:LimitConfig.strategy` | `"random"` | `index-only` | — | — | Default sampling strategy; structural. |
 | `config/schema.py:DataConfig.channels` | `3` | `index-only` | — | — | Rationale in field description: 3-channel RGB is the SAM 3.1 pretrained stem width; explicit only. |
@@ -122,10 +123,10 @@ Row schema (every section uses these six columns):
 | `config/schema.py:ModelConfig.device` | `None` | `index-only` | — | — | `None`-sentinel: auto-select device unless set. |
 | `config/schema.py:LimitConfig.train` | `None` | `index-only` | — | — | `None`-sentinel: no train-split limit. |
 | `config/schema.py:LimitConfig.val` | `None` | `index-only` | — | — | `None`-sentinel: no val-split limit. |
-| `config/schema.py:ValSplitConfig.seed` | `None` | `index-only` | — | — | `None`-sentinel: inherits run.seed at resolve time. |
+| `config/schema.py:SplitConfig.seed` | `None` | `index-only` | — | — | `None`-sentinel: inherits run.seed at resolve time. |
 | `config/schema.py:HFDatasetConfig.split_val` | `None` | `index-only` | — | — | `None`-sentinel: no separate HF val split unless set. |
 | `config/schema.py:DataConfig.val` | `None` | `index-only` | — | — | `None`-sentinel: no-val mode unless set. |
-| `config/schema.py:DataConfig.val_split` | `None` | `index-only` | — | — | `None`-sentinel: auto-split off unless set. |
+| `config/schema.py:DataConfig.split` | `None` | `index-only` | — | — | `None`-sentinel: auto-split off unless set. |
 | `config/schema.py:DataConfig.normalize` | `None` | `index-only` | — | — | `None`-sentinel: resolved from channel semantics unless set. |
 | `config/schema.py:DataConfig.test` | `None` | `index-only` | — | — | `None`-sentinel: optional test split. |
 | `config/schema.py:DataConfig.hf` | `None` | `index-only` | — | — | `None`-sentinel: required only when format == "hf". |
