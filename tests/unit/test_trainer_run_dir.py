@@ -75,6 +75,7 @@ def test_fit_uses_caller_provided_run_dir(tmp_path: Path, monkeypatch: pytest.Mo
             return_value=(
                 MagicMock(overall={}, per_class={}, n_images=0, n_predictions=0),
                 [],
+                None,
             )
         )
     )

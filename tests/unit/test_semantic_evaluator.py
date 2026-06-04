@@ -88,11 +88,12 @@ def test_evaluate_and_save_writes_task_tagged_json(
 
 def test_per_example_iou_returned(stub_semantic_model, tiny_semantic_dataset):
     ev = SemanticEvaluator(EvalConfig(batch_size=1))
-    _report, per_ex = ev.evaluate(
+    _report, per_ex, gt_counts = ev.evaluate(
         stub_semantic_model, tiny_semantic_dataset, return_per_example_iou=True
     )
     assert isinstance(per_ex, list)
     assert len(per_ex) == len(tiny_semantic_dataset)
+    assert gt_counts is None  # SemanticEvaluator always returns None for gt_counts
 
 
 # ---------------------------------------------------------------------------

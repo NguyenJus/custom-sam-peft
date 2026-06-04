@@ -133,7 +133,7 @@ def _patch_common_semantic(
         return_per_example_iou: bool = False,
     ) -> object:
         if return_per_example_iou:
-            return fake_report, per_example_iou
+            return fake_report, per_example_iou, None
         return fake_report
 
     ev.evaluate = _evaluate
@@ -238,7 +238,7 @@ def test_inline_return_per_example_iou_instance_no_task_key(
     monkeypatch.setattr("custom_sam_peft.train.checkpoint.load_lora", lambda *_a, **_kw: None)
 
     ev = MagicMock()
-    ev.evaluate.return_value = (fake_report, [0.5, 0.4, 0.6])
+    ev.evaluate.return_value = (fake_report, [0.5, 0.4, 0.6], [1, 1, 1])
     ev._last_predictions = []
 
     monkeypatch.setattr("custom_sam_peft.eval.runner.Evaluator", lambda _cfg: ev)

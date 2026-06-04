@@ -152,16 +152,18 @@ def test_evaluate_single_dataset_traversal(stub_model):
 
 
 def test_evaluate_returns_per_example_iou_when_requested(stub_model, tiny_text_dataset):
-    """When return_per_example_iou=True, return (MetricsReport, list[float])
+    """When return_per_example_iou=True, return (MetricsReport, list[float], list[int] | None)
     aligned with dataset indices."""
     cfg = EvalConfig(mode="full", iou_thresholds=[0.5], batch_size=1)
     out = Evaluator(cfg).evaluate(stub_model, tiny_text_dataset, return_per_example_iou=True)
     assert isinstance(out, tuple)
-    report, ious = out
+    report, ious, gt_counts = out
     assert isinstance(report, MetricsReport)
     assert isinstance(ious, list)
     assert len(ious) == len(tiny_text_dataset)
     assert all(0.0 <= v <= 1.0 or math.isnan(v) for v in ious)  # 0..1 or NaN
+    assert gt_counts is not None
+    assert len(gt_counts) == len(tiny_text_dataset)
 
 
 def test_evaluate_default_unchanged_returns_report_only(stub_model, tiny_text_dataset):
