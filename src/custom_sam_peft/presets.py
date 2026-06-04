@@ -45,13 +45,12 @@ MODEL_PARAMS = 5_000_000_000  # SAM 3.1 base parameter count — analytic seed
 # Per-scope adapter dimension sum: sum over every injected LoRA adapter of
 # (lora_A.in_features + lora_B.out_features). Keyed by LoraScope VALUE (string).
 #
-# *** THESE ARE CONSERVATIVE PLACEHOLDER INTEGERS — NOT AUTHORITATIVE VALUES ***
-# Values are intentionally OVER-estimated (overestimate → smaller batch preset →
-# no OOM; zero/underestimate is unsafe). They must be replaced by running
-# scripts/_derive_preset_constants.py against the real SAM 3.1 model on GPU
-# and copying the printed ADAPTER_DIM_SUM_BY_SCOPE block here. Each populated
-# entry must carry a citation comment: "derived: _derive_preset_constants.py
-# <YYYY-MM-DD>". Until then every entry carries the # tbd: tag below.
+# Values below are EXACT, derived offline by inspecting the real SAM 3.1 model
+# after apply_lora: scripts/_derive_preset_constants.py --scope-survey. Internal
+# consistency check: vision (trunk-only, 196_608) + decoder_concept (49_152) ==
+# vision_decoder_concept (245_760), since decoder_concept == vision_decoder_concept
+# minus the trunk. Re-derive (and re-stamp the citation date) if the scope target
+# sets, the model architecture, or the peft adapter placement change.
 #
 # Why offline derivation (not a live meta-device count): the vendored ViT __init__
 # calls `.item()` on a meta tensor (sam3/model/vitdet.py:878: `dpr = [x.item()
@@ -61,12 +60,11 @@ MODEL_PARAMS = 5_000_000_000  # SAM 3.1 base parameter count — analytic seed
 ADAPTER_DIM_SUM_BY_SCOPE: dict[str, int] = {
     # <scope>: sum over every injected LoRA adapter of
     #          (lora_A.in_features + lora_B.out_features)
-    # derived offline via scripts/_derive_preset_constants.py (see §3 mechanism)
-    "vision": 37_748_736,  # tbd: derive run (§3)
-    "vision_decoder": 55_574_528,  # tbd: derive run (§3)
-    "vision_decoder_concept": 50_331_648,  # tbd: derive run (§3)
-    "decoder_concept": 12_582_912,  # tbd: derive run (§3)
-    "all": 73_400_320,  # tbd: derive run (§3)
+    "vision": 196_608,  # derived 2026-06-04 (scope-survey)
+    "vision_decoder": 233_472,  # derived 2026-06-04 (scope-survey)
+    "vision_decoder_concept": 245_760,  # derived 2026-06-04 (scope-survey)
+    "decoder_concept": 49_152,  # derived 2026-06-04 (scope-survey)
+    "all": 964_129,  # derived 2026-06-04 (scope-survey)
 }
 Q_OVERHEAD = 64 * _MIB  # bnb NF4 per-block scale + zero-point overhead
 WORKSPACE_BYTES = 256 * _MIB  # cuDNN workspace + autograd graph + tmp buffers (spec §3)
