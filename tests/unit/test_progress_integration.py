@@ -46,15 +46,15 @@ def test_fake_trainer_smoke() -> None:
         assert not isinstance(handle, _NoOpHandle), "expected live handle inside session"
 
         for epoch in range(total_epochs):
-            handle.advance_outer()
-            outer_advances += 1
-            handle.reset_inner()
+            handle.reset_inner(total=batches_per_epoch, epoch=epoch)
 
             for _ in range(batches_per_epoch):
                 handle.advance_inner()
                 inner_advances += 1
 
             handle.update_postfix(loss=0.5 - epoch * 0.1, it_s=2.3)
+            handle.advance_outer()
+            outer_advances += 1
 
     assert isinstance(_state.handle, _NoOpHandle), "expected _NoOpHandle after session exits"
     assert outer_advances == total_epochs, f"expected {total_epochs} outer advances"
