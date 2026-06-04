@@ -62,7 +62,7 @@ __all__ = [  # noqa: RUF022
     "TrackingConfig",
     "TrainConfig",
     "TrainHyperparams",
-    "ValSplitConfig",
+    "SplitConfig",
     # Type aliases
     "BoxFamily",
     "DataFormat",
@@ -366,20 +366,46 @@ class HFDatasetConfig(_Strict):
     field_map: HFFieldMap = Field(default_factory=HFFieldMap)
 
 
-class ValSplitConfig(_Strict):
-    """Auto-split parameters. Used when DataConfig.val_split is set.
+class SplitConfig(_Strict):
+    """3-way auto-split parameters. Used when DataConfig.split is set.
 
-    Carves data.train into train+val deterministically. In v0:
-      - stratification is always-on Sechidis multi-label iterative;
-        not configurable.
+    Carves data.train into train + val + test deterministically via a single
+    joint Sechidis-2011 multi-label stratification pass. At least one of
+    val / test must be set and > 0.
+
+    In v0 (inherited from the predecessor's locked decisions):
+      - stratification is always-on Sechidis multi-label iterative; not
+        configurable.
       - split unit is always 'image'; not configurable. Splitting by
-        annotation can leak the same image into both sides.
+        annotation can leak the same image across buckets.
 
-    Spec: docs/superpowers/specs/2026-05-22-data-no-val-auto-split-design.md §3.1.
+    Spec: docs/superpowers/specs/2026-06-04-train-val-test-split-design.md §3.2.
     """
 
-    fraction: float = Field(default=0.1, gt=0.0, le=0.5)
+    val: float | None = None  # carve this fraction into val;  None → no val bucket
+    test: float | None = None  # carve this fraction into test; None → no test bucket
     seed: int | None = None  # None → inherit run.seed at resolve time
+
+    @model_validator(mode="after")
+    def _check_fractions(self) -> SplitConfig:
+        if self.val is None and self.test is None:
+            raise ValueError(
+                "data.split requires at least one of val / test to be set "
+                "(both omitted carves nothing)."
+            )
+        for name in ("val", "test"):
+            v = getattr(self, name)
+            if v is not None and not (0.0 < v < 1.0):
+                raise ValueError(
+                    f"data.split.{name}={v!r} must be in (0.0, 1.0) (exclusive)."
+                )
+        carved = (self.val or 0.0) + (self.test or 0.0)
+        if carved >= 1.0:
+            raise ValueError(
+                f"data.split.val + data.split.test = {carved} must be < 1.0 so the "
+                "train bucket is non-empty."
+            )
+        return self
 
 
 SubsetStrategy = Literal["random", "stratified", "first_n"]
@@ -460,7 +486,7 @@ class DataConfig(_Strict):
     format: DataFormat
     train: DataSplit
     val: DataSplit | None = None
-    val_split: ValSplitConfig | None = None
+    split: SplitConfig | None = None  # was: val_split: ValSplitConfig | None
     channels: int = Field(
         default=3,
         ge=1,
@@ -544,26 +570,31 @@ class DataConfig(_Strict):
         return self
 
     @model_validator(mode="after")
-    def _check_val_modes(self) -> DataConfig:
-        if self.val is not None and self.val_split is not None:
+    def _check_split_modes(self) -> DataConfig:
+        if self.split is not None and self.val is not None:
             raise ValueError(
-                "data.val and data.val_split are mutually exclusive. "
-                "Set one to provide a validation set, neither for no-val mode."
+                "data.split and data.val are mutually exclusive. Use data.split to "
+                "carve val/test from data.train, or data.val for an explicit val set."
+            )
+        if self.split is not None and self.test is not None:
+            raise ValueError(
+                "data.split and data.test are mutually exclusive. Use data.split.test "
+                "to carve a test set from data.train, or data.test for an explicit one."
             )
         return self
 
     @model_validator(mode="after")
-    def _check_hf_split_val_compat(self) -> DataConfig:
+    def _check_hf_split_compat(self) -> DataConfig:
         if (
             self.format == "hf"
-            and self.val_split is not None
+            and self.split is not None
             and self.hf is not None
             and self.hf.split_val is not None
         ):
             raise ValueError(
-                "data.hf.split_val cannot be customized when data.val_split is set; "
-                "auto-split carves the val set from data.hf.split_train. "
-                "Remove split_val or remove val_split."
+                "data.hf.split_val cannot be customized when data.split is set; "
+                "auto-split carves val/test from data.hf.split_train. "
+                "Remove split_val or remove split."
             )
         return self
 
