@@ -396,9 +396,7 @@ class SplitConfig(_Strict):
         for name in ("val", "test"):
             v = getattr(self, name)
             if v is not None and not (0.0 < v < 1.0):
-                raise ValueError(
-                    f"data.split.{name}={v!r} must be in (0.0, 1.0) (exclusive)."
-                )
+                raise ValueError(f"data.split.{name}={v!r} must be in (0.0, 1.0) (exclusive).")
         carved = (self.val or 0.0) + (self.test or 0.0)
         if carved >= 1.0:
             raise ValueError(
