@@ -27,13 +27,13 @@ def _stub_gpu(
 
 
 def _write_cache(path: Path, **fields: object) -> None:
-    # v3 schema: split activation into A_fixed (encoder, K-invariant) and
+    # v4 schema: split activation into A_fixed (encoder, K-invariant) and
     # A_per_class (decoder, scales with K).  Values chosen so that at
     # classes_per_forward=16 (the decide_eval_batch_size default) the total
     # activation per image equals the pre-split 0.5 GiB:
     #   A_fixed + A_per_class * 16 = 0.35 GiB + 0.009375 GiB * 16 = 0.5 GiB
     base = {
-        "schema_version": 3,
+        "schema_version": 4,  # current CACHE_SCHEMA_VERSION (v4: pinned r/alpha)
         "calibrated_at": "2026-05-22T00:00:00+00:00",
         "gpu_name": "StubGPU",
         "gpu_total_memory_bytes": int(40 * _GB),

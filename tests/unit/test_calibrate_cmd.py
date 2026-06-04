@@ -88,10 +88,12 @@ def _patch_probe(
         _write_config(tmp_path / "config.yaml", method="lora", r=16, k=16)
 
 
-def test_calibrate_writes_cache_with_schema_v3(
+def test_calibrate_writes_cache_with_schema_v4(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    """calibrate writes a v4 cache (schema_version=4) after the pin-r/alpha bump."""
     from custom_sam_peft.cli import calibrate_cmd
+    from custom_sam_peft.presets import CACHE_SCHEMA_VERSION
 
     _patch_probe(monkeypatch, tmp_path=tmp_path)
     monkeypatch.setattr(calibrate_cmd, "_run_probe", _synthetic_peak)
@@ -99,7 +101,7 @@ def test_calibrate_writes_cache_with_schema_v3(
     result = runner.invoke(app, ["calibrate"])
     assert result.exit_code == 0, result.output
     data = json.loads((tmp_path / ".custom_sam_peft_calibration.json").read_text())
-    assert data["schema_version"] == 3
+    assert data["schema_version"] == CACHE_SCHEMA_VERSION  # 4 post pin-r/alpha bump
     assert {"A_fixed", "A_per_class"}.issubset(data.keys())
     assert "activation_bytes_per_example" not in data
 
@@ -173,8 +175,9 @@ def test_calibrate_checkpoint_missing_exits_3(
 
 
 def test_calibrate_cache_fresh_exits_zero(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """Fresh v3 cache: exits 0, no re-probe, config rewritten from calibrated provenance."""
+    """Fresh v4 cache: exits 0, no re-probe, config rewritten from calibrated provenance."""
     from custom_sam_peft.cli import calibrate_cmd
+    from custom_sam_peft.presets import CACHE_SCHEMA_VERSION
 
     _patch_probe(monkeypatch, tmp_path=tmp_path)
     # decide_preset validates the cache via presets._current_sam3_checkpoint_sha;
@@ -190,12 +193,12 @@ def test_calibrate_cache_fresh_exits_zero(tmp_path: Path, monkeypatch: pytest.Mo
     )
     monkeypatch.chdir(tmp_path)
     cache = tmp_path / ".custom_sam_peft_calibration.json"
-    # Seed a confirmed v3 cache with the chosen_* keys so _decision_from_cache
+    # Seed a confirmed v4 cache with the chosen_* keys so _decision_from_cache
     # returns the empirical config (provenance="calibrated") on the fresh-cache path.
     cache.write_text(
         json.dumps(
             {
-                "schema_version": 3,
+                "schema_version": CACHE_SCHEMA_VERSION,  # 4 (pinned r/alpha)
                 "calibrated_at": "2026-05-22T00:00:00+00:00",
                 "gpu_name": "NVIDIA A100-SXM4-40GB",
                 "gpu_total_memory_bytes": int(40 * _GB),
@@ -207,6 +210,7 @@ def test_calibrate_cache_fresh_exits_zero(tmp_path: Path, monkeypatch: pytest.Mo
                 "peak_memory_bytes_at_probe": int(38 * _GB),
                 "chosen_method": "lora",
                 "chosen_r": 16,
+                "chosen_alpha": 32,
                 "chosen_batch": 4,
                 "chosen_classes_per_forward": 8,
             }
@@ -233,6 +237,7 @@ def test_calibrate_cache_fresh_exits_zero(tmp_path: Path, monkeypatch: pytest.Mo
 
 def test_calibrate_force_overwrites_cache(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     from custom_sam_peft.cli import calibrate_cmd
+    from custom_sam_peft.presets import CACHE_SCHEMA_VERSION
 
     _patch_probe(monkeypatch, tmp_path=tmp_path)
     monkeypatch.setattr(calibrate_cmd, "_run_probe", _synthetic_peak)
@@ -242,7 +247,7 @@ def test_calibrate_force_overwrites_cache(tmp_path: Path, monkeypatch: pytest.Mo
     result = runner.invoke(app, ["calibrate", "--force"])
     assert result.exit_code == 0, result.output
     data = json.loads(cache.read_text())
-    assert data.get("schema_version") == 3
+    assert data.get("schema_version") == CACHE_SCHEMA_VERSION  # 4 post pin-r/alpha bump
     assert {"A_fixed", "A_per_class"}.issubset(data.keys())
     assert "activation_bytes_per_example" not in data
 
@@ -277,7 +282,9 @@ def test_calibrate_negative_activation_warns(
     result = runner.invoke(app, ["calibrate"])
     assert result.exit_code == 0, result.output
     data = json.loads((tmp_path / ".custom_sam_peft_calibration.json").read_text())
-    assert data["schema_version"] == 3
+    from custom_sam_peft.presets import CACHE_SCHEMA_VERSION
+
+    assert data["schema_version"] == CACHE_SCHEMA_VERSION  # 4 post pin-r/alpha bump
     assert data["A_fixed"] == 0
     assert data["A_per_class"] == 0
 
@@ -396,7 +403,9 @@ def test_run_calibration_stage1_solves_split(
     out = tmp_path / ".custom_sam_peft_calibration.json"
     calibrate_cmd.run_calibration(config=tmp_path / "config.yaml", output=out, force=True)
     data = json.loads(out.read_text())
-    assert data["schema_version"] == 3
+    from custom_sam_peft.presets import CACHE_SCHEMA_VERSION
+
+    assert data["schema_version"] == CACHE_SCHEMA_VERSION  # 4 post pin-r/alpha bump
     # A_per_class solved from the two synthetic K=1/K=4 peaks (closed form).
     assert abs(data["A_per_class"] - 50_000_000) < 1_000_000
     assert "activation_bytes_per_example" not in data
@@ -675,7 +684,9 @@ def test_calibrate_non_default_output_uses_calibrated_provenance(
     assert result.exit_code == 0, result.output
     assert custom_cache.is_file(), "cache was not written to custom path"
     data = json.loads(custom_cache.read_text())
-    assert data["schema_version"] == 3
+    from custom_sam_peft.presets import CACHE_SCHEMA_VERSION
+
+    assert data["schema_version"] == CACHE_SCHEMA_VERSION  # 4 post pin-r/alpha bump
     # _load_cache (and therefore decide_preset) must have received the non-default path.
     assert captured_cache_path.get("path") == custom_cache, (
         f"_load_cache received cache_path={captured_cache_path.get('path')!r}, "

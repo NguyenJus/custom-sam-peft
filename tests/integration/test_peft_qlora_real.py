@@ -300,3 +300,61 @@ def test_inproj_qlora_coexists_attaches_merges_vision_decoder_concept() -> None:
     merge_lora(w)
     assert w.peft_model is None
     assert w.model.model is not None
+
+
+@pytest.mark.skipif(not _bnb_available(), reason="bitsandbytes not installed")
+def test_apply_qlora_decoder_concept_mirrors_vision_decoder_concept_minus_trunk() -> None:
+    """decoder_concept under QLoRA behaves as vision_decoder_concept minus the trunk.
+
+    Asserts (spec §4, QLoRA note in §1):
+      1. FFN linears (linear1/linear2) are quantized to Linear4bit (same as
+         vision_decoder_concept).
+      2. cross_attn.out_proj is targetable (genuine nn.Linear on RoPEAttention,
+         same as vision_decoder_concept).
+      3. self_attn / ca_text MHA modules are adapted (via SCOPE_MHA_MODULES), same
+         as vision_decoder_concept.
+      4. Trunk is frozen: no lora_ param contains 'vision_backbone' or 'trunk.blocks'
+         (this is the difference from vision_decoder_concept).
+      5. LoRA params exist for both the decoder FFN linears and the MHA modules.
+    """
+    w = load_sam31(ModelConfig())
+    cfg = PEFTConfig(method="qlora", scope="decoder_concept")
+    apply_qlora(w, cfg)
+
+    lora_names = [n for n, _ in w.model.model.named_parameters() if "lora_" in n]
+
+    # 1. FFN linears quantize — at least one linear1/linear2 LoRA param exists.
+    ffn_lora = [n for n in lora_names if "linear1" in n or "linear2" in n]
+    assert ffn_lora, (
+        f"no FFN linear1/linear2 LoRA params under decoder_concept QLoRA: {lora_names[:12]}"
+    )
+
+    # 2. cross_attn.out_proj targetable — LoRA params exist for it.
+    cross_attn_lora = [n for n in lora_names if "cross_attn" in n]
+    assert cross_attn_lora, (
+        f"no cross_attn LoRA params under decoder_concept QLoRA: {lora_names[:12]}"
+    )
+
+    # 3. self_attn / ca_text MHA adapted — in_proj LoRA params exist.
+    ca_text_inproj = [n for n in lora_names if "ca_text" in n and "out_proj" not in n]
+    assert any("lora_A" in n for n in ca_text_inproj), (
+        f"no ca_text in_proj lora_A under decoder_concept QLoRA: {lora_names[:12]}"
+    )
+    self_attn_inproj = [n for n in lora_names if "self_attn" in n and "out_proj" not in n]
+    assert any("lora_A" in n for n in self_attn_inproj), (
+        f"no self_attn in_proj lora_A under decoder_concept QLoRA: {lora_names[:12]}"
+    )
+
+    # 4. Trunk frozen — no lora_ param belongs to the ViT vision trunk.
+    trunk_lora = [n for n in lora_names if "vision_backbone" in n or "trunk.blocks" in n]
+    assert not trunk_lora, (
+        f"trunk LoRA params found under decoder_concept QLoRA (trunk must be frozen): {trunk_lora}"
+    )
+
+    # 5. Structural sanity: PeftModel handle is set.
+    assert w.peft_model is not None, "apply_qlora must set wrapper.peft_model"
+
+    # merge_and_unload must not raise (QLoRA coexistence requirement).
+    merge_lora(w)
+    assert w.peft_model is None
+    assert w.model.model is not None

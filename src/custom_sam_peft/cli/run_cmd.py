@@ -62,7 +62,7 @@ def _fallback_preset(cfg: TrainConfig) -> PresetDecision:
 
     Passes the config's classes_per_forward as the K upper bound (spec §3).
     """
-    return decide_preset(k=cfg.train.multiplex.classes_per_forward)
+    return decide_preset(k=cfg.train.multiplex.classes_per_forward, scope=cfg.peft.scope)
 
 
 def _load_preset_or_fallback(cfg: TrainConfig) -> PresetDecision:

@@ -808,7 +808,7 @@ class Trainer:
                 for epoch in range(start_epoch, cfg.train.epochs):
                     _current_epoch[0] = epoch
                     total_batches = max(len(train_loader), 1)
-                    P.reset_inner(total=total_batches)
+                    P.reset_inner(total=total_batches, epoch=epoch)
                     global_step, nan_streak = self._train_epoch(
                         epoch,
                         train_loader,
@@ -868,7 +868,7 @@ class Trainer:
             _LOG.warning(
                 "host-RAM floor reached at step %d (epoch %d): %.2f GB available (floor: %.2f GB). "
                 "Checkpoint saved to %s. "
-                "To resume: reduce data.num_workers and/or batch_size, or raise "
+                "To resume: reduce train.num_workers and/or train.batch_size, or raise "
                 "train.host_ram_floor_gb, then resume from the checkpoint.",
                 ram_stop.step,
                 ram_stop.epoch,
