@@ -103,7 +103,7 @@ Optimizer = Literal["adamw", "adamw8bit", "auto"]
 LRSchedule = Literal["constant", "cosine", "linear", "poly"]
 TrackerBackend = Literal["local", "tensorboard", "wandb", "none"]
 TextPromptMode = Literal["present", "all", "present_plus_negatives", "sampled_fixed_k"]
-LoraScope = Literal["vision", "vision_decoder", "vision_decoder_concept", "all"]
+LoraScope = Literal["vision", "vision_decoder", "vision_decoder_concept", "decoder_concept", "all"]
 EvalMode = Literal["full", "lite"]
 
 
@@ -580,13 +580,19 @@ class PEFTConfig(_Strict):
     r: PositiveInt = 16  # cite: LoRA (Hu 2021) arXiv:2106.09685 §4.1; alpha=2r convention
     alpha: PositiveInt = 32  # cite: LoRA (Hu 2021) §4.1 "we simply set alpha to the first r we try"
     dropout: float = Field(default=0.05, ge=0.0, lt=1.0)  # tbd: #191 (LoRA varies 0.0-0.1)
-    scope: LoraScope = "vision_decoder_concept"
-    # tbd: #230 (project-chosen SAM 3.1 concept scope; default flipped from
-    #      vision_decoder so the shipped default can learn niche TEXT concepts —
-    #      vision_decoder freezes ca_text/self_attn in_proj. Reproducibility: a config
-    #      without an explicit peft.scope now additionally adapts ca_text/self_attn
-    #      in_proj; configs pinning vision/vision_decoder/all are unaffected. See
-    #      research note §4, §7.)
+    scope: LoraScope = "decoder_concept"
+    # #230 trunk-frozen default: decoder_concept adapts the full SAM 3.1 decoder
+    # (cross_attn.out_proj, linear1/linear2 FFN, and self_attn/ca_text MHA modules)
+    # while leaving the ViT vision trunk frozen — no LoRA adapters on the trunk,
+    # all trunk base params keep requires_grad=False, autograd skips the trunk
+    # subgraph in the backward pass.
+    # Migration from the old vision_decoder_concept default: configs that pin an
+    # explicit peft.scope (vision, vision_decoder, vision_decoder_concept, all) or
+    # that set peft.target_modules are byte-for-byte unaffected. Only configs that
+    # OMIT peft.scope now resolve to decoder_concept instead of
+    # vision_decoder_concept, meaning they stop adapting the ViT trunk. No in-repo
+    # config relies on the old default (overfit_debug.yaml pins vision_decoder_concept;
+    # example configs pin vision_decoder).
     # --- advanced ---
     target_modules: list[str] | None = Field(
         default=None,
