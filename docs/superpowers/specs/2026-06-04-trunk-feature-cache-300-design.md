@@ -7,8 +7,12 @@ ViT vision trunk is fully frozen and deterministic, `forward_image` recomputes
 identical features every epoch. This spec specifies a pure REPLAY cache:
 compute trunk features once on epoch 0, replay on epochs 1+, and skip the trunk
 forward entirely. The lever is wall-clock for compute-constrained runs; net
-saving per replayed step is approximately `(trunk_fwd_time - H2D_copy_time)`,
-summed over `(epochs - 1)` epochs.
+saving per replayed step is approximately `(trunk_fwd_time - replay_time)`,
+where under the resolved single-run on-disk (SSD) residence
+`replay_time = disk_read + pin + H2D` (≈ 21.3 ms cold, or ≈ 0 with the 1-step
+prefetch in §3.5), summed over `(epochs - 1)` epochs. Measured: +70 ms/step
+cold, ~+91 ms with prefetch
+(`docs/spikes/2026-06-04-trunk-feature-cache-disk-respike.md`).
 
 This feature REQUIRES an adapter-free trunk scope, which has landed:
 [#304](https://github.com/justin/custom-sam-peft/pull/304) added `decoder_concept`
@@ -23,9 +27,13 @@ precondition is therefore the project default. Guard 1 (Section 2) remains the
 hard backstop: if any future scope or override leaves the trunk trainable, the
 cache hard-errors rather than miscaching.
 
-This spec is SPIKE-FIRST: production wiring is conditional on a feasibility
-spike on the real SAM3.1 model (see Spike-first plan). Cache RESIDENCE
-(RAM / disk / hybrid) is deliberately left to the spike's evidence.
+This spec is SPIKE-FIRST: production wiring was conditional on a feasibility
+spike on the real SAM3.1 model (see Spike-first plan). That spike has now RUN
+(twice): Part A is DONE and RESIDENCE is RESOLVED to **single-run on-disk (SSD)**
+(§5 Part A, Open question (c)). The original HDD-era spike
+(`docs/spikes/2026-06-04-trunk-feature-cache-spike.md`, NO-GO on disk) was
+reversed by an SSD re-spike after WSL moved onto an SSD; see
+`docs/spikes/2026-06-04-trunk-feature-cache-disk-respike.md`.
 
 ## 1. Regime and shape of the win
 
@@ -51,8 +59,8 @@ tensors are stored: `backbone_fpn` / `vision_features` (and, when active, the
 ```
 
 Net saving per replayed step is approximately
-`(trunk_fwd_time - H2D_copy_time)`. The spike confirms this is positive on the
-target box before any wiring lands.
+`(trunk_fwd_time - replay_time)`. The spike confirmed this is positive on the
+target box (+70 ms/step cold, ~+91 ms with prefetch) before any wiring lands.
 
 ## 2. Correctness gate: three independent guards, ALL required
 
@@ -112,9 +120,104 @@ against a different trunk.
 ### Stored value
 
 The `forward_image` return dict (minus `vision_pos_enc`), batch-unbound into
-per-image entries, `detach()`ed, kept on CPU (VRAM stays free), and PINNED for
-fast non-blocking H2D on replay. Prior art: the pinned-copy path in #288 /
-`transfer_binarize` (the only survivor of the #273 algo/CUDA audit).
+per-image entries, `detach()`ed, cast to fp16, and — under the resolved
+single-run on-disk residence (§3.5) — SERIALIZED to the on-disk cache dir
+(`torch.save`, one file per `sample_uid`). VRAM stays free; host RAM is not held
+either (this reverses the original RAM-residence plan, which kept PINNED CPU
+tensors). On replay the entry is COLD-READ from disk, pinned, then non-blocking
+H2D. Prior art for the pin + H2D tail: the pinned-copy path in #288 /
+`transfer_binarize` (the only survivor of the #273 algo/CUDA audit). The
+trunk-config fingerprint in the Key (above) is written into / checked on every
+on-disk entry, so a corrupt or foreign blob is rejected rather than replayed.
+
+## 3.5 Disk residence, activation guards, prefetch, cleanup
+
+Residence is RESOLVED: **single-run on-disk (SSD)**. The original HDD-era spike
+was NO-GO on disk (HDD-saturation crash + 193 GiB ≫ 16 GB RAM); after WSL moved
+onto an SSD the re-spike flipped it to GO — the 3,720-image / ~193 GiB DFC roof
+working set fits the 918 GB free SSD with ~4.7× headroom, and cold reads sustain
+2.91 GB/s
+(`docs/spikes/2026-06-04-trunk-feature-cache-disk-respike.md`).
+
+### Single-run, NOT cross-run persistent
+
+The cache lives under the run's output directory — default
+`<output_dir>/.trunk_cache/` (cited default path: a hidden subdir of the run's
+own `output_dir`, so it is namespaced per-run and swept with the run) — and is
+DELETED at run end in a `finally` / teardown (see Cleanup below). It is NOT a
+multi-run persistent cache.
+
+Rationale: a 160-epoch run already replays on epochs 1–159; the one-time
+epoch-0 build is ~88 ms × 3,720 ≈ **5.5 min**, negligible against the run. Cross-run
+persistence would cost ~193 GiB on disk PER distinct trunk fingerprint and
+accumulate (only ~4 such caches fit the 918 GB SSD), for a benefit that only
+materializes on frequent fresh restarts with byte-identical configs — not worth
+the storage bloat and the cross-run invalidation/cleanup policy it would require.
+This keeps §7's "no multi-run persistent disk cache" stance, now as a DELIBERATE
+choice rather than a deferral.
+
+### Serialization
+
+Per-image entry via `torch.save`, fp16. `torch.save` is self-describing with
+~zero size overhead; the measured 17.86 ms cold read is dominated by the disk
+read, not unpickling, so deserialization cost is not on the critical path.
+Raw-bytes / `safetensors` is noted as a LATER tuning knob only — adopt it only if
+deserialize ever shows up in a profile (it does not today; re-spike Step 2d).
+
+### Three-layer activation guard (in addition to §2's three correctness guards)
+
+§2's three correctness guards (trunk-frozen / RGB / aug-off) are UNCHANGED and
+still all required. The residence decision adds three further activation gates.
+**None may gate on the kernel `rotational` flag** — the re-spike proved it
+unreliable under WSL2/VHDX: this SSD reports `rotational=1` (would falsely flag
+as HDD) while RAM-backed `ram*` devices report `rotational=0`
+(`...disk-respike.md`, "Device assessment").
+
+- **(a) Opt-in flag** — `cache_trunk_features` (cited default `false`,
+  unchanged from §2). Caching never turns on implicitly.
+- **(b) Free-disk fit-check** (build-time, fail-fast) — compute projected cache
+  size `n_samples × per_image_bytes` from the ACTUAL post-tiling sample count
+  (per-`sample_uid`, so tiling-window expansion is counted) and per-image bytes
+  (53.16 MiB fp16 measured; re-spike Step 1). Refuse to enable, naming the flag,
+  when the projected size exceeds **70%** of FREE disk on the cache volume.
+  Cited default `0.70`: leaves ≳30% headroom on the cache volume for checkpoints,
+  logs, DataLoader spill, and OS, while still admitting the 193 GiB DFC set on
+  the 918 GB SSD (193/918 ≈ 21% ≪ 70%); `# tbd:` if the user wants a tighter
+  number. This REPLACES the original spec's implicit 16 GB host-RAM fit concern
+  (residence is disk now, not RAM).
+- **(c) Throughput auto-guard** (build-time probe of the cache dir) — cold-read a
+  representative blob (page-cache evicted, as prototyped in
+  `scripts/spike_trunk_cache_feasibility.py` Step 2d) and measure throughput. The
+  break-even is DERIVED, not hardcoded: `feature_bytes / trunk_fwd` — below this,
+  a cold read costs more than just recomputing the trunk. With the measured
+  53.16 MiB / 91.4 ms this is ≈ **0.57 GB/s**; the spec stores the derivation, and
+  the guard recomputes it from the live `per_image_bytes` and `trunk_fwd` at probe
+  time. If measured throughput is below break-even, refuse / fall back to
+  recompute UNLESS the explicit override `cache_allow_slow_disk` (cited default
+  `false`) is set. The measured SSD cold read (2.91 GB/s) clears the bar by ~5×;
+  the probe is the gate that auto-PASSES this SSD and would auto-FAIL a genuine
+  ~0.15 GB/s HDD — by measured speed, not by the unreliable device label.
+
+### Replay path + 1-step prefetch
+
+Replay is **cold read → pin → non-blocking H2D**, WITH a depth-1 prefetch. A
+background reader prefetches the NEXT step's blobs during the current step's
+compute, hiding the ~17.86 ms read behind the ~91 ms prior-step compute and
+lifting the win from **+70 ms** (cold, no prefetch) to **~+91 ms/step**
+(re-spike Net-win table). This requires lookahead into the (possibly shuffled)
+sampler order plus a background reader thread (or a dedicated CUDA stream for the
+H2D tail).
+
+Prefetch DEPTH = 1 (cited): one step's ~91 ms compute already exceeds one blob's
+~18 ms read, so depth 1 fully hides the read; deeper prefetch only adds pinned-
+memory pressure for marginal gain.
+
+### Cleanup / teardown
+
+The cache dir is DELETED at run end in a `finally` / teardown block, so an
+aborted or crashed run does not leak ~193 GiB. Because residence is single-run,
+there is no cross-run reuse to preserve — teardown unconditionally removes
+`<output_dir>/.trunk_cache/`.
 
 ## 4. Batch policy
 
@@ -128,31 +231,48 @@ fast non-blocking H2D on replay. Prior art: the pinned-copy path in #288 /
 No per-image scatter/gather inside the trunk: the trunk runs on either the full
 batch or none of it.
 
+The batch-policy LOGIC is unchanged by the disk-residence decision. Under
+single-run disk residence the whole working set fits (the §3.5(b) fit-check
+guarantees it), so after epoch 0 a "miss" only happens on a missing or corrupt
+on-disk blob — caught by the trunk-config fingerprint on read (§3 Stored value).
+Such a miss falls into the existing any-miss path: recompute that whole batch and
+rewrite its entries.
+
 ## 5. Spike-first plan
 
-Residence is deferred to evidence. The spike is the gate before any production
-wiring.
+### Part A: feasibility spike (GPU box, real SAM3.1) — DONE
 
-### Part A: feasibility spike (GPU box, real SAM3.1)
+DONE and GO. Ran twice. Verdict: **GO on the mechanics, GO on single-run on-disk
+(SSD) residence** for the full ~160-epoch DFC roof run.
 
-1. Per-image feature bytes in fp16 — measured WITH and WITHOUT the
-   `sam2_backbone_out` path.
-2. Trunk-forward wall-clock as a fraction of the full `train_step`
-   (`src/custom_sam_peft/train/loop.py:227-475`), plus H2D copy time for cached
-   features. Confirm net win `> 0`. Reuse the permanent profiling harness
-   (`CSP_PROFILE=1` + `csp profile`).
-3. Break-even table: dataset size x per-image bytes vs 16 GB host RAM and vs
-   disk-I/O headroom.
-4. Recommendation: go / no-go plus residence choice (RAM-cap / disk / hybrid).
-   Disk is explicitly weighed against the documented HDD-saturation
-   session-crash risk on this box (sessions crash from disk-I/O saturation, not
-   RAM/VRAM OOM).
+- Original (HDD-era):
+  `docs/spikes/2026-06-04-trunk-feature-cache-spike.md` — GO on mechanics, NO-GO
+  on residence (HDD-saturation crash rule + 193 GiB ≫ 16 GB RAM).
+- SSD re-spike:
+  `docs/spikes/2026-06-04-trunk-feature-cache-disk-respike.md` — after WSL moved
+  to an SSD, residence FLIPPED to GO. Snapshot:
+  `docs/spikes/snapshots/2026-06-04-trunk-feature-cache-disk-respike-snapshot.json`.
 
-### Part B: conditional implementation (only if the spike says go)
+Measured (RTX 5070 Ti, real SAM 3.1, B=1 bf16): 53.16 MiB/image fp16;
+`trunk_fwd` 91.4 ms; cold disk read (page-cache evicted) 17.86 ms (2.91 GB/s);
+full replay 21.31 ms; net win +70 ms/step cold, ~91 ms with 1-step prefetch;
+193 GiB fits 918 GB free SSD; break-even read throughput
+`feature_bytes / trunk_fwd` ≈ 0.57 GB/s.
 
-- The cache module (residence filled in from Part A).
-- The three correctness guards (Section 2).
-- The `cache_trunk_features` config flag (default `false`).
+### Part B: implementation (spike says GO)
+
+- The cache module, residence = **single-run on-disk (SSD)** under
+  `<output_dir>/.trunk_cache/` (§3.5): `torch.save`/fp16 per-`sample_uid` entry,
+  cold-read → pin → non-blocking H2D on replay.
+- The three correctness guards (Section 2) — UNCHANGED.
+- The three-layer activation guard (§3.5): opt-in `cache_trunk_features`
+  (default `false`); build-time free-disk fit-check (refuse > 70% of free disk);
+  build-time throughput auto-guard (probe cold read vs the derived
+  `feature_bytes / trunk_fwd` break-even, override `cache_allow_slow_disk`,
+  default `false`). NONE gates on the kernel `rotational` flag.
+- The 1-step prefetch (§3.5): background reader / CUDA stream hides the read
+  behind prior-step compute; depth 1.
+- Cleanup / teardown (§3.5): delete the cache dir in a `finally` / teardown.
 - `_Sam3ImageAdapter` integration at the boundary (Section 3), including the
   `sample_uid` threading on the `Example` / collate path.
 
@@ -172,13 +292,30 @@ spike (Part A), NOT in CI.
   which is recomputed).
 - **Eviction -> recompute:** a forced miss recomputes the whole batch and
   refreshes the cache.
+- **Free-disk fit-check fail-fast (§3.5b):** a projected cache size over the
+  70% free-disk fraction hard-errors at build time, naming the flag; a size under
+  it passes. Drive with a stubbed free-disk value and synthetic
+  `n_samples × per_image_bytes`.
+- **Throughput auto-guard fail / override (§3.5c):** a probed cold-read
+  throughput below the derived `feature_bytes / trunk_fwd` break-even refuses (or
+  falls back to recompute) unless `cache_allow_slow_disk=true`; above break-even
+  passes. The guard must NOT read the kernel `rotational` flag (assert it is
+  derived from measured throughput).
+- **Cleanup on teardown (§3.5):** the cache dir is removed on normal exit AND on
+  a simulated mid-run exception (the `finally` / teardown fires).
+- **Prefetch correctness (§3.5):** replayed `backbone_out` is identical with the
+  1-step prefetch ON vs OFF (prefetch must not change the replayed features,
+  including under a shuffled sampler order).
 
 ## 7. Out of scope
 
 - The adapter-free trunk scope itself (already landed as `decoder_concept` in
   #304). Guard 1 hard-errors when a trunk-trainable scope is used.
 - Feature-space augmentation.
-- A multi-run persistent disk cache, unless the spike picks disk residence.
+- A MULTI-RUN persistent disk cache. Residence is single-run on-disk (SSD) and
+  swept at teardown (§3.5) — this is now a DELIBERATE choice, not a deferral: see
+  §3.5 "Single-run, NOT cross-run persistent" for the storage-bloat /
+  cross-run-invalidation rationale.
 - QLoRA / bnb interactions.
 
 ## Open questions resolved
@@ -189,7 +326,14 @@ spike (Part A), NOT in CI.
 - **(b) Augmentation:** hard-require aug-off via a fail-fast build-time guard
   (Guard 3) asserted against the built train transform — not a silent
   best-effort.
-- **(c) Residence (RAM / disk / hybrid):** deferred to the Part A spike;
-  disk is weighed against the known HDD-saturation crash risk on this box.
+- **(c) Residence (RAM / disk / hybrid):** RESOLVED — **single-run on-disk
+  (SSD)** under `<output_dir>/.trunk_cache/`, deleted at run end (§3.5). The
+  HDD-era spike was NO-GO on disk (HDD-saturation crash + 193 GiB ≫ 16 GB RAM);
+  after WSL moved onto an SSD the re-spike
+  (`docs/spikes/2026-06-04-trunk-feature-cache-disk-respike.md`) flipped it to
+  GO — 193 GiB fits the 918 GB free SSD, cold reads sustain 2.91 GB/s ≫ the
+  0.57 GB/s break-even, and the old HDD-saturation crash mode no longer exists.
+  RAM residence is rejected (the 193 GiB working set is ~12× host RAM, and a
+  capped RAM-LRU thrashes to ~0% hit rate since intra-epoch reuse is zero).
 - **(d) Activation:** opt-in flag `cache_trunk_features` (cited default `false`)
   with lazy populate — epoch 0 fills the cache, epochs 1+ replay.
