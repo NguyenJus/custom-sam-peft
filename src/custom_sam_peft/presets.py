@@ -42,9 +42,30 @@ MODEL_PARAMS = 5_000_000_000  # SAM 3.1 base parameter count — analytic seed
 # (vision encoder ~762M + text encoder ~302M + decoder/neck ~50M,
 #  plus retained activations and optimizer state heuristic; superseded
 #  by calibration cache. Re-derive via scripts/_derive_preset_constants.py)
-LORA_LAYERS = 96  # vision_decoder scope; nn.Linear LoRA targets (_resolve_targets)
-D_IN = 768  # avg input feature dim across LoRA targets
-D_OUT = 768  # avg output feature dim across LoRA targets
+# Per-scope adapter dimension sum: sum over every injected LoRA adapter of
+# (lora_A.in_features + lora_B.out_features). Keyed by LoraScope VALUE (string).
+#
+# Values below are EXACT, derived offline by inspecting the real SAM 3.1 model
+# after apply_lora: scripts/_derive_preset_constants.py --scope-survey. Internal
+# consistency check: vision (trunk-only, 196_608) + decoder_concept (49_152) ==
+# vision_decoder_concept (245_760), since decoder_concept == vision_decoder_concept
+# minus the trunk. Re-derive (and re-stamp the citation date) if the scope target
+# sets, the model architecture, or the peft adapter placement change.
+#
+# Why offline derivation (not a live meta-device count): the vendored ViT __init__
+# calls `.item()` on a meta tensor (sam3/model/vitdet.py:878: `dpr = [x.item()
+# for x in torch.linspace(...)]`), and complex-RoPE initialisation is a further
+# likely blocker on meta. A real CPU build of the ~5B-param model does not fit
+# the 16 GB box. Do not re-attempt a meta-device count.
+ADAPTER_DIM_SUM_BY_SCOPE: dict[str, int] = {
+    # <scope>: sum over every injected LoRA adapter of
+    #          (lora_A.in_features + lora_B.out_features)
+    "vision": 196_608,  # derived 2026-06-04 (scope-survey)
+    "vision_decoder": 233_472,  # derived 2026-06-04 (scope-survey)
+    "vision_decoder_concept": 245_760,  # derived 2026-06-04 (scope-survey)
+    "decoder_concept": 49_152,  # derived 2026-06-04 (scope-survey)
+    "all": 964_129,  # derived 2026-06-04 (scope-survey)
+}
 Q_OVERHEAD = 64 * _MIB  # bnb NF4 per-block scale + zero-point overhead
 WORKSPACE_BYTES = 256 * _MIB  # cuDNN workspace + autograd graph + tmp buffers (spec §3)
 # Split activation seeds — PORTABLE FLASH-BASELINE, measured natively at SAM 3.1's
@@ -163,15 +184,17 @@ def _model_bytes(method: str) -> int:
     return base + (Q_OVERHEAD if method == "qlora" else 0)
 
 
-def _adapter_bytes(r: int) -> int:
-    # LORA_LAYERS * r * (D_IN + D_OUT) * 2 bytes (bf16 adapter weights).
-    return LORA_LAYERS * r * (D_IN + D_OUT) * 2
+def _adapter_bytes(r: int, scope: str = "decoder_concept") -> int:
+    # ADAPTER_DIM_SUM_BY_SCOPE[scope] * r * 2 bytes (bf16 adapter weights, 2 B/param).
+    # scope defaults to the schema's default LoraScope, matching decide_preset /
+    # decide_eval_batch_size; production callers thread the run's cfg.peft.scope.
+    return ADAPTER_DIM_SUM_BY_SCOPE[scope] * r * 2
 
 
-def _optimizer_bytes(r: int) -> int:
+def _optimizer_bytes(r: int, scope: str = "decoder_concept") -> int:
     # AdamW state on the bf16 adapter — fp32 m + fp32 v (two fp32 moments).
     # Adapter weights are 2 B/param; state is 8 B/param -> 4x adapter_bytes.
-    return _adapter_bytes(r) * 4
+    return _adapter_bytes(r, scope) * 4
 
 
 def _attention_bytes_per_example(image_size: int) -> int:
@@ -227,6 +250,7 @@ def _predicted_bytes(
     batch: int,
     image_size: int,
     cache: dict[str, Any] | None,
+    scope: str = "decoder_concept",
     mode: Literal["train", "eval"] = "train",
     k_eff: int = 1,
     flash_available: bool = True,
@@ -242,8 +266,8 @@ def _predicted_bytes(
         # STATIC + split + conditional attention.
         return (
             _model_bytes(method)
-            + _adapter_bytes(r)
-            + _optimizer_bytes(r)
+            + _adapter_bytes(r, scope)
+            + _optimizer_bytes(r, scope)
             + _activation_bytes(batch, cache, k_eff=k_eff)
             + WORKSPACE_BYTES
             + attn
@@ -355,7 +379,11 @@ def _sort_key(c: tuple[str, int, int, int]) -> tuple[int, int, int, int]:
 # === Public entry point ====================================================
 
 
-def decide_preset(k: int | None = None, cache_path: Path | None = None) -> PresetDecision:
+def decide_preset(
+    k: int | None = None,
+    cache_path: Path | None = None,
+    scope: str = "decoder_concept",
+) -> PresetDecision:
     """Pick the largest configuration that fits within the VRAM budget.
 
     Args:
@@ -367,6 +395,9 @@ def decide_preset(k: int | None = None, cache_path: Path | None = None) -> Prese
          explicit path when the calibration cache was written to a non-default
          location (e.g. ``calibrate --output``), so provenance reflects the
          just-written probe rather than a stale/absent default cache.
+      scope: LoraScope value (string) from the run PEFTConfig. Used to look up
+         the per-scope adapter dimension sum for VRAM estimation. Defaults to
+         "decoder_concept" (the new default scope; spec §3).
 
     Raises:
       RuntimeError: CUDA unavailable, env-var malformed, or no candidate fits.
@@ -405,7 +436,7 @@ def decide_preset(k: int | None = None, cache_path: Path | None = None) -> Prese
         if k_cand > k_cap:
             continue
         pb = _predicted_bytes(
-            method, r, batch, image_size, cache, k_eff=k_cand, flash_available=flash
+            method, r, batch, image_size, cache, scope=scope, k_eff=k_cand, flash_available=flash
         )
         if pb <= budget:
             feasible.append((method, r, batch, k_cand, pb))
@@ -414,7 +445,7 @@ def decide_preset(k: int | None = None, cache_path: Path | None = None) -> Prese
         budget_gib = budget / _GB
         headroom_gib = headroom / _GB
         min_needed = _predicted_bytes(
-            "qlora", 4, 1, image_size, cache, k_eff=1, flash_available=flash
+            "qlora", 4, 1, image_size, cache, scope=scope, k_eff=1, flash_available=flash
         )
         raise RuntimeError(
             f"pick_preset(): GPU has {budget_gib:.1f} GiB after {headroom_gib:.1f} GiB "
@@ -445,6 +476,7 @@ def decide_preset(k: int | None = None, cache_path: Path | None = None) -> Prese
 
 def decide_eval_batch_size(
     classes_per_forward: int = 16,
+    scope: str = "decoder_concept",
 ) -> tuple[int, int, Literal["calibrated", "analytic"]]:
     """Pick the largest forward-only batch size that fits within the eval VRAM budget.
 
@@ -456,6 +488,12 @@ def decide_eval_batch_size(
     ``classes_per_forward`` is now threaded through the split activation formula
     as k_eff, so higher K can only lower (or hold) the returned batch size —
     never raise it (no regression guarantee). Spec §6.
+
+    ``scope``: LoraScope value (string) from the run PEFTConfig. Passed through to
+    _predicted_bytes for the shared signature; the eval branch does not add adapter
+    or optimizer bytes so the value does not affect the computed estimate, but it must
+    be forwarded so the call site matches the updated signature. Defaults to
+    "decoder_concept" (the new default scope; spec §3).
     """
     from custom_sam_peft.models.sam3 import MULTIPLEX_CAP as _CAP
     from custom_sam_peft.models.sam3 import SAM3_IMAGE_SIZE
@@ -490,6 +528,7 @@ def decide_eval_batch_size(
         batch=1,
         image_size=image_size,
         cache=cache,
+        scope=scope,
         mode="eval",
         k_eff=classes_per_forward,
         flash_available=flash,
@@ -501,6 +540,7 @@ def decide_eval_batch_size(
             batch=batch,
             image_size=image_size,
             cache=cache,
+            scope=scope,
             mode="eval",
             k_eff=classes_per_forward,
             flash_available=flash,
@@ -547,6 +587,7 @@ def decide_eval_batch_size(
             batch=best_bs,
             image_size=image_size,
             cache=cache,
+            scope=scope,
             mode="eval",
             k_eff=classes_per_forward,
             flash_available=flash,

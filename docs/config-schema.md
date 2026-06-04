@@ -145,7 +145,7 @@ LoRA / QLoRA adapter configuration.
 | `peft.r` | int (>0) | `16` | common | LoRA rank — number of low-rank decomposition dimensions. |
 | `peft.alpha` | int (>0) | `32` | common | LoRA scaling factor; effective scale = `alpha / r`. |
 | `peft.dropout` | float [0, 1) | `0.05` | common | Dropout probability applied to LoRA layers during training. |
-| `peft.scope` | `"vision"` \| `"vision_decoder"` \| `"all"` | `"vision_decoder"` | common | Which parts of SAM 3.1 receive LoRA adapters. |
+| `peft.scope` | `"vision"` \| `"vision_decoder"` \| `"vision_decoder_concept"` \| `"decoder_concept"` \| `"all"` | `"decoder_concept"` (new default — freezes ViT trunk) | common | Which parts of SAM 3.1 receive LoRA adapters. `decoder_concept` adapts the decoder (cross-attention, FFN, and `ca_text`/`self_attn` MHA) while keeping the ViT trunk frozen; use `vision_decoder_concept` to also adapt the trunk. |
 | `peft.target_modules` | list[str] \| null | `null` | advanced | Explicit list of module-name patterns to adapt; overrides `scope` when set. |
 | `peft.bias` | `"none"` \| `"all"` \| `"lora_only"` | `"none"` | advanced | Which bias terms to train alongside the LoRA weights. |
 | `peft.qlora.quant_type` | `"nf4"` \| `"fp4"` | `"nf4"` | advanced | 4-bit quantization type (applies when `peft.method == "qlora"`). |
