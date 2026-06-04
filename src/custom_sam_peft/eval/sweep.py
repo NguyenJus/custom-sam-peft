@@ -57,7 +57,7 @@ def discover_checkpoints(checkpoints_dir: Path) -> list[Path]:
     """
     if not checkpoints_dir.exists():
         raise FileNotFoundError(
-            f"discover_checkpoints: checkpoints directory not found: {checkpoints_dir}"
+            "discover_checkpoints: checkpoint directory not found: " + str(checkpoints_dir)
         )
 
     matches: list[tuple[int, Path]] = []
