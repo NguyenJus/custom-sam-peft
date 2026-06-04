@@ -16,7 +16,7 @@ from custom_sam_peft import profiling
 from custom_sam_peft._registry import lookup
 from custom_sam_peft.config.schema import TrainConfig
 from custom_sam_peft.data.base import Dataset
-from custom_sam_peft.data.val_source import resolve_val_source
+from custom_sam_peft.data.split_source import resolve_split_source
 from custom_sam_peft.eval._artifacts import EvalArtifacts
 from custom_sam_peft.eval.evaluator import Evaluator
 from custom_sam_peft.eval.metrics import MetricsReport
@@ -125,7 +125,7 @@ def run_eval(
         if split == "test":
             cfg_dict["val"] = cfg_dict["test"]
         elif split == "val" and cfg.data.val_split is not None:
-            vs = resolve_val_source(cfg, run_dir=None)
+            vs = resolve_split_source(cfg, run_dir=None)
             assert vs.val_ids is not None  # noqa: S101 — auto_split mode invariant
             cfg_dict["_resolved_image_ids"] = {"eval": list(vs.val_ids)}
         builder = lookup("dataset", cfg.data.format)
