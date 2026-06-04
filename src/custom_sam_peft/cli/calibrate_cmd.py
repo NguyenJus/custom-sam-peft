@@ -1,8 +1,8 @@
 """`custom-sam-peft calibrate` — thin wrapper over `run_calibration`.
 
 Three-stage probe: (1) derive split (two probes → `A_fixed`/`A_per_class`),
-(2) analytic aim via `decide_preset`, (3) confirm-and-climb. Writes a v3 cache
-(schema_version=3) at `./.custom_sam_peft_calibration.json`.
+(2) analytic aim via `decide_preset`, (3) confirm-and-climb. Writes a v4 cache
+(schema_version=4) at `./.custom_sam_peft_calibration.json`.
 
 Spec: docs/superpowers/specs/2026-05-28-vram-calibration-reassess-design.md §4-§5.
 """
@@ -322,6 +322,9 @@ def _decision_from_cache(output: Path, k_cap: int) -> PresetDecision | None:
         return None
     method = data["chosen_method"]
     r = int(data["chosen_r"])
+    # Prefer the persisted chosen_alpha; fall back to 2*r only as a last-ditch
+    # defensive default (v3 caches are stale post schema-bump, so in practice this
+    # branch is unreachable on valid v4 caches). # defensive
     alpha = int(data.get("chosen_alpha", 2 * r))
     batch = int(data["chosen_batch"])
     k = min(int(data["chosen_classes_per_forward"]), k_cap)
@@ -478,10 +481,19 @@ def run_calibration(*, config: Path, output: Path, force: bool) -> PresetDecisio
 
     # Stage 2 — analytic aim over the full grid using the derived split. This is the
     # ONLY analytic use in the probe path (the aim that the probe then confirms).
+    # Pin cfg.peft.method/r/alpha so the aim never raises r above the configured
+    # value (spec §6.3). Aim r is now cfg.peft.r, not the old max-fitting 64.
     _write_cache_v3(
         output, gpu_name=gpu_name, total=total, a_fixed=a_fixed, a_per_class=a_per_class, peak=0
     )
-    aim = decide_preset(k=k_cap, cache_path=output, scope=scope)
+    aim = decide_preset(
+        k=k_cap,
+        cache_path=output,
+        scope=scope,
+        method=method,
+        r=r,
+        alpha=cfg_alpha,
+    )
     budget = aim.budget_bytes  # decide_preset already computed total - headroom
 
     # Stage 3 — confirm + climb/shrink down the full sacrifice order (bounded).
@@ -507,10 +519,10 @@ def run_calibration(*, config: Path, output: Path, force: bool) -> PresetDecisio
             err=True,
         )
     else:
-        # r == cfg_r (unchanged) or r > cfg_r (autosize climbed above the configured
-        # rank on a larger GPU): spec §7a.3(d) co-scales alpha ONLY on reduction, so
-        # alpha keeps its configured value here. Intentional asymmetry — do not change
-        # to `r != cfg_r` without a spec amendment.
+        # r == cfg_r (common path) — the analytic aim is now pinned to cfg.peft.r
+        # (spec §6.3), so r > cfg_r is unreachable post-pin. Guard is kept defensive;
+        # co-scale applies ONLY on reduction (spec §7a.3(d)); alpha keeps configured
+        # value on any non-reduction path. Do not change to `r != cfg_r`.
         alpha_final = cfg_alpha
 
     # Persist the measured peak AND the empirically-chosen sizing (Correction B). The

@@ -26,6 +26,7 @@ from custom_sam_peft.cli._options import (
 )
 from custom_sam_peft.config.loader import load_config
 from custom_sam_peft.config.schema import ClassImbalance, Intensity, Preset
+from custom_sam_peft.data._num_classes import infer_num_classes
 from custom_sam_peft.presets import decide_preset
 from custom_sam_peft.utils.huggingface import download_model
 
@@ -178,12 +179,21 @@ def run_init(
     )
     output.write_text(body)
 
-    # Bake concrete formula-derived sizing into the file the user reviews (spec §6.1).
+    # Bake concrete formula-derived sizing into the file the user reviews (spec §6.2).
     cfg = load_config(output)
     k = cfg.train.multiplex.classes_per_forward
     if torch.cuda.is_available():
         try:
-            decision = decide_preset(k=k)
+            # Pin the template's method/r/alpha — hardware autosizes only b/k.
+            # Best-effort num_classes caps K at the dataset vocabulary (§5).
+            num_classes = infer_num_classes(cfg.data.model_dump())
+            decision = decide_preset(
+                k=k,
+                method=cfg.peft.method,
+                r=cfg.peft.r,
+                alpha=cfg.peft.alpha,
+                num_classes=num_classes,
+            )
             _rewrite_sizing_block(
                 output,
                 method=decision.method,
