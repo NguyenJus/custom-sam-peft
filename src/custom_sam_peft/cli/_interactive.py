@@ -175,10 +175,10 @@ def _ask_validation(ctx: Ctx) -> dict[str, Any]:
                 f = float(s)
             except ValueError:
                 return "fraction must be a number"
-            return None if 0.0 < f <= 0.5 else "fraction must be in (0, 0.5]"
+            return None if 0.0 < f < 1.0 else "fraction must be in (0, 1.0) exclusive"
 
-        frac = ask_text("Auto-split fraction (0<f<=0.5)?", default="0.1", validate=_fraction)
-        return {"data": {"val_split": {"fraction": float(frac)}}}
+        frac = ask_text("Auto-split val fraction (0<f<1)?", default="0.1", validate=_fraction)
+        return {"data": {"split": {"val": float(frac)}}}
     if fmt == "hf":
         split = ask_text("HF validation split name?", default="validation")
         return {"data": {"hf": {"split_val": split}}}
@@ -284,7 +284,7 @@ def validate_checkpoint_dir(s: str) -> str | None:
 
 def validate_config_with_eval_split(s: str) -> str | None:
     """ask_text validator for eval-reuse: None when s load_config's AND carries a
-    val / val_split / hf.split_val / test source; else an error string."""
+    val / split / hf.split_val / test source; else an error string."""
     from custom_sam_peft.errors import ConfigError
 
     try:
@@ -296,7 +296,7 @@ def validate_config_with_eval_split(s: str) -> str | None:
     )
     has_split = (
         cfg.data.val is not None
-        or cfg.data.val_split is not None
+        or cfg.data.split is not None
         or hf_has_split_val
         or cfg.data.test is not None
     )

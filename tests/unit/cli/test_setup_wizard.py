@@ -17,8 +17,8 @@ from custom_sam_peft.config.loader import load_config
 
 def test_deep_merge_nested_dicts() -> None:
     dst = {"data": {"format": "coco"}}
-    sw._deep_merge(dst, {"data": {"val_split": {"fraction": 0.1}}})
-    assert dst == {"data": {"format": "coco", "val_split": {"fraction": 0.1}}}
+    sw._deep_merge(dst, {"data": {"split": {"val": 0.1}}})
+    assert dst == {"data": {"format": "coco", "split": {"val": 0.1}}}
 
 
 def test_deep_merge_scalar_overwrites() -> None:
@@ -302,7 +302,7 @@ def test_render_coco_explicit_val_reloads(tmp_path) -> None:
     rendered = sw.render(answers, run_mode="train")
     assert "format: coco" in rendered
     assert "# hf:" in rendered
-    assert "# val_split:" in rendered
+    assert "# split:" in rendered
     out = tmp_path / "c.yaml"
     out.write_text(rendered)
     cfg = load_config(out)
@@ -317,7 +317,7 @@ def test_render_hf_autosplit_qlora_reloads(tmp_path) -> None:
         "data": {
             "format": "hf",
             "hf": {"name": "org/ds"},
-            "val_split": {"fraction": 0.2},
+            "split": {"val": 0.2},
             "augmentations": {"preset": "natural", "intensity": "safe"},
         },
         "peft": {"method": "qlora"},
@@ -326,7 +326,7 @@ def test_render_hf_autosplit_qlora_reloads(tmp_path) -> None:
     rendered = sw.render(answers, run_mode="train")
     assert "name: org/ds" in rendered
     assert "quant_type: nf4" in rendered
-    assert "val_split:" in rendered
+    assert "split:" in rendered
     out = tmp_path / "c.yaml"
     out.write_text(rendered)
     cfg = load_config(out)
@@ -432,7 +432,7 @@ def test_generate_config_happy_path_local_coco_autosplit(tmp_path, monkeypatch) 
     sw.generate_config(out, force=False, cuda_available=False)
     cfg = load_config(out)
     assert cfg.run.name == "my-run"
-    assert cfg.data.val_split is not None
+    assert cfg.data.split is not None
     assert cfg.train.epochs == 7
 
 
@@ -646,7 +646,7 @@ def test_fraction_validator_rejects_non_numeric(monkeypatch) -> None:
     monkeypatch.setattr(itv, "ask_text", _capture_ask_text)
     ctx = sw.Ctx(answers={"data": {"format": "coco"}}, cuda_available=False)
     result = sw._ask_validation(ctx)
-    assert result == {"data": {"val_split": {"fraction": 0.1}}}
+    assert result == {"data": {"split": {"val": 0.1}}}
     # The ask_text call must have received a validate= callback
     assert len(calls) == 1
     _args, _kwargs, validate = calls[0]
@@ -655,10 +655,11 @@ def test_fraction_validator_rejects_non_numeric(monkeypatch) -> None:
     assert validate("abc") is not None
     # validate rejects out-of-range
     assert validate("0") is not None
-    assert validate("0.6") is not None
-    # validate accepts valid fractions
+    assert validate("1.0") is not None
+    # validate accepts valid fractions (cap dropped: 0.6 is now legal)
     assert validate("0.1") is None
     assert validate("0.5") is None
+    assert validate("0.6") is None
 
 
 # ---------------------------------------------------------------------------
@@ -905,7 +906,7 @@ def test_generate_config_happy_path_with_limit_step(tmp_path, monkeypatch) -> No
     sw.generate_config(out, force=False, cuda_available=False)
     cfg = load_config(out)
     assert cfg.run.name == "my-run"
-    assert cfg.data.val_split is not None
+    assert cfg.data.split is not None
     assert cfg.train.epochs == 7
 
 
@@ -921,7 +922,7 @@ def test_render_with_val_emits_poly(tmp_path) -> None:
         "data": {
             "format": "coco",
             "train": {"annotations": "t.json", "images": "t/"},
-            "val_split": {"fraction": 0.1},
+            "split": {"val": 0.1},
             "augmentations": {"preset": "natural", "intensity": "medium"},
         },
         "peft": {"method": "lora"},

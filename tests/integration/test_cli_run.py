@@ -110,12 +110,12 @@ def _make_train_result(
     """Build a minimal EvalArtifacts that satisfies _orchestrate's expectations."""
     run_dir.mkdir(parents=True, exist_ok=True)
     (run_dir / "adapter").mkdir(exist_ok=True)
-    # _orchestrate reads val_source.json after training to decide val mode.
-    (run_dir / "val_source.json").write_text(
-        '{"mode": "explicit", "fraction_requested": null, "seed_used": null, '
-        '"realized_fraction": null, "n_train": null, "n_val": null, '
-        '"per_class_counts": null, "missing_in_val": null, '
-        '"train_ids": null, "val_ids": null}'
+    # _orchestrate reads split_source.json after training to decide val mode.
+    (run_dir / "split_source.json").write_text(
+        '{"mode": "explicit", "val_fraction_requested": null, "test_fraction_requested": null, '
+        '"seed_used": null, "realized_fraction": null, "n_train": null, "n_val": null, '
+        '"n_test": null, "per_class_counts": null, "missing_in_val": null, '
+        '"missing_in_test": null, "train_ids": null, "val_ids": null, "test_ids": null}'
     )
     return EvalArtifacts(
         checkpoint_path=run_dir / "adapter",

@@ -64,7 +64,7 @@ def test_init_emits_comprehensive_config(tmp_path: Path) -> None:
     for section in ("run:", "model:", "data:", "peft:", "train:", "eval:", "tracking:", "export:"):
         assert section in body
     # Alternative branches present as comments:
-    assert "# val_split:" in body
+    assert "# split:" in body
     assert "# hf:" in body
     # data.limit is exposed as a commented discoverable block (shared template
     # with the wizard; flag-driven init has no limit flag, so it stays unset):

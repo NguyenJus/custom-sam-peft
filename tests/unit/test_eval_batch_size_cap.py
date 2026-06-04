@@ -179,7 +179,7 @@ def _make_run_eval_cfg(train_batch_size: int = 2) -> MagicMock:
         "test": None,
     }
     cfg.data.val = MagicMock()
-    cfg.data.val_split = None
+    cfg.data.split = None
     cfg.data.test = None
     cfg.model.name = "facebook/sam3.1"
     cfg.peft.method = "lora"

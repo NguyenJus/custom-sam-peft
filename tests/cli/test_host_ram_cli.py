@@ -174,7 +174,7 @@ def test_run_host_ram_stop_short_circuits_before_eval_export_bundle(
     monkeypatch.setattr(run_cmd, "run_training", lambda *a, **k: _ram_stop_artifacts(run_dir))
     phase_calls = {"val": 0, "load": 0, "bundle": 0}
     monkeypatch.setattr(
-        "custom_sam_peft.data.val_source.load_val_source",
+        "custom_sam_peft.data.split_source.load_split_source",
         lambda *a, **k: phase_calls.__setitem__("val", 1),
     )
     monkeypatch.setattr(run_cmd, "load_sam31", lambda *a, **k: phase_calls.__setitem__("load", 1))

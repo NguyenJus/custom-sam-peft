@@ -384,11 +384,11 @@ def test_missing_annotation_entry_does_not_crash(tmp_path: Path) -> None:
 
 
 def test_e2e_auto_split_on_tiny_coco(tmp_path: Path, tiny_coco_dir: Path) -> None:
-    """Spec §9.10.2: end-to-end run with val_split=0.5 creates val_source.json
+    """Spec §9.10.2: end-to-end run with split.val=0.5 creates split_source.json
     and metrics.json (with overall mAP from the carved val set)."""
     import custom_sam_peft.train.runner as runner_mod
-    from custom_sam_peft.config.schema import ValSplitConfig
-    from custom_sam_peft.data.val_source import load_val_source
+    from custom_sam_peft.config.schema import SplitConfig
+    from custom_sam_peft.data.split_source import load_split_source
 
     # Default-path guard: the practical optimizer/regularization hyperparameters
     # (learning_rate, lr_schedule, optimizer, max_grad_norm, peft.r/alpha/dropout)
@@ -409,7 +409,7 @@ def test_e2e_auto_split_on_tiny_coco(tmp_path: Path, tiny_coco_dir: Path) -> Non
                 images=str(tiny_coco_dir / "images"),
             ),
             val=None,
-            val_split=ValSplitConfig(fraction=0.5, seed=None),
+            split=SplitConfig(val=0.5, seed=None),
         ),
         peft=PEFTConfig(
             method="lora", scope="vision", target_modules=FIXTURE_SCOPE_PATTERNS["vision"]
@@ -434,7 +434,7 @@ def test_e2e_auto_split_on_tiny_coco(tmp_path: Path, tiny_coco_dir: Path) -> Non
     finally:
         runner_mod.load_sam31 = orig_load  # type: ignore[assignment]
 
-    vs = load_val_source(result.run_dir)
+    vs = load_split_source(result.run_dir)
     assert vs is not None
     assert vs.mode == "auto_split"
     assert (result.run_dir / "metrics.json").is_file()
@@ -444,10 +444,10 @@ def test_e2e_auto_split_on_tiny_coco(tmp_path: Path, tiny_coco_dir: Path) -> Non
 
 
 def test_e2e_no_val_on_tiny_coco(tmp_path: Path, tiny_coco_dir: Path) -> None:
-    """Spec §9.10.3: end-to-end no-val run creates val_source.json with mode=none
+    """Spec §9.10.3: end-to-end no-val run creates split_source.json with mode=none
     and metrics.json with the no-val note."""
     import custom_sam_peft.train.runner as runner_mod
-    from custom_sam_peft.data.val_source import load_val_source
+    from custom_sam_peft.data.split_source import load_split_source
 
     # Default-path guard: the practical optimizer/regularization hyperparameters
     # (learning_rate, lr_schedule, optimizer, max_grad_norm, peft.r/alpha/dropout)
@@ -468,7 +468,7 @@ def test_e2e_no_val_on_tiny_coco(tmp_path: Path, tiny_coco_dir: Path) -> None:
                 images=str(tiny_coco_dir / "images"),
             ),
             val=None,
-            val_split=None,
+            split=None,
         ),
         peft=PEFTConfig(
             method="lora", scope="vision", target_modules=FIXTURE_SCOPE_PATTERNS["vision"]
@@ -492,7 +492,7 @@ def test_e2e_no_val_on_tiny_coco(tmp_path: Path, tiny_coco_dir: Path) -> None:
     finally:
         runner_mod.load_sam31 = orig_load  # type: ignore[assignment]
 
-    vs = load_val_source(result.run_dir)
+    vs = load_split_source(result.run_dir)
     assert vs is not None
     assert vs.mode == "none"
     payload = json.loads((result.run_dir / "metrics.json").read_text())

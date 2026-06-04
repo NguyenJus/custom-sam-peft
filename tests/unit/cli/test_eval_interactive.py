@@ -98,7 +98,7 @@ def test_baseline_emits_reloadable_config(tmp_path, monkeypatch, capsys) -> None
     itv.run_eval_interactive(output=out_cfg, force=False)
     assert out_cfg.is_file()
     cfg = load_config(out_cfg)
-    assert cfg.data.val_split is not None
+    assert cfg.data.split is not None
     assert cfg.run.name == "baseline-eval"
     out = capsys.readouterr().out
     assert f"custom-sam-peft eval --config {out_cfg} --split val" in out

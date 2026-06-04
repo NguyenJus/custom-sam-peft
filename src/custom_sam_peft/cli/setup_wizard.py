@@ -146,15 +146,19 @@ def _validation_block(answers: dict[str, Any]) -> str:
         explicit_active = True
         v = data["val"]
         active = f"  val:\n    annotations: {v['annotations']}\n    images: {v['images']}"
-    elif data.get("val_split") is not None:
+    elif data.get("split") is not None:
         auto_active = True
-        active = f"  val_split:\n    fraction: {data['val_split']['fraction']}\n    seed: null"
+        split = data["split"]
+        val_line = f"    val: {split['val']}" if split.get("val") is not None else ""
+        test_line = f"    test: {split['test']}" if split.get("test") is not None else ""
+        inner = "\n".join(ln for ln in [val_line, test_line, "    seed: null"] if ln)
+        active = f"  split:\n{inner}"
     elif hf_explicit:
         # Validation comes from data.hf.split_val (rendered in the dataset block).
         active = "  # validation: HF split set via data.hf.split_val above is used as the val set."
     else:
         noval_active = True
-        active = "  # no-val mode: neither val: nor val_split: is set."
+        active = "  # no-val mode: neither val: nor split: is set."
     alts = []
     if not explicit_active:
         alts.append(
@@ -164,11 +168,9 @@ def _validation_block(answers: dict[str, Any]) -> str:
             "  #   images: data/val/"
         )
     if not auto_active:
-        alts.append(
-            "  # Auto-split alternative:\n  # val_split:\n  #   fraction: 0.1\n  #   seed: null"
-        )
+        alts.append("  # Auto-split alternative:\n  # split:\n  #   val: 0.1\n  #   seed: null")
     if not noval_active:
-        alts.append("  # No-val alternative: omit val:, val_split:, and hf.split_val.")
+        alts.append("  # No-val alternative: omit val:, split:, and hf.split_val.")
     return "\n".join([active, *alts])
 
 

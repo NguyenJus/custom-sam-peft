@@ -1,8 +1,8 @@
-# Demonstrates auto-split: data.train carved deterministically into train+val.
-# val_split.seed: null → inherit run.seed (42 here).
-# The resolved split is recorded once in <run_dir>/val_source.json and is
+# Demonstrates auto-split: data.train carved deterministically into train+val+test.
+# split.seed: null → inherit run.seed (42 here).
+# The resolved split is recorded once in <run_dir>/split_source.json and is
 # authoritative on resume.
-# See: docs/superpowers/specs/2026-05-22-data-no-val-auto-split-design.md §4-§5.
+# See: docs/superpowers/specs/2026-06-04-train-val-test-split-design.md §3-§6.
 
 run:
   name: coco-text-auto-split
@@ -20,9 +20,10 @@ data:
   train:
     annotations: data/coco/instances_train2017.json
     images: data/coco/train2017
-  # No `val:` block; instead, auto-split data.train.
-  val_split:
-    fraction: 0.1
+  # No `val:` block; instead, auto-split data.train into train+val+test.
+  split:
+    val: 0.1
+    test: 0.1
     # seed: null → inherit run.seed at resolve time
   augmentations:
     preset: natural

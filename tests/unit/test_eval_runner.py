@@ -22,7 +22,7 @@ def _make_cfg(
         "test": ({"annotations": "te.json", "images": "te/"} if has_test else None),
     }
     cfg.data.val = MagicMock()
-    cfg.data.val_split = None
+    cfg.data.split = None
     cfg.data.test = MagicMock() if has_test else None
     cfg.model.name = "facebook/sam3.1"
     cfg.peft.method = peft_method
@@ -77,9 +77,13 @@ def test_run_eval_dispatches_qlora_from_disk(
     assert dirpath == tmp_path
 
 
-def test_run_eval_rejects_test_split_when_data_test_none(tmp_path: Path) -> None:
+def test_run_eval_rejects_test_split_when_data_test_and_split_test_both_none(
+    tmp_path: Path,
+) -> None:
+    """§10.4 case 1: --split test requires data.test or data.split.test."""
     cfg = _make_cfg(has_test=False)
-    with pytest.raises(ValueError, match=r"data\.test"):
+    cfg.data.split = None  # type: ignore[attr-defined]
+    with pytest.raises(ValueError, match=r"--split test requires data\.test or data\.split\.test"):
         run_eval(cfg, checkpoint=tmp_path, split="test")
 
 
@@ -249,49 +253,51 @@ def test_run_eval_return_per_example_iou_default_false_unchanged(
 
 
 # ---------------------------------------------------------------------------
-# spec/data-no-val-auto-split (#71): --split val guard + auto-split in eval
+# §10.4: eval runner split-source cases
 # ---------------------------------------------------------------------------
 
 
-def test_run_eval_rejects_val_split_when_data_val_and_val_split_none(
+def test_run_eval_rejects_val_split_when_data_val_and_split_none(
     tmp_path: Path,
 ) -> None:
-    """Spec §7.4 A: --split val requires data.val or data.val_split."""
+    """§10.4: --split val requires data.val, data.split, or data.hf.split_val."""
     cfg = _make_cfg(format_="coco", peft_method="lora")
     cfg.data.val = None  # type: ignore[attr-defined]
-    cfg.data.val_split = None  # type: ignore[attr-defined]
+    cfg.data.split = None  # type: ignore[attr-defined]
     cfg.data.test = None
     with pytest.raises(ValueError, match=r"--split val requires data\.val"):
         run_eval(cfg, checkpoint=tmp_path, split="val")
 
 
-def test_run_eval_auto_split_threads_resolved_image_ids_to_builder(
+def test_run_eval_split_test_with_data_split_test_threads_image_ids(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Spec §7.4 B: when val_dataset is None and val_split is set, builder receives
-    _resolved_image_ids."""
+    """§10.4 case 2: --split test with data.split.test set → builder gets test_ids."""
     cfg = _make_cfg(format_="coco", peft_method="lora")
     cfg.data.val = None  # type: ignore[attr-defined]
-    # Build a real ValSplitConfig so the guard passes.
-    from custom_sam_peft.config.schema import ValSplitConfig
+    cfg.data.test = None  # no explicit data.test; use split path
+    # data.split.test must be set for the guard and the branch
+    split_mock = MagicMock()
+    split_mock.test = 0.2
+    cfg.data.split = split_mock  # type: ignore[attr-defined]
 
-    cfg.data.val_split = ValSplitConfig(fraction=0.5, seed=1)  # type: ignore[attr-defined]
+    from custom_sam_peft.data.split_source import SplitSource
 
-    # Mock resolve_val_source to return a known partition.
-    from custom_sam_peft.data.val_source import ValSource
-
-    fake_vs = ValSource(
-        mode="auto_split",
+    fake_vs = SplitSource(
+        mode="none",
         train_ids=("1", "2"),
-        val_ids=("3", "4"),
-        realized_fraction=0.5,
-        per_class_counts={0: (2, 2)},
+        val_ids=(),
+        test_ids=("3", "4"),
+        realized_fraction=(0.0, 0.2),
+        per_class_counts={0: (2, 0, 2)},
         missing_in_val=(),
-        fraction_requested=0.5,
-        seed_used=1,
+        missing_in_test=(),
+        val_fraction_requested=None,
+        test_fraction_requested=0.2,
+        seed_used=0,
     )
     monkeypatch.setattr(
-        "custom_sam_peft.eval.runner.resolve_val_source", lambda *_a, **_kw: fake_vs
+        "custom_sam_peft.eval.runner.resolve_split_source", lambda *_a, **_kw: fake_vs
     )
 
     captured: dict[str, object] = {}
@@ -301,12 +307,94 @@ def test_run_eval_auto_split_threads_resolved_image_ids_to_builder(
         captured["cfg_dict"] = cfg_dict
         return fake_ds
 
-    monkeypatch.setattr(
-        "custom_sam_peft.eval.runner.lookup",
-        lambda kind, name: fake_builder,
-    )
+    monkeypatch.setattr("custom_sam_peft.eval.runner.lookup", lambda kind, name: fake_builder)
     monkeypatch.setattr("custom_sam_peft.eval.runner.load_sam31", lambda _m, **_kw: MagicMock())
-    # load_adapter dispatches load_lora via train.checkpoint's module-level import.
+    monkeypatch.setattr("custom_sam_peft.train.checkpoint.load_lora", lambda *_a, **_kw: None)
+    fake_report = MagicMock(overall={"mAP": 0.5}, per_class={}, n_images=2, n_predictions=2)
+    monkeypatch.setattr(
+        "custom_sam_peft.eval.runner.Evaluator",
+        lambda _cfg: MagicMock(evaluate_and_save=MagicMock(return_value=fake_report)),
+    )
+
+    run_eval(cfg, checkpoint=tmp_path, split="test", output_dir=tmp_path)
+    assert "cfg_dict" in captured
+    cfg_dict = captured["cfg_dict"]
+    assert isinstance(cfg_dict, dict)
+    assert "_resolved_image_ids" in cfg_dict
+    assert cfg_dict["_resolved_image_ids"] == {"eval": ["3", "4"]}
+
+
+def test_run_eval_split_test_with_explicit_data_test_uses_existing_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """§10.4 case 3: --split test with explicit data.test → cfg_dict['val'] = cfg_dict['test']."""
+    cfg = _make_cfg(format_="coco", peft_method="lora", has_test=True)
+    cfg.data.val = None  # type: ignore[attr-defined]
+    cfg.data.split = None  # no auto-split; explicit data.test
+
+    captured: dict[str, object] = {}
+    fake_ds = MagicMock(__len__=lambda self: 2, class_names=["c"])
+
+    def fake_builder(cfg_dict: object, **kwargs: object) -> object:
+        captured["cfg_dict"] = cfg_dict
+        return fake_ds
+
+    monkeypatch.setattr("custom_sam_peft.eval.runner.lookup", lambda kind, name: fake_builder)
+    monkeypatch.setattr("custom_sam_peft.eval.runner.load_sam31", lambda _m, **_kw: MagicMock())
+    monkeypatch.setattr("custom_sam_peft.train.checkpoint.load_lora", lambda *_a, **_kw: None)
+    fake_report = MagicMock(overall={"mAP": 0.5}, per_class={}, n_images=2, n_predictions=2)
+    monkeypatch.setattr(
+        "custom_sam_peft.eval.runner.Evaluator",
+        lambda _cfg: MagicMock(evaluate_and_save=MagicMock(return_value=fake_report)),
+    )
+
+    run_eval(cfg, checkpoint=tmp_path, split="test", output_dir=tmp_path)
+    assert "cfg_dict" in captured
+    cfg_dict = captured["cfg_dict"]
+    assert isinstance(cfg_dict, dict)
+    # explicit test path: val key should be set to the test dict
+    assert cfg_dict.get("val") == cfg_dict.get("test")
+    assert "_resolved_image_ids" not in cfg_dict
+
+
+def test_run_eval_split_val_with_data_split_threads_val_ids(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """§10.4 case 4: --split val with data.split carving a val bucket → builder gets val_ids."""
+    cfg = _make_cfg(format_="coco", peft_method="lora")
+    cfg.data.val = None  # type: ignore[attr-defined]
+    split_mock = MagicMock()
+    split_mock.test = None
+    cfg.data.split = split_mock  # type: ignore[attr-defined]
+
+    from custom_sam_peft.data.split_source import SplitSource
+
+    fake_vs = SplitSource(
+        mode="auto_split",
+        train_ids=("1", "2"),
+        val_ids=("3", "4"),
+        test_ids=None,
+        realized_fraction=(0.5, 0.0),
+        per_class_counts={0: (2, 2, 0)},
+        missing_in_val=(),
+        missing_in_test=(),
+        val_fraction_requested=0.5,
+        test_fraction_requested=None,
+        seed_used=0,
+    )
+    monkeypatch.setattr(
+        "custom_sam_peft.eval.runner.resolve_split_source", lambda *_a, **_kw: fake_vs
+    )
+
+    captured: dict[str, object] = {}
+    fake_ds = MagicMock(__len__=lambda self: 2, class_names=["c"])
+
+    def fake_builder(cfg_dict: object, **kwargs: object) -> object:
+        captured["cfg_dict"] = cfg_dict
+        return fake_ds
+
+    monkeypatch.setattr("custom_sam_peft.eval.runner.lookup", lambda kind, name: fake_builder)
+    monkeypatch.setattr("custom_sam_peft.eval.runner.load_sam31", lambda _m, **_kw: MagicMock())
     monkeypatch.setattr("custom_sam_peft.train.checkpoint.load_lora", lambda *_a, **_kw: None)
     fake_report = MagicMock(overall={"mAP": 0.5}, per_class={}, n_images=2, n_predictions=2)
     monkeypatch.setattr(
@@ -320,6 +408,204 @@ def test_run_eval_auto_split_threads_resolved_image_ids_to_builder(
     assert isinstance(cfg_dict, dict)
     assert "_resolved_image_ids" in cfg_dict
     assert cfg_dict["_resolved_image_ids"] == {"eval": ["3", "4"]}
+
+
+def test_run_eval_load_not_recompute_when_split_source_json_present(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """§10.4 case 5: stored split_source.json wins over recompute.
+
+    Monkeypatches stratified_split to raise — asserts it's never called when
+    split_source.json is already present.  Mirrors the run_dir derivation:
+    checkpoint is at tmp_path/checkpoints/step_1/; run_dir = tmp_path.
+    """
+    # Set up a run dir with a hand-written split_source.json
+    ckpt_dir = tmp_path / "checkpoints" / "step_1"
+    ckpt_dir.mkdir(parents=True)
+    stored_test_ids = ["stored_a", "stored_b"]
+    (tmp_path / "split_source.json").write_text(
+        __import__("json").dumps(
+            {
+                "mode": "none",
+                "val_fraction_requested": None,
+                "test_fraction_requested": 0.2,
+                "seed_used": 0,
+                "realized_fraction": [0.0, 0.2],
+                "n_train": 8,
+                "n_val": 0,
+                "n_test": 2,
+                "per_class_counts": None,
+                "missing_in_val": None,
+                "missing_in_test": [],
+                "train_ids": ["t1", "t2", "t3", "t4", "t5", "t6", "t7", "t8"],
+                "val_ids": [],
+                "test_ids": stored_test_ids,
+            }
+        )
+    )
+
+    def _must_not_split(*_a: object, **_kw: object) -> object:
+        raise AssertionError("stratified_split must not be called when split_source.json exists")
+
+    monkeypatch.setattr("custom_sam_peft.data.split_source.stratified_split", _must_not_split)
+
+    cfg = _make_cfg(format_="coco", peft_method="lora")
+    cfg.data.val = None  # type: ignore[attr-defined]
+    cfg.data.test = None
+    split_mock = MagicMock()
+    split_mock.test = 0.2
+    split_mock.val = None
+    split_mock.seed = 0
+    cfg.data.split = split_mock  # type: ignore[attr-defined]
+    cfg.run = MagicMock()
+    cfg.run.seed = 0
+
+    captured: dict[str, object] = {}
+    fake_ds = MagicMock(__len__=lambda self: 2, class_names=["c"])
+
+    def fake_builder(cfg_dict: object, **kwargs: object) -> object:
+        captured["cfg_dict"] = cfg_dict
+        return fake_ds
+
+    monkeypatch.setattr("custom_sam_peft.eval.runner.lookup", lambda kind, name: fake_builder)
+    monkeypatch.setattr("custom_sam_peft.eval.runner.load_sam31", lambda _m, **_kw: MagicMock())
+    monkeypatch.setattr("custom_sam_peft.train.checkpoint.load_lora", lambda *_a, **_kw: None)
+    fake_report = MagicMock(overall={"mAP": 0.5}, per_class={}, n_images=2, n_predictions=2)
+    monkeypatch.setattr(
+        "custom_sam_peft.eval.runner.Evaluator",
+        lambda _cfg: MagicMock(evaluate_and_save=MagicMock(return_value=fake_report)),
+    )
+
+    # checkpoint is at <run_dir>/checkpoints/step_1/; run_dir derived as parent.parent
+    run_eval(cfg, checkpoint=ckpt_dir, split="test", output_dir=tmp_path)
+    assert "cfg_dict" in captured
+    assert captured["cfg_dict"]["_resolved_image_ids"] == {"eval": stored_test_ids}  # type: ignore[index]
+
+
+def test_run_eval_load_not_recompute_val_branch_when_split_source_json_present(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """§10.4 case 5 (val branch): stored split_source.json wins over recompute for val."""
+    ckpt_dir = tmp_path / "checkpoints" / "step_1"
+    ckpt_dir.mkdir(parents=True)
+    stored_val_ids = ["val_x", "val_y"]
+    (tmp_path / "split_source.json").write_text(
+        __import__("json").dumps(
+            {
+                "mode": "auto_split",
+                "val_fraction_requested": 0.2,
+                "test_fraction_requested": None,
+                "seed_used": 0,
+                "realized_fraction": [0.2, 0.0],
+                "n_train": 8,
+                "n_val": 2,
+                "n_test": None,
+                "per_class_counts": None,
+                "missing_in_val": [],
+                "missing_in_test": None,
+                "train_ids": ["t1", "t2", "t3", "t4", "t5", "t6", "t7", "t8"],
+                "val_ids": stored_val_ids,
+                "test_ids": None,
+            }
+        )
+    )
+
+    def _must_not_split(*_a: object, **_kw: object) -> object:
+        raise AssertionError("stratified_split must not be called when split_source.json exists")
+
+    monkeypatch.setattr("custom_sam_peft.data.split_source.stratified_split", _must_not_split)
+
+    cfg = _make_cfg(format_="coco", peft_method="lora")
+    cfg.data.val = None  # type: ignore[attr-defined]
+    cfg.data.test = None
+    split_mock = MagicMock()
+    split_mock.test = None
+    split_mock.val = 0.2
+    split_mock.seed = 0
+    cfg.data.split = split_mock  # type: ignore[attr-defined]
+    cfg.run = MagicMock()
+    cfg.run.seed = 0
+
+    captured: dict[str, object] = {}
+    fake_ds = MagicMock(__len__=lambda self: 2, class_names=["c"])
+
+    def fake_builder(cfg_dict: object, **kwargs: object) -> object:
+        captured["cfg_dict"] = cfg_dict
+        return fake_ds
+
+    monkeypatch.setattr("custom_sam_peft.eval.runner.lookup", lambda kind, name: fake_builder)
+    monkeypatch.setattr("custom_sam_peft.eval.runner.load_sam31", lambda _m, **_kw: MagicMock())
+    monkeypatch.setattr("custom_sam_peft.train.checkpoint.load_lora", lambda *_a, **_kw: None)
+    fake_report = MagicMock(overall={"mAP": 0.5}, per_class={}, n_images=2, n_predictions=2)
+    monkeypatch.setattr(
+        "custom_sam_peft.eval.runner.Evaluator",
+        lambda _cfg: MagicMock(evaluate_and_save=MagicMock(return_value=fake_report)),
+    )
+
+    run_eval(cfg, checkpoint=ckpt_dir, split="val", output_dir=tmp_path)
+    assert "cfg_dict" in captured
+    assert captured["cfg_dict"]["_resolved_image_ids"] == {"eval": stored_val_ids}  # type: ignore[index]
+
+
+def test_run_eval_recompute_fallback_when_no_split_source_json(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """§10.4 case 6: baseline eval (checkpoint=None) with data.split.test → recomputes."""
+    cfg = _make_cfg(format_="coco", peft_method="lora")
+    cfg.data.val = None  # type: ignore[attr-defined]
+    cfg.data.test = None
+    split_mock = MagicMock()
+    split_mock.test = 0.2
+    split_mock.val = None
+    split_mock.seed = 0
+    cfg.data.split = split_mock  # type: ignore[attr-defined]
+    cfg.run = MagicMock()
+    cfg.run.seed = 0
+
+    from custom_sam_peft.data.split_source import SplitSource
+
+    recomputed = SplitSource(
+        mode="none",
+        train_ids=("r1", "r2"),
+        val_ids=(),
+        test_ids=("r3",),
+        realized_fraction=(0.0, 0.33),
+        per_class_counts=None,
+        missing_in_val=None,
+        missing_in_test=(),
+        val_fraction_requested=None,
+        test_fraction_requested=0.2,
+        seed_used=0,
+    )
+
+    resolve_calls: list[int] = []
+
+    def _fake_resolve(*_a: object, **_kw: object) -> SplitSource:
+        resolve_calls.append(1)
+        return recomputed
+
+    monkeypatch.setattr("custom_sam_peft.eval.runner.resolve_split_source", _fake_resolve)
+
+    captured: dict[str, object] = {}
+    fake_ds = MagicMock(__len__=lambda self: 1, class_names=["c"])
+
+    def fake_builder(cfg_dict: object, **kwargs: object) -> object:
+        captured["cfg_dict"] = cfg_dict
+        return fake_ds
+
+    monkeypatch.setattr("custom_sam_peft.eval.runner.lookup", lambda kind, name: fake_builder)
+    monkeypatch.setattr("custom_sam_peft.eval.runner.load_sam31", lambda _m, **_kw: MagicMock())
+    fake_report = MagicMock(overall={"mAP": 0.5}, per_class={}, n_images=1, n_predictions=1)
+    monkeypatch.setattr(
+        "custom_sam_peft.eval.runner.Evaluator",
+        lambda _cfg: MagicMock(evaluate_and_save=MagicMock(return_value=fake_report)),
+    )
+
+    # checkpoint=None → no run_dir derived → recompute
+    run_eval(cfg, checkpoint=None, split="test", output_dir=tmp_path)
+    assert resolve_calls, "resolve_split_source must have been called (recompute path)"
+    assert "cfg_dict" in captured
+    assert captured["cfg_dict"]["_resolved_image_ids"] == {"eval": ["r3"]}  # type: ignore[index]
 
 
 # ---------------------------------------------------------------------------

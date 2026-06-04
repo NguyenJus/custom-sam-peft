@@ -57,25 +57,30 @@ def test_run_training_dispatches_via_registry(
         "custom_sam_peft.train.runner.build_tracker",
         lambda _cfg: MagicMock(close=MagicMock(), start_run=MagicMock()),
     )
-    # Bypass val_source resolution + persistence — this test is purely about
+    # Bypass split_source resolution + persistence — this test is purely about
     # registry dispatch wiring with a MagicMock cfg (no real schema).
-    from custom_sam_peft.data.val_source import ValSource
+    from custom_sam_peft.data.split_source import SplitSource
 
     monkeypatch.setattr(
-        "custom_sam_peft.train.runner.resolve_val_source",
-        lambda _cfg, run_dir=None: ValSource(
+        "custom_sam_peft.train.runner.resolve_split_source",
+        lambda _cfg, run_dir=None: SplitSource(
             mode="explicit",
             train_ids=None,
             val_ids=None,
+            test_ids=None,
             realized_fraction=None,
             per_class_counts=None,
             missing_in_val=None,
-            fraction_requested=None,
+            missing_in_test=None,
+            val_fraction_requested=None,
+            test_fraction_requested=None,
             seed_used=None,
         ),
     )
-    monkeypatch.setattr("custom_sam_peft.train.runner.save_val_source", lambda _vs, _run_dir: None)
-    monkeypatch.setattr("custom_sam_peft.train.runner._log_val_source", lambda _vs: None)
+    monkeypatch.setattr(
+        "custom_sam_peft.train.runner.save_split_source", lambda _vs, _run_dir: None
+    )
+    monkeypatch.setattr("custom_sam_peft.train.runner._log_split_source", lambda _vs: None)
 
     fake_result = MagicMock()
 
@@ -91,28 +96,29 @@ def test_run_training_dispatches_via_registry(
 
 
 # ---------------------------------------------------------------------------
-# spec/data-no-val-auto-split (#71): val_source orchestration
+# §10.6: split_source orchestration (renamed from val_source)
 # ---------------------------------------------------------------------------
 
 
-def test_run_training_writes_val_source_json_on_auto_split(
+def test_run_training_writes_split_source_json_on_auto_split(
     tmp_path: Path, tiny_coco_dir: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Spec §6.4 + §9.7.1: end-to-end auto-split writes <run_dir>/val_source.json.
+    """§10.6: end-to-end auto-split writes <run_dir>/split_source.json.
 
-    Uses tiny_coco + LoRA stub to keep this CPU-bound.
+    Uses tiny_coco + LoRA stub to keep this CPU-bound. Validates that
+    split_source.json is written with test_ids when split.test is set.
     """
     from custom_sam_peft.config.schema import (
         DataConfig,
         DataSplit,
         PEFTConfig,
         RunConfig,
+        SplitConfig,
         TrackingConfig,
         TrainConfig,
         TrainHyperparams,
-        ValSplitConfig,
     )
-    from custom_sam_peft.data.val_source import load_val_source
+    from custom_sam_peft.data.split_source import load_split_source
     from tests.fixtures.tiny_sam3_lora_stub import FIXTURE_SCOPE_PATTERNS, make_stub_wrapper
 
     cfg = TrainConfig(
@@ -124,7 +130,7 @@ def test_run_training_writes_val_source_json_on_auto_split(
                 images=str(tiny_coco_dir / "images"),
             ),
             val=None,
-            val_split=ValSplitConfig(fraction=0.5, seed=None),
+            split=SplitConfig(val=0.3, test=0.2, seed=None),
         ),
         peft=PEFTConfig(
             method="lora", scope="vision", target_modules=FIXTURE_SCOPE_PATTERNS["vision"]
@@ -145,17 +151,18 @@ def test_run_training_writes_val_source_json_on_auto_split(
         "custom_sam_peft.train.runner.load_sam31",
         lambda _m, **_kw: make_stub_wrapper(dim=8, working=True),
     )
-    from custom_sam_peft import train as _train_pkg  # noqa: F401
-
-    # peft_factory must accept (wrapper, cfg.peft) and apply lora; reuse real.
     from custom_sam_peft.train.runner import run_training
 
     result = run_training(cfg)
-    assert (result.run_dir / "val_source.json").is_file()
-    vs = load_val_source(result.run_dir)
+    assert (result.run_dir / "split_source.json").is_file(), (
+        "split_source.json must be written (not val_source.json)"
+    )
+    vs = load_split_source(result.run_dir)
     assert vs is not None
     assert vs.mode == "auto_split"
     assert vs.train_ids is not None and vs.val_ids is not None
+    # test_ids must be populated because split.test was set
+    assert vs.test_ids is not None, "test_ids must be populated when split.test is set"
 
 
 def test_eval_batch_size_auto_still_resolved_at_runtime() -> None:
@@ -188,21 +195,21 @@ def test_train_tuple_has_no_auto_sentinel() -> None:
     assert isinstance(TrainHyperparams(epochs=1).batch_size, int)
 
 
-def test_run_training_resume_reuses_saved_val_source(
+def test_run_training_resume_reuses_saved_split_source(
     tmp_path: Path, tiny_coco_dir: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Spec §8.2 + §9.7.2: resume reuses the saved partition; splitter not re-called."""
+    """§10.6: resume reuses the saved partition from split_source.json; splitter not re-called."""
     from custom_sam_peft.config.schema import (
         DataConfig,
         DataSplit,
         PEFTConfig,
         RunConfig,
+        SplitConfig,
         TrackingConfig,
         TrainConfig,
         TrainHyperparams,
-        ValSplitConfig,
     )
-    from custom_sam_peft.data.val_source import load_val_source
+    from custom_sam_peft.data.split_source import load_split_source
     from tests.fixtures.tiny_sam3_lora_stub import FIXTURE_SCOPE_PATTERNS, make_stub_wrapper
 
     def _cfg() -> TrainConfig:
@@ -215,7 +222,7 @@ def test_run_training_resume_reuses_saved_val_source(
                     images=str(tiny_coco_dir / "images"),
                 ),
                 val=None,
-                val_split=ValSplitConfig(fraction=0.5, seed=None),
+                split=SplitConfig(val=0.3, test=0.2, seed=None),
             ),
             peft=PEFTConfig(
                 method="lora", scope="vision", target_modules=FIXTURE_SCOPE_PATTERNS["vision"]
@@ -240,10 +247,11 @@ def test_run_training_resume_reuses_saved_val_source(
 
     # First run.
     r1 = run_training(_cfg())
-    vs1 = load_val_source(r1.run_dir)
+    vs1 = load_split_source(r1.run_dir)
     assert vs1 is not None
     saved_train = vs1.train_ids
     saved_val = vs1.val_ids
+    saved_test = vs1.test_ids
     ckpts = sorted((r1.run_dir / "checkpoints").glob("step_*"))
     assert ckpts, "first run produced no checkpoint"
 
@@ -251,12 +259,15 @@ def test_run_training_resume_reuses_saved_val_source(
     def _splitter_must_not_run(*a: object, **kw: object) -> object:
         raise AssertionError("splitter must not be re-called on resume")
 
-    monkeypatch.setattr("custom_sam_peft.data.val_source.stratified_split", _splitter_must_not_run)
+    monkeypatch.setattr(
+        "custom_sam_peft.data.split_source.stratified_split", _splitter_must_not_run
+    )
     r2 = run_training(_cfg(), resume_from=ckpts[0])
-    vs2 = load_val_source(r2.run_dir)
+    vs2 = load_split_source(r2.run_dir)
     assert vs2 is not None
     assert vs2.train_ids == saved_train
     assert vs2.val_ids == saved_val
+    assert vs2.test_ids == saved_test
 
 
 def test_run_training_resume_reuses_run_dir(
@@ -273,10 +284,10 @@ def test_run_training_resume_reuses_run_dir(
         DataSplit,
         PEFTConfig,
         RunConfig,
+        SplitConfig,
         TrackingConfig,
         TrainConfig,
         TrainHyperparams,
-        ValSplitConfig,
     )
     from tests.fixtures.tiny_sam3_lora_stub import FIXTURE_SCOPE_PATTERNS, make_stub_wrapper
 
@@ -290,7 +301,7 @@ def test_run_training_resume_reuses_run_dir(
                     images=str(tiny_coco_dir / "images"),
                 ),
                 val=None,
-                val_split=ValSplitConfig(fraction=0.5, seed=None),
+                split=SplitConfig(val=0.3, seed=None),
             ),
             peft=PEFTConfig(
                 method="lora", scope="vision", target_modules=FIXTURE_SCOPE_PATTERNS["vision"]
@@ -335,10 +346,10 @@ def test_run_training_local_backend_writes_metrics_jsonl(
         DataSplit,
         PEFTConfig,
         RunConfig,
+        SplitConfig,
         TrackingConfig,
         TrainConfig,
         TrainHyperparams,
-        ValSplitConfig,
     )
     from tests.fixtures.tiny_sam3_lora_stub import FIXTURE_SCOPE_PATTERNS, make_stub_wrapper
 
@@ -351,7 +362,7 @@ def test_run_training_local_backend_writes_metrics_jsonl(
                 images=str(tiny_coco_dir / "images"),
             ),
             val=None,
-            val_split=ValSplitConfig(fraction=0.5, seed=None),
+            split=SplitConfig(val=0.3, seed=None),
         ),
         peft=PEFTConfig(
             method="lora", scope="vision", target_modules=FIXTURE_SCOPE_PATTERNS["vision"]
