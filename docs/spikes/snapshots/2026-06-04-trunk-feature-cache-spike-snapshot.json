@@ -1,0 +1,24 @@
+{
+  "buckets": {
+    "spike.trunk_fwd": 0.9598973260001458,
+    "spike.h2d_copy": 0.015102735000255052,
+    "spike.wrapper_fwd": 1.5104021890001604
+  },
+  "meta": {
+    "spike_trunk_fwd_mean_s": 0.09604211419996318,
+    "spike_trunk_fwd_median_s": 0.09681164549988353,
+    "spike_h2d_copy_mean_s": 0.001521950100027425,
+    "spike_h2d_copy_median_s": 0.001480495000009796,
+    "spike_wrapper_fwd_mean_s": 0.15106807809995643,
+    "spike_wrapper_fwd_median_s": 0.14474409900003593,
+    "spike_net_win_mean_s": 0.09452016409993576,
+    "spike_fpn_bytes_per_image": 55738368,
+    "spike_sam2_fpn_bytes_per_image": 0,
+    "spike_total_bytes_no_sam2": 55738368,
+    "spike_total_bytes_with_sam2": 55738368,
+    "spike_batch_size": 1,
+    "spike_dtype": "bfloat16",
+    "spike_iters": 10,
+    "spike_warmup": 3
+  }
+}
