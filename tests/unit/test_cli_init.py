@@ -481,3 +481,44 @@ def test_init_cpu_only_writes_safe_defaults_with_warning(
     assert "re-resolve" in result.output.lower() or "gpu" in result.output.lower()
     cfg = load_config(out)  # safe defaults still valid
     assert cfg.peft.method in {"lora", "qlora"}
+
+
+# ---------------------------------------------------------------------------
+# §10.5 — example config migration: coco_text_auto_split.yaml
+# ---------------------------------------------------------------------------
+
+
+def test_coco_text_auto_split_example_parses_split_config() -> None:
+    """configs/examples/coco_text_auto_split.yaml must load and carry data.split.val
+    and data.split.test (3-way split); the old data.val_split field must be absent.
+    Spec: docs/superpowers/specs/2026-06-04-train-val-test-split-design.md §10.5.
+    """
+    # parents[0]=unit, parents[1]=tests, parents[2]=worktree root
+    repo_root = Path(__file__).parents[2]
+    example_path = repo_root / "configs" / "examples" / "coco_text_auto_split.yaml"
+    assert example_path.is_file(), f"example config not found at {example_path}"
+    cfg = load_config(example_path)
+    assert cfg.data.split is not None, "data.split must be set in coco_text_auto_split.yaml"
+    assert cfg.data.split.val is not None, "data.split.val must be set"
+    assert cfg.data.split.test is not None, "data.split.test must be set"
+    # The old val_split field must no longer exist on the schema.
+    assert not hasattr(cfg.data, "val_split"), "data.val_split must not exist (hard rename)"
+    # Sanity-check the values from the example file.
+    assert 0.0 < cfg.data.split.val < 1.0
+    assert 0.0 < cfg.data.split.test < 1.0
+
+
+def test_init_emitted_config_contains_split_not_val_split(tmp_path: Path) -> None:
+    """The config emitted by `csp init` must reference `split:` (not `val_split:`) in
+    the commented alternative block.
+    Spec: docs/superpowers/specs/2026-06-04-train-val-test-split-design.md §10.5.
+    """
+    _make_data_paths(tmp_path)
+    out = tmp_path / "config.yaml"
+    result = runner.invoke(app, ["init", "--output", str(out)])
+    assert result.exit_code == 0, result.output
+    body = out.read_text()
+    # The new auto-split alternative comment must be present.
+    assert "# split:" in body
+    # The old val_split field must NOT appear anywhere in the emitted YAML.
+    assert "val_split" not in body

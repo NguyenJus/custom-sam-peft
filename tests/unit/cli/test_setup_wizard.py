@@ -1049,3 +1049,64 @@ def test_generate_config_nonzero_exit_emits_failure_message(
 
     failure_msgs = [m for m in echoes if "did not complete" in m]
     assert failure_msgs, "Expected failure message on non-zero exit, but none was emitted"
+
+
+# ---------------------------------------------------------------------------
+# §10.5 — emitter migration: emitted configs use split: not val_split:
+# ---------------------------------------------------------------------------
+
+
+def test_render_auto_split_uses_split_key_not_val_split(tmp_path: Path) -> None:
+    """render() with data.split set must produce a YAML block containing 'split:'
+    and must NOT produce 'val_split:' anywhere in the output.
+    Spec: docs/superpowers/specs/2026-06-04-train-val-test-split-design.md §10.5.
+    """
+    answers = {
+        "run": {"name": "r"},
+        "data": {
+            "format": "coco",
+            "train": {"annotations": "t.json", "images": "t/"},
+            "split": {"val": 0.15},
+            "augmentations": {"preset": "natural", "intensity": "medium"},
+        },
+        "peft": {"method": "lora"},
+        "train": {"epochs": 1, "loss": {"preset": "natural", "class_imbalance": "balanced"}},
+    }
+    rendered = sw.render(answers, run_mode="train")
+    # Active split block must appear.
+    assert "split:" in rendered
+    # Old val_split key must not appear anywhere.
+    assert "val_split" not in rendered
+    # Must round-trip through load_config.
+    out = tmp_path / "c.yaml"
+    out.write_text(rendered)
+    cfg = load_config(out)
+    assert cfg.data.split is not None
+    assert cfg.data.split.val == pytest.approx(0.15)
+
+
+def test_render_auto_split_val_and_test_round_trips(tmp_path: Path) -> None:
+    """render() with data.split containing val + test emits both fractions and
+    load_config returns a DataConfig with both split.val and split.test set.
+    Spec: docs/superpowers/specs/2026-06-04-train-val-test-split-design.md §10.5.
+    """
+    answers = {
+        "run": {"name": "r"},
+        "data": {
+            "format": "coco",
+            "train": {"annotations": "t.json", "images": "t/"},
+            "split": {"val": 0.1, "test": 0.1},
+            "augmentations": {"preset": "natural", "intensity": "medium"},
+        },
+        "peft": {"method": "lora"},
+        "train": {"epochs": 1, "loss": {"preset": "natural", "class_imbalance": "balanced"}},
+    }
+    rendered = sw.render(answers, run_mode="train")
+    assert "split:" in rendered
+    assert "val_split" not in rendered
+    out = tmp_path / "c.yaml"
+    out.write_text(rendered)
+    cfg = load_config(out)
+    assert cfg.data.split is not None
+    assert cfg.data.split.val == pytest.approx(0.1)
+    assert cfg.data.split.test == pytest.approx(0.1)
