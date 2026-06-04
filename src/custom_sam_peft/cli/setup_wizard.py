@@ -372,6 +372,11 @@ def _calibrate_or_analytic(ctx: Ctx) -> dict[str, Any] | None:
     chosen_method = peft_answers.get("method", "lora")
     chosen_r = int(peft_answers.get("r", 16))
     chosen_alpha = int(peft_answers.get("alpha", 32))
+    # Scope drives the per-scope adapter dim sum in the VRAM estimate (#310). The
+    # wizard does not yet collect scope, so this resolves to the PEFTConfig default
+    # until it does — but threading it now keeps non-default scopes correctly sized.
+    # cite: PEFTConfig.scope default "decoder_concept" (config/schema.py:612).
+    chosen_scope = peft_answers.get("scope", "decoder_concept")
     # Best-effort num_classes from the dataset config collected so far (§5).
     data_cfg = ctx.answers.get("data")
     num_classes = infer_num_classes(data_cfg) if isinstance(data_cfg, dict) else None
@@ -383,6 +388,7 @@ def _calibrate_or_analytic(ctx: Ctx) -> dict[str, Any] | None:
             r=chosen_r,
             alpha=chosen_alpha,
             num_classes=num_classes,
+            scope=chosen_scope,
         )
     except (RuntimeError, ValueError) as exc:
         typer.echo(f"could not auto-size: {exc}; falling back to manual")

@@ -193,6 +193,7 @@ def run_init(
                 r=cfg.peft.r,
                 alpha=cfg.peft.alpha,
                 num_classes=num_classes,
+                scope=cfg.peft.scope,
             )
             _rewrite_sizing_block(
                 output,
