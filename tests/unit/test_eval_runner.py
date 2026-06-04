@@ -198,7 +198,7 @@ def test_run_eval_accepts_prebuilt_val_dataset_and_model(
             captured["dataset"] = dataset
             captured["return_per_example_iou"] = return_per_example_iou
             if return_per_example_iou:
-                return fake_report, [0.1, 0.5, 0.9]
+                return fake_report, [0.1, 0.5, 0.9], None
             return fake_report
 
         ev.evaluate = _evaluate
@@ -886,11 +886,12 @@ def test_run_eval_calls_write_eval_visualizations_when_on(
         "custom_sam_peft.eval.runner.lookup",
         lambda *_a, **_kw: lambda *a, **kw: MagicMock(__len__=lambda self: 0, class_names=["cat"]),
     )
-    # Evaluator.evaluate(..., return_per_example_iou=True) -> (report, iou_list)
+    # Evaluator.evaluate(..., return_per_example_iou=True) -> (report, iou_list, gt_counts)
     ev = MagicMock()
     ev.evaluate.return_value = (
         MagicMock(overall={}, per_class={}, n_images=1, n_predictions=0),
         [0.5],
+        [1],
     )
     ev._last_predictions = []
     monkeypatch.setattr("custom_sam_peft.eval.runner.Evaluator", lambda _c: ev)
@@ -951,6 +952,7 @@ def test_run_eval_viz_failure_does_not_abort(
     ev.evaluate.return_value = (
         MagicMock(overall={}, per_class={}, n_images=1, n_predictions=0),
         [0.5],
+        [1],
     )
     ev._last_predictions = []
     monkeypatch.setattr("custom_sam_peft.eval.runner.Evaluator", lambda _c: ev)

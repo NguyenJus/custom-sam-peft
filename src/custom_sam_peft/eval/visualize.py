@@ -76,6 +76,7 @@ def pick_samples(
     per_example_iou: Sequence[float],
     dataset: Dataset,
     count: int,
+    gt_counts: Sequence[int] | None = None,
 ) -> list[int]:
     """Return up to `count` dataset indices, variety-weighted toward high IoU.
 
@@ -84,10 +85,17 @@ def pick_samples(
     good/median/worst spread per spec §5.3. Returns <= count indices when the
     candidate pool is smaller than count. Indices are returned in descending-IoU
     order so the written composites are filename-stable and roughly best-to-worst.
+
+    When ``gt_counts`` is provided (index-aligned to ``per_example_iou``), uses
+    ``gt_counts[i] > 0`` for the candidate filter — zero disk reads. Falls back to
+    ``len(dataset[i].instances) > 0`` when ``gt_counts`` is ``None``.
     """
     # Candidate filter: >=1 GT instance. per_example_iou is index-aligned to the
     # dataset slice the metrics pass evaluated (full or lite).
-    candidates = [i for i in range(len(per_example_iou)) if len(dataset[i].instances) > 0]
+    if gt_counts is not None:
+        candidates = [i for i in range(len(per_example_iou)) if gt_counts[i] > 0]
+    else:
+        candidates = [i for i in range(len(per_example_iou)) if len(dataset[i].instances) > 0]
     if not candidates:
         return []
 
@@ -453,6 +461,7 @@ def write_eval_visualizations(
     model_name: str,
     normalize: NormalizeConfig | None,
     channel_semantics: str,
+    gt_counts: Sequence[int] | None = None,
 ) -> list[Path]:
     """Phase-2 viz pass. Selects `count` variety-weighted images (§5), renders a
     GT-vs-Pred composite per image (§7.4-7.5), writes PNGs under
@@ -460,7 +469,7 @@ def write_eval_visualizations(
     processes and frees one image at a time. Per-image failures are caught and
     logged at WARNING; never raises for a single bad image.
     """
-    selected = pick_samples(per_example_iou, dataset, count)
+    selected = pick_samples(per_example_iou, dataset, count, gt_counts=gt_counts)
     if not selected:
         _LOG.info("eval visualize: no GT-bearing images to visualize; skipping.")
         return []

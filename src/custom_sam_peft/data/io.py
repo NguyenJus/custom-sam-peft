@@ -3,6 +3,9 @@ channel_semantics never reaches this module."""
 
 from __future__ import annotations
 
+from collections import OrderedDict
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
@@ -10,6 +13,76 @@ import numpy as np
 
 _PIL_MODE = {1: "L", 3: "RGB", 4: "RGBA"}
 _RASTER_EXTS = {".png", ".jpg", ".jpeg", ".bmp", ".gif", ".webp"}
+
+# ---------------------------------------------------------------------------
+# Eval-scoped image-read cache (Part 2 spec §Design — Part 2)
+# ---------------------------------------------------------------------------
+# The store is a module-level bounded LRU keyed on (resolved_path_str, channels).
+# It is long-lived: it persists across cached_image_reads() context manager
+# exits so that the same ~64 val images remain resident across all ~160
+# periodic evals.  The active flag enables/disables consult + populate;
+# when inactive read_image behaves exactly as before (no overhead).
+
+
+class _LRUStore:
+    """Bounded LRU cache that allows explicit insertion.
+
+    Unlike functools.lru_cache this is a plain dict-backed store so callers can
+    insert pre-computed values without re-routing through a callable.
+    """
+
+    def __init__(self, maxsize: int) -> None:
+        self._maxsize = maxsize
+        self._store: OrderedDict[tuple[str, int], np.ndarray[Any, Any]] = OrderedDict()
+
+    def get(self, key: tuple[str, int]) -> np.ndarray[Any, Any] | None:
+        if key not in self._store:
+            return None
+        # Move to end (most-recently used).
+        self._store.move_to_end(key)
+        return self._store[key]
+
+    def put(self, key: tuple[str, int], value: np.ndarray[Any, Any]) -> None:
+        if key in self._store:
+            self._store.move_to_end(key)
+            self._store[key] = value
+            return
+        if len(self._store) >= self._maxsize:
+            self._store.popitem(last=False)  # evict LRU
+        self._store[key] = value
+
+    def resize(self, maxsize: int) -> None:
+        """Grow maxsize; never shrinks (avoids evicting warm entries)."""
+        if maxsize > self._maxsize:
+            self._maxsize = maxsize
+
+
+_store = _LRUStore(maxsize=64)
+_cache_active: bool = False
+
+
+@contextmanager
+def cached_image_reads(maxsize: int) -> Iterator[None]:
+    """Activate the eval-scoped image-read cache for the duration of this block.
+
+    The underlying LRU store is long-lived and is **not** cleared on exit, so
+    the hot val images stay resident across all periodic evals.  Only the
+    active flag is toggled; reads outside this block always hit the decode path.
+
+    Scoping rationale: periodic eval runs synchronously in the main process (no
+    DataLoader workers).  Training image reads happen only in worker processes.
+    Because the cache is activated only around the main-process eval call —
+    never during DataLoader iteration or across a worker fork — training workers
+    never see the active flag and never populate the cache.
+    """
+    global _cache_active
+    _store.resize(maxsize)
+    previous = _cache_active
+    _cache_active = True
+    try:
+        yield
+    finally:
+        _cache_active = previous
 
 
 def _coerce_to_channels(obj: object, channels: int) -> np.ndarray[Any, Any]:
@@ -108,8 +181,33 @@ def read_image_with_meta(
 
 
 def read_image(path: str | Path, channels: int) -> np.ndarray[Any, Any]:
-    """Read an image file to (H, W, C) with C == channels. Dispatch on extension."""
+    """Read an image file to (H, W, C) with C == channels. Dispatch on extension.
+
+    When the eval-scoped cache is active (inside ``cached_image_reads``), a
+    fast path checks the module-level LRU store first.  On a hit the cached
+    read-only array is returned directly (zero new disk I/O).  On a miss the
+    normal decode runs, the result is made read-only, and it is inserted into
+    the store.  When inactive the function behaves exactly as before.
+    """
     path = Path(path)
+
+    # --- eval-scoped cache fast path ---
+    if _cache_active:
+        cache_key = (str(path), channels)
+        cached = _store.get(cache_key)
+        if cached is not None:
+            return cached
+        # Miss: decode, mark read-only, insert, return.
+        arr = _decode_image(path, channels)
+        arr.flags.writeable = False
+        _store.put(cache_key, arr)
+        return arr
+
+    return _decode_image(path, channels)
+
+
+def _decode_image(path: Path, channels: int) -> np.ndarray[Any, Any]:
+    """Internal: unconditionally decode *path* without consulting the cache."""
     ext = path.suffix.lower()
     if ext in _RASTER_EXTS:
         from PIL import Image as PILImage
