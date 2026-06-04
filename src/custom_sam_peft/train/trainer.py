@@ -27,7 +27,7 @@ from custom_sam_peft.peft_adapters import PEFTMethod, make_peft_method
 from custom_sam_peft.predict.budget import decide_predict_budget_warning
 from custom_sam_peft.runtime import Runtime, to_device
 from custom_sam_peft.tracking.base import Tracker
-from custom_sam_peft.train._scheduler import PlateauOrLambda
+from custom_sam_peft.train._scheduler import PlateauOrLambda, rewind_to_step
 from custom_sam_peft.train.checkpoint import (
     ResumeState,
     load_full_state,
@@ -765,9 +765,19 @@ class Trainer:
             # achieved on disk; this only ever makes resume MORE conservative
             # and cannot cause a premature stop (#264).
             self._ladder.best = max(self._ladder.best, self._best_metric_value)
-        global_step = rs.start_step
         nan_streak = rs.nan_streak
         start_epoch = rs.start_epoch
+        # #308: the trainer re-walks the interrupted epoch from its start (no
+        # batch-skip), so global_step and the per-step LR scheduler are rewound
+        # to the epoch boundary. Continuing from the saved mid-epoch step
+        # (rs.start_step) would double-count the already-walked batches — drift
+        # that shifts save_every/eval_every cadence, over-steps the LR schedule
+        # past total_steps, and compounds across successive resumes. Epoch
+        # length is uniform (len(train_loader) is constant), so the boundary is
+        # exactly start_epoch * steps_per_epoch.
+        global_step = start_epoch * steps_per_epoch
+        if resume_from is not None:
+            rewind_to_step(scheduler, global_step)
         if start_epoch > 0 or global_step > 0:
             P.set_start(start_epoch, global_step)
 
