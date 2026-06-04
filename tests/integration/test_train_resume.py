@@ -186,3 +186,60 @@ def test_resume_matches_uninterrupted(
             assert ssd_c[key] >= ssd_a[key], (
                 f"scheduler {key}: resumed {ssd_c[key]} < reference {ssd_a[key]}"
             )
+
+
+def test_resume_does_not_overstep_scheduler(
+    tmp_path: Path, tiny_coco_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """#308: resume rewinds global_step + scheduler to the epoch boundary.
+
+    The resumed run re-walks the interrupted epoch from its start, so the
+    scheduler (LR is a pure function of its internal step counter) must be
+    rewound to ``start_epoch * steps_per_epoch`` to avoid over-stepping by the
+    number of already-walked batches. A run resumed at an epoch boundary that
+    then completes the SAME total number of epochs as an uninterrupted run must
+    land the scheduler on the EXACT same ``last_epoch`` — not a drifted, larger
+    value. Pre-fix this asserts a strict over-step (e.g. 6 vs 4).
+    """
+    ds = _ds(tiny_coco_dir)
+    cfg = _cfg(tmp_path, tiny_coco_dir, save_every=2)
+
+    real_sched_builder = trainer_mod._build_scheduler
+    captured_scheds: list[Any] = []
+
+    def _sched_spy(*a: Any, **kw: Any) -> Any:
+        sched = real_sched_builder(*a, **kw)
+        captured_scheds.append(sched)
+        return sched
+
+    monkeypatch.setattr(trainer_mod, "_build_scheduler", _sched_spy)
+
+    # Uninterrupted reference run (2 epochs).
+    w_a = make_stub_wrapper(dim=8, working=True)
+    apply_lora(w_a, cfg.peft)
+    trainer_mod.Trainer(w_a, ds, ds, NoopTracker(), cfg).fit(run_dir=tmp_path / "ref")
+    ref_last_epoch = captured_scheds[-1].state_dict()["last_epoch"]
+
+    # Truncated run (1 epoch) → checkpoint at the epoch-0 boundary, then resume
+    # to the full 2 epochs. The resumed run re-walks epoch 0 + walks epoch 1.
+    w_b = make_stub_wrapper(dim=8, working=True)
+    apply_lora(w_b, cfg.peft)
+    cfg_short = _cfg(tmp_path, tiny_coco_dir, save_every=2)
+    cfg_short.train.epochs = 1
+    result_b1 = trainer_mod.Trainer(w_b, ds, ds, NoopTracker(), cfg_short).fit(
+        run_dir=tmp_path / "trunc"
+    )
+    resume_dir = sorted((result_b1.run_dir / "checkpoints").glob("step_*"))[-1]
+
+    w_c = make_stub_wrapper(dim=8, working=True)
+    apply_lora(w_c, cfg.peft)
+    trainer_mod.Trainer(w_c, ds, ds, NoopTracker(), cfg).fit(
+        run_dir=tmp_path / "resumed", resume_from=resume_dir
+    )
+    resumed_last_epoch = captured_scheds[-1].state_dict()["last_epoch"]
+
+    assert resumed_last_epoch == ref_last_epoch, (
+        f"scheduler over-stepped on resume: resumed last_epoch={resumed_last_epoch} "
+        f"!= reference {ref_last_epoch} (#308 drift — global_step/scheduler not "
+        "rewound to the epoch boundary before re-walking the interrupted epoch)"
+    )

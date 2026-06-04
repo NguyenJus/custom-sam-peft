@@ -7,6 +7,13 @@ optimizer / scheduler / RNG / step / epoch.
 Resume granularity is epoch-boundary: the trainer re-walks the interrupted
 epoch (RNG-restored shuffling replays the same order). See
 docs/superpowers/specs/2026-05-17-training-loop-design.md §7 for rationale.
+
+Because the epoch is fully re-walked, ``global_step`` and the per-step LR
+scheduler are rewound to the epoch boundary on resume rather than continued
+from the saved mid-epoch ``start_step`` — otherwise the already-walked batches
+are double-counted, drifting save/eval cadence and over-stepping the schedule
+(#308). The rewind lives in ``Trainer.fit``; ``start_step`` is retained in the
+serialized state for forensics/back-compat.
 """
 
 from __future__ import annotations

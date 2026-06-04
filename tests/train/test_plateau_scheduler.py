@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import torch
 
-from custom_sam_peft.train._scheduler import step_per_train_step
+from custom_sam_peft.train._scheduler import rewind_to_step, step_per_train_step
 from custom_sam_peft.train.trainer import _build_scheduler
 
 
@@ -56,6 +56,48 @@ def test_param_groups_lr_matches_get_last_lr_for_lambda() -> None:
     for _s in range(5):
         sched.step()
     assert abs(opt.param_groups[0]["lr"] - sched.get_last_lr()[0]) < 1e-12
+
+
+# ---------------------------------------------------------------------------
+# rewind_to_step rewinds the per-step LambdaLR to an exact step (#308)
+# ---------------------------------------------------------------------------
+
+
+def test_rewind_to_step_matches_a_fresh_forward_walk() -> None:
+    """rewind_to_step(sched, k) lands last_epoch AND lr where stepping to k would.
+
+    Mirrors the resume path: a scheduler advanced past the epoch boundary (the
+    loaded mid-epoch state) is rewound back to the boundary so the re-walk does
+    not over-step the schedule.
+    """
+    lam = lambda s: 1.0 - s * 0.01  # noqa: E731 — terse closure for the test
+    # Reference: a fresh scheduler stepped forward to step 3.
+    ref = torch.optim.lr_scheduler.LambdaLR(_opt(lr=1e-4), lr_lambda=lam)
+    for _ in range(3):
+        ref.step()
+
+    # Over-stepped scheduler (simulating a loaded mid-epoch checkpoint at 5),
+    # then rewound back to the boundary at 3.
+    over = torch.optim.lr_scheduler.LambdaLR(_opt(lr=1e-4), lr_lambda=lam)
+    for _ in range(5):
+        over.step()
+    rewind_to_step(over, 3)
+
+    assert over.last_epoch == ref.last_epoch == 3
+    assert abs(over.get_last_lr()[0] - ref.get_last_lr()[0]) < 1e-12
+    assert abs(over.optimizer.param_groups[0]["lr"] - ref.get_last_lr()[0]) < 1e-12
+
+
+def test_rewind_then_step_continues_correctly() -> None:
+    """After rewind to k, the next step() advances to k+1 with the right lr."""
+    lam = lambda s: 1.0 - s * 0.01  # noqa: E731
+    sched = torch.optim.lr_scheduler.LambdaLR(_opt(lr=1e-4), lr_lambda=lam)
+    for _ in range(5):
+        sched.step()
+    rewind_to_step(sched, 2)
+    step_per_train_step(sched)
+    assert sched.last_epoch == 3
+    assert abs(sched.optimizer.param_groups[0]["lr"] - 1e-4 * lam(3)) < 1e-12
 
 
 # ---------------------------------------------------------------------------
