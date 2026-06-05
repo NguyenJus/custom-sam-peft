@@ -112,7 +112,7 @@ Row schema (every section uses these six columns):
 | `config/schema.py:EvalConfig.mask_threshold` | `0.0` | `# cite: degenerate-case` | — | — | Logit decision boundary: sigmoid(0.0)=0.5 is the probability midpoint. Threshold=0 ↔ predict positive when logit > 0 ↔ predicted probability > 0.5. Mathematical identity. |
 | `config/schema.py:EvalConfig.save_predictions` | `False` | `index-only` | — | — | Boolean toggle; off by default. Not trust-bearing. |
 | `config/schema.py:EvalConfig.batch_size` | `"auto"` | `index-only` | — | — | Auto-resolved at eval time; structural. |
-| `config/schema.py:EvalConfig.visualize` | `True` | `# tbd: #191` | — | — | Repo-chosen default. Tracking via #191. |
+| `config/schema.py:EvalConfig.visualize` | `False` | `# tbd: #323` | — | — | Defaulted off as a temporary safety measure: enabling viz forces the exact + full-retention eval path (~12 GB) and can freeze the 16 GB box. Tracking via #323. |
 | `config/schema.py:EvalConfig.visualize_count` | `10` | `# tbd: #191` | — | — | Repo-chosen number of visualized samples. Tracking via #191. |
 | `config/schema.py:TrackingConfig.backend` | `"local"` | `index-only` | — | — | Structural tracker-backend literal; not trust-bearing. |
 | `config/schema.py:AugmentationsConfig.preset` | `"natural"` | `index-only` | — | — | Default augmentation preset; structural (mirrors LossConfig.preset). |
