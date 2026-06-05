@@ -657,7 +657,7 @@ def test_eval_config_visualize_defaults() -> None:
     from custom_sam_peft.config.schema import EvalConfig
 
     cfg = EvalConfig()
-    assert cfg.visualize is True
+    assert cfg.visualize is False  # #323: defaulted off (system-freeze safety)
     assert cfg.visualize_count == 10
 
 

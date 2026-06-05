@@ -825,7 +825,10 @@ class EvalConfig(_Strict):
     mask_threshold: float = 0.0  # cite: degenerate-case (logit boundary; sigmoid(0)=0.5)
     save_predictions: bool = False
     batch_size: PositiveInt | Literal["auto"] = "auto"
-    visualize: bool = True
+    # tbd: #323 — temporarily defaulted off: enabling viz forces the exact +
+    # full-retention eval path (~12 GB) and can freeze the 16 GB box. Opt in
+    # explicitly until the memory-light viz path lands (#323).
+    visualize: bool = False
     visualize_count: PositiveInt = 10
 
 
