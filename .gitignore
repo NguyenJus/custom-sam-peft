@@ -53,3 +53,6 @@ models/*
 
 # Downloaded CI tooling (downloaded at lint time, not committed)
 actionlint
+
+# Local design specs (historical, not tracked)
+docs/specs/
