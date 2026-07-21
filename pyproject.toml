@@ -17,7 +17,7 @@ dependencies = [
   "pycocotools>=2.0",
   "numpy>=1.26",
   "rich>=13",
-  "pillow>=10",
+  "pillow>=12.3.0",
   # rasterio replaces tifffile as the base TIFF reader (spec §6.3/§10): adds CRS +
   # affine + nodata. Floor 1.3: first series with reliably bundled manylinux GDAL
   # wheels (no system GDAL required).
